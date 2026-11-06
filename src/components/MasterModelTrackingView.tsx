@@ -5,8 +5,6 @@ import {
   Search, 
   Printer, 
   Clock, 
-  Layers, 
-  CheckCircle2, 
   Scissors, 
   X, 
   User, 
@@ -15,7 +13,6 @@ import {
   FileText,
   Sparkles,
   Scale,
-  AlertTriangle,
   Truck
 } from 'lucide-react';
 import { Model, ModelTimelineEvent } from '../types';
@@ -538,6 +535,14 @@ export const MasterModelTrackingView: React.FC = () => {
         const modelSewingRecords = sewingDispatches.filter((d) => d.model_id === model.id);
         const modelReqs = requirements.filter((r) => r.model_id === model.id);
         const modelAccs = modelAccessories.filter((a) => a.model_id === model.id);
+        const totalCutWeight = modelCutRecords.reduce(
+          (s, r) => s + (r.layer_weight || 0) * (r.layers_count || 0),
+          0
+        );
+        const totalQcDefects = modelQcRecords.reduce(
+          (s, q) => s + (q.defect_qty ?? q.defect_pieces ?? 0),
+          0
+        );
 
         return (
           <div className="fixed inset-0 z-[60] bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
@@ -617,7 +622,7 @@ export const MasterModelTrackingView: React.FC = () => {
                       <div className="p-3.5 rounded-2xl bg-blue-50 border border-blue-200">
                         <span className="text-[11px] text-blue-700 font-bold block">الكمية المقصوصة</span>
                         <strong className="text-lg font-black text-blue-900">
-                          {(snap.cut_pieces ?? snap.total_cut_pieces ?? model.total_cut_pieces ?? model.actual_cut_count ?? 0).toLocaleString('ar-EG')} قطعة
+                          {(snap.cut_pieces ?? snap.pieces_count ?? snap.total_cut_pieces ?? model.total_cut_pieces ?? model.actual_cut_count ?? 0).toLocaleString('ar-EG')} قطعة
                         </strong>
                       </div>
                       <div className="p-3.5 rounded-2xl bg-blue-50 border border-blue-200">
@@ -633,23 +638,23 @@ export const MasterModelTrackingView: React.FC = () => {
                         </strong>
                       </div>
                       <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
-                        <span className="text-[11px] text-slate-500 font-bold block">وزن الراقة / القماش المسحوب</span>
+                        <span className="text-[11px] text-slate-500 font-bold block">وزن الراقة / القماش المقصوص</span>
                         <strong className="text-sm font-black text-slate-900">
                           {snap.layer_weight
                             ? `${snap.layer_weight} كجم`
-                            : `${(model.withdrawn_fabric_qty || modelCutRecords.reduce((s, r) => s + r.layer_weight * r.layers_count, 0)).toFixed(1)} كجم`}
+                            : `${totalCutWeight.toFixed(1)} كجم`}
                         </strong>
                       </div>
                     </div>
 
                     {/* Specific Cutting Record Snapshot if available */}
-                    {(snap.color_code || snap.fabric_name || snap.worker_notes) && (
+                    {(snap.color_code || snap.color_name || snap.fabric_name || snap.worker_notes) && (
                       <div className="p-4 rounded-2xl bg-white border border-blue-200 space-y-2">
                         <div className="font-black text-blue-900 text-xs">تفاصيل الفرشة المسجلة في هذا الحدث:</div>
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                           <div>
                             <span className="text-slate-400">الخامة واللون: </span>
-                            <strong className="text-slate-800">{snap.fabric_name || ''} ({snap.color_code || '-'})</strong>
+                            <strong className="text-slate-800">{snap.fabric_name || ''} ({snap.color_name || snap.color_code || '-'})</strong>
                           </div>
                           <div>
                             <span className="text-slate-400">القطعة: </span>
@@ -676,8 +681,7 @@ export const MasterModelTrackingView: React.FC = () => {
                         <table className="w-full text-right text-xs">
                           <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
                             <tr>
-                              <th className="py-2 px-3">القطعة</th>
-                              <th className="py-2 px-3">اللون / الخامة</th>
+                              <th className="py-2 px-3">اللون / الدرجة</th>
                               <th className="py-2 px-3 text-center">عدد الراقات</th>
                               <th className="py-2 px-3 text-center">وزن الراقة</th>
                               <th className="py-2 px-3 text-center">الكمية المقصوصة</th>
@@ -689,15 +693,16 @@ export const MasterModelTrackingView: React.FC = () => {
                             {modelCutRecords.map((rec) => (
                               <tr key={rec.id} className="hover:bg-slate-50">
                                 <td className="py-2 px-3 font-bold">
-                                  {rec.part === 'pants' ? 'بنطلون' : 'تيشرت'}
-                                </td>
-                                <td className="py-2 px-3">
-                                  {rec.fabric_name || ''} {rec.color_code} {rec.color_name ? `(${rec.color_name})` : ''}
+                                  {rec.color_name || rec.colorName || '-'} {rec.shade_degree ? `(${rec.shade_degree})` : ''}
                                 </td>
                                 <td className="py-2 px-3 text-center font-bold text-blue-700">{rec.layers_count}</td>
                                 <td className="py-2 px-3 text-center">{rec.layer_weight} كجم</td>
-                                <td className="py-2 px-3 text-center font-black text-slate-900">{rec.cut_pieces} ق</td>
-                                <td className="py-2 px-3 font-semibold">{rec.recorded_by || model.cutter_name || '-'}</td>
+                                <td className="py-2 px-3 text-center font-black text-slate-900">
+                                  {rec.pieces_count ?? rec.piecesCount ?? 0} ق
+                                </td>
+                                <td className="py-2 px-3 font-semibold">
+                                  {rec.cutter_name || rec.cutterName || model.cutter_name || '-'}
+                                </td>
                                 <td className="py-2 px-3 text-amber-800 font-medium">{rec.notes || '-'}</td>
                               </tr>
                             ))}
@@ -720,7 +725,7 @@ export const MasterModelTrackingView: React.FC = () => {
                       <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
                         <span className="text-[11px] text-slate-500 font-bold block">مرجع المقصوص</span>
                         <strong className="text-lg font-black text-slate-900">
-                          {(snap.cut_pieces_ref ?? model.total_cut_pieces ?? model.actual_cut_count ?? 0).toLocaleString('ar-EG')} ق
+                          {(snap.cut_pieces_ref ?? snap.pieces_cut ?? model.total_cut_pieces ?? model.actual_cut_count ?? 0).toLocaleString('ar-EG')} ق
                         </strong>
                       </div>
                       <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200">
@@ -732,13 +737,13 @@ export const MasterModelTrackingView: React.FC = () => {
                       <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200">
                         <span className="text-[11px] text-rose-700 font-bold block">قطع الديفوه / التالف</span>
                         <strong className="text-lg font-black text-rose-800">
-                          {(snap.defect_qty ?? model.Print_defects ?? model.Cut_defects ?? 0).toLocaleString('ar-EG')} ق
+                          {(snap.defect_qty ?? snap.defect_pieces ?? totalQcDefects ?? 0).toLocaleString('ar-EG')} ق
                         </strong>
                       </div>
                       <div className="p-3.5 rounded-2xl bg-purple-50 border border-purple-200">
                         <span className="text-[11px] text-purple-700 font-bold block">مسؤول الفرز والكنترول</span>
                         <strong className="text-sm font-black text-purple-900">
-                          {snap.inspector || eventUser}
+                          {snap.inspector || snap.inspector_name || eventUser}
                         </strong>
                       </div>
                     </div>
@@ -761,11 +766,17 @@ export const MasterModelTrackingView: React.FC = () => {
                           <tbody className="divide-y divide-slate-100">
                             {modelQcRecords.map((q) => (
                               <tr key={q.id} className="hover:bg-slate-50">
-                                <td className="py-2 px-3 font-mono text-[11px]">{q.timestamp}</td>
-                                <td className="py-2 px-3 text-center font-bold">{q.cut_pieces_ref} ق</td>
-                                <td className="py-2 px-3 text-center font-black text-emerald-700">{q.good_qty} ق</td>
-                                <td className="py-2 px-3 text-center font-bold text-rose-700">{q.defect_qty} ق</td>
-                                <td className="py-2 px-3 text-slate-700">{q.notes || '-'}</td>
+                                <td className="py-2 px-3 font-mono text-[11px]">{q.created_at}</td>
+                                <td className="py-2 px-3 text-center font-bold">
+                                  {q.pieces_cut ?? model.total_cut_pieces ?? model.actual_cut_count ?? 0} ق
+                                </td>
+                                <td className="py-2 px-3 text-center font-black text-emerald-700">
+                                  {q.good_qty ?? q.counted_pieces ?? 0} ق
+                                </td>
+                                <td className="py-2 px-3 text-center font-bold text-rose-700">
+                                  {q.defect_qty ?? q.defect_pieces ?? 0} ق
+                                </td>
+                                <td className="py-2 px-3 text-slate-700">{q.notes || q.defect_notes || '-'}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -933,9 +944,9 @@ export const MasterModelTrackingView: React.FC = () => {
                         </strong>
                       </div>
                       <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
-                        <span className="text-[11px] text-slate-500 font-bold block">ماركر التيشرت / البنطلون</span>
+                        <span className="text-[11px] text-slate-500 font-bold block">ماركر القص / الطباعة</span>
                         <strong className="text-xs font-black text-slate-900">
-                          {model.marker_shirt_length || model.marker_length || 0} م / {model.marker_pants_length || 0} م
+                          {model.main_marker_url ? 'ماركر أساسي مرفق' : 'بدون ماركر'}
                         </strong>
                       </div>
                       <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
@@ -987,7 +998,9 @@ export const MasterModelTrackingView: React.FC = () => {
                                   className="w-3 h-3 rounded-full border border-slate-300"
                                   style={{ backgroundColor: col?.hex_code || '#3b82f6' }}
                                 />
-                                <span>{fab?.name || 'قماش'} - {col?.color_code || ''} ({req.required_quantity} {fab?.unit || 'كيلو'})</span>
+                                <span>
+                                  {fab?.name || 'قماش'} - {col?.color_code || ''} ({req.planned_quantity} {fab?.unit || 'كيلو'})
+                                </span>
                               </span>
                             );
                           })}

@@ -205,12 +205,13 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const generateWhatsappText = (item: AccessoryItem, qty: number, supplierName?: string) => {
     const isCustom = item.usage_type === 'custom_model';
     return formatSupplierWhatsappMessage({
-      supplier_name: supplierName || 'حضرة المورد',
-      item_name: `${item.type_name} - ${item.name}${isCustom && item.custom_model_code ? ` (موديل ${item.custom_model_code})` : ''}`,
-      color_code: item.code,
+      supplierName: supplierName || 'حضرة المورد',
+      itemName: `${item.type_name} - ${item.name}`,
+      code: item.code,
       quantity: qty,
       unit: item.unit,
-      available: item.quantity
+      available: item.quantity,
+      modelCode: isCustom ? item.custom_model_code : undefined
     });
   };
 

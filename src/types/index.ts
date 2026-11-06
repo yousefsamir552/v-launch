@@ -258,6 +258,10 @@ export interface DesignModel {
   print_house_name?: string;
   print_house?: string;
   print_cost?: number;
+  withdrawn_fabric_qty?: number;
+  marker_length?: number;
+  marker_shirt_length?: number;
+  marker_pants_length?: number;
 
   // Expected Delivery & Workshop tracking
   print_expected_date?: string;
@@ -297,6 +301,7 @@ export interface ModelRequirement {
   color_id: string;
   part_name: string;
   planned_quantity: number;
+  required_quantity?: number;
 }
 
 export interface ModelAccessory {
@@ -317,14 +322,19 @@ export interface CuttingRecord {
   model_id: string;
   color_name?: string;
   colorName?: string;
+  color_code?: string;
+  fabric_name?: string;
+  part?: 'shirt' | 'pants' | string;
   cutter_name?: string;
   cutterName?: string;
+  recorded_by?: string;
   layers_count: number;
   layersCount?: number;
   layer_weight: number;
   layerWeight?: number;
   pieces_count: number;
   piecesCount?: number;
+  cut_pieces?: number;
   shade_degree?: string;
   shadeDegree?: string;
   notes?: string;
@@ -340,6 +350,7 @@ export interface QCRecord {
   color_name?: string;
   size?: string;
   pieces_cut?: number;
+  cut_pieces_ref?: number;
   good_qty: number;
   defect_qty: number;
   defect_notes?: string;
@@ -347,6 +358,7 @@ export interface QCRecord {
   defect_pieces?: number;
   notes?: string;
   created_at: string;
+  timestamp?: string;
   inspector_name?: string;
 }
 

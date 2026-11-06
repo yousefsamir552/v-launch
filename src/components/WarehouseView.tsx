@@ -184,9 +184,9 @@ export const WarehouseView: React.FC = () => {
     if (!reorderModalItem) return;
     const supplierName = reorderModalItem.supplier?.name || 'حضرة المورد';
     const text = formatSupplierWhatsappMessage({
-      supplier_name: supplierName,
-      item_name: reorderModalItem.fabric.name,
-      color_code: `${reorderModalItem.color.color_code} (${reorderModalItem.color.color_name || 'بدون اسم'})`,
+      supplierName,
+      itemName: reorderModalItem.fabric.name,
+      code: `${reorderModalItem.color.color_code} (${reorderModalItem.color.color_name || 'بدون اسم'})`,
       quantity: reorderQty,
       unit: reorderModalItem.fabric.unit,
       available: reorderModalItem.available
