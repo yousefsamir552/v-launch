@@ -1,0 +1,493 @@
+import React, { useState } from 'react';
+import { useApp } from '../context/AppContext';
+import {
+  Printer,
+  Plus,
+  Truck,
+  CheckCircle2,
+  Layers,
+  X,
+  Lock
+} from 'lucide-react';
+import { DispatchStatus } from '../types';
+
+export const DispatchAssemblyView: React.FC = () => {
+  const {
+    models,
+    qcRecords,
+    printDispatches,
+    addPrintDispatch,
+    updateDispatchStatus,
+    hasPermission,
+    canViewPrintingCosts,
+    canEditPrintingCosts,
+    canAddPrintingNotes,
+    canAddQCBeforePrintNotes
+  } = useApp();
+
+  const canEdit = hasPermission('printing', true) || hasPermission('qc', true) || hasPermission('cutting', true);
+  const allowPrintNotes = canAddPrintingNotes() || canAddQCBeforePrintNotes();
+
+  // Models ready to send to print house
+  const readyModels = models.filter(
+    (m) => !m.is_deleted && m.status === 'جاهز للطباعة / التجميع'
+  );
+
+  const [showModal, setShowModal] = useState(false);
+  const [modelId, setModelId] = useState(readyModels[0]?.id || '');
+  const [shopName, setShopName] = useState('');
+  const [piecesCount, setPiecesCount] = useState<number>(100);
+  const [printType, setPrintType] = useState('سلك سكرين مائي');
+  const [expectedDeliveryDate, setExpectedDeliveryDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 2);
+    return d.toISOString().slice(0, 10);
+  });
+  const [costPerPiece, setCostPerPiece] = useState<number>(4.5);
+  const [notes, setNotes] = useState('');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!modelId || !shopName.trim()) return;
+
+    addPrintDispatch({
+      modelId,
+      shopName: shopName.trim(),
+      piecesCount: Number(piecesCount) || 0,
+      printType: printType.trim(),
+      expectedDeliveryDate,
+      costPerPiece: canEditPrintingCosts() ? Number(costPerPiece) : undefined,
+      notes: allowPrintNotes ? notes.trim() : ''
+    });
+
+    setShowModal(false);
+    setShopName('');
+    setNotes('');
+  };
+
+  const getStatusBadge = (status: DispatchStatus) => {
+    switch (status) {
+      case 'مرسل للمطبعة':
+        return 'bg-amber-100 text-amber-800 border-amber-300';
+      case 'قيد التنفيذ':
+        return 'bg-blue-100 text-blue-800 border-blue-300';
+      case 'تم الاستلام بالمصنع':
+        return 'bg-emerald-100 text-emerald-800 border-emerald-300';
+      default:
+        return 'bg-slate-100 text-slate-800 border-slate-300';
+    }
+  };
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-200">
+      {/* Header (Section 5: Renamed to المطابع والتطريز) */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-black text-teal-700 tracking-tight flex items-center gap-2">
+            <Printer className="w-7 h-7 text-teal-600" />
+            <span>قسم المطابع والتطريز (Printing & Embroidery)</span>
+          </h2>
+          <p className="text-slate-500 text-sm mt-0.5">
+            إرسال الموديلات المعتمدة بعد القص لمطابع السلك سكرين والديجيتال وورش التطريز، وتوجيهها آلياً للعد بعد الاستلام.
+          </p>
+        </div>
+
+        {canEdit && readyModels.length > 0 && (
+          <button
+            onClick={() => {
+              if (readyModels.length > 0) {
+                setModelId(readyModels[0].id);
+              }
+              setShowModal(true);
+            }}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs shadow-md shadow-teal-700/20 transition shrink-0 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>+ إرسال تشغيلة للمطبعة / التطريز</span>
+          </button>
+        )}
+      </div>
+
+      {/* Ready Models Summary Bar (Disappears immediately when sent!) */}
+      <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs">
+        <h3 className="font-extrabold text-slate-900 text-sm mb-4 flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            <Layers className="w-4 h-4 text-teal-600" />
+            <span>الموديلات الجاهزة للإرسال للمطابع والتطريز ({readyModels.length}):</span>
+          </span>
+          <span className="text-[11px] text-slate-400 font-normal">
+            (تختفي فوراً بمجرد إرسالها للمطبعة)
+          </span>
+        </h3>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {readyModels.length > 0 ? (
+            readyModels.map((m) => {
+              const mQc = qcRecords.filter((q) => q.model_id === m.id);
+              const goodTotal = mQc.reduce((sum, q) => sum + q.good_qty, 0) || m.actual_cut_count || m.target_cut_quantity;
+
+              return (
+                <div
+                  key={m.id}
+                  className="p-4 rounded-2xl border border-teal-200 bg-teal-50/40 hover:bg-teal-50 transition flex items-center gap-3 shadow-2xs"
+                >
+                  <img
+                    src={m.image}
+                    alt={m.model_code}
+                    className="w-12 h-12 rounded-xl object-contain bg-white border shrink-0 p-0.5"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).src =
+                        'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
+                    }}
+                  />
+                  <div className="flex-grow min-w-0">
+                    <h4 className="font-black text-sm text-slate-900 truncate">{m.model_code}</h4>
+                    <p className="text-[11px] text-slate-500">
+                      قطع سليمة للطباعة:{' '}
+                      <strong className="text-teal-800">{goodTotal}</strong>
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setModelId(m.id);
+                      if (goodTotal > 0) setPiecesCount(goodTotal);
+                      setShowModal(true);
+                    }}
+                    className="p-2 rounded-xl bg-teal-600 text-white hover:bg-teal-700 transition font-bold text-xs shadow-xs cursor-pointer shrink-0"
+                    title="إرسال للمطبعة الآن"
+                  >
+                    <Truck className="w-4 h-4" />
+                  </button>
+                </div>
+              );
+            })
+          ) : (
+            <p className="col-span-full text-slate-400 text-xs py-3">
+              لا توجد موديلات حالياً في انتظار الإرسال للمطابع. جميع الموديلات إما قيد التشغيل أو في مراحل لاحقة.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Dispatches Tracking Table */}
+      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
+        <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Truck className="w-5 h-5 text-teal-700" />
+            <h3 className="font-extrabold text-base text-slate-900">
+              سجل تشغيلات وتسليمات المطابع والتطريز
+            </h3>
+          </div>
+          <span className="text-xs text-slate-500 font-semibold">
+            إجمالي التشغيلات: {printDispatches.length}
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs text-start">
+            <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
+              <tr>
+                <th className="px-6 py-3.5">كود الموديل</th>
+                <th className="px-6 py-3.5">المطبعة / ورشة التطريز</th>
+                <th className="px-6 py-3.5 text-center">القطع المسلمة</th>
+                <th className="px-6 py-3.5">نوع الطباعة / التشغيل</th>
+                {canViewPrintingCosts() && (
+                  <>
+                    <th className="px-6 py-3.5 text-center">تكلفة القطعة</th>
+                    <th className="px-6 py-3.5 text-center">الإجمالي</th>
+                  </>
+                )}
+                <th className="px-6 py-3.5 text-center">تاريخ الإرسال</th>
+                <th className="px-6 py-3.5 text-center">الاستلام المتوقع</th>
+                <th className="px-6 py-3.5 text-center">الحالة</th>
+                <th className="px-6 py-3.5 text-center">الإجراء</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {printDispatches.length > 0 ? (
+                printDispatches.map((disp) => {
+                  const m = models.find((model) => model.id === disp.model_id);
+
+                  return (
+                    <tr key={disp.id} className="hover:bg-slate-50 transition">
+                      <td className="px-6 py-4 font-bold text-slate-900 flex items-center gap-2">
+                        {m && (
+                          <img
+                            src={m.image}
+                            alt={m.model_code}
+                            className="w-9 h-9 rounded-lg object-contain bg-white border p-0.5"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).src =
+                                'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
+                            }}
+                          />
+                        )}
+                        <span>{m?.model_code || 'موديل'}</span>
+                      </td>
+                      <td className="px-6 py-4 font-bold text-slate-800">{disp.shop_name}</td>
+                      <td className="px-6 py-4 text-center font-black text-slate-900 text-sm">
+                        {disp.pieces_count}
+                      </td>
+                      <td className="px-6 py-4 text-slate-600 font-medium">
+                        {disp.print_type}
+                        {disp.notes && <span className="block text-[10px] text-slate-400">{disp.notes}</span>}
+                      </td>
+
+                      {/* Printing Cost Columns guarded by permission */}
+                      {canViewPrintingCosts() && (
+                        <>
+                          <td className="px-6 py-4 text-center font-mono font-bold text-slate-700">
+                            {disp.cost_per_piece ? `${disp.cost_per_piece} ج.م` : '-'}
+                          </td>
+                          <td className="px-6 py-4 text-center font-mono font-black text-teal-800">
+                            {disp.total_cost ? `${disp.total_cost.toLocaleString('ar-EG')} ج.م` : '-'}
+                          </td>
+                        </>
+                      )}
+
+                      <td className="px-6 py-4 text-center text-slate-500 font-mono">
+                        {disp.dispatched_at}
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        {disp.expected_delivery_date ? (() => {
+                          const today = new Date();
+                          today.setHours(0, 0, 0, 0);
+                          const exp = new Date(disp.expected_delivery_date);
+                          exp.setHours(0, 0, 0, 0);
+                          const diff = Math.round((exp.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+                          const isReceived = disp.status === 'تم الاستلام بالمصنع';
+
+                          if (!isReceived && diff < 0) {
+                            return (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black bg-red-100 text-red-700 border border-red-300 animate-pulse">
+                                🚨 متأخر ({Math.abs(diff)} يوم)
+                              </span>
+                            );
+                          }
+                          if (!isReceived && diff === 0) {
+                            return (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black bg-amber-100 text-amber-800 border border-amber-300">
+                                ⏰ موعد اليوم!
+                              </span>
+                            );
+                          }
+                          if (!isReceived && diff === 1) {
+                            return (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                                📅 غداً
+                              </span>
+                            );
+                          }
+                          return (
+                            <span className="font-mono text-slate-700 text-xs font-semibold">
+                              {disp.expected_delivery_date}
+                            </span>
+                          );
+                        })() : (
+                          <span className="text-slate-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        <span
+                          className={`inline-block px-3 py-1 rounded-full text-xs font-bold border ${getStatusBadge(
+                            disp.status
+                          )}`}
+                        >
+                          {disp.status}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        {disp.status !== 'تم الاستلام بالمصنع' && canEdit ? (
+                          <button
+                            onClick={() => updateDispatchStatus(disp.id, 'تم الاستلام بالمصنع')}
+                            className="px-3.5 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
+                            title="استلام من المطبعة وتحويل تلقائي للعد بعد الطباعة"
+                          >
+                            استلام بالمصنع 📥
+                          </button>
+                        ) : (
+                          <span className="text-emerald-700 font-bold text-xs flex items-center justify-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>مستلم بالفرز</span>
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan={canViewPrintingCosts() ? 9 : 7} className="text-center py-8 text-slate-400">
+                    لا توجد تشغيلات مسجلة للمطابع والتطريز بعد.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Modal: Add Dispatch */}
+      {showModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-2">
+                <Truck className="w-5 h-5 text-teal-700" />
+                <span>إرسال تشغيلة إلى المطبعة / التطريز</span>
+              </h3>
+              <button
+                onClick={() => setShowModal(false)}
+                className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-4 mt-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">الموديل *</label>
+                <select
+                  required
+                  value={modelId}
+                  onChange={(e) => setModelId(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                >
+                  {readyModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      موديل {m.model_code} ({m.model_type || 'ملابس'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  اسم المطبعة أو ورشة التطريز *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={shopName}
+                  onChange={(e) => setShopName(e.target.value)}
+                  placeholder="مثال: مطبعة النجوم الحديثة، ورشة الهدى للتطريز..."
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    عدد القطع المسلمة *
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={piecesCount}
+                    onChange={(e) => setPiecesCount(parseInt(e.target.value) || 0)}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs text-center font-bold focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">نوع التشغيل</label>
+                  <select
+                    value={printType}
+                    onChange={(e) => setPrintType(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                  >
+                    <option value="سلك سكرين مائي">سلك سكرين مائي</option>
+                    <option value="بلاستيزول حراري">بلاستيزول حراري</option>
+                    <option value="تطريز كمبيوتر بارز">تطريز كمبيوتر بارز</option>
+                    <option value="ديجيتال DTF">ديجيتال DTF</option>
+                    <option value="فينيل كبس">فينيل كبس</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Printing Cost Input (Restricted by Permission) */}
+              {canEditPrintingCosts() && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    تكلفة تشغيل القطعة بالمطبعة (ج.م)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={costPerPiece}
+                    onChange={(e) => setCostPerPiece(parseFloat(e.target.value) || 0)}
+                    className="w-full px-4 py-2 rounded-xl border border-slate-300 text-xs font-bold text-slate-900"
+                  />
+                  <span className="text-[10px] text-slate-400 block mt-0.5">
+                    إجمالي التكلفة المتوقعة: {(costPerPiece * piecesCount).toLocaleString('ar-EG')} ج.م
+                  </span>
+                </div>
+              )}
+
+              {/* Expected Delivery Date */}
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  تاريخ الاستلام المتوقع من المطبعة *
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={expectedDeliveryDate}
+                  onChange={(e) => setExpectedDeliveryDate(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs font-mono font-bold focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                />
+                <span className="text-[10px] text-slate-400 block mt-0.5">
+                  يُستخدم لحساب التنبيهات الذكية والإشعارات وقوائم المتأخرات تلقائياً.
+                </span>
+              </div>
+
+              {/* Notes gated by permission */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-600">ملاحظات التشغيل (اختياري)</label>
+                  {!allowPrintNotes && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                      <Lock className="w-3 h-3" />
+                      <span>يتطلب صلاحية تسجيل ملاحظات المطابع</span>
+                    </span>
+                  )}
+                </div>
+                {allowPrintNotes ? (
+                  <textarea
+                    rows={2}
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="مثال: يرجى تسليم العينة الأولى للاعتماد قبل إتمام الكمية..."
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                  ></textarea>
+                ) : (
+                  <div className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-[11px] text-slate-400">
+                    إدخال الملاحظات غير مفعل لحسابك حالياً.
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowModal(false)}
+                  className="px-4 py-2 rounded-full text-xs font-bold text-slate-600 hover:bg-slate-100"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="px-6 py-2 rounded-full bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs shadow-md shadow-teal-700/20"
+                >
+                  تأكيد الإرسال للمطبعة
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
