@@ -101,10 +101,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <div>
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-white/10 text-blue-200 backdrop-blur-xs mb-3">
             <TrendingUp className="w-3.5 h-3.5" />
-            لوحة قيادة خط الإنتاج والمصنع (ERP v2.0)
+              (ERP v4.0)
           </span>
           <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-            مرحباً بك في نظام إدارة المصنع
+            Wellcome
           </h1>
           <p className="text-slate-300 text-sm mt-1 max-w-xl">
             متابعة فورية متكاملة للمخازن، التصميم، القص، المطابع، الفرز، المكن، وحركة الموديلات الشاملة.
