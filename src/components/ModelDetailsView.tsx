@@ -11,8 +11,12 @@ import {
   Sparkles,
   Layers,
   FileText,
-  Lock
+  Lock,
+  Star,
+  CheckSquare,
+  Square
 } from 'lucide-react';
+import { AccessoryItem } from '../types';
 
 interface ModelDetailsViewProps {
   modelId: string;
@@ -32,6 +36,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     requirements,
     accessories,
     accessoryItems,
+    globalSettings,
     addModelRequirement,
     deleteModelRequirement,
     addModelAccessory,
@@ -51,11 +56,14 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   const modelReqs = requirements.filter((r) => r.model_id === modelId);
   const modelAccs = accessories.filter((a) => a.model_id === modelId);
 
-  const [targetCutQuantity, setTargetCutQuantity] = useState<number>(model?.target_cut_quantity || 500);
+  const [targetCutQuantity, setTargetCutQuantity] = useState<number>(
+    model?.target_cut_quantity || 500
+  );
 
   // Local Form state for Section 1 (Add Color & Add Accessory)
   const [selectedColorId, setSelectedColorId] = useState('');
   const [partName, setPartName] = useState('');
+  const [partPlannedQty, setPartPlannedQty] = useState<string>('10');
 
   // Accessory addition form with target_type & piece_consumption
   const [selectedAccessoryId, setSelectedAccessoryId] = useState('');
@@ -94,7 +102,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
       aMap[a.id] = a.planned_quantity ?? 0;
     });
     setAccQuantities(aMap);
-  }, [modelId, requirements.length, accessories.length]);
+  }, [modelId, requirements, accessories]);
 
   if (!model) {
     return (
@@ -110,6 +118,40 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     );
   }
 
+  // General Tools / Favorite Accessories saved in Settings (Task 2.1)
+  const favoriteIds = globalSettings?.favorite_accessory_ids || [];
+  const generalToolItems = accessoryItems.filter((item) => favoriteIds.includes(item.id));
+
+  const handleToggleGeneralTool = (
+    toolItem: AccessoryItem,
+    targetType: 'shirt' | 'pants' = accTargetType
+  ) => {
+    if (!canEdit) return;
+    // Check if this tool is already added to this model for the selected targetType (or any targetType)
+    const existingEntry = modelAccs.find(
+      (a) =>
+        (a.accessory_id === toolItem.id || a.accessory_code === toolItem.code) &&
+        a.target_type === targetType
+    );
+
+    if (existingEntry) {
+      deleteModelAccessory(existingEntry.id);
+    } else {
+      const consumption = Number(accPieceConsumption) || 1;
+      const plannedTotal = Math.round(consumption * (Number(targetCutQuantity) || 100));
+      addModelAccessory(modelId, {
+        id: toolItem.id,
+        code: toolItem.code,
+        name: toolItem.name,
+        unit: toolItem.unit,
+        image: toolItem.image,
+        target_type: targetType,
+        piece_consumption: consumption,
+        planned_quantity: plannedTotal
+      });
+    }
+  };
+
   const handleUpdateTargetCut = (newQty: number) => {
     setTargetCutQuantity(newQty);
     updateModelNotesAndTarget(modelId, { target_cut_quantity: newQty });
@@ -118,9 +160,13 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   const handleAddColorSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedColorId || !partName.trim()) return;
-    addModelRequirement(modelId, selectedColorId, partName.trim());
-    setPartName('');
-    setSelectedColorId('');
+    const qtyNum = Math.max(0, parseFloat(partPlannedQty) || 0);
+    const res = addModelRequirement(modelId, selectedColorId, partName.trim(), qtyNum);
+    if (res.success) {
+      setPartName('');
+      setSelectedColorId('');
+      setPartPlannedQty('10');
+    }
   };
 
   const handleAddAccessorySubmit = (e: React.FormEvent) => {
@@ -129,7 +175,9 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     const targetItem = accessoryItems.find((a) => a.id === selectedAccessoryId);
     if (!targetItem) return;
 
-    const plannedTotal = Math.round(Number(accPieceConsumption) * (Number(targetCutQuantity) || 100));
+    const plannedTotal = Math.round(
+      Number(accPieceConsumption) * (Number(targetCutQuantity) || 100)
+    );
 
     addModelAccessory(modelId, {
       id: targetItem.id,
@@ -160,13 +208,23 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   };
 
   const handleIssueFabric = () => {
-    const totalPlanned = modelReqs.reduce((sum, r) => sum + (reqQuantities[r.id] ?? r.planned_quantity), 0);
+    const totalPlanned = modelReqs.reduce(
+      (sum, r) => sum + (reqQuantities[r.id] ?? r.planned_quantity),
+      0
+    );
     if (totalPlanned <= 0) {
-      alert('يجب تخطيط وحجز كميات للأقمشة أولاً قبل الصرف للقص!');
+      alert('يجب تخطيط وحجز كميات للأقمشة أولاً قبل صرف القماش والتوجيه للقص!');
       return;
     }
-    if (window.confirm('هل أنت متأكد من صرف القماش وتحويل الموديل للقص نهائياً؟')) {
-      const res = issueFabricToCutting(modelId);
+    if (
+      window.confirm(
+        'هل أنت متأكد من صرف القماش والتوجيه للقص؟ سيتم الآن خصم الكميات المحددة من المخزون الفعلي الكلي.'
+      )
+    ) {
+      const res = issueFabricToCutting(modelId, {
+        reqQuantities,
+        accQuantities
+      });
       if (res.success) {
         onGoToCutting(modelId);
       }
@@ -174,7 +232,11 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   };
 
   const handleDelete = () => {
-    if (window.confirm('هل أنت متأكد من حذف هذا الموديل؟ سيتم إخفاؤه من النظام وتحرير الأقمشة المحجوزة.')) {
+    if (
+      window.confirm(
+        'هل أنت متأكد من حذف هذا الموديل؟ سيتم إخفاؤه من النظام وتحرير الأقمشة المحجوزة وإعادتها إلى المتاح للتصميم.'
+      )
+    ) {
       deleteDesignModel(modelId);
       onBack();
     }
@@ -182,6 +244,12 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
 
   const shirtAccessories = modelAccs.filter((a) => a.target_type !== 'pants');
   const pantsAccessories = modelAccs.filter((a) => a.target_type === 'pants');
+
+  const selectedColorObj = fabricColors.find((c) => c.id === selectedColorId);
+  const selectedColorFab = fabrics.find((f) => f.id === selectedColorObj?.fabric_id);
+  const selectedColorAvailableForDesign = selectedColorObj
+    ? Number((selectedColorObj.quantity - selectedColorObj.reserved_quantity).toFixed(2))
+    : 0;
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -222,7 +290,8 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 </span>
               </div>
               <p className="text-slate-500 text-xs sm:text-sm mt-1">
-                النوع: <strong className="text-slate-800">{model.model_type || 'أولادي'}</strong> | تاريخ الإنشاء: {new Date(model.created_at).toLocaleDateString('ar-EG')}
+                النوع: <strong className="text-slate-800">{model.model_type || 'أولادي'}</strong> | تاريخ الإنشاء:{' '}
+                {new Date(model.created_at).toLocaleDateString('ar-EG')}
               </p>
             </div>
 
@@ -255,7 +324,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 className="flex items-center gap-2 px-6 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-600/20 transition cursor-pointer"
               >
                 <Scissors className="w-4 h-4" />
-                <span>✂️ صرف القماش والإكسسوارات وبدء القص</span>
+                <span>✂️ صرف القماش والتوجيه للقص</span>
               </button>
             )}
 
@@ -277,14 +346,21 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
         <div className="lg:col-span-5 space-y-6">
           {/* Card 1: Add Fabric Color to Model */}
           <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs space-y-4">
-            <h3 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
-              <Palette className="w-4 h-4 text-amber-600" />
-              <span>تخصيص ألوان وخامات الموديل:</span>
-            </h3>
+            <div>
+              <h3 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
+                <Palette className="w-4 h-4 text-amber-600" />
+                <span>تخصيص ألوان وخامات الموديل:</span>
+              </h3>
+              <p className="text-[11px] text-slate-500 mt-1">
+                عند تحديد القماش للموديل، يتم خصم الكمية من <strong className="text-emerald-700">(المتاح للتصميم)</strong> فقط، ولا يتم الخصم من <strong className="text-blue-700">(المخزون الفعلي الكلي)</strong> إلا عند الضغط على زر "صرف القماش والتوجيه للقص".
+              </p>
+            </div>
 
             <form onSubmit={handleAddColorSubmit} className="space-y-3">
               <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">اللون والخامة من المخزن</label>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  اللون والخامة من المخزن *
+                </label>
                 <select
                   disabled={!canEdit}
                   value={selectedColorId}
@@ -294,26 +370,64 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                   <option value="">-- اختر لون قماش --</option>
                   {fabricColors.map((col) => {
                     const fab = fabrics.find((f) => f.id === col.fabric_id);
-                    const avail = Number((col.quantity - col.reserved_quantity).toFixed(1));
+                    const avail = Number((col.quantity - col.reserved_quantity).toFixed(2));
                     return (
                       <option key={col.id} value={col.id}>
-                        {fab?.name} - {col.color_code} ({col.color_name || 'لون'}) [متاح: {avail} {fab?.unit}]
+                        {fab?.name} - {col.color_code} ({col.color_name || 'لون'}) [المتاح للتصميم: {avail} {fab?.unit} | الفعلي الكلي: {col.quantity}]
                       </option>
                     );
                   })}
                 </select>
+                {selectedColorObj && (
+                  <div className="mt-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between text-[11px]">
+                    <span className="text-slate-600">
+                      المخزون الفعلي الكلي:{' '}
+                      <strong className="text-blue-700 font-black">
+                        {selectedColorObj.quantity} {selectedColorFab?.unit}
+                      </strong>
+                    </span>
+                    <span className="text-emerald-800 font-bold">
+                      المتاح للتصميم:{' '}
+                      <strong className="font-black">
+                        {selectedColorAvailableForDesign} {selectedColorFab?.unit}
+                      </strong>
+                    </span>
+                  </div>
+                )}
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">اسم القطعة أو الجزء</label>
-                <input
-                  type="text"
-                  disabled={!canEdit}
-                  placeholder="مثال: الصدر والظهر، كابيشو، أساور..."
-                  value={partName}
-                  onChange={(e) => setPartName(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    اسم القطعة أو الجزء *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    disabled={!canEdit}
+                    placeholder="مثال: الصدر والظهر، كابيشو..."
+                    value={partName}
+                    onChange={(e) => setPartName(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    الكمية المطلوبة ({selectedColorFab?.unit || 'كجم'}) *
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0.1"
+                    required
+                    disabled={!canEdit}
+                    placeholder="مثال: 15"
+                    value={partPlannedQty}
+                    onChange={(e) => setPartPlannedQty(e.target.value)}
+                    className="w-full px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 focus:outline-hidden"
+                  />
+                </div>
               </div>
 
               {canEdit && (
@@ -322,14 +436,14 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                   className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>إضافة خامة اللون للموديل</span>
+                  <span>تحديد القماش للموديل (حجز من المتاح للتصميم)</span>
                 </button>
               )}
             </form>
           </div>
 
-          {/* Card 2: Add Accessory to Model */}
-          <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs space-y-4">
+          {/* Card 2: Add Accessory to Model + General Tools Below Accessories (Task 2.1) */}
+          <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs space-y-5">
             <h3 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-pink-600" />
               <span>تخصيص الإكسسوارات (تيشرت / بنطلون):</span>
@@ -337,12 +451,14 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
 
             <form onSubmit={handleAddAccessorySubmit} className="space-y-3">
               <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">قسم الإكسسوار (تيشرت أو بنطلون) *</label>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  قسم الإكسسوار (تيشرت أو بنطلون) *
+                </label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => setAccTargetType('shirt')}
-                    className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 ${
+                    className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
                       accTargetType === 'shirt'
                         ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-2xs'
                         : 'bg-white border-slate-200 text-slate-600'
@@ -354,7 +470,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setAccTargetType('pants')}
-                    className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 ${
+                    className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
                       accTargetType === 'pants'
                         ? 'bg-amber-50 border-amber-400 text-amber-900 shadow-2xs'
                         : 'bg-white border-slate-200 text-slate-600'
@@ -366,7 +482,9 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">اختر الصنف من مخزن الإكسسوارات *</label>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  اختر الصنف من مخزن الإكسسوارات *
+                </label>
                 <select
                   disabled={!canEdit}
                   value={selectedAccessoryId}
@@ -419,6 +537,107 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 </button>
               )}
             </form>
+
+            {/* BELOW ACCESSORIES: GENERAL TOOLS (الأدوات العامة المحفوظة من شاشة الإعدادات - Task 2.1) */}
+            <div className="pt-4 border-t border-slate-200 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Star className="w-4 h-4 text-amber-500 fill-amber-500 shrink-0" />
+                  <h4 className="font-extrabold text-xs text-slate-900">
+                    🛠️ الأدوات العامة (اختيار سريع لـ {accTargetType === 'shirt' ? 'التيشرت' : 'البنطلون'}):
+                  </h4>
+                </div>
+                <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-black">
+                  {generalToolItems.length} أداة محفوظة
+                </span>
+              </div>
+
+              <p className="text-[11px] text-slate-500">
+                اضغط على أي أداة عامة (أو علامة التحديد Checkbox) لإضافتها أو إزالتها فوراً للموديل ضمن قسم{' '}
+                <strong className="text-slate-800">
+                  {accTargetType === 'shirt' ? 'التيشرت' : 'البنطلون'}
+                </strong>
+                .
+              </p>
+
+              {generalToolItems.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {generalToolItems.map((tool) => {
+                    const isSelectedForCurrentTarget = modelAccs.some(
+                      (a) =>
+                        (a.accessory_id === tool.id || a.accessory_code === tool.code) &&
+                        a.target_type === accTargetType
+                    );
+                    const isSelectedForOtherTarget = modelAccs.some(
+                      (a) =>
+                        (a.accessory_id === tool.id || a.accessory_code === tool.code) &&
+                        a.target_type !== accTargetType
+                    );
+                    const avail = Number((tool.quantity - tool.reserved_quantity).toFixed(2));
+
+                    return (
+                      <label
+                        key={tool.id}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleToggleGeneralTool(tool, accTargetType);
+                        }}
+                        className={`flex items-center justify-between gap-2 p-2.5 rounded-2xl border text-start transition select-none ${
+                          !canEdit ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
+                        } ${
+                          isSelectedForCurrentTarget
+                            ? 'bg-amber-50 border-amber-500 text-amber-950 shadow-2xs ring-2 ring-amber-400/25'
+                            : 'bg-slate-50/70 border-slate-200 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={isSelectedForCurrentTarget}
+                            disabled={!canEdit}
+                            onChange={() => {}}
+                            className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 shrink-0 pointer-events-none"
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1 flex-wrap">
+                              <span className="font-extrabold text-xs text-slate-900 truncate">
+                                {tool.name}
+                              </span>
+                              <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-white border border-slate-200 text-slate-600">
+                                {tool.code}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-slate-500 block">
+                              متاح: {avail} {tool.unit}
+                              {isSelectedForOtherTarget && (
+                                <strong className="text-indigo-600 ms-1">
+                                  • (مضاف أيضاً بـ {accTargetType === 'shirt' ? 'البنطلون' : 'التيشرت'})
+                                </strong>
+                              )}
+                            </span>
+                          </div>
+                        </div>
+
+                        <span
+                          className={`text-[10px] font-black px-2 py-0.5 rounded-full shrink-0 ${
+                            isSelectedForCurrentTarget
+                              ? 'bg-amber-500 text-slate-950'
+                              : 'bg-white border border-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {isSelectedForCurrentTarget ? '✓ تم الاختيار' : '+ اختر'}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="p-3.5 rounded-2xl bg-amber-50/60 border border-amber-200 text-center text-xs text-amber-900">
+                  لم يتم تحديد أدوات عامة مفضلة من شاشة الإعدادات بعد. يمكنك تحديدها من قسم{' '}
+                  <strong>الإعدادات &larr; الإعدادات والأدوات العامة</strong> لتظهر هنا كأزرار سريعة.
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -427,12 +646,17 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
           <form onSubmit={handleSavePlan} className="space-y-6">
             {/* Fabric Requirements Table */}
             <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs space-y-3">
-              <div className="flex items-center justify-between border-b pb-2">
-                <h3 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-blue-600" />
-                  <span>خطة أوزان الأقمشة المطلوبة للتشغيلة:</span>
-                </h3>
-                <span className="text-xs text-slate-400">إجمالي الأجزاء: {modelReqs.length}</span>
+              <div className="flex items-center justify-between border-b pb-2 flex-wrap gap-2">
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-blue-600" />
+                    <span>خطة أوزان الأقمشة المطلوبة للتشغيلة:</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    الكميات المخططة هنا تُخصم من <strong>(المتاح للتصميم)</strong> فقط، ويبقى <strong>(المخزون الفعلي الكلي)</strong> ثابتاً حتى الضغط على صرف القماش للقص.
+                  </p>
+                </div>
+                <span className="text-xs font-bold text-slate-500">إجمالي الأجزاء: {modelReqs.length}</span>
               </div>
 
               <div className="overflow-x-auto">
@@ -441,8 +665,9 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                     <tr>
                       <th className="p-2">القطعة</th>
                       <th className="p-2">الخامة واللون</th>
-                      <th className="p-2 text-center">المتاح بالمخزن</th>
-                      <th className="p-2 text-center">الكمية المخططة (كجم)</th>
+                      <th className="p-2 text-center">المخزون الفعلي الكلي</th>
+                      <th className="p-2 text-center">المتاح للتصميم</th>
+                      <th className="p-2 text-center">الكمية المحجوزة للموديل</th>
                       <th className="p-2 text-center">حذف</th>
                     </tr>
                   </thead>
@@ -451,17 +676,37 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                       modelReqs.map((req) => {
                         const color = fabricColors.find((c) => c.id === req.color_id);
                         const fab = fabrics.find((f) => f.id === color?.fabric_id);
-                        const avail = color ? Number((color.quantity - color.reserved_quantity).toFixed(1)) : 0;
                         const planned = reqQuantities[req.id] ?? req.planned_quantity;
+                        const savedPlanned = req.planned_quantity || 0;
+                        // Dynamically reflect any unsaved edits in the input field on the displayed Available for Design
+                        const baseAvail = color
+                          ? Number((color.quantity - color.reserved_quantity).toFixed(2))
+                          : 0;
+                        const liveAvail = Number(
+                          Math.max(0, baseAvail + savedPlanned - (Number(planned) || 0)).toFixed(2)
+                        );
 
                         return (
                           <tr key={req.id}>
                             <td className="p-2 font-bold text-slate-900">{req.part_name}</td>
                             <td className="p-2 text-slate-600">
-                              {fab?.name} ({color?.color_code})
+                              <div className="flex items-center gap-1.5">
+                                {color && (
+                                  <span
+                                    className="w-3.5 h-3.5 rounded-full border border-slate-300 shrink-0"
+                                    style={{ backgroundColor: color.hex_code }}
+                                  />
+                                )}
+                                <span>
+                                  {fab?.name} ({color?.color_code})
+                                </span>
+                              </div>
                             </td>
-                            <td className="p-2 text-center text-emerald-700 font-bold">
-                              {avail} {fab?.unit || 'كجم'}
+                            <td className="p-2 text-center text-blue-700 font-black">
+                              {color ? color.quantity : 0} {fab?.unit || 'كجم'}
+                            </td>
+                            <td className="p-2 text-center text-emerald-700 font-extrabold">
+                              {liveAvail} {fab?.unit || 'كجم'}
                             </td>
                             <td className="p-2 text-center">
                               <input
@@ -476,7 +721,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                                     [req.id]: parseFloat(e.target.value) || 0
                                   })
                                 }
-                                className="w-20 px-2 py-1 text-center font-bold text-xs border rounded-lg"
+                                className="w-24 px-2 py-1 text-center font-black text-xs border border-amber-300 bg-amber-50/40 rounded-lg focus:ring-2 focus:ring-amber-500"
                               />
                             </td>
                             <td className="p-2 text-center">
@@ -484,7 +729,8 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => deleteModelRequirement(req.id)}
-                                  className="text-rose-500 hover:text-rose-700"
+                                  className="text-rose-500 hover:text-rose-700 cursor-pointer"
+                                  title="حذف وإعادة الكمية للمتاح للتصميم"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
@@ -495,7 +741,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                       })
                     ) : (
                       <tr>
-                        <td colSpan={5} className="text-center py-4 text-slate-400">
+                        <td colSpan={6} className="text-center py-4 text-slate-400">
                           لم يتم تخصيص خامات بعد لهذا الموديل.
                         </td>
                       </tr>
@@ -537,7 +783,9 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                         shirtAccessories.map((acc) => (
                           <tr key={acc.id}>
                             <td className="p-2 font-bold text-slate-900">{acc.accessory_name}</td>
-                            <td className="p-2 text-center font-bold text-blue-700">{acc.piece_consumption || 1}</td>
+                            <td className="p-2 text-center font-bold text-blue-700">
+                              {acc.piece_consumption || 1}
+                            </td>
                             <td className="p-2 text-center">
                               <input
                                 type="number"
@@ -559,7 +807,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => deleteModelAccessory(acc.id)}
-                                  className="text-rose-500 hover:text-rose-700"
+                                  className="text-rose-500 hover:text-rose-700 cursor-pointer"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
@@ -601,7 +849,9 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                         pantsAccessories.map((acc) => (
                           <tr key={acc.id}>
                             <td className="p-2 font-bold text-slate-900">{acc.accessory_name}</td>
-                            <td className="p-2 text-center font-bold text-amber-700">{acc.piece_consumption || 1}</td>
+                            <td className="p-2 text-center font-bold text-amber-700">
+                              {acc.piece_consumption || 1}
+                            </td>
                             <td className="p-2 text-center">
                               <input
                                 type="number"
@@ -623,7 +873,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => deleteModelAccessory(acc.id)}
-                                  className="text-rose-500 hover:text-rose-700"
+                                  className="text-rose-500 hover:text-rose-700 cursor-pointer"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
@@ -642,6 +892,74 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                   </table>
                 </div>
               </div>
+
+              {/* Quick General Tools Selector Bar also accessible directly below the accessories tables */}
+              {generalToolItems.length > 0 && (
+                <div className="pt-3 border-t border-slate-100 space-y-2.5">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <span className="text-xs font-extrabold text-amber-950 flex items-center gap-1.5">
+                      <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
+                      <span>الأدوات العامة المحفوظة من الإعدادات (اضغط للاختيار السريع للموديل):</span>
+                    </span>
+                    <div className="flex items-center gap-1 text-[11px]">
+                      <span className="text-slate-500">إضافة إلى:</span>
+                      <button
+                        type="button"
+                        onClick={() => setAccTargetType('shirt')}
+                        className={`px-2.5 py-0.5 rounded-lg font-bold cursor-pointer ${
+                          accTargetType === 'shirt'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        تيشرت
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAccTargetType('pants')}
+                        className={`px-2.5 py-0.5 rounded-lg font-bold cursor-pointer ${
+                          accTargetType === 'pants'
+                            ? 'bg-amber-600 text-white'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        بنطلون
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {generalToolItems.map((tool) => {
+                      const isChecked = modelAccs.some(
+                        (a) =>
+                          (a.accessory_id === tool.id || a.accessory_code === tool.code) &&
+                          a.target_type === accTargetType
+                      );
+                      return (
+                        <button
+                          key={`quick-${tool.id}`}
+                          type="button"
+                          disabled={!canEdit}
+                          onClick={() => handleToggleGeneralTool(tool, accTargetType)}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer ${
+                            isChecked
+                              ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-2xs'
+                              : 'bg-white text-slate-700 border-slate-300 hover:bg-amber-50'
+                          }`}
+                        >
+                          {isChecked ? (
+                            <CheckSquare className="w-3.5 h-3.5 text-slate-950" />
+                          ) : (
+                            <Square className="w-3.5 h-3.5 text-slate-400" />
+                          )}
+                          <span>{tool.name}</span>
+                          <span className="text-[10px] opacity-75 font-mono">({tool.code})</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* DESIGN & OPERATING NOTES (Gated by canAddDesignNotes permission - Task 4) */}
@@ -714,7 +1032,9 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
               {/* Marker Codes */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">الماركر الأساسي للقص</label>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                    الماركر الأساسي للقص
+                  </label>
                   <input
                     type="text"
                     disabled={!canEdit}
@@ -725,7 +1045,9 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">ماركر الطباعة والتطريز</label>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                    ماركر الطباعة والتطريز
+                  </label>
                   <input
                     type="text"
                     disabled={!canEdit}
@@ -744,7 +1066,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 className="w-full py-3.5 rounded-full bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition shadow-lg flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Save className="w-4 h-4" />
-                <span>حفظ التعديلات وخطة التشغيل والملاحظات</span>
+                <span>حفظ التعديلات وخطة التشغيل (تحديث المحجوز من المتاح للتصميم)</span>
               </button>
             )}
           </form>

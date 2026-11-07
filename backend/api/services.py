@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from django.db.models import Sum
 from django.utils import timezone
 from .models import (
     SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier,
@@ -197,6 +198,66 @@ DEFAULT_ROLES_SEED = [
         }
     }
 ]
+
+
+DESIGN_STAGES = ('مرحلة التصميم', 'تصميم')
+
+
+def sync_reserved_quantities():
+    """
+    Synchronizes `reserved_quantity` across all FabricColor and Accessory items:
+    - When a model is in the Design stage ('مرحلة التصميم' or 'تصميم') and not deleted,
+      any fabric/accessory quantities assigned to it are reserved (deducted from
+      'Available for Design' only, NOT from actual total stock `quantity`).
+    - Once the model's fabric is issued to Cutting (`issue_fabric_to_cutting`),
+      the model moves out of Design stage, its planned quantities are deducted from
+      actual total stock (`quantity` / `current_stock`), and its reservation is released.
+    """
+    # 1. Sync FabricColor reserved_quantity
+    design_reqs = (
+        ModelRequirement.objects.filter(
+            model__is_deleted=False,
+            model__status__in=DESIGN_STAGES
+        )
+        .values('color_id')
+        .annotate(total_reserved=Sum('planned_quantity'))
+    )
+    reserved_by_color_id = {
+        row['color_id']: round(max(0.0, float(row['total_reserved'] or 0.0)), 2)
+        for row in design_reqs
+    }
+
+    for col in FabricColor.objects.all():
+        expected_res = reserved_by_color_id.get(col.id, 0.0)
+        if round(float(col.reserved_quantity or 0.0), 2) != expected_res:
+            col.reserved_quantity = expected_res
+            col.save(update_fields=['reserved_quantity'])
+
+    # 2. Sync Accessory reserved_quantity
+    design_accs = (
+        ModelAccessory.objects.filter(
+            model__is_deleted=False,
+            model__status__in=DESIGN_STAGES
+        )
+        .exclude(accessory_id_ref__isnull=True)
+        .exclude(accessory_id_ref='')
+    )
+    reserved_by_acc_ref = {}
+    for m_acc in design_accs:
+        ref = str(m_acc.accessory_id_ref).strip()
+        reserved_by_acc_ref[ref] = round(
+            reserved_by_acc_ref.get(ref, 0.0) + max(0.0, float(m_acc.planned_quantity or 0.0)),
+            2
+        )
+
+    for acc in Accessory.objects.all():
+        ext_id = acc.client_id or str(acc.id)
+        expected_acc_res = reserved_by_acc_ref.get(ext_id, 0.0)
+        if str(acc.id) in reserved_by_acc_ref and ext_id != str(acc.id):
+            expected_acc_res = round(expected_acc_res + reserved_by_acc_ref[str(acc.id)], 2)
+        if round(float(acc.reserved_quantity or 0.0), 2) != expected_acc_res:
+            acc.reserved_quantity = expected_acc_res
+            acc.save(update_fields=['reserved_quantity'])
 
 
 def ensure_initial_seed():

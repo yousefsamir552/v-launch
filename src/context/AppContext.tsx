@@ -54,6 +54,8 @@ const DEFAULT_GLOBAL_SETTINGS: GlobalSiteSettings = {
   favorite_accessory_ids: []
 };
 
+const DESIGN_STAGES = new Set(['مرحلة التصميم', 'تصميم']);
+
 interface AppContextType {
   currentUser: User | null;
   setCurrentUser: (user: User | null) => void;
@@ -227,7 +229,12 @@ interface AppContextType {
       notes_pants?: string;
     }
   ) => void;
-  addModelRequirement: (modelId: string, colorId: string, partName: string) => void;
+  addModelRequirement: (
+    modelId: string,
+    colorId: string,
+    partName: string,
+    plannedQuantity?: number
+  ) => { success: boolean; message: string };
   deleteModelRequirement: (reqId: string) => void;
   addModelAccessory: (
     modelId: string,
@@ -243,7 +250,10 @@ interface AppContextType {
     }
   ) => { success: boolean; message: string };
   deleteModelAccessory: (accId: string) => void;
-  issueFabricToCutting: (modelId: string) => { success: boolean; message: string };
+  issueFabricToCutting: (
+    modelId: string,
+    extraData?: { reqQuantities?: Record<string, number>; accQuantities?: Record<string, number> }
+  ) => { success: boolean; message: string };
   deleteDesignModel: (modelId: string) => void;
 
   // Cutting Actions
@@ -387,13 +397,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [sizeDefs, setSizeDefs] = useState<SizeDef[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [fabrics, setFabrics] = useState<Fabric[]>([]);
-  const [fabricColors, setFabricColors] = useState<FabricColor[]>([]);
+  const [fabricColorsRaw, setFabricColors] = useState<FabricColor[]>([]);
   const [fabricTransactions, setFabricTransactions] = useState<FabricTransaction[]>([]);
   const [models, setModels] = useState<DesignModel[]>([]);
   const [requirements, setRequirements] = useState<ModelRequirement[]>([]);
   const [accessories, setAccessories] = useState<ModelAccessory[]>([]);
   const [accessoryTypes, setAccessoryTypes] = useState<AccessoryType[]>([]);
-  const [accessoryItems, setAccessoryItems] = useState<AccessoryItem[]>([]);
+  const [accessoryItemsRaw, setAccessoryItems] = useState<AccessoryItem[]>([]);
   const [accessoryTransactions, setAccessoryTransactions] = useState<AccessoryTransaction[]>([]);
   const [cuttingRecords, setCuttingRecords] = useState<CuttingRecord[]>([]);
   const [qcRecords, setQcRecords] = useState<QCRecord[]>([]);
@@ -410,6 +420,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return [];
     }
   });
+
+  /**
+   * Automatically compute `reserved_quantity` for each FabricColor and AccessoryItem
+   * from active models in the Design stage ('مرحلة التصميم' or 'تصميم').
+   * This guarantees that selecting/planning a fabric for a model in Design ONLY deducts
+   * from "Available for Design" (`quantity - reserved_quantity`), while actual total
+   * stock (`quantity`) remains untouched until "صرف القماش والتوجيه للقص" is clicked.
+   */
+  const designModelIdsSet = useMemo(() => {
+    return new Set(
+      models
+        .filter((m) => !m.is_deleted && DESIGN_STAGES.has(m.status))
+        .map((m) => m.id)
+    );
+  }, [models]);
+
+  const fabricColors = useMemo<FabricColor[]>(() => {
+    const reservedByColor: Record<string, number> = {};
+    requirements.forEach((req) => {
+      if (designModelIdsSet.has(req.model_id)) {
+        const qty = Math.max(0, Number(req.planned_quantity) || 0);
+        reservedByColor[req.color_id] = Number(
+          ((reservedByColor[req.color_id] || 0) + qty).toFixed(2)
+        );
+      }
+    });
+    return fabricColorsRaw.map((c) => ({
+      ...c,
+      reserved_quantity: reservedByColor[c.id] ?? 0
+    }));
+  }, [fabricColorsRaw, requirements, designModelIdsSet]);
+
+  const accessoryItems = useMemo<AccessoryItem[]>(() => {
+    const reservedByAcc: Record<string, number> = {};
+    accessories.forEach((acc) => {
+      if (acc.accessory_id && designModelIdsSet.has(acc.model_id)) {
+        const qty = Math.max(0, Number(acc.planned_quantity) || 0);
+        reservedByAcc[acc.accessory_id] = Number(
+          ((reservedByAcc[acc.accessory_id] || 0) + qty).toFixed(2)
+        );
+      }
+    });
+    return accessoryItemsRaw.map((it) => ({
+      ...it,
+      reserved_quantity: reservedByAcc[it.id] ?? 0
+    }));
+  }, [accessoryItemsRaw, accessories, designModelIdsSet]);
 
   const removeFlashMessage = useCallback((id: string) => {
     setFlashMessages((prev) => prev.filter((m) => m.id !== id));
@@ -1104,7 +1161,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const headers = ['الخامة', 'كود اللون', 'اسم اللون', 'الكمية الفعلية', 'الكمية المحجوزة', 'المتاح للتصميم', 'الوحدة'];
     const rows = fabricColors.map((color) => {
       const fabric = fabrics.find((f) => f.id === color.fabric_id);
-      const available = color.quantity - color.reserved_quantity;
+      const available = Number((color.quantity - color.reserved_quantity).toFixed(2));
       return [
         fabric?.name || 'غير معروف',
         color.color_code,
@@ -1531,6 +1588,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const allowNotes = canAddDesignNotes();
 
+    // Validate that planned quantities don't exceed available for design (including what this model already had reserved)
+    const modelReqs = requirements.filter((r) => r.model_id === data.modelId);
+    for (const req of modelReqs) {
+      const nextQty = Math.max(0, Number(data.reqQuantities[req.id] ?? req.planned_quantity) || 0);
+      const col = fabricColors.find((c) => c.id === req.color_id);
+      if (col) {
+        const otherModelsReserved = requirements
+          .filter(
+            (r) =>
+              r.color_id === req.color_id &&
+              r.model_id !== data.modelId &&
+              designModelIdsSet.has(r.model_id)
+          )
+          .reduce((sum, r) => sum + (Number(r.planned_quantity) || 0), 0);
+        const sameModelOtherParts = modelReqs
+          .filter((r) => r.color_id === req.color_id && r.id !== req.id)
+          .reduce(
+            (sum, r) => sum + Math.max(0, Number(data.reqQuantities[r.id] ?? r.planned_quantity) || 0),
+            0
+          );
+        const maxAvailableForThisPart = Number(
+          Math.max(0, col.quantity - otherModelsReserved - sameModelOtherParts).toFixed(2)
+        );
+        if (nextQty > maxAvailableForThisPart) {
+          addFlashMessage(
+            `الكمية المطلوبة للون (${col.color_code}) تتجاوز المتاح للتصميم (${maxAvailableForThisPart})!`,
+            'warning'
+          );
+          return {
+            success: false,
+            message: `الكمية المطلوبة للون (${col.color_code}) تتجاوز المتاح للتصميم (${maxAvailableForThisPart})`
+          };
+        }
+      }
+    }
+
     setRequirements((prev) =>
       prev.map((r) => {
         if (r.model_id !== data.modelId) return r;
@@ -1579,8 +1672,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
       .then((savedModel) => {
         setModels((prev) => prev.map((m) => (m.id === data.modelId ? savedModel : m)));
-        logAction('التصميم', `تحديث خطة وخامات الموديل ${model.model_code}`);
-        addFlashMessage('تم حفظ تفاصيل وملاحظات الموديل بنجاح');
+        logAction('التصميم', `تحديث خطة وخامات الموديل ${model.model_code} (حجز من المتاح للتصميم)`);
+        addFlashMessage('تم حفظ خطة الموديل وخصم الكميات المحددة من (المتاح للتصميم) فقط بنجاح');
       })
       .catch((err) => {
         refreshState();
@@ -1628,25 +1721,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
-  const addModelRequirement = (modelId: string, colorId: string, partName: string) => {
+  const addModelRequirement = (
+    modelId: string,
+    colorId: string,
+    partName: string,
+    plannedQuantity: number = 0
+  ) => {
+    const col = fabricColors.find((c) => c.id === colorId);
+    const cleanQty = Math.max(0, Number(plannedQuantity) || 0);
+
+    if (col && cleanQty > 0) {
+      const availableForDesign = Number((col.quantity - col.reserved_quantity).toFixed(2));
+      if (cleanQty > availableForDesign) {
+        addFlashMessage(
+          `الكمية المطلوبة (${cleanQty}) أكبر من المتاح للتصميم حالياً (${availableForDesign}) للون ${col.color_code}`,
+          'warning'
+        );
+        return {
+          success: false,
+          message: `الكمية المطلوبة أكبر من المتاح للتصميم (${availableForDesign})`
+        };
+      }
+    }
+
     const newReq: ModelRequirement = {
       id: 'req-' + Date.now(),
       model_id: modelId,
       color_id: colorId,
       part_name: partName.trim(),
-      planned_quantity: 0
+      planned_quantity: cleanQty
     };
     setRequirements((prev) => [...prev, newReq]);
     api
       .createModelRequirement(newReq)
       .then((saved) => {
         setRequirements((prev) => prev.map((r) => (r.id === newReq.id ? saved : r)));
-        addFlashMessage('تمت إضافة خامة اللون بنجاح');
+        addFlashMessage(
+          cleanQty > 0
+            ? `تم تخصيص خامة اللون وحجز ${cleanQty} من المتاح للتصميم فقط (دون المساس بالمخزون الفعلي الكلي)`
+            : 'تمت إضافة خامة اللون بنجاح'
+        );
       })
       .catch((err) => {
         refreshState();
         addFlashMessage(err.message || 'فشل إضافة الخامة للموديل في الباك إند', 'danger');
       });
+
+    return { success: true, message: 'تمت إضافة الخامة بنجاح' };
   };
 
   const deleteModelRequirement = (reqId: string) => {
@@ -1654,7 +1775,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     api
       .deleteModelRequirement(reqId)
       .then(() => {
-        addFlashMessage('تم حذف الخامة من الموديل');
+        addFlashMessage('تم حذف الخامة من الموديل وإعادة الكمية إلى المتاح للتصميم');
       })
       .catch((err) => {
         refreshState();
@@ -1723,10 +1844,87 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
-  const issueFabricToCutting = (modelId: string) => {
+  const issueFabricToCutting = (
+    modelId: string,
+    extraData?: { reqQuantities?: Record<string, number>; accQuantities?: Record<string, number> }
+  ) => {
     const targetModel = models.find((m) => m.id === modelId);
     if (!targetModel) return { success: false, message: 'الموديل غير موجود' };
 
+    const reqQuantities = extraData?.reqQuantities || {};
+    const accQuantities = extraData?.accQuantities || {};
+
+    // Update requirements and accessories locally if latest quantities were passed
+    const effectiveReqs = requirements.map((r) => {
+      if (r.model_id !== modelId) return r;
+      const q = reqQuantities[r.id];
+      return q !== undefined ? { ...r, planned_quantity: Math.max(0, Number(q) || 0) } : r;
+    });
+    const effectiveAccs = accessories.map((a) => {
+      if (a.model_id !== modelId) return a;
+      const q = accQuantities[a.id];
+      return q !== undefined ? { ...a, planned_quantity: Math.max(0, Number(q) || 0) } : a;
+    });
+
+    const modelReqs = effectiveReqs.filter((r) => r.model_id === modelId && r.planned_quantity > 0);
+    const modelAccs = effectiveAccs.filter((a) => a.model_id === modelId && a.planned_quantity > 0);
+
+    // Check that actual total stock is sufficient for deduction
+    const colorDeductMap: Record<string, number> = {};
+    for (const req of modelReqs) {
+      colorDeductMap[req.color_id] = Number(
+        ((colorDeductMap[req.color_id] || 0) + req.planned_quantity).toFixed(2)
+      );
+    }
+    for (const [colId, totalNeeded] of Object.entries(colorDeductMap)) {
+      const col = fabricColors.find((c) => c.id === colId);
+      if (col && col.quantity < totalNeeded) {
+        addFlashMessage(
+          `الرصيد الفعلي الكلي للون (${col.color_code}) غير كافٍ للصرف! المطلوب: ${totalNeeded}، الفعلي بالمخزن: ${col.quantity}`,
+          'danger'
+        );
+        return {
+          success: false,
+          message: `الرصيد الفعلي الكلي للون (${col.color_code}) غير كافٍ للصرف`
+        };
+      }
+    }
+
+    setRequirements(effectiveReqs);
+    setAccessories(effectiveAccs);
+
+    // Deduct from actual total stock (`quantity`) ONLY now when issuing fabric to Cutting!
+    setFabricColors((prev) =>
+      prev.map((c) => {
+        const deductAmt = colorDeductMap[c.id];
+        if (!deductAmt) return c;
+        return {
+          ...c,
+          quantity: Math.max(0, Number((c.quantity - deductAmt).toFixed(2)))
+        };
+      })
+    );
+
+    const accDeductMap: Record<string, number> = {};
+    for (const mAcc of modelAccs) {
+      if (mAcc.accessory_id) {
+        accDeductMap[mAcc.accessory_id] = Number(
+          ((accDeductMap[mAcc.accessory_id] || 0) + mAcc.planned_quantity).toFixed(2)
+        );
+      }
+    }
+    setAccessoryItems((prev) =>
+      prev.map((it) => {
+        const deductAmt = accDeductMap[it.id];
+        if (!deductAmt) return it;
+        return {
+          ...it,
+          quantity: Math.max(0, Math.round(it.quantity - deductAmt))
+        };
+      })
+    );
+
+    // Move model status to 'في القص' (which also automatically releases its design reservation)
     setModels((prev) =>
       prev.map((m) =>
         m.id === modelId ? { ...m, status: 'في القص', cut_at: new Date().toISOString() } : m
@@ -1734,11 +1932,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     api
-      .issueFabricToCutting(modelId, currentUser?.real_name || 'مسؤول التصميم')
+      .issueFabricToCutting(modelId, currentUser?.real_name || 'مسؤول التصميم', extraData)
       .then(async () => {
         await refreshState();
-        logAction('التصميم', `صرف خامات وإكسسوارات الموديل ${targetModel.model_code} وتحويله للقص`);
-        addFlashMessage('تم صرف الأقمشة والإكسسوارات وتحويل الموديل للقص بنجاح');
+        logAction('التصميم', `صرف خامات وإكسسوارات الموديل ${targetModel.model_code} من المخزون الفعلي الكلي وتحويله للقص`);
+        addFlashMessage('تم صرف القماش والإكسسوارات من المخزون الفعلي الكلي وتوجيه الموديل للقص بنجاح');
       })
       .catch((err) => {
         refreshState();

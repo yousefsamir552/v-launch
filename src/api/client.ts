@@ -172,16 +172,30 @@ export const api = {
     }),
   createModelRequirement: (data: any) =>
     request<any>('/model-requirements/', { method: 'POST', body: JSON.stringify(data) }),
+  updateModelRequirement: (id: string, data: any) =>
+    request<any>(`/model-requirements/${encodeURIComponent(id)}/`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    }),
   deleteModelRequirement: (id: string) =>
     request<any>(`/model-requirements/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
   createModelAccessory: (data: any) =>
     request<any>('/model-accessories/', { method: 'POST', body: JSON.stringify(data) }),
+  updateModelAccessory: (id: string, data: any) =>
+    request<any>(`/model-accessories/${encodeURIComponent(id)}/`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    }),
   deleteModelAccessory: (id: string) =>
     request<any>(`/model-accessories/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
-  issueFabricToCutting: (modelId: string, userName?: string) =>
+  issueFabricToCutting: (
+    modelId: string,
+    userName?: string,
+    extraData?: { reqQuantities?: Record<string, number>; accQuantities?: Record<string, number> }
+  ) =>
     request<any>(`/models/${encodeURIComponent(modelId)}/issue_fabric_to_cutting/`, {
       method: 'POST',
-      body: JSON.stringify({ user_name: userName })
+      body: JSON.stringify({ user_name: userName, ...(extraData || {}) })
     }),
   finishCuttingToQC: (modelId: string, userName?: string, notes?: string) =>
     request<any>(`/models/${encodeURIComponent(modelId)}/finish_cutting/`, {

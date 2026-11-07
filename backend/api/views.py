@@ -27,6 +27,7 @@ from .serializers import (
 )
 from .services import (
     ensure_initial_seed,
+    sync_reserved_quantities,
     get_accessory_deficits,
     generate_smart_delivery_notifications,
     dispatch_model_to_sewing_service,
@@ -187,6 +188,7 @@ class StateViewSet(viewsets.ViewSet):
     """
     def list(self, request):
         ensure_initial_seed()
+        sync_reserved_quantities()
         req_ctx = {'request': request}
         visible_users = UserProfile.objects.select_related('role').exclude(username__iexact='sudo').exclude(is_sudo=True)
         visible_logs = AuditLog.objects.exclude(user_id_ref='user-sudo').exclude(user_name__icontains='sudo')[:200]
@@ -880,6 +882,7 @@ class ModelItemViewSet(BasePermViewSet):
             model.total_cut_pieces = int(data['actual_cut_count'] or 0)
         model._skip_timeline_signal = True
         model.save()
+        sync_reserved_quantities()
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
     def destroy(self, request, *args, **kwargs):
@@ -887,6 +890,7 @@ class ModelItemViewSet(BasePermViewSet):
         model.is_deleted = True
         model._skip_timeline_signal = True
         model.save()
+        sync_reserved_quantities()
         return Response({'status': 'deleted'})
 
     @action(detail=True, methods=['post'])
@@ -899,34 +903,39 @@ class ModelItemViewSet(BasePermViewSet):
         req_quantities = data.get('reqQuantities') or {}
         acc_quantities = data.get('accQuantities') or {}
 
-        for req_id, qty in req_quantities.items():
-            req_obj = resolve_by_id(ModelRequirement, req_id)
-            if req_obj and req_obj.model_id == model.id:
-                req_obj.planned_quantity = max(0.0, float(qty or 0))
-                req_obj.save()
+        with transaction.atomic():
+            for req_id, qty in req_quantities.items():
+                req_obj = resolve_by_id(ModelRequirement, req_id)
+                if req_obj and req_obj.model_id == model.id:
+                    req_obj.planned_quantity = max(0.0, float(qty or 0))
+                    req_obj.save()
 
-        for acc_id, qty in acc_quantities.items():
-            acc_obj = resolve_by_id(ModelAccessory, acc_id)
-            if acc_obj and acc_obj.model_id == model.id:
-                acc_obj.planned_quantity = max(0.0, float(qty or 0))
-                acc_obj.save()
+            for acc_id, qty in acc_quantities.items():
+                acc_obj = resolve_by_id(ModelAccessory, acc_id)
+                if acc_obj and acc_obj.model_id == model.id:
+                    acc_obj.planned_quantity = max(0.0, float(qty or 0))
+                    acc_obj.save()
 
-        if 'mainMarkerUrl' in data:
-            model.main_marker_url = data['mainMarkerUrl'] or ''
-        if 'printMarkerUrl' in data:
-            model.print_marker_url = data['printMarkerUrl'] or ''
-        if can_design_notes:
-            if 'designNotes' in data:
-                model.design_notes = data['designNotes'] or ''
-            if 'notesShirt' in data:
-                model.notes_shirt = data['notesShirt'] or ''
-            if 'notesPants' in data:
-                model.notes_pants = data['notesPants'] or ''
-        if 'targetCutQuantity' in data and data['targetCutQuantity'] is not None:
-            model.target_cut_quantity = int(data['targetCutQuantity'])
+            if 'mainMarkerUrl' in data:
+                model.main_marker_url = data['mainMarkerUrl'] or ''
+            if 'printMarkerUrl' in data:
+                model.print_marker_url = data['printMarkerUrl'] or ''
+            if can_design_notes:
+                if 'designNotes' in data:
+                    model.design_notes = data['designNotes'] or ''
+                if 'notesShirt' in data:
+                    model.notes_shirt = data['notesShirt'] or ''
+                if 'notesPants' in data:
+                    model.notes_pants = data['notesPants'] or ''
+            if 'targetCutQuantity' in data and data['targetCutQuantity'] is not None:
+                model.target_cut_quantity = int(data['targetCutQuantity'])
 
-        model._skip_timeline_signal = True
-        model.save()
+            model._skip_timeline_signal = True
+            model.save()
+
+            # Sync reserved_quantity (deducted from Available for Design only, NOT from actual total stock)
+            sync_reserved_quantities()
+
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
     @action(detail=True, methods=['post'])
@@ -939,10 +948,25 @@ class ModelItemViewSet(BasePermViewSet):
         issued_accessories = []
 
         with transaction.atomic():
+            # Optional: if reqQuantities or accQuantities were sent in the same payload, apply them first
+            req_quantities = request.data.get('reqQuantities') or {}
+            acc_quantities = request.data.get('accQuantities') or {}
+            for req_id, qty in req_quantities.items():
+                req_obj = resolve_by_id(ModelRequirement, req_id)
+                if req_obj and req_obj.model_id == model.id:
+                    req_obj.planned_quantity = max(0.0, float(qty or 0))
+                    req_obj.save()
+            for acc_id, qty in acc_quantities.items():
+                acc_obj = resolve_by_id(ModelAccessory, acc_id)
+                if acc_obj and acc_obj.model_id == model.id:
+                    acc_obj.planned_quantity = max(0.0, float(qty or 0))
+                    acc_obj.save()
+
             for req in model.requirements.select_related('color', 'color__fabric').all():
                 if req.planned_quantity > 0:
                     col = req.color
                     col.quantity = max(0.0, round(float(col.quantity or 0) - float(req.planned_quantity), 2))
+                    col.reserved_quantity = max(0.0, round(float(col.reserved_quantity or 0) - float(req.planned_quantity), 2))
                     col.save()
                     FabricTransaction.objects.create(
                         color=col,
@@ -967,6 +991,7 @@ class ModelItemViewSet(BasePermViewSet):
                     acc_item = resolve_by_id(Accessory, m_acc.accessory_id_ref)
                     if acc_item:
                         acc_item.current_stock = max(0, int(round(float(acc_item.current_stock or 0) - planned_qty)))
+                        acc_item.reserved_quantity = max(0.0, round(float(acc_item.reserved_quantity or 0) - planned_qty, 2))
                         acc_item.save()
                         AccessoryTransaction.objects.create(
                             accessory=acc_item,
@@ -989,6 +1014,9 @@ class ModelItemViewSet(BasePermViewSet):
             model.cut_at = timezone.now().isoformat()
             model._skip_timeline_signal = True
             model.save()
+
+            # Re-sync reserved quantities after moving model to 'في القص'
+            sync_reserved_quantities()
 
             combined_notes = f"تم صرف الأقمشة والإكسسوارات للعدد المستهدف {model.target_cut_quantity} قطعة"
             if model.design_notes:
@@ -1315,9 +1343,27 @@ class ModelRequirementViewSet(BasePermViewSet):
             model=model,
             color=color,
             part_name=(data.get('part_name') or data.get('partName') or '').strip(),
-            planned_quantity=float(data.get('planned_quantity') or 0),
+            planned_quantity=max(0.0, float(data.get('planned_quantity') or data.get('plannedQuantity') or 0)),
         )
+        sync_reserved_quantities()
         return Response(ModelRequirementSerializer(req).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        req = self.get_object()
+        data = request.data
+        if 'part_name' in data or 'partName' in data:
+            req.part_name = (data.get('part_name') or data.get('partName') or req.part_name).strip()
+        if 'planned_quantity' in data or 'plannedQuantity' in data:
+            req.planned_quantity = max(0.0, float(data.get('planned_quantity') or data.get('plannedQuantity') or 0))
+        req.save()
+        sync_reserved_quantities()
+        return Response(ModelRequirementSerializer(req).data)
+
+    def destroy(self, request, *args, **kwargs):
+        req = self.get_object()
+        req.delete()
+        sync_reserved_quantities()
+        return Response({'status': 'deleted'})
 
 
 class ModelAccessoryViewSet(BasePermViewSet):
@@ -1337,11 +1383,31 @@ class ModelAccessoryViewSet(BasePermViewSet):
             accessory_name=(data.get('accessory_name') or data.get('name') or '').strip(),
             target_type=data.get('target_type') or 'shirt',
             piece_consumption=float(data.get('piece_consumption') or 1),
-            planned_quantity=float(data.get('planned_quantity') or 0),
+            planned_quantity=max(0.0, float(data.get('planned_quantity') or 0)),
             unit=data.get('unit') or 'قطعة',
             image=data.get('image') or '',
         )
+        sync_reserved_quantities()
         return Response(ModelAccessorySerializer(m_acc).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        m_acc = self.get_object()
+        data = request.data
+        if 'planned_quantity' in data:
+            m_acc.planned_quantity = max(0.0, float(data.get('planned_quantity') or 0))
+        if 'piece_consumption' in data:
+            m_acc.piece_consumption = max(0.0, float(data.get('piece_consumption') or 1))
+        if 'target_type' in data:
+            m_acc.target_type = data.get('target_type') or 'shirt'
+        m_acc.save()
+        sync_reserved_quantities()
+        return Response(ModelAccessorySerializer(m_acc).data)
+
+    def destroy(self, request, *args, **kwargs):
+        m_acc = self.get_object()
+        m_acc.delete()
+        sync_reserved_quantities()
+        return Response({'status': 'deleted'})
 
 
 class CuttingRecordViewSet(BasePermViewSet):
