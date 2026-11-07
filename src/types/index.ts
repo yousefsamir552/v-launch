@@ -253,6 +253,7 @@ export interface DesignModel {
   actual_cut_count?: number;
   total_cut_pieces?: number;
   cutter_name?: string;
+  spreader_name?: string;
   count_before_print?: number;
   count_after_print?: number;
   count_after_sewing?: number;
@@ -318,16 +319,38 @@ export interface ModelAccessory {
   image?: string;
 }
 
+export interface CuttingSpreadLayer {
+  id?: string;
+  spread_id?: string;
+  color_name: string;
+  colorName?: string;
+  layers_count: number;
+  layersCount?: number;
+  layer_weight?: number;
+  layerWeight?: number;
+  pieces_count?: number;
+  piecesCount?: number;
+  shade_degree?: string;
+  shadeDegree?: string;
+  notes?: string;
+}
+
 export interface CuttingRecord {
   id: string;
   model_id: string;
+  spread_number?: number;
+  spreadNumber?: number;
+  spreader_name?: string;
+  spreaderName?: string;
+  cutter_name?: string;
+  cutterName?: string;
   color_name?: string;
   colorName?: string;
+  color_layers?: CuttingSpreadLayer[];
+  colorLayers?: CuttingSpreadLayer[];
   color_code?: string;
   fabric_name?: string;
   part?: 'shirt' | 'pants' | string;
-  cutter_name?: string;
-  cutterName?: string;
   recorded_by?: string;
   layers_count: number;
   layersCount?: number;
@@ -343,6 +366,14 @@ export interface CuttingRecord {
 }
 
 export type QCStageType = 'before_print' | 'after_print' | 'after_sewing';
+
+export interface QCMatrixCellInput {
+  color_name: string;
+  size: string;
+  good_qty: number;
+  defect_qty: number;
+  notes?: string;
+}
 
 export interface QCRecord {
   id: string;

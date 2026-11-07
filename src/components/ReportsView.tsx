@@ -166,13 +166,16 @@ export const ReportsView: React.FC = () => {
         if (rec.cutter_name && !bucket.operators.includes(rec.cutter_name)) {
           bucket.operators.push(rec.cutter_name);
         }
+        if (rec.spreader_name && !bucket.operators.includes(rec.spreader_name)) {
+          bucket.operators.push(rec.spreader_name);
+        }
         bucket.details.push({
           id: rec.id,
           modelCode,
-          detail1: `اللون: ${rec.color_name || rec.colorName || '—'}`,
-          detail2: `المقصدار: ${rec.cutter_name || rec.cutterName || '—'} (راقات: ${rec.layers_count || 0})`,
+          detail1: `فرشة #${rec.spread_number || 1} (${rec.color_name || rec.colorName || '—'})`,
+          detail2: `الفراش: ${rec.spreader_name || rec.spreaderName || '—'} • المقصدار: ${rec.cutter_name || rec.cutterName || '—'} (راقات: ${rec.layers_count || 0})`,
           pieces: rec.pieces_count || rec.piecesCount || 0,
-          notes: rec.shade_degree || rec.shadeDegree || '',
+          notes: rec.notes || rec.shade_degree || rec.shadeDegree || '',
           timestamp: rec.created_at
         });
       });
@@ -262,8 +265,8 @@ export const ReportsView: React.FC = () => {
         bucket.details.push({
           id: rec.id,
           modelCode,
-          detail1: `مرحلة: ${rec.stage || 'فرز'}`,
-          detail2: `مسؤول الجودة: ${rec.inspector_name || '—'} (هوالك: ${defects})`,
+          detail1: `مرحلة: ${rec.stage || 'فرز'} (${rec.color_name || 'لون'} - مقاس ${rec.size || '—'})`,
+          detail2: `مسؤول الجودة: ${rec.inspector_name || '—'} (تالف: ${defects})`,
           pieces: counted,
           notes: rec.notes || rec.defect_notes || '',
           timestamp: rec.created_at

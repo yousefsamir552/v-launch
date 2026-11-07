@@ -12,7 +12,9 @@ import {
   ModelRequirement,
   ModelAccessory,
   CuttingRecord,
+  CuttingSpreadLayer,
   QCRecord,
+  QCMatrixCellInput,
   QCStageType,
   PrintDispatch,
   DispatchStatus,
@@ -256,13 +258,16 @@ interface AppContextType {
   ) => { success: boolean; message: string };
   deleteDesignModel: (modelId: string) => void;
 
-  // Cutting Actions
+  // Cutting Actions (Spreads / Lays System)
   addCuttingRecord: (data: {
     modelId: string;
-    colorName: string;
+    spreadNumber?: number;
+    spreaderName: string;
     cutterName: string;
-    layersCount: number;
-    layerWeight: number;
+    colorLayers: CuttingSpreadLayer[];
+    colorName?: string;
+    layersCount?: number;
+    layerWeight?: number;
     piecesCount: number;
     shadeDegree?: string;
     notes?: string;
@@ -270,7 +275,9 @@ interface AppContextType {
   finishCuttingToQC: (modelId: string, notes?: string) => void;
   exportCuttingCsv: (modelId: string) => void;
 
-  // QC Actions & Multi-stage counting
+  // QC Actions & Multi-stage Matrix counting (Color x Size)
+  getModelColorList: (modelId: string) => string[];
+  getModelSizeList: (modelId: string) => string[];
   recordQCData: (data: {
     modelId: string;
     colorName: string;
@@ -281,11 +288,18 @@ interface AppContextType {
     stage?: QCStageType;
   }) => void;
   addQCRecord: (data: any) => void;
+  saveQCMatrix: (data: {
+    modelId: string;
+    stage: QCStageType;
+    matrixEntries: QCMatrixCellInput[];
+    notes?: string;
+  }) => void;
   recordQCStageCount: (data: {
     modelId: string;
     stage: QCStageType;
-    piecesCounted: number;
-    defectQty: number;
+    piecesCounted?: number;
+    defectQty?: number;
+    matrixEntries?: QCMatrixCellInput[];
     defectNotes?: string;
     advanceStage?: boolean;
   }) => void;
@@ -1962,13 +1976,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
-  // Cutting Actions
+  // Helper to resolve colors and sizes for a model (used in Cutting Spreads & QC Matrix)
+  const getModelColorList = useCallback(
+    (modelId: string): string[] => {
+      const model = models.find((m) => m.id === modelId);
+      const modelReqs = requirements.filter((r) => r.model_id === modelId);
+      const colors: string[] = [];
+
+      modelReqs.forEach((req) => {
+        const col = fabricColors.find((c) => c.id === req.color_id);
+        const colorLabel = col?.color_name
+          ? `${col.color_code} - ${col.color_name} (${req.part_name})`
+          : `${col?.color_code || 'لون'} (${req.part_name})`;
+        if (!colors.includes(colorLabel)) {
+          colors.push(colorLabel);
+        }
+      });
+
+      // Also include any distinct colors recorded in Cutting Spreads if requirements were empty
+      if (colors.length === 0) {
+        const modelSpreads = cuttingRecords.filter((r) => r.model_id === modelId);
+        modelSpreads.forEach((sp) => {
+          const spreadLayers = sp.color_layers || sp.colorLayers || [];
+          spreadLayers.forEach((lay) => {
+            const cName = (lay.color_name || lay.colorName || '').trim();
+            if (cName && !colors.includes(cName)) {
+              colors.push(cName);
+            }
+          });
+        });
+      }
+
+      if (colors.length === 0 && model) {
+        colors.push(`اللون الأساسي (${model.model_code})`);
+      }
+      return colors;
+    },
+    [models, requirements, fabricColors, cuttingRecords]
+  );
+
+  const getModelSizeList = useCallback(
+    (modelId: string): string[] => {
+      const model = models.find((m) => m.id === modelId);
+      const sizeCat = sizeDefs.find((s) => s.id === model?.size_category_id);
+      if (sizeCat && sizeCat.values) {
+        const parsed = sizeCat.values
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (parsed.length > 0) return parsed;
+      }
+      return ['S', 'M', 'L', 'XL'];
+    },
+    [models, sizeDefs]
+  );
+
+  // Cutting Actions (Spreads / Lays System)
   const addCuttingRecord = (data: {
     modelId: string;
-    colorName: string;
+    spreadNumber?: number;
+    spreaderName: string;
     cutterName: string;
-    layersCount: number;
-    layerWeight: number;
+    colorLayers: CuttingSpreadLayer[];
+    colorName?: string;
+    layersCount?: number;
+    layerWeight?: number;
     piecesCount: number;
     shadeDegree?: string;
     notes?: string;
@@ -1976,19 +2048,64 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const recId = 'cut-' + Date.now();
     const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
     const cleanNotes = canAddCuttingNotes() ? (data.notes?.trim() || '') : '';
+    const existingModelSpreads = cuttingRecords.filter((r) => r.model_id === data.modelId);
+    const spreadNumber = data.spreadNumber || existingModelSpreads.length + 1;
+
+    const cleanLayers: CuttingSpreadLayer[] = (data.colorLayers || [])
+      .filter((l) => (l.color_name || l.colorName) && Number(l.layers_count ?? l.layersCount ?? 0) > 0)
+      .map((l, idx) => ({
+        id: l.id || `lay-${Date.now()}-${idx}`,
+        color_name: (l.color_name || l.colorName || '').trim(),
+        colorName: (l.color_name || l.colorName || '').trim(),
+        layers_count: Math.max(0, Number(l.layers_count ?? l.layersCount ?? 0)),
+        layersCount: Math.max(0, Number(l.layers_count ?? l.layersCount ?? 0)),
+        layer_weight: Math.max(0, Number(l.layer_weight ?? l.layerWeight ?? 0)),
+        layerWeight: Math.max(0, Number(l.layer_weight ?? l.layerWeight ?? 0)),
+        pieces_count: Math.max(0, Number(l.pieces_count ?? l.piecesCount ?? 0)),
+        piecesCount: Math.max(0, Number(l.pieces_count ?? l.piecesCount ?? 0)),
+        shade_degree: (l.shade_degree || l.shadeDegree || '').trim(),
+        shadeDegree: (l.shade_degree || l.shadeDegree || '').trim(),
+        notes: (l.notes || '').trim()
+      }));
+
+    const totalLayersCount =
+      cleanLayers.length > 0
+        ? cleanLayers.reduce((sum, item) => sum + item.layers_count, 0)
+        : Math.max(0, Number(data.layersCount) || 0);
+
+    const totalWeight =
+      Number(data.layerWeight) > 0
+        ? Number(data.layerWeight)
+        : cleanLayers.reduce((sum, item) => sum + (item.layer_weight || 0), 0);
+
+    const colorsSummary =
+      cleanLayers.length > 0
+        ? cleanLayers.map((item) => `${item.color_name} (${item.layers_count} راق)`).join(' + ')
+        : data.colorName || '';
+
+    const cleanSpreader = (data.spreaderName || '').trim();
+    const cleanCutter = (data.cutterName || '').trim();
+    const totalPieces = Math.max(0, Number(data.piecesCount) || 0);
+
     const newRecord: CuttingRecord = {
       id: recId,
       model_id: data.modelId,
-      color_name: data.colorName,
-      colorName: data.colorName,
-      cutter_name: data.cutterName.trim(),
-      cutterName: data.cutterName.trim(),
-      layers_count: Math.max(0, data.layersCount),
-      layersCount: Math.max(0, data.layersCount),
-      layer_weight: Math.max(0, data.layerWeight),
-      layerWeight: Math.max(0, data.layerWeight),
-      pieces_count: Math.max(0, data.piecesCount),
-      piecesCount: Math.max(0, data.piecesCount),
+      spread_number: spreadNumber,
+      spreadNumber: spreadNumber,
+      spreader_name: cleanSpreader,
+      spreaderName: cleanSpreader,
+      cutter_name: cleanCutter,
+      cutterName: cleanCutter,
+      color_name: colorsSummary,
+      colorName: colorsSummary,
+      color_layers: cleanLayers,
+      colorLayers: cleanLayers,
+      layers_count: totalLayersCount,
+      layersCount: totalLayersCount,
+      layer_weight: totalWeight,
+      layerWeight: totalWeight,
+      pieces_count: totalPieces,
+      piecesCount: totalPieces,
       shade_degree: data.shadeDegree?.trim() || '',
       shadeDegree: data.shadeDegree?.trim() || '',
       notes: cleanNotes,
@@ -1999,33 +2116,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setModels((prev) =>
       prev.map((m) => {
         if (m.id !== data.modelId) return m;
-        const newTotal = (m.actual_cut_count || 0) + data.piecesCount;
+        const newTotal = (m.actual_cut_count || 0) + totalPieces;
         const tlEvent: ModelTimelineEvent = {
           id: 'tl-' + Date.now(),
           stage: 'في القص',
-          title: `تسجيل راق قص (${data.piecesCount} قطعة)`,
-          notes: `بواسطة المقصدار: ${data.cutterName.trim()} | اللون/القطعة: ${data.colorName} | عدد الراقات: ${data.layersCount} | وزن الراق: ${data.layerWeight} كجم${cleanNotes ? ` | ملاحظات: ${cleanNotes}` : ''}`,
-          user: data.cutterName.trim(),
+          title: `تسجيل فرشة قص #${spreadNumber} (${totalPieces} قطعة)`,
+          notes: `فرشة رقم #${spreadNumber} | الفَرّاش: ${cleanSpreader || '-'} | المقصدار: ${cleanCutter} | الألوان والراقات: ${colorsSummary} | إجمالي الراقات: ${totalLayersCount}${totalWeight > 0 ? ` | الوزن: ${totalWeight} كجم` : ''}${cleanNotes ? ` | ملاحظات: ${cleanNotes}` : ''}`,
+          user: cleanCutter || cleanSpreader,
           timestamp: createdAt,
           details: {
             phase_type: 'cutting',
             record_id: recId,
-            color_name: data.colorName,
-            cutter_name: data.cutterName.trim(),
-            layers_count: data.layersCount,
-            layer_weight: data.layerWeight,
-            pieces_count: data.piecesCount,
+            spread_number: spreadNumber,
+            spreader_name: cleanSpreader,
+            cutter_name: cleanCutter,
+            color_name: colorsSummary,
+            color_layers: cleanLayers,
+            layers_count: totalLayersCount,
+            layer_weight: totalWeight,
+            pieces_count: totalPieces,
             total_cut_pieces_so_far: newTotal,
             shade_degree: data.shadeDegree?.trim() || '',
             worker_notes: cleanNotes,
-            operator_name: data.cutterName.trim()
+            operator_name: cleanCutter || cleanSpreader
           }
         };
         return {
           ...m,
           actual_cut_count: newTotal,
           total_cut_pieces: newTotal,
-          cutter_name: data.cutterName.trim(),
+          cutter_name: cleanCutter,
+          spreader_name: cleanSpreader,
           timeline: [tlEvent, ...(m.timeline || [])]
         };
       })
@@ -2035,23 +2156,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .createCuttingRecord({
         id: recId,
         model_id: data.modelId,
-        color_name: data.colorName,
-        cutter_name: data.cutterName.trim(),
-        layers_count: Math.max(0, data.layersCount),
-        layer_weight: Math.max(0, data.layerWeight),
-        pieces_count: Math.max(0, data.piecesCount),
+        spread_number: spreadNumber,
+        spreader_name: cleanSpreader,
+        cutter_name: cleanCutter,
+        color_name: colorsSummary,
+        color_layers: cleanLayers,
+        layers_count: totalLayersCount,
+        layer_weight: totalWeight,
+        pieces_count: totalPieces,
         shade_degree: data.shadeDegree?.trim() || '',
         notes: cleanNotes,
         created_at: createdAt
       })
       .then((saved) => {
         setCuttingRecords((prev) => prev.map((r) => (r.id === recId ? saved : r)));
-        logAction('القص', `تسجيل راق قص للموديل: ${data.piecesCount} قطعة`);
-        addFlashMessage(`تم تسجيل الراق بنجاح (${data.piecesCount} قطعة)`);
+        logAction('القص', `تسجيل فرشة قص #${spreadNumber} للموديل: ${totalPieces} قطعة (الفراش: ${cleanSpreader} | المقصدار: ${cleanCutter})`);
+        addFlashMessage(`تم تسجيل الفرشة رقم #${spreadNumber} بنجاح (${totalPieces} قطعة)`);
       })
       .catch((err) => {
         refreshState();
-        addFlashMessage(err.message || 'فشل تسجيل الراق في الباك إند', 'danger');
+        addFlashMessage(err.message || 'فشل تسجيل الفرشة في الباك إند', 'danger');
       });
   };
 
@@ -2080,22 +2204,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const records = cuttingRecords.filter((r) => r.model_id === modelId);
     const headers = [
       'كود الموديل',
-      'اللون / القطعة',
-      'اسم المقصدار',
-      'عدد الرقات',
-      'وزن الراق (كجم)',
-      'القطع المنتجة',
+      'رقم الفرشة',
+      'اسم الفراش (Spreader)',
+      'الألوان والراقات داخل الفرشة',
+      'إجمالي الراقات',
+      'إجمالي الوزن (كجم)',
+      'إجمالي القطع المنتجة',
+      'اسم المقصدار (Cutter)',
       'درجة الصبغة',
       'الملاحظات',
       'تاريخ ووقت التسجيل'
     ];
-    const rows = records.map((r) => [
+    const rows = records.map((r, idx) => [
       targetModel?.model_code || modelId,
-      r.color_name,
-      r.cutter_name,
+      String(r.spread_number || idx + 1),
+      r.spreader_name || r.spreaderName || '-',
+      r.color_name || '-',
       r.layers_count.toString(),
       r.layer_weight.toString(),
       r.pieces_count.toString(),
+      r.cutter_name || '-',
       r.shade_degree || '-',
       r.notes || '-',
       r.created_at
@@ -2111,18 +2239,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     link.setAttribute('href', url);
     link.setAttribute(
       'download',
-      `cutting_${targetModel?.model_code || 'records'}_${new Date().toISOString().slice(0, 10)}.csv`
+      `cutting_spreads_${targetModel?.model_code || 'records'}_${new Date().toISOString().slice(0, 10)}.csv`
     );
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
 
-    logAction('القص', `تصدير سجل القص للموديل ${targetModel?.model_code} إلى إكسيل`);
-    addFlashMessage('تم تصدير سجل القص بنجاح');
+    logAction('القص', `تصدير سجل فرشات القص للموديل ${targetModel?.model_code} إلى إكسيل`);
+    addFlashMessage('تم تصدير سجل فرشات القص بنجاح');
   };
 
-  // QC Actions
+  // QC Actions (Matrix per Color x Size)
   const recordQCData = (data: {
     modelId: string;
     colorName: string;
@@ -2147,12 +2275,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       size: data.size,
       good_qty: Math.max(0, data.goodQty),
       defect_qty: Math.max(0, data.defectQty),
+      counted_pieces: Math.max(0, data.goodQty),
+      defect_pieces: Math.max(0, data.defectQty),
       defect_notes: cleanNotes,
       notes: cleanNotes,
       inspector_name: currentUser?.real_name || 'مراقب الجودة',
       created_at: createdAt
     };
-    setQcRecords((prev) => [newQC, ...prev]);
+
+    setQcRecords((prev) => {
+      const existingIdx = prev.findIndex(
+        (q) =>
+          q.model_id === data.modelId &&
+          q.stage === stage &&
+          q.color_name === data.colorName &&
+          q.size === data.size
+      );
+      if (existingIdx >= 0) {
+        const updated = [...prev];
+        updated[existingIdx] = { ...updated[existingIdx], ...newQC, id: updated[existingIdx].id };
+        return updated;
+      }
+      return [newQC, ...prev];
+    });
 
     api
       .createQCRecord({
@@ -2168,9 +2313,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         created_at: createdAt
       })
       .then((saved) => {
-        setQcRecords((prev) => prev.map((q) => (q.id === qcId ? saved : q)));
-        logAction('الفرز', `تسجيل بيانات فرز (${stage}): سليم: ${data.goodQty}، هالك: ${data.defectQty}`);
-        addFlashMessage('تم تسجيل بيانات الفرز والكنترول بنجاح');
+        setQcRecords((prev) => {
+          const filtered = prev.filter(
+            (q) =>
+              !(
+                q.model_id === data.modelId &&
+                q.stage === stage &&
+                q.color_name === data.colorName &&
+                q.size === data.size &&
+                q.id !== saved.id
+              )
+          );
+          const exists = filtered.some((q) => q.id === saved.id);
+          return exists
+            ? filtered.map((q) => (q.id === saved.id ? saved : q))
+            : [saved, ...filtered];
+        });
+        logAction('الفرز', `تسجيل بيانات فرز (${stage}) [${data.colorName} - مقاس ${data.size}]: سليم: ${data.goodQty}، تالف: ${data.defectQty}`);
+        addFlashMessage('تم حفظ خلية الفرز بنجاح');
       })
       .catch((err) => {
         refreshState();
@@ -2178,11 +2338,54 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
+  const saveQCMatrix = (data: {
+    modelId: string;
+    stage: QCStageType;
+    matrixEntries: QCMatrixCellInput[];
+    notes?: string;
+  }) => {
+    const allowNotes =
+      data.stage === 'before_print' ? canAddQCBeforePrintNotes() : canAddQCAfterPrintNotes();
+    const cleanNotes = allowNotes ? (data.notes?.trim() || '') : '';
+    const inspector = currentUser?.real_name || 'مراقب الجودة';
+    const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
+
+    api
+      .saveQCMatrix({
+        model_id: data.modelId,
+        stage: data.stage,
+        matrix_entries: data.matrixEntries,
+        notes: cleanNotes,
+        inspector_name: inspector,
+        created_at: createdAt
+      })
+      .then((res) => {
+        if (res.model) {
+          setModels((prev) => prev.map((m) => (m.id === data.modelId ? res.model : m)));
+        }
+        if (Array.isArray(res.qcRecords)) {
+          setQcRecords((prev) => {
+            const otherRecords = prev.filter(
+              (q) => !(q.model_id === data.modelId && q.stage === data.stage)
+            );
+            return [...res.qcRecords, ...otherRecords];
+          });
+        }
+        logAction('الفرز', `حفظ جدول مصفوفة الفرز (${data.stage}) للموديل`);
+        addFlashMessage('تم حفظ جدول الفرز (الألوان × المقاسات) بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل حفظ جدول الفرز في الباك إند', 'danger');
+      });
+  };
+
   const recordQCStageCount = (data: {
     modelId: string;
     stage: QCStageType;
-    piecesCounted: number;
-    defectQty: number;
+    piecesCounted?: number;
+    defectQty?: number;
+    matrixEntries?: QCMatrixCellInput[];
     defectNotes?: string;
     advanceStage?: boolean;
   }) => {
@@ -2196,20 +2399,58 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
     const inspector = currentUser?.real_name || 'مراقب الجودة';
 
-    const newQC: QCRecord = {
-      id: qcId,
-      model_id: data.modelId,
-      stage: data.stage,
-      color_name: model.model_type || 'الأساسي',
-      pieces_cut: model.actual_cut_count || model.target_cut_quantity,
-      good_qty: data.piecesCounted,
-      defect_qty: data.defectQty,
-      defect_notes: cleanNotes,
-      notes: cleanNotes,
-      inspector_name: inspector,
-      created_at: createdAt
-    };
-    setQcRecords((prev) => [newQC, ...prev]);
+    const matrixList = data.matrixEntries || [];
+    const totalGoodFromMatrix =
+      matrixList.length > 0
+        ? matrixList.reduce((sum, cell) => sum + (Number(cell.good_qty) || 0), 0)
+        : Number(data.piecesCounted) || 0;
+    const totalDefectFromMatrix =
+      matrixList.length > 0
+        ? matrixList.reduce((sum, cell) => sum + (Number(cell.defect_qty) || 0), 0)
+        : Number(data.defectQty) || 0;
+
+    if (matrixList.length > 0) {
+      const optimisticRecords: QCRecord[] = matrixList.map((cell, idx) => ({
+        id: `qc-${Date.now()}-${idx}`,
+        model_id: data.modelId,
+        stage: data.stage,
+        color_name: cell.color_name,
+        size: cell.size,
+        pieces_cut: model.actual_cut_count || model.target_cut_quantity,
+        good_qty: Math.max(0, Number(cell.good_qty) || 0),
+        defect_qty: Math.max(0, Number(cell.defect_qty) || 0),
+        counted_pieces: Math.max(0, Number(cell.good_qty) || 0),
+        defect_pieces: Math.max(0, Number(cell.defect_qty) || 0),
+        defect_notes: cell.notes || cleanNotes,
+        notes: cell.notes || cleanNotes,
+        inspector_name: inspector,
+        created_at: createdAt
+      }));
+
+      setQcRecords((prev) => {
+        const others = prev.filter(
+          (q) => !(q.model_id === data.modelId && q.stage === data.stage)
+        );
+        return [...optimisticRecords, ...others];
+      });
+    } else {
+      const newQC: QCRecord = {
+        id: qcId,
+        model_id: data.modelId,
+        stage: data.stage,
+        color_name: model.model_type || 'الأساسي',
+        pieces_cut: model.actual_cut_count || model.target_cut_quantity,
+        good_qty: totalGoodFromMatrix,
+        defect_qty: totalDefectFromMatrix,
+        counted_pieces: totalGoodFromMatrix,
+        defect_pieces: totalDefectFromMatrix,
+        defect_notes: cleanNotes,
+        notes: cleanNotes,
+        inspector_name: inspector,
+        created_at: createdAt
+      };
+      setQcRecords((prev) => [newQC, ...prev]);
+    }
 
     setModels((prev) =>
       prev.map((m) => {
@@ -2217,20 +2458,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (data.stage === 'before_print') {
           return {
             ...m,
-            count_before_print: data.piecesCounted,
+            count_before_print: totalGoodFromMatrix,
             ...(data.advanceStage ? { status: 'جاهز للطباعة / التجميع' } : {})
           };
         }
         if (data.stage === 'after_print') {
           return {
             ...m,
-            count_after_print: data.piecesCounted,
+            count_after_print: totalGoodFromMatrix,
             ...(data.advanceStage ? { status: 'في قسم المكن' } : {})
           };
         }
         return {
           ...m,
-          count_after_sewing: data.piecesCounted,
+          count_after_sewing: totalGoodFromMatrix,
           ...(data.advanceStage ? { status: 'مخزن الإنتاج التام' } : {})
         };
       })
@@ -2240,8 +2481,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .recordQCStageCount(data.modelId, {
         qc_id: qcId,
         stage: data.stage,
-        counted_pieces: data.piecesCounted,
-        defect_pieces: data.defectQty,
+        counted_pieces: totalGoodFromMatrix,
+        defect_pieces: totalDefectFromMatrix,
+        matrix_entries: matrixList,
         notes: cleanNotes,
         advanceStage: data.advanceStage,
         user_name: inspector
@@ -2250,10 +2492,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (res.model) {
           setModels((prev) => prev.map((m) => (m.id === data.modelId ? res.model : m)));
         }
-        if (res.qcRecord) {
+        if (Array.isArray(res.qcRecords) && res.qcRecords.length > 0) {
+          setQcRecords((prev) => {
+            const others = prev.filter(
+              (q) => !(q.model_id === data.modelId && q.stage === data.stage)
+            );
+            return [...res.qcRecords!, ...others];
+          });
+        } else if (res.qcRecord) {
           setQcRecords((prev) => prev.map((q) => (q.id === qcId ? res.qcRecord : q)));
         }
-        addFlashMessage('تم تسجيل بيانات العد والمرحلة بنجاح');
+        addFlashMessage('تم تسجيل مصفوفة العد والفرز واعتماد المرحلة بنجاح');
       })
       .catch((err) => {
         refreshState();
@@ -2285,9 +2534,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const headers = [
       'المرحلة',
       'كود الموديل',
-      'المفتش',
+      'اللون / القطعة',
+      'المقاس',
       'العدد السليم',
-      'العدد الهالك',
+      'العدد التالف (الهالك)',
+      'المفتش',
       'ملاحظات العيوب',
       'تاريخ ووقت الفرز'
     ];
@@ -2298,16 +2549,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ? 'العد بعد الطباعة'
         : 'العد بعد المكن',
       targetModel?.model_code || modelId,
+      r.color_name || '-',
+      r.size || '-',
+      (r.good_qty ?? r.counted_pieces ?? 0).toString(),
+      (r.defect_qty ?? r.defect_pieces ?? 0).toString(),
       r.inspector_name || '-',
-      r.good_qty.toString(),
-      r.defect_qty.toString(),
-      r.defect_notes || '-',
+      r.defect_notes || r.notes || '-',
       r.created_at
     ]);
 
     const csvContent =
       '\ufeff' +
-      [headers.join(','), ...rows.map((r) => r.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(','))].join('\n');
+      [headers.join(','), ...rows.map((r) => r.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -2315,15 +2568,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     link.setAttribute('href', url);
     link.setAttribute(
       'download',
-      `qc_${targetModel?.model_code || 'records'}_${new Date().toISOString().slice(0, 10)}.csv`
+      `qc_matrix_${targetModel?.model_code || 'records'}_${new Date().toISOString().slice(0, 10)}.csv`
     );
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
 
-    logAction('الفرز', `تصدير تقرير الجودة للموديل ${targetModel?.model_code} إلى إكسيل`);
-    addFlashMessage('تم تصدير تقرير الفرز والجودة بنجاح');
+    logAction('الفرز', `تصدير جدول مصفوفة الجودة للموديل ${targetModel?.model_code} إلى إكسيل`);
+    addFlashMessage('تم تصدير جدول الفرز والجودة بنجاح');
   };
 
   // Printing & Embroidery Actions
@@ -3090,8 +3343,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addCuttingRecord,
         finishCuttingToQC,
         exportCuttingCsv,
+        getModelColorList,
+        getModelSizeList,
         recordQCData,
         addQCRecord: recordQCData,
+        saveQCMatrix,
         recordQCStageCount,
         finishQCApproval,
         exportQcCsv,

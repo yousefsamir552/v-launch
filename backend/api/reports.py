@@ -74,7 +74,7 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
     # 1. CUTTING REPORT (تقرير قسم القص)
     if section == 'cutting':
         summary['section_name'] = 'تقرير قسم القص وخطوط الفرش'
-        qs = CuttingRecord.objects.select_related('model')
+        qs = CuttingRecord.objects.select_related('model').prefetch_related('color_layers')
 
         if date_from:
             qs = qs.filter(created_at__date__gte=date_from)
@@ -99,7 +99,8 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
             sub_records = qs.filter(created_at__date=bucket_date if period == 'daily' else bucket_date)
             model_codes = list(sub_records.values_list('model__model_code', flat=True).distinct())
             cutters = list(sub_records.values_list('cutter_name', flat=True).distinct())
-            colors = list(sub_records.values_list('fabric_color', flat=True).distinct())
+            spreaders = list(sub_records.values_list('spreader_name', flat=True).distinct())
+            operators = list(dict.fromkeys([c for c in cutters + spreaders if c]))
 
             all_models_set.update(model_codes)
             total_pcs = g['total_pieces'] or 0
@@ -110,14 +111,16 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
                 'models_count': g['models_count'],
                 'model_codes': model_codes,
                 'total_pieces': total_pcs,
-                'secondary_metric_label': 'عدد الراقات',
+                'secondary_metric_label': 'عدد الراقات بالفرشات',
                 'secondary_metric_value': g['total_layers'] or 0,
                 'operations_count': g['ops_count'],
-                'operators_list': [c for c in cutters if c],
+                'operators_list': operators,
                 'details_list': [
                     {
                         'id': rec.id,
                         'model_code': rec.model.model_code,
+                        'spread_number': rec.spread_number,
+                        'spreader': rec.spreader_name,
                         'color': rec.fabric_color,
                         'cutter': rec.cutter_name,
                         'pieces': rec.pieces_count,
@@ -246,12 +249,14 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
                         'id': rec.id,
                         'model_code': rec.model.model_code,
                         'stage': rec.get_stage_display() if hasattr(rec, 'get_stage_display') else rec.stage,
+                        'color_name': rec.color_name or '',
+                        'size': rec.size or '',
                         'good': rec.counted_pieces,
                         'defects': rec.defect_pieces,
                         'inspector': rec.checked_by,
                         'notes': rec.notes or ''
                     }
-                    for rec in sub_records[:30]
+                    for rec in sub_records[:50]
                 ]
             })
 

@@ -4,7 +4,7 @@ from .models import (
     Fabric, FabricColor, FabricTransaction,
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
-    CuttingRecord, QCRecord, PrintDispatch,
+    CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog
 )
 
@@ -89,14 +89,26 @@ class ModelAccessoryAdmin(admin.ModelAdmin):
     list_display = ('model', 'accessory_name', 'target_type', 'planned_quantity', 'unit')
 
 
+class CuttingSpreadLayerInline(admin.TabularInline):
+    model = CuttingSpreadLayer
+    extra = 1
+
+
 @admin.register(CuttingRecord)
 class CuttingRecordAdmin(admin.ModelAdmin):
-    list_display = ('model', 'fabric_color', 'cutter_name', 'pieces_count', 'created_at')
+    list_display = ('model', 'spread_number', 'spreader_name', 'cutter_name', 'layers_count', 'pieces_count', 'created_at')
+    inlines = [CuttingSpreadLayerInline]
+
+
+@admin.register(CuttingSpreadLayer)
+class CuttingSpreadLayerAdmin(admin.ModelAdmin):
+    list_display = ('spread', 'color_name', 'layers_count', 'layer_weight', 'pieces_count')
 
 
 @admin.register(QCRecord)
 class QCRecordAdmin(admin.ModelAdmin):
-    list_display = ('model', 'stage', 'counted_pieces', 'defect_pieces', 'checked_by')
+    list_display = ('model', 'stage', 'color_name', 'size', 'counted_pieces', 'defect_pieces', 'checked_by')
+    list_filter = ('stage', 'color_name', 'size')
 
 
 @admin.register(PrintDispatch)

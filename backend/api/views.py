@@ -12,7 +12,7 @@ from .models import (
     Fabric, FabricColor, FabricTransaction,
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
-    CuttingRecord, QCRecord, PrintDispatch,
+    CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog
 )
 from .serializers import (
@@ -21,7 +21,7 @@ from .serializers import (
     FabricSerializer, FabricColorSerializer, FabricTransactionSerializer,
     AccessoryTypeSerializer, AccessorySerializer, AccessoryTransactionSerializer,
     ModelItemSerializer, ModelRequirementSerializer, ModelAccessorySerializer,
-    ModelTimelineSerializer, CuttingRecordSerializer, QCRecordSerializer,
+    ModelTimelineSerializer, CuttingRecordSerializer, CuttingSpreadLayerSerializer, QCRecordSerializer,
     PrintDispatchSerializer, SewingDispatchSerializer,
     AppNotificationSerializer, InternalMessageSerializer, AuditLogSerializer
 )
@@ -211,7 +211,7 @@ class StateViewSet(viewsets.ViewSet):
             'models': ModelItemSerializer(ModelItem.objects.filter(is_deleted=False).prefetch_related('timeline', 'accessories'), many=True, context=req_ctx).data,
             'requirements': ModelRequirementSerializer(ModelRequirement.objects.select_related('model', 'color').all(), many=True).data,
             'accessories': ModelAccessorySerializer(ModelAccessory.objects.select_related('model').all(), many=True).data,
-            'cuttingRecords': CuttingRecordSerializer(CuttingRecord.objects.select_related('model').all(), many=True).data,
+            'cuttingRecords': CuttingRecordSerializer(CuttingRecord.objects.select_related('model').prefetch_related('color_layers').all(), many=True).data,
             'qcRecords': QCRecordSerializer(QCRecord.objects.select_related('model').all(), many=True).data,
             'printDispatches': PrintDispatchSerializer(PrintDispatch.objects.select_related('model').all(), many=True, context=req_ctx).data,
             'sewingDispatches': SewingDispatchSerializer(SewingDispatch.objects.select_related('model').all(), many=True, context=req_ctx).data,
@@ -866,7 +866,7 @@ class ModelItemViewSet(BasePermViewSet):
 
         for field in [
             'model_type', 'status', 'size_category_id', 'main_marker_url', 'print_marker_url',
-            'target_cut_quantity', 'total_cut_pieces', 'cutter_name',
+            'target_cut_quantity', 'total_cut_pieces', 'cutter_name', 'spreader_name',
             'count_before_print', 'count_after_print', 'count_after_sewing',
             'print_house', 'image', 'is_deleted', 'colored_at', 'cut_at'
         ]:
@@ -1056,12 +1056,11 @@ class ModelItemViewSet(BasePermViewSet):
         model._skip_timeline_signal = True
         model.save()
 
-        cut_records = list(model.cutting_records.values(
-            'fabric_color', 'cutter_name', 'layers_count', 'layer_weight', 'pieces_count', 'shade_degree', 'notes'
-        ))
-        total_layers = sum(r['layers_count'] or 0 for r in cut_records)
+        spreads_qs = model.cutting_records.prefetch_related('color_layers').all()
+        cut_records = CuttingRecordSerializer(spreads_qs, many=True).data
+        total_layers = sum(int(r.get('layers_count') or 0) for r in cut_records)
 
-        tl_notes = f"إجمالي القطع المقصوصة: {model.total_cut_pieces or 0} قطعة | إجمالي الراقات: {total_layers}"
+        tl_notes = f"إجمالي الفرشات: {len(cut_records)} | إجمالي القطع المقصوصة: {model.total_cut_pieces or 0} قطعة | إجمالي الراقات: {total_layers}"
         if notes:
             tl_notes += f" | ملاحظات: {notes}"
 
@@ -1077,7 +1076,9 @@ class ModelItemViewSet(BasePermViewSet):
                 'total_cut_pieces': model.total_cut_pieces or 0,
                 'target_cut_quantity': model.target_cut_quantity or 0,
                 'total_layers': total_layers,
+                'spreads_count': len(cut_records),
                 'cutter_name': model.cutter_name or user_name,
+                'spreader_name': model.spreader_name or '',
                 'cutting_records': cut_records,
                 'operator_name': user_name,
                 'worker_notes': notes,
@@ -1115,8 +1116,6 @@ class ModelItemViewSet(BasePermViewSet):
     def record_qc_count(self, request, pk=None):
         model = self.get_object()
         stage = request.data.get('stage') or 'before_print'
-        counted = int(request.data.get('counted_pieces') or request.data.get('piecesCounted') or 0)
-        defects = int(request.data.get('defect_pieces') or request.data.get('defectQty') or 0)
         raw_notes = (request.data.get('notes') or request.data.get('defectNotes') or '').strip()
 
         profile = getattr(request, 'user_profile', None)
@@ -1132,86 +1131,158 @@ class ModelItemViewSet(BasePermViewSet):
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         pieces_cut_ref = model.total_cut_pieces or model.target_cut_quantity or 0
 
-        qc_rec = QCRecord.objects.create(
-            client_id=request.data.get('qc_id'),
-            model=model,
-            stage=stage,
-            color_name=model.model_type or 'الأساسي',
-            pieces_cut=pieces_cut_ref,
-            counted_pieces=counted,
-            defect_pieces=defects,
-            notes=notes,
-            checked_by=user,
-            created_at_str=now_str,
-        )
+        matrix_entries = request.data.get('matrix_entries') or request.data.get('matrixEntries')
+        saved_records = []
 
-        qc_details = {
-            'phase_type': f'qc_{stage}',
-            'record_id': get_ext_id(qc_rec),
-            'qc_stage': stage,
-            'pieces_cut': pieces_cut_ref,
-            'counted_pieces': counted,
-            'defect_pieces': defects,
-            'deficit': pieces_cut_ref - counted,
-            'inspector_name': user,
-            'operator_name': user,
-            'worker_notes': notes,
-        }
+        with transaction.atomic():
+            if isinstance(matrix_entries, list) and len(matrix_entries) > 0:
+                # Upsert each (color_name, size) cell for this model and stage
+                for entry in matrix_entries:
+                    c_name = (entry.get('color_name') or entry.get('colorName') or '').strip()
+                    sz = (entry.get('size') or '').strip()
+                    if not c_name and not sz:
+                        continue
+                    g_qty = max(0, int(entry.get('good_qty') if entry.get('good_qty') is not None else (entry.get('goodQty') or entry.get('counted_pieces') or 0)))
+                    d_qty = max(0, int(entry.get('defect_qty') if entry.get('defect_qty') is not None else (entry.get('defectQty') or entry.get('defect_pieces') or 0)))
+                    cell_notes = (entry.get('notes') or entry.get('defect_notes') or notes or '').strip()
 
-        if stage == 'before_print':
-            model.count_before_print = counted
-            if advance_stage:
-                model.status = 'جاهز للطباعة / التجميع'
-            tl_text = f"القطع السليمة: {counted} | هالك: {defects} {'-> تحويل للمطابع والتطريز' if advance_stage else ''}"
-            if notes:
-                tl_text += f" | ملاحظات: {notes}"
-            ModelTimeline.objects.create(
-                model=model,
-                stage="العد قبل الطباعة",
-                title="إتمام العد قبل الطباعة",
-                notes=tl_text,
-                user=user,
-                timestamp_str=now_str,
-                details=qc_details,
-            )
-        elif stage == 'after_print':
-            model.count_after_print = counted
-            if advance_stage:
-                model.status = 'في قسم المكن'
-            tl_text = f"العدد الفعلي بعد الطباعة: {counted} قطعة | هالك: {defects} {'-> تحويل لقسم المكن' if advance_stage else ''}"
-            if notes:
-                tl_text += f" | ملاحظات: {notes}"
-            ModelTimeline.objects.create(
-                model=model,
-                stage="العد بعد الطباعة",
-                title="إتمام العد بعد الطباعة",
-                notes=tl_text,
-                user=user,
-                timestamp_str=now_str,
-                details=qc_details,
-            )
-        elif stage == 'after_sewing':
-            model.count_after_sewing = counted
-            if advance_stage:
-                model.status = 'مخزن الإنتاج التام'
-            tl_text = f"الإنتاج التام المعتمد: {counted} قطعة | هالك: {defects} {'-> تحويل لمخزن الإنتاج التام' if advance_stage else ''}"
-            if notes:
-                tl_text += f" | ملاحظات: {notes}"
-            ModelTimeline.objects.create(
-                model=model,
-                stage="العد بعد المكن",
-                title="إتمام العد النهائي بعد المكن",
-                notes=tl_text,
-                user=user,
-                timestamp_str=now_str,
-                details=qc_details,
-            )
+                    existing_rec = QCRecord.objects.filter(
+                        model=model,
+                        stage=stage,
+                        color_name=c_name,
+                        size=sz
+                    ).first()
 
-        model._skip_timeline_signal = True
-        model.save()
+                    if existing_rec:
+                        existing_rec.pieces_cut = pieces_cut_ref
+                        existing_rec.counted_pieces = g_qty
+                        existing_rec.defect_pieces = d_qty
+                        existing_rec.notes = cell_notes
+                        existing_rec.checked_by = user
+                        existing_rec.created_at_str = now_str
+                        existing_rec.save()
+                        saved_records.append(existing_rec)
+                    else:
+                        new_rec = QCRecord.objects.create(
+                            client_id=entry.get('id') or entry.get('client_id'),
+                            model=model,
+                            stage=stage,
+                            color_name=c_name,
+                            size=sz,
+                            pieces_cut=pieces_cut_ref,
+                            counted_pieces=g_qty,
+                            defect_pieces=d_qty,
+                            notes=cell_notes,
+                            checked_by=user,
+                            created_at_str=now_str,
+                        )
+                        saved_records.append(new_rec)
+
+                # Calculate total counted & defects across all matrix cells in this stage for the model
+                stage_qs = QCRecord.objects.filter(model=model, stage=stage)
+                counted = sum(int(r.counted_pieces or 0) for r in stage_qs)
+                defects = sum(int(r.defect_pieces or 0) for r in stage_qs)
+            else:
+                counted = int(request.data.get('counted_pieces') or request.data.get('piecesCounted') or 0)
+                defects = int(request.data.get('defect_pieces') or request.data.get('defectQty') or 0)
+                c_name = (request.data.get('color_name') or request.data.get('colorName') or model.model_type or 'الأساسي').strip()
+                sz = (request.data.get('size') or '').strip()
+                qc_rec = QCRecord.objects.create(
+                    client_id=request.data.get('qc_id'),
+                    model=model,
+                    stage=stage,
+                    color_name=c_name,
+                    size=sz,
+                    pieces_cut=pieces_cut_ref,
+                    counted_pieces=counted,
+                    defect_pieces=defects,
+                    notes=notes,
+                    checked_by=user,
+                    created_at_str=now_str,
+                )
+                saved_records.append(qc_rec)
+
+            matrix_snapshot = [
+                {
+                    'color_name': r.color_name,
+                    'size': r.size,
+                    'good_qty': r.counted_pieces,
+                    'defect_qty': r.defect_pieces,
+                }
+                for r in saved_records
+            ]
+
+            qc_details = {
+                'phase_type': f'qc_{stage}',
+                'record_id': get_ext_id(saved_records[0]) if saved_records else '',
+                'qc_stage': stage,
+                'pieces_cut': pieces_cut_ref,
+                'counted_pieces': counted,
+                'defect_pieces': defects,
+                'deficit': pieces_cut_ref - counted,
+                'matrix_entries': matrix_snapshot,
+                'inspector_name': user,
+                'operator_name': user,
+                'worker_notes': notes,
+            }
+
+            if stage == 'before_print':
+                model.count_before_print = counted
+                if advance_stage:
+                    model.status = 'جاهز للطباعة / التجميع'
+                tl_text = f"مصفوفة الفرز قبل الطباعة — إجمالي السليم: {counted} | إجمالي التالف: {defects} {'-> تحويل للمطابع والتطريز' if advance_stage else ''}"
+                if notes:
+                    tl_text += f" | ملاحظات: {notes}"
+                ModelTimeline.objects.create(
+                    model=model,
+                    stage="العد قبل الطباعة",
+                    title="إتمام العد والفرز قبل الطباعة (جدول الألوان والمقاسات)",
+                    notes=tl_text,
+                    user=user,
+                    timestamp_str=now_str,
+                    details=qc_details,
+                )
+            elif stage == 'after_print':
+                model.count_after_print = counted
+                if advance_stage:
+                    model.status = 'في قسم المكن'
+                tl_text = f"مصفوفة الفرز بعد الطباعة — إجمالي السليم: {counted} قطعة | إجمالي التالف: {defects} {'-> تحويل لقسم المكن' if advance_stage else ''}"
+                if notes:
+                    tl_text += f" | ملاحظات: {notes}"
+                ModelTimeline.objects.create(
+                    model=model,
+                    stage="العد بعد الطباعة",
+                    title="إتمام العد والفرز بعد الطباعة (جدول الألوان والمقاسات)",
+                    notes=tl_text,
+                    user=user,
+                    timestamp_str=now_str,
+                    details=qc_details,
+                )
+            elif stage == 'after_sewing':
+                model.count_after_sewing = counted
+                if advance_stage:
+                    model.status = 'مخزن الإنتاج التام'
+                tl_text = f"مصفوفة الفحص النهائي بعد المكن — إجمالي السليم: {counted} قطعة | إجمالي التالف: {defects} {'-> تحويل لمخزن الإنتاج التام' if advance_stage else ''}"
+                if notes:
+                    tl_text += f" | ملاحظات: {notes}"
+                ModelTimeline.objects.create(
+                    model=model,
+                    stage="العد بعد المكن",
+                    title="إتمام العد النهائي بعد المكن (جدول الألوان والمقاسات)",
+                    notes=tl_text,
+                    user=user,
+                    timestamp_str=now_str,
+                    details=qc_details,
+                )
+
+            model._skip_timeline_signal = True
+            model.save()
+
+        all_model_qc = QCRecord.objects.filter(model=model, stage=stage)
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
-            'qcRecord': QCRecordSerializer(qc_rec).data,
+            'qcRecord': QCRecordSerializer(saved_records[0]).data if saved_records else None,
+            'qcRecords': QCRecordSerializer(all_model_qc, many=True).data,
         })
 
     @action(detail=True, methods=['post'])
@@ -1411,7 +1482,7 @@ class ModelAccessoryViewSet(BasePermViewSet):
 
 
 class CuttingRecordViewSet(BasePermViewSet):
-    queryset = CuttingRecord.objects.select_related('model').all()
+    queryset = CuttingRecord.objects.select_related('model').prefetch_related('color_layers').all()
     serializer_class = CuttingRecordSerializer
 
     def create(self, request, *args, **kwargs):
@@ -1423,61 +1494,123 @@ class CuttingRecordViewSet(BasePermViewSet):
         profile = getattr(request, 'user_profile', None)
         can_cutting_notes = True if not profile else profile.has_perm('can_add_cutting_notes')
 
-        pieces = max(0, int(data.get('pieces_count') or data.get('piecesCount') or 0))
-        layers = max(0, int(data.get('layers_count') or data.get('layersCount') or 0))
-        weight = max(0.0, float(data.get('layer_weight') or data.get('layerWeight') or 0))
+        spreader = (data.get('spreader_name') or data.get('spreaderName') or '').strip()
         cutter = (data.get('cutter_name') or data.get('cutterName') or '').strip()
-        color_name = data.get('color_name') or data.get('colorName') or data.get('fabric_color') or ''
+        raw_layers = data.get('color_layers') or data.get('colorLayers') or []
+
+        # Calculate spread number automatically if not passed
+        existing_spreads_count = CuttingRecord.objects.filter(model=model).count()
+        spread_num = int(data.get('spread_number') or data.get('spreadNumber') or (existing_spreads_count + 1))
+
+        # Aggregate layers and build color summary from color_layers
+        parsed_layers = []
+        if isinstance(raw_layers, list) and len(raw_layers) > 0:
+            for item in raw_layers:
+                c_name = (item.get('color_name') or item.get('colorName') or '').strip()
+                l_count = max(0, int(item.get('layers_count') or item.get('layersCount') or 0))
+                l_weight = max(0.0, float(item.get('layer_weight') or item.get('layerWeight') or 0))
+                l_pieces = max(0, int(item.get('pieces_count') or item.get('piecesCount') or 0))
+                l_shade = (item.get('shade_degree') or item.get('shadeDegree') or '').strip()
+                l_notes = (item.get('notes') or '').strip()
+                if c_name and l_count > 0:
+                    parsed_layers.append({
+                        'id': item.get('id') or item.get('client_id'),
+                        'color_name': c_name,
+                        'layers_count': l_count,
+                        'layer_weight': l_weight,
+                        'pieces_count': l_pieces,
+                        'shade_degree': l_shade,
+                        'notes': l_notes,
+                    })
+
+        total_layers_from_items = sum(item['layers_count'] for item in parsed_layers)
+        total_weight_from_items = sum(item['layer_weight'] for item in parsed_layers)
+        total_pieces_from_items = sum(item['pieces_count'] for item in parsed_layers)
+
+        layers = max(0, int(data.get('layers_count') or data.get('layersCount') or total_layers_from_items or 0))
+        weight = max(0.0, float(data.get('layer_weight') or data.get('layerWeight') or total_weight_from_items or 0))
+        pieces = max(0, int(data.get('pieces_count') or data.get('piecesCount') or total_pieces_from_items or 0))
+
+        if parsed_layers:
+            color_name = ' + '.join(f"{item['color_name']} ({item['layers_count']} راق)" for item in parsed_layers)
+        else:
+            color_name = (data.get('color_name') or data.get('colorName') or data.get('fabric_color') or '').strip()
+
         shade = (data.get('shade_degree') or data.get('shadeDegree') or '').strip()
         notes = (data.get('notes') or '').strip() if can_cutting_notes else ''
         now_str = data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
 
-        rec = CuttingRecord.objects.create(
-            client_id=data.get('id') or data.get('client_id'),
-            model=model,
-            fabric_color=color_name,
-            cutter_name=cutter,
-            layers_count=layers,
-            layer_weight=weight,
-            pieces_count=pieces,
-            shade_degree=shade,
-            notes=notes,
-            created_at_str=now_str,
-        )
+        with transaction.atomic():
+            rec = CuttingRecord.objects.create(
+                client_id=data.get('id') or data.get('client_id'),
+                model=model,
+                spread_number=spread_num,
+                spreader_name=spreader,
+                cutter_name=cutter,
+                fabric_color=color_name,
+                layers_count=layers,
+                layer_weight=weight,
+                pieces_count=pieces,
+                shade_degree=shade,
+                notes=notes,
+                created_at_str=now_str,
+            )
 
-        model.total_cut_pieces = int(model.total_cut_pieces or 0) + pieces
-        model.cutter_name = cutter
-        model._skip_timeline_signal = True
-        model.save()
+            for item in parsed_layers:
+                CuttingSpreadLayer.objects.create(
+                    client_id=item.get('id'),
+                    spread=rec,
+                    color_name=item['color_name'],
+                    layers_count=item['layers_count'],
+                    layer_weight=item['layer_weight'],
+                    pieces_count=item['pieces_count'],
+                    shade_degree=item['shade_degree'],
+                    notes=item['notes'],
+                )
 
-        tl_notes = f"بواسطة المقصدار: {cutter} | اللون/القطعة: {color_name} | عدد الراقات: {layers} | وزن الراق: {weight} كجم"
-        if shade:
-            tl_notes += f" | درجة الصبغة: {shade}"
-        if notes:
-            tl_notes += f" | ملاحظات: {notes}"
+            model.total_cut_pieces = int(model.total_cut_pieces or 0) + pieces
+            if cutter:
+                model.cutter_name = cutter
+            if spreader:
+                model.spreader_name = spreader
+            model._skip_timeline_signal = True
+            model.save()
 
-        ModelTimeline.objects.create(
-            model=model,
-            stage='في القص',
-            title=f"تسجيل راق قص ({pieces} قطعة)",
-            notes=tl_notes,
-            user=cutter,
-            timestamp_str=now_str,
-            details={
-                'phase_type': 'cutting',
-                'record_id': get_ext_id(rec),
-                'color_name': color_name,
-                'cutter_name': cutter,
-                'layers_count': layers,
-                'layer_weight': weight,
-                'pieces_count': pieces,
-                'total_cut_pieces_so_far': model.total_cut_pieces,
-                'shade_degree': shade,
-                'worker_notes': notes,
-                'operator_name': cutter,
-            }
-        )
-        return Response(CuttingRecordSerializer(rec).data, status=status.HTTP_201_CREATED)
+            tl_notes = f"فرشة رقم #{spread_num} | الفَرّاش: {spreader or '-'} | المقصدار: {cutter or '-'} | الألوان والراقات: {color_name} | إجمالي الراقات: {layers} | القطع المنتجة: {pieces}"
+            if weight > 0:
+                tl_notes += f" | الوزن: {weight} كجم"
+            if shade:
+                tl_notes += f" | درجة الصبغة: {shade}"
+            if notes:
+                tl_notes += f" | ملاحظات: {notes}"
+
+            ModelTimeline.objects.create(
+                model=model,
+                stage='في القص',
+                title=f"تسجيل فرشة قص #{spread_num} ({pieces} قطعة)",
+                notes=tl_notes,
+                user=cutter or spreader or 'مسؤول القص',
+                timestamp_str=now_str,
+                details={
+                    'phase_type': 'cutting',
+                    'record_id': get_ext_id(rec),
+                    'spread_number': spread_num,
+                    'spreader_name': spreader,
+                    'cutter_name': cutter,
+                    'color_name': color_name,
+                    'color_layers': parsed_layers,
+                    'layers_count': layers,
+                    'layer_weight': weight,
+                    'pieces_count': pieces,
+                    'total_cut_pieces_so_far': model.total_cut_pieces,
+                    'shade_degree': shade,
+                    'worker_notes': notes,
+                    'operator_name': cutter or spreader,
+                }
+            )
+
+        rec_refreshed = CuttingRecord.objects.select_related('model').prefetch_related('color_layers').get(pk=rec.pk)
+        return Response(CuttingRecordSerializer(rec_refreshed).data, status=status.HTTP_201_CREATED)
 
 
 class QCRecordViewSet(BasePermViewSet):
@@ -1500,25 +1633,150 @@ class QCRecordViewSet(BasePermViewSet):
             elif stage in ('after_print', 'after_sewing') and not profile.has_perm('can_add_qc_after_print_notes'):
                 raw_notes = ''
 
-        good_qty = max(0, int(data.get('good_qty') or data.get('goodQty') or data.get('counted_pieces') or 0))
-        defect_qty = max(0, int(data.get('defect_qty') or data.get('defectQty') or data.get('defect_pieces') or 0))
+        good_qty = max(0, int(data.get('good_qty') if data.get('good_qty') is not None else (data.get('goodQty') or data.get('counted_pieces') or 0)))
+        defect_qty = max(0, int(data.get('defect_qty') if data.get('defect_qty') is not None else (data.get('defectQty') or data.get('defect_pieces') or 0)))
         inspector = data.get('inspector_name') or 'مراقب الجودة'
         now_str = data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
+        color_name = (data.get('color_name') or data.get('colorName') or '').strip()
+        size_val = (data.get('size') or '').strip()
+        pieces_cut_ref = int(data.get('pieces_cut') or model.total_cut_pieces or 0)
 
-        rec = QCRecord.objects.create(
-            client_id=data.get('id') or data.get('client_id'),
-            model=model,
-            stage=stage,
-            color_name=data.get('color_name') or data.get('colorName') or '',
-            size=data.get('size') or '',
-            pieces_cut=int(data.get('pieces_cut') or model.total_cut_pieces or 0),
-            counted_pieces=good_qty,
-            defect_pieces=defect_qty,
-            notes=raw_notes,
-            checked_by=inspector,
-            created_at_str=now_str,
-        )
+        with transaction.atomic():
+            # Upsert if same model + stage + color_name + size exists
+            existing = None
+            if color_name or size_val:
+                existing = QCRecord.objects.filter(
+                    model=model,
+                    stage=stage,
+                    color_name=color_name,
+                    size=size_val
+                ).first()
+
+            if existing:
+                existing.pieces_cut = pieces_cut_ref
+                existing.counted_pieces = good_qty
+                existing.defect_pieces = defect_qty
+                existing.notes = raw_notes
+                existing.checked_by = inspector
+                existing.created_at_str = now_str
+                existing.save()
+                rec = existing
+            else:
+                rec = QCRecord.objects.create(
+                    client_id=data.get('id') or data.get('client_id'),
+                    model=model,
+                    stage=stage,
+                    color_name=color_name,
+                    size=size_val,
+                    pieces_cut=pieces_cut_ref,
+                    counted_pieces=good_qty,
+                    defect_pieces=defect_qty,
+                    notes=raw_notes,
+                    checked_by=inspector,
+                    created_at_str=now_str,
+                )
+
+            # Update aggregated stage count on model
+            stage_total = sum(
+                int(r.counted_pieces or 0)
+                for r in QCRecord.objects.filter(model=model, stage=stage)
+            )
+            if stage == 'before_print':
+                model.count_before_print = stage_total
+            elif stage == 'after_print':
+                model.count_after_print = stage_total
+            elif stage == 'after_sewing':
+                model.count_after_sewing = stage_total
+            model._skip_timeline_signal = True
+            model.save()
+
         return Response(QCRecordSerializer(rec).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'])
+    def save_matrix(self, request):
+        """
+        Bulk save/upsert QC matrix records (Color x Size) for a given model and stage.
+        """
+        data = request.data
+        model = resolve_by_id(ModelItem, data.get('model_id') or data.get('modelId'))
+        if not model:
+            return Response({'detail': 'الموديل غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+
+        stage = data.get('stage') or 'before_print'
+        entries = data.get('matrix_entries') or data.get('matrixEntries') or []
+        raw_notes = (data.get('notes') or data.get('defectNotes') or '').strip()
+
+        profile = getattr(request, 'user_profile', None)
+        if profile:
+            if stage == 'before_print' and not profile.has_perm('can_add_qc_before_print_notes'):
+                raw_notes = ''
+            elif stage in ('after_print', 'after_sewing') and not profile.has_perm('can_add_qc_after_print_notes'):
+                raw_notes = ''
+
+        inspector = data.get('inspector_name') or data.get('user_name') or 'مراقب الجودة'
+        now_str = data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
+        pieces_cut_ref = int(model.total_cut_pieces or model.target_cut_quantity or 0)
+
+        saved_list = []
+        with transaction.atomic():
+            for entry in entries:
+                c_name = (entry.get('color_name') or entry.get('colorName') or '').strip()
+                sz = (entry.get('size') or '').strip()
+                if not c_name and not sz:
+                    continue
+                g_qty = max(0, int(entry.get('good_qty') if entry.get('good_qty') is not None else (entry.get('goodQty') or entry.get('counted_pieces') or 0)))
+                d_qty = max(0, int(entry.get('defect_qty') if entry.get('defect_qty') is not None else (entry.get('defectQty') or entry.get('defect_pieces') or 0)))
+                cell_notes = (entry.get('notes') or entry.get('defect_notes') or raw_notes or '').strip()
+
+                existing = QCRecord.objects.filter(
+                    model=model,
+                    stage=stage,
+                    color_name=c_name,
+                    size=sz
+                ).first()
+
+                if existing:
+                    existing.pieces_cut = pieces_cut_ref
+                    existing.counted_pieces = g_qty
+                    existing.defect_pieces = d_qty
+                    existing.notes = cell_notes
+                    existing.checked_by = inspector
+                    existing.created_at_str = now_str
+                    existing.save()
+                    saved_list.append(existing)
+                else:
+                    new_rec = QCRecord.objects.create(
+                        client_id=entry.get('id') or entry.get('client_id'),
+                        model=model,
+                        stage=stage,
+                        color_name=c_name,
+                        size=sz,
+                        pieces_cut=pieces_cut_ref,
+                        counted_pieces=g_qty,
+                        defect_pieces=d_qty,
+                        notes=cell_notes,
+                        checked_by=inspector,
+                        created_at_str=now_str,
+                    )
+                    saved_list.append(new_rec)
+
+            stage_total = sum(
+                int(r.counted_pieces or 0)
+                for r in QCRecord.objects.filter(model=model, stage=stage)
+            )
+            if stage == 'before_print':
+                model.count_before_print = stage_total
+            elif stage == 'after_print':
+                model.count_after_print = stage_total
+            elif stage == 'after_sewing':
+                model.count_after_sewing = stage_total
+            model._skip_timeline_signal = True
+            model.save()
+
+        return Response({
+            'model': ModelItemSerializer(model, context={'request': request}).data,
+            'qcRecords': QCRecordSerializer(saved_list, many=True).data,
+        })
 
 
 class PrintDispatchViewSet(BasePermViewSet):

@@ -527,6 +527,7 @@ class ModelItem(models.Model):
     count_after_sewing = models.IntegerField(default=0, blank=True, null=True, verbose_name="العد بعد المكن")
 
     cutter_name = models.CharField(max_length=150, blank=True, null=True, verbose_name="المقصدار")
+    spreader_name = models.CharField(max_length=150, blank=True, null=True, verbose_name="الفراش")
 
     # Printing info
     print_house = models.CharField(max_length=150, blank=True, null=True, verbose_name="المطبعة")
@@ -630,15 +631,24 @@ class ModelTimeline(models.Model):
 
 
 class CuttingRecord(models.Model):
+    """
+    Cutting Spread / Lay (فرشة قص):
+    Records a complete spread with:
+    - spreader_name: اسم الشخص الذي قام بالفرش (الفراش)
+    - cutter_name: اسم المقصدار / القاصص للفرشة بالكامل
+    - color_layers (related CuttingSpreadLayer): الألوان وعدد الراقات داخل هذه الفرشة
+    """
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
-    model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, related_name="cutting_records")
-    fabric_color = models.CharField(max_length=150, verbose_name="لون القماش")
-    pieces_count = models.IntegerField(default=0, verbose_name="عدد القطع المقصوصة")
-    layers_count = models.IntegerField(default=0, verbose_name="عدد الراقات")
-    layer_weight = models.FloatField(default=0.0, verbose_name="وزن الراق")
+    model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, related_name="cutting_records", verbose_name="الموديل")
+    spread_number = models.IntegerField(default=1, verbose_name="رقم الفرشة")
+    spreader_name = models.CharField(max_length=150, blank=True, default='', verbose_name="اسم الفَرّاش (من قام بالفرش)")
+    cutter_name = models.CharField(max_length=150, verbose_name="اسم المقصدار / القاصص")
+    fabric_color = models.CharField(max_length=255, blank=True, default='', verbose_name="ملخص ألوان الفرشة")
+    pieces_count = models.IntegerField(default=0, verbose_name="إجمالي القطع المنتجة بالفرشة")
+    layers_count = models.IntegerField(default=0, verbose_name="إجمالي عدد الراقات بالفرشة")
+    layer_weight = models.FloatField(default=0.0, verbose_name="إجمالي وزن الفرشة (كجم)")
     shade_degree = models.CharField(max_length=100, blank=True, null=True, default='', verbose_name="درجة الصبغة")
-    cutter_name = models.CharField(max_length=150, verbose_name="اسم المقصدار")
-    notes = models.TextField(blank=True, null=True, default='', verbose_name="ملاحظات القص")
+    notes = models.TextField(blank=True, null=True, default='', verbose_name="ملاحظات الفرشة والقص")
     created_at_str = models.CharField(max_length=100, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -650,8 +660,42 @@ class CuttingRecord(models.Model):
             self.client_id = generate_client_id('cut')
         super().save(*args, **kwargs)
 
+    def __str__(self):
+        return f"فرشة #{self.spread_number} - {self.model.model_code} (فرش: {self.spreader_name} | قص: {self.cutter_name})"
+
+
+class CuttingSpreadLayer(models.Model):
+    """
+    Individual color and layers entry inside a Cutting Spread (CuttingRecord).
+    For example: 50 layers Red, 40 layers Green inside the same spread.
+    """
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    spread = models.ForeignKey(CuttingRecord, on_delete=models.CASCADE, related_name="color_layers", verbose_name="الفرشة")
+    color_name = models.CharField(max_length=150, verbose_name="اللون / القطعة")
+    layers_count = models.IntegerField(default=0, verbose_name="عدد الراقات")
+    layer_weight = models.FloatField(default=0.0, blank=True, verbose_name="الوزن (كجم)")
+    pieces_count = models.IntegerField(default=0, blank=True, verbose_name="القطع الناتجة")
+    shade_degree = models.CharField(max_length=100, blank=True, default='', verbose_name="درجة الصبغة")
+    notes = models.TextField(blank=True, default='', verbose_name="ملاحظات اللون")
+
+    class Meta:
+        ordering = ['id']
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('lay')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.color_name}: {self.layers_count} راق"
+
 
 class QCRecord(models.Model):
+    """
+    Quality Control & Sorting Record per (Model + Stage + Color + Size) Matrix cell.
+    Stores counted_pieces (good_qty) and defect_pieces (defect_qty) for each intersection
+    of Color and Size across all three stages: before_print, after_print, after_sewing.
+    """
     STAGE_TYPES = [
         ('before_print', 'العد قبل الطباعة'),
         ('after_print', 'العد بعد الطباعة'),
@@ -677,6 +721,9 @@ class QCRecord(models.Model):
         if not self.client_id:
             self.client_id = generate_client_id('qc')
         super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.model.model_code} [{self.stage}] - {self.color_name} / {self.size} (سليم: {self.counted_pieces}, تالف: {self.defect_pieces})"
 
 
 class PrintDispatch(models.Model):

@@ -672,35 +672,41 @@ export const MasterModelTrackingView: React.FC = () => {
                       </div>
                     )}
 
-                    {/* All Cutting Records Table for the Model */}
+                    {/* All Cutting Spreads Table for the Model */}
                     {modelCutRecords.length > 0 && (
                       <div className="border border-slate-200 rounded-2xl overflow-hidden">
                         <div className="bg-slate-100 px-4 py-2 font-black text-slate-800 text-xs">
-                          جدول فرشات وسجلات القص التفصيلية للموديل ({modelCutRecords.length} سجل):
+                          جدول فرشات القص التفصيلية للموديل ({modelCutRecords.length} فرشة):
                         </div>
                         <table className="w-full text-right text-xs">
                           <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
                             <tr>
-                              <th className="py-2 px-3">اللون / الدرجة</th>
-                              <th className="py-2 px-3 text-center">عدد الراقات</th>
-                              <th className="py-2 px-3 text-center">وزن الراقة</th>
+                              <th className="py-2 px-3">الفرشة</th>
+                              <th className="py-2 px-3">الفَرّاش</th>
+                              <th className="py-2 px-3">الألوان والراقات بالفرشة</th>
+                              <th className="py-2 px-3 text-center">إجمالي الراقات</th>
                               <th className="py-2 px-3 text-center">الكمية المقصوصة</th>
                               <th className="py-2 px-3">المقصدار</th>
-                              <th className="py-2 px-3">ملاحظات العامل</th>
+                              <th className="py-2 px-3">ملاحظات</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {modelCutRecords.map((rec) => (
+                            {modelCutRecords.map((rec, idx) => (
                               <tr key={rec.id} className="hover:bg-slate-50">
+                                <td className="py-2 px-3 font-black text-rose-700">
+                                  فرشة #{rec.spread_number || rec.spreadNumber || modelCutRecords.length - idx}
+                                </td>
+                                <td className="py-2 px-3 font-semibold text-slate-800">
+                                  {rec.spreader_name || rec.spreaderName || model.spreader_name || '-'}
+                                </td>
                                 <td className="py-2 px-3 font-bold">
                                   {rec.color_name || rec.colorName || '-'} {rec.shade_degree ? `(${rec.shade_degree})` : ''}
                                 </td>
                                 <td className="py-2 px-3 text-center font-bold text-blue-700">{rec.layers_count}</td>
-                                <td className="py-2 px-3 text-center">{rec.layer_weight} كجم</td>
                                 <td className="py-2 px-3 text-center font-black text-slate-900">
                                   {rec.pieces_count ?? rec.piecesCount ?? 0} ق
                                 </td>
-                                <td className="py-2 px-3 font-semibold">
+                                <td className="py-2 px-3 font-semibold text-emerald-800">
                                   {rec.cutter_name || rec.cutterName || model.cutter_name || '-'}
                                 </td>
                                 <td className="py-2 px-3 text-amber-800 font-medium">{rec.notes || '-'}</td>
@@ -751,24 +757,36 @@ export const MasterModelTrackingView: React.FC = () => {
                     {modelQcRecords.length > 0 && (
                       <div className="border border-slate-200 rounded-2xl overflow-hidden">
                         <div className="bg-purple-50 px-4 py-2 font-black text-purple-950 text-xs">
-                          سجلات الفرز والكنترول للموديل ({modelQcRecords.length} سجل):
+                          سجلات مصفوفة الفرز والكنترول للموديل (اللون × المقاس) ({modelQcRecords.length} خلية):
                         </div>
                         <table className="w-full text-right text-xs">
                           <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
                             <tr>
-                              <th className="py-2 px-3">التوقيت</th>
-                              <th className="py-2 px-3 text-center">مرجع القص</th>
+                              <th className="py-2 px-3">المرحلة</th>
+                              <th className="py-2 px-3">اللون / القطعة</th>
+                              <th className="py-2 px-3 text-center">المقاس</th>
                               <th className="py-2 px-3 text-center">السليم</th>
-                              <th className="py-2 px-3 text-center">الديفوه</th>
+                              <th className="py-2 px-3 text-center">التالف (الديفوه)</th>
                               <th className="py-2 px-3">ملاحظات الفرز</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
                             {modelQcRecords.map((q) => (
                               <tr key={q.id} className="hover:bg-slate-50">
-                                <td className="py-2 px-3 font-mono text-[11px]">{q.created_at}</td>
-                                <td className="py-2 px-3 text-center font-bold">
-                                  {q.pieces_cut ?? model.total_cut_pieces ?? model.actual_cut_count ?? 0} ق
+                                <td className="py-2 px-3 font-semibold text-purple-800">
+                                  {q.stage === 'before_print'
+                                    ? 'قبل الطباعة'
+                                    : q.stage === 'after_print'
+                                    ? 'بعد الطباعة'
+                                    : 'بعد المكن'}
+                                </td>
+                                <td className="py-2 px-3 font-bold text-slate-900">
+                                  {q.color_name || '-'}
+                                </td>
+                                <td className="py-2 px-3 text-center">
+                                  <span className="px-2 py-0.5 rounded-md bg-slate-900 text-white font-bold text-[10px]">
+                                    {q.size || '-'}
+                                  </span>
                                 </td>
                                 <td className="py-2 px-3 text-center font-black text-emerald-700">
                                   {q.good_qty ?? q.counted_pieces ?? 0} ق

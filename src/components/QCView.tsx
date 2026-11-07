@@ -1,36 +1,46 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { 
-  CheckCircle, 
-  Printer, 
-  Search, 
-  Layers, 
-  Shirt, 
-  Sparkles, 
-  ClipboardCheck, 
+import {
+  CheckCircle,
+  Printer,
+  Search,
+  Layers,
+  Shirt,
+  Sparkles,
+  ClipboardCheck,
   X,
   FileText,
-  Lock
+  Lock,
+  Grid,
+  Save
 } from 'lucide-react';
-import { QCStageType, Model } from '../types';
+import { QCStageType, Model, QCMatrixCellInput } from '../types';
 
 export const QCView: React.FC = () => {
   const {
     models,
+    qcRecords,
+    getModelColorList,
+    getModelSizeList,
+    saveQCMatrix,
     recordQCStageCount,
     canAddQCBeforePrintNotes,
     canAddQCAfterPrintNotes,
+    hasPermission,
     globalSettings
   } = useApp();
+
+  const canEdit = hasPermission('qc', true);
 
   const [activeTab, setActiveTab] = useState<QCStageType>('before_print');
   const [searchTerm, setSearchTerm] = useState('');
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [countingModel, setCountingModel] = useState<Model | null>(null);
 
-  // Form states for count submission modal
-  const [countedPieces, setCountedPieces] = useState<number>(0);
-  const [defectPieces, setDefectPieces] = useState<number>(0);
+  // Matrix state: key is `${color}___${size}` -> { good: number, defect: number }
+  const [matrixState, setMatrixState] = useState<
+    Record<string, { good: number; defect: number }>
+  >({});
   const [qcNotes, setQcNotes] = useState('');
 
   const canWriteNotesForCurrentStage =
@@ -59,9 +69,10 @@ export const QCView: React.FC = () => {
     });
   };
 
-  const currentTabModels = getModelsForStage(activeTab).filter((m) =>
-    m.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (m.model_type && m.model_type.toLowerCase().includes(searchTerm.toLowerCase()))
+  const currentTabModels = getModelsForStage(activeTab).filter(
+    (m) =>
+      m.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (m.model_type && m.model_type.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
   const beforePrintCount = getModelsForStage('before_print').length;
@@ -69,23 +80,110 @@ export const QCView: React.FC = () => {
   const afterSewingCount = getModelsForStage('after_sewing').length;
   const totalQCModels = beforePrintCount + afterPrintCount + afterSewingCount;
 
+  const makeCellKey = (color: string, size: string) => `${color}___${size}`;
+
   const handleOpenCountModal = (model: Model) => {
     setCountingModel(model);
-    const initialCount = model.total_cut_pieces || model.target_cut_quantity || 0;
-    setCountedPieces(initialCount);
-    setDefectPieces(0);
-    setQcNotes('');
+    const colors = getModelColorList(model.id);
+    const sizes = getModelSizeList(model.id);
+    const existingStageRecs = qcRecords.filter(
+      (r) => r.model_id === model.id && r.stage === activeTab
+    );
+
+    const initialMatrix: Record<string, { good: number; defect: number }> = {};
+    let existingNote = '';
+
+    colors.forEach((col) => {
+      sizes.forEach((sz) => {
+        const match = existingStageRecs.find(
+          (r) => r.color_name === col && r.size === sz
+        );
+        initialMatrix[makeCellKey(col, sz)] = {
+          good: match ? Number(match.good_qty ?? match.counted_pieces ?? 0) : 0,
+          defect: match ? Number(match.defect_qty ?? match.defect_pieces ?? 0) : 0
+        };
+        if (match?.notes && !existingNote) {
+          existingNote = match.notes;
+        }
+      });
+    });
+
+    setMatrixState(initialMatrix);
+    setQcNotes(existingNote);
   };
 
-  const handleSaveCount = (e: React.FormEvent) => {
+  const handleCellChange = (
+    color: string,
+    size: string,
+    field: 'good' | 'defect',
+    value: number
+  ) => {
+    const key = makeCellKey(color, size);
+    setMatrixState((prev) => ({
+      ...prev,
+      [key]: {
+        good: prev[key]?.good ?? 0,
+        defect: prev[key]?.defect ?? 0,
+        [field]: Math.max(0, value)
+      }
+    }));
+  };
+
+  const buildMatrixEntriesFromState = (model: Model): QCMatrixCellInput[] => {
+    const colors = getModelColorList(model.id);
+    const sizes = getModelSizeList(model.id);
+    const entries: QCMatrixCellInput[] = [];
+
+    colors.forEach((col) => {
+      sizes.forEach((sz) => {
+        const cell = matrixState[makeCellKey(col, sz)] || { good: 0, defect: 0 };
+        entries.push({
+          color_name: col,
+          size: sz,
+          good_qty: Number(cell.good) || 0,
+          defect_qty: Number(cell.defect) || 0,
+          notes: canWriteNotesForCurrentStage ? qcNotes.trim() : ''
+        });
+      });
+    });
+    return entries;
+  };
+
+  const handleSaveMatrixOnly = () => {
+    if (!countingModel) return;
+    const entries = buildMatrixEntriesFromState(countingModel);
+    saveQCMatrix({
+      modelId: countingModel.id,
+      stage: activeTab,
+      matrixEntries: entries,
+      notes: canWriteNotesForCurrentStage ? qcNotes.trim() : ''
+    });
+  };
+
+  const handleApproveAndAdvance = (e: React.FormEvent) => {
     e.preventDefault();
     if (!countingModel) return;
+
+    const entries = buildMatrixEntriesFromState(countingModel);
+    const totalGood = entries.reduce((sum, item) => sum + item.good_qty, 0);
+    const totalDefect = entries.reduce((sum, item) => sum + item.defect_qty, 0);
+
+    if (totalGood === 0 && totalDefect === 0) {
+      if (
+        !window.confirm(
+          'جميع خلايا الجدول (السليم والتالف) تساوي صفر. هل أنت متأكد من المتابعة؟'
+        )
+      ) {
+        return;
+      }
+    }
 
     recordQCStageCount({
       modelId: countingModel.id,
       stage: activeTab,
-      piecesCounted: countedPieces,
-      defectQty: defectPieces,
+      piecesCounted: totalGood,
+      defectQty: totalDefect,
+      matrixEntries: entries,
       defectNotes: canWriteNotesForCurrentStage ? qcNotes.trim() : '',
       advanceStage: true
     });
@@ -115,6 +213,19 @@ export const QCView: React.FC = () => {
     }
   };
 
+  // Compute active modal matrix dimensions & totals
+  const modalColors = countingModel ? getModelColorList(countingModel.id) : [];
+  const modalSizes = countingModel ? getModelSizeList(countingModel.id) : [];
+
+  const modalTotalGood = Object.values(matrixState).reduce(
+    (sum, cell) => sum + (Number(cell.good) || 0),
+    0
+  );
+  const modalTotalDefect = Object.values(matrixState).reduce(
+    (sum, cell) => sum + (Number(cell.defect) || 0),
+    0
+  );
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* Top Header */}
@@ -122,10 +233,10 @@ export const QCView: React.FC = () => {
         <div>
           <h2 className="text-2xl font-black text-purple-800 tracking-tight flex items-center gap-2">
             <ClipboardCheck className="w-8 h-8 text-purple-600" />
-            <span>قسم الفرز والكنترول والجودة</span>
+            <span>قسم الفرز والكنترول والجودة (نظام المصفوفة)</span>
           </h2>
           <p className="text-slate-500 text-sm mt-0.5">
-            متابعة مراحل العد والتدقيق الثلاثية (قبل الطباعة، بعد الطباعة، وبعد المكن) بدقة مع احتساب الهوالك والعجز.
+            مصفوفة الفرز الديناميكية (الألوان × المقاسات) لتسجيل القطع السليمة والتالفة لكل تقاطع بدقة عبر المراحل الثلاث.
           </p>
         </div>
 
@@ -153,10 +264,12 @@ export const QCView: React.FC = () => {
           </div>
         </div>
 
-        <div 
+        <div
           onClick={() => setActiveTab('before_print')}
           className={`p-5 rounded-3xl border cursor-pointer transition-all shadow-xs flex items-center justify-between ${
-            activeTab === 'before_print' ? 'bg-purple-50/70 border-purple-300 ring-2 ring-purple-500/20' : 'bg-white border-slate-200/80 hover:border-purple-200'
+            activeTab === 'before_print'
+              ? 'bg-purple-50/70 border-purple-300 ring-2 ring-purple-500/20'
+              : 'bg-white border-slate-200/80 hover:border-purple-200'
           }`}
         >
           <div>
@@ -169,10 +282,12 @@ export const QCView: React.FC = () => {
           </div>
         </div>
 
-        <div 
+        <div
           onClick={() => setActiveTab('after_print')}
           className={`p-5 rounded-3xl border cursor-pointer transition-all shadow-xs flex items-center justify-between ${
-            activeTab === 'after_print' ? 'bg-purple-50/70 border-purple-300 ring-2 ring-purple-500/20' : 'bg-white border-slate-200/80 hover:border-purple-200'
+            activeTab === 'after_print'
+              ? 'bg-purple-50/70 border-purple-300 ring-2 ring-purple-500/20'
+              : 'bg-white border-slate-200/80 hover:border-purple-200'
           }`}
         >
           <div>
@@ -185,10 +300,12 @@ export const QCView: React.FC = () => {
           </div>
         </div>
 
-        <div 
+        <div
           onClick={() => setActiveTab('after_sewing')}
           className={`p-5 rounded-3xl border cursor-pointer transition-all shadow-xs flex items-center justify-between ${
-            activeTab === 'after_sewing' ? 'bg-purple-50/70 border-purple-300 ring-2 ring-purple-500/20' : 'bg-white border-slate-200/80 hover:border-purple-200'
+            activeTab === 'after_sewing'
+              ? 'bg-purple-50/70 border-purple-300 ring-2 ring-purple-500/20'
+              : 'bg-white border-slate-200/80 hover:border-purple-200'
           }`}
         >
           <div>
@@ -215,9 +332,13 @@ export const QCView: React.FC = () => {
             }`}
           >
             <span>العد قبل الطباعة</span>
-            <span className={`px-2 py-0.5 rounded-full text-[10px] ${
-              activeTab === 'before_print' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
-            }`}>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] ${
+                activeTab === 'before_print'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-200 text-slate-700'
+              }`}
+            >
               {beforePrintCount}
             </span>
           </button>
@@ -231,9 +352,13 @@ export const QCView: React.FC = () => {
             }`}
           >
             <span>العد بعد الطباعة</span>
-            <span className={`px-2 py-0.5 rounded-full text-[10px] ${
-              activeTab === 'after_print' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
-            }`}>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] ${
+                activeTab === 'after_print'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-200 text-slate-700'
+              }`}
+            >
               {afterPrintCount}
             </span>
           </button>
@@ -247,9 +372,13 @@ export const QCView: React.FC = () => {
             }`}
           >
             <span>العد بعد المكن</span>
-            <span className={`px-2 py-0.5 rounded-full text-[10px] ${
-              activeTab === 'after_sewing' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
-            }`}>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] ${
+                activeTab === 'after_sewing'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-200 text-slate-700'
+              }`}
+            >
               {afterSewingCount}
             </span>
           </button>
@@ -272,7 +401,9 @@ export const QCView: React.FC = () => {
       <div className="bg-purple-50/60 border border-purple-200/80 rounded-2xl p-3 px-5 flex items-center justify-between text-xs text-purple-900 font-semibold">
         <div className="flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-purple-600" />
-          <span>المرحلة الحالية: <strong>{getStageTitle(activeTab)}</strong></span>
+          <span>
+            المرحلة الحالية: <strong>{getStageTitle(activeTab)}</strong>
+          </span>
         </div>
         <span className="text-purple-700 font-bold">
           الخطوة التالية بعد الاعتماد: {getNextStageLabel(activeTab)}
@@ -287,6 +418,19 @@ export const QCView: React.FC = () => {
             const targetPieces = model.target_cut_quantity || 0;
             const beforePrint = model.count_before_print;
             const afterPrint = model.count_after_print;
+            const mColors = getModelColorList(model.id);
+            const mSizes = getModelSizeList(model.id);
+            const stageSavedRecs = qcRecords.filter(
+              (r) => r.model_id === model.id && r.stage === activeTab
+            );
+            const stageSavedGood = stageSavedRecs.reduce(
+              (s, r) => s + (r.good_qty ?? r.counted_pieces ?? 0),
+              0
+            );
+            const stageSavedDefect = stageSavedRecs.reduce(
+              (s, r) => s + (r.defect_qty ?? r.defect_pieces ?? 0),
+              0
+            );
 
             return (
               <div
@@ -313,7 +457,7 @@ export const QCView: React.FC = () => {
                   <span className="absolute top-3 end-3 px-3 py-1 rounded-full text-[11px] font-bold bg-purple-700 text-white shadow-xs">
                     {model.status}
                   </span>
-                  
+
                   {model.cutter_name && (
                     <span className="absolute bottom-3 start-3 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-black/60 backdrop-blur-xs text-white">
                       مقصدار: {model.cutter_name}
@@ -332,28 +476,54 @@ export const QCView: React.FC = () => {
                       </span>
                     </div>
 
+                    <div className="flex items-center gap-1.5 flex-wrap mt-1 text-[10px] font-bold text-slate-500">
+                      <span className="px-2 py-0.5 rounded-md bg-purple-50 text-purple-800 border border-purple-200">
+                        {mColors.length} ألوان
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">
+                        مقاسات: {mSizes.join('، ')}
+                      </span>
+                    </div>
+
                     {/* Stats summary table */}
                     <div className="bg-slate-50 rounded-2xl p-3 border border-slate-100 space-y-1.5 text-xs mt-3">
                       <div className="flex justify-between items-center text-slate-600">
                         <span>العدد المستهدف للقص:</span>
-                        <strong className="text-slate-900">{targetPieces.toLocaleString('ar-EG')} ق</strong>
+                        <strong className="text-slate-900">
+                          {targetPieces.toLocaleString('ar-EG')} ق
+                        </strong>
                       </div>
                       <div className="flex justify-between items-center text-slate-600">
                         <span>العدد المقصوص الفعلي:</span>
-                        <strong className="text-purple-700 font-extrabold">{cutPieces.toLocaleString('ar-EG')} ق</strong>
+                        <strong className="text-purple-700 font-extrabold">
+                          {cutPieces.toLocaleString('ar-EG')} ق
+                        </strong>
                       </div>
+
+                      {stageSavedRecs.length > 0 && (
+                        <div className="flex justify-between items-center text-emerald-700 pt-1 border-t border-slate-200/70">
+                          <span>مسجل بالجدول حالياً:</span>
+                          <strong className="font-black">
+                            سليم: {stageSavedGood} | تالف: {stageSavedDefect}
+                          </strong>
+                        </div>
+                      )}
 
                       {activeTab !== 'before_print' && beforePrint !== undefined && (
                         <div className="flex justify-between items-center text-slate-600">
                           <span>العدد قبل الطباعة:</span>
-                          <strong className="text-blue-700 font-bold">{beforePrint.toLocaleString('ar-EG')} ق</strong>
+                          <strong className="text-blue-700 font-bold">
+                            {beforePrint.toLocaleString('ar-EG')} ق
+                          </strong>
                         </div>
                       )}
 
                       {activeTab === 'after_sewing' && afterPrint !== undefined && (
                         <div className="flex justify-between items-center text-slate-600">
                           <span>العدد بعد الطباعة:</span>
-                          <strong className="text-emerald-700 font-bold">{afterPrint.toLocaleString('ar-EG')} ق</strong>
+                          <strong className="text-emerald-700 font-bold">
+                            {afterPrint.toLocaleString('ar-EG')} ق
+                          </strong>
                         </div>
                       )}
                     </div>
@@ -363,8 +533,8 @@ export const QCView: React.FC = () => {
                     onClick={() => handleOpenCountModal(model)}
                     className="w-full py-2.5 px-4 rounded-full bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs transition shadow-md shadow-purple-600/20 flex items-center justify-center gap-1.5 cursor-pointer"
                   >
-                    <ClipboardCheck className="w-4 h-4" />
-                    <span>تسجيل العد واعتماد النقل</span>
+                    <Grid className="w-4 h-4" />
+                    <span>فتح جدول الفرز (الألوان × المقاسات)</span>
                   </button>
                 </div>
               </div>
@@ -373,7 +543,9 @@ export const QCView: React.FC = () => {
         ) : (
           <div className="col-span-full py-16 text-center bg-white rounded-3xl border border-slate-200/80 p-8 text-slate-400">
             <ClipboardCheck className="w-12 h-12 mx-auto mb-2 text-purple-300" />
-            <p className="font-bold text-slate-700 text-base">لا توجد موديلات في مرحلة "{getStageTitle(activeTab)}" حالياً</p>
+            <p className="font-bold text-slate-700 text-base">
+              لا توجد موديلات في مرحلة "{getStageTitle(activeTab)}" حالياً
+            </p>
             <p className="text-xs text-slate-400 mt-1">
               الموديلات تظهر في كل مرحلة تباعاً عند إنهاء المرحلة السابقة.
             </p>
@@ -381,21 +553,22 @@ export const QCView: React.FC = () => {
         )}
       </div>
 
-      {/* MODAL 1: Record Count & Defects */}
+      {/* MODAL 1: Dynamic Matrix (Color x Size) for Good & Defect Counts */}
       {countingModel && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 animate-in zoom-in-95 duration-150 my-auto">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-6xl w-full p-5 sm:p-6 shadow-2xl border border-slate-100 animate-in zoom-in-95 duration-150 my-auto max-h-[94vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center">
-                  <ClipboardCheck className="w-5 h-5" />
+                <div className="w-11 h-11 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center">
+                  <Grid className="w-6 h-6" />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-slate-900 text-lg">
-                    تسجيل عد الموديل: {countingModel.model_code}
+                  <h3 className="font-extrabold text-slate-900 text-base sm:text-lg">
+                    مصفوفة الفرز والعد للموديل: {countingModel.model_code}
                   </h3>
                   <p className="text-xs text-purple-600 font-bold">
-                    المرحلة: {getStageTitle(activeTab)}
+                    المرحلة: {getStageTitle(activeTab)} — إدخال (السليم والتالف) لكل لون ومقاس على حدة
                   </p>
                 </div>
               </div>
@@ -407,12 +580,15 @@ export const QCView: React.FC = () => {
               </button>
             </div>
 
-            <form onSubmit={handleSaveCount} className="space-y-4 pt-4">
-              {/* Reference Info Card */}
-              <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-200/80 grid grid-cols-2 gap-3 text-xs">
+            <form
+              onSubmit={handleApproveAndAdvance}
+              className="space-y-4 pt-4 overflow-y-auto flex-grow"
+            >
+              {/* Reference Summary Banner */}
+              <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-200/80 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                 <div>
-                  <span className="text-slate-500 block">العدد المقصوص من المقصدار:</span>
-                  <strong className="text-slate-800 text-sm font-black">
+                  <span className="text-slate-500 block">العدد المقصوص الفعلي:</span>
+                  <strong className="text-slate-900 text-sm font-black">
                     {(countingModel.total_cut_pieces || 0).toLocaleString('ar-EG')} قطعة
                   </strong>
                 </div>
@@ -422,104 +598,275 @@ export const QCView: React.FC = () => {
                     {(countingModel.target_cut_quantity || 0).toLocaleString('ar-EG')} قطعة
                   </strong>
                 </div>
+                <div className="bg-emerald-50/90 border border-emerald-200 rounded-xl px-3 py-1.5">
+                  <span className="text-emerald-700 font-bold block">إجمالي السليم بالجدول:</span>
+                  <strong className="text-emerald-900 text-base font-black">
+                    {modalTotalGood.toLocaleString('ar-EG')} قطعة
+                  </strong>
+                </div>
+                <div className="bg-rose-50/90 border border-rose-200 rounded-xl px-3 py-1.5">
+                  <span className="text-rose-700 font-bold block">إجمالي التالف (الهالك):</span>
+                  <strong className="text-rose-900 text-base font-black">
+                    {modalTotalDefect.toLocaleString('ar-EG')} قطعة
+                  </strong>
+                </div>
               </div>
 
-              {/* Input for counted sound pieces */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  العدد الفعلي السليم (القطع الصالحة) *
-                </label>
-                <input
-                  type="number"
-                  required
-                  min={0}
-                  value={countedPieces || ''}
-                  onChange={(e) => setCountedPieces(Number(e.target.value))}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-base font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500"
-                />
+              {/* DYNAMIC MATRIX TABLE (Colors x Sizes) */}
+              <div className="rounded-2xl border border-slate-300 overflow-x-auto shadow-2xs">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-900 text-white font-bold">
+                      <th className="p-3 text-right border-b border-e border-slate-700 min-w-[170px]">
+                        اللون / المقاس
+                      </th>
+                      {modalSizes.map((sz) => (
+                        <th
+                          key={sz}
+                          className="p-2.5 text-center border-b border-e border-slate-700 min-w-[125px]"
+                        >
+                          <div className="text-sm font-black text-amber-300 mb-1">
+                            مقاس {sz}
+                          </div>
+                          <div className="grid grid-cols-2 gap-1 text-[10px] font-extrabold">
+                            <span className="bg-emerald-700/80 text-white py-0.5 rounded">
+                              سليم
+                            </span>
+                            <span className="bg-rose-700/80 text-white py-0.5 rounded">
+                              تالف
+                            </span>
+                          </div>
+                        </th>
+                      ))}
+                      <th className="p-3 text-center border-b border-slate-700 bg-slate-800 min-w-[120px]">
+                        إجمالي اللون
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {modalColors.map((colName) => {
+                      let rowGood = 0;
+                      let rowDefect = 0;
+                      modalSizes.forEach((sz) => {
+                        const cell = matrixState[makeCellKey(colName, sz)];
+                        rowGood += Number(cell?.good) || 0;
+                        rowDefect += Number(cell?.defect) || 0;
+                      });
+
+                      return (
+                        <tr key={colName} className="hover:bg-slate-50/80 transition">
+                          <td className="p-3 font-black text-slate-900 bg-slate-50 border-e border-slate-200">
+                            🎨 {colName}
+                          </td>
+
+                          {modalSizes.map((sz) => {
+                            const cell = matrixState[makeCellKey(colName, sz)] || {
+                              good: 0,
+                              defect: 0
+                            };
+                            return (
+                              <td
+                                key={sz}
+                                className="p-2 border-e border-slate-200 bg-white align-middle"
+                              >
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  {/* Good pieces input */}
+                                  <div>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      disabled={!canEdit}
+                                      value={cell.good === 0 ? '' : cell.good}
+                                      placeholder="0"
+                                      onChange={(e) =>
+                                        handleCellChange(
+                                          colName,
+                                          sz,
+                                          'good',
+                                          parseInt(e.target.value) || 0
+                                        )
+                                      }
+                                      title={`القطع السليمة (${colName} - مقاس ${sz})`}
+                                      className="w-full px-1.5 py-1.5 rounded-lg border-2 border-emerald-300 bg-emerald-50/30 text-center font-black text-emerald-900 text-xs focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
+                                    />
+                                  </div>
+                                  {/* Defect pieces input */}
+                                  <div>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      disabled={!canEdit}
+                                      value={cell.defect === 0 ? '' : cell.defect}
+                                      placeholder="0"
+                                      onChange={(e) =>
+                                        handleCellChange(
+                                          colName,
+                                          sz,
+                                          'defect',
+                                          parseInt(e.target.value) || 0
+                                        )
+                                      }
+                                      title={`القطع التالفة (${colName} - مقاس ${sz})`}
+                                      className="w-full px-1.5 py-1.5 rounded-lg border-2 border-rose-300 bg-rose-50/30 text-center font-black text-rose-900 text-xs focus:outline-hidden focus:ring-2 focus:ring-rose-500"
+                                    />
+                                  </div>
+                                </div>
+                              </td>
+                            );
+                          })}
+
+                          {/* Row Totals */}
+                          <td className="p-2.5 text-center bg-slate-50 font-bold">
+                            <div className="flex flex-col gap-0.5 text-[11px]">
+                              <span className="text-emerald-700 font-black">
+                                سليم: {rowGood}
+                              </span>
+                              <span className="text-rose-600 font-bold">
+                                تالف: {rowDefect}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+
+                  {/* Column Totals Footer */}
+                  <tfoot>
+                    <tr className="bg-slate-100 border-t-2 border-slate-300 font-bold">
+                      <td className="p-3 text-slate-900 font-black border-e border-slate-300">
+                        إجمالي المقاس
+                      </td>
+                      {modalSizes.map((sz) => {
+                        let colGood = 0;
+                        let colDefect = 0;
+                        modalColors.forEach((colName) => {
+                          const cell = matrixState[makeCellKey(colName, sz)];
+                          colGood += Number(cell?.good) || 0;
+                          colDefect += Number(cell?.defect) || 0;
+                        });
+                        return (
+                          <td
+                            key={sz}
+                            className="p-2 text-center border-e border-slate-300"
+                          >
+                            <div className="grid grid-cols-2 gap-1 text-[11px]">
+                              <span className="px-1 py-0.5 rounded bg-emerald-100 text-emerald-900 font-black">
+                                {colGood}
+                              </span>
+                              <span className="px-1 py-0.5 rounded bg-rose-100 text-rose-900 font-black">
+                                {colDefect}
+                              </span>
+                            </div>
+                          </td>
+                        );
+                      })}
+                      <td className="p-2.5 text-center bg-purple-100 text-purple-950 font-black">
+                        <div className="text-xs">سليم: {modalTotalGood}</div>
+                        <div className="text-[11px] text-rose-700">
+                          تالف: {modalTotalDefect}
+                        </div>
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
               </div>
 
-              {/* Input for defect pieces */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  عدد الهوالك / العيوب (ديفوهات)
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  value={defectPieces || ''}
-                  onChange={(e) => setDefectPieces(Number(e.target.value))}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
-                />
-              </div>
-
-              {/* Deficit Calculation Preview */}
+              {/* Deficit Calculation Preview against Cut Pieces */}
               {(() => {
                 const cutCount = countingModel.total_cut_pieces || 0;
-                const deficit = cutCount - countedPieces;
+                const deficit = cutCount - modalTotalGood;
                 return (
-                  <div className={`p-3 rounded-2xl border text-xs flex items-center justify-between ${
-                    deficit > 0 
-                      ? 'bg-amber-50 border-amber-200 text-amber-900' 
-                      : deficit < 0 
-                      ? 'bg-blue-50 border-blue-200 text-blue-900' 
-                      : 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                  }`}>
+                  <div
+                    className={`p-3 rounded-2xl border text-xs flex items-center justify-between ${
+                      deficit > 0
+                        ? 'bg-amber-50 border-amber-200 text-amber-900'
+                        : deficit < 0
+                        ? 'bg-blue-50 border-blue-200 text-blue-900'
+                        : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                    }`}
+                  >
                     <span className="font-bold">
-                      {deficit > 0 ? '⚠️ يوجد عجز عن المقصوص:' : deficit < 0 ? 'زيادة عن المقصوص:' : '✅ العدد مطابق للمقصوص تماماً:'}
+                      {deficit > 0
+                        ? '⚠️ الفرق بين المقصوص وإجمالي السليم بالجدول:'
+                        : deficit < 0
+                        ? 'زيادة عن المقصوص:'
+                        : '✅ إجمالي السليم بالجدول مطابق للمقصوص تماماً:'}
                     </span>
                     <strong className="text-sm font-black">
-                      {Math.abs(deficit).toLocaleString('ar-EG')} قطعة {deficit > 0 ? 'عجز' : deficit < 0 ? 'زيادة' : ''}
+                      {Math.abs(deficit).toLocaleString('ar-EG')} قطعة{' '}
+                      {deficit > 0 ? 'عجز / هالك' : deficit < 0 ? 'زيادة' : ''}
                     </strong>
                   </div>
                 );
               })()}
 
-              {/* QC Notes gated by stage-specific notes permission (Task 4) */}
+              {/* QC Notes gated by stage-specific notes permission */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
                     <FileText className="w-3.5 h-3.5 text-purple-600" />
                     <span>
-                      ملاحظات {activeTab === 'before_print' ? 'الفرز قبل الطباعة' : activeTab === 'after_print' ? 'الفرز بعد الطباعة' : 'الفرز بعد المكن'} (اختياري)
+                      ملاحظات{' '}
+                      {activeTab === 'before_print'
+                        ? 'الفرز قبل الطباعة'
+                        : activeTab === 'after_print'
+                        ? 'الفرز بعد الطباعة'
+                        : 'الفرز بعد المكن'}{' '}
+                      (اختياري)
                     </span>
                   </label>
                   {!canWriteNotesForCurrentStage && (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold">
                       <Lock className="w-3 h-3" />
-                      يتطلب صلاحية ملاحظات {activeTab === 'before_print' ? 'الفرز قبل الطباعة' : 'الفرز بعد الطباعة'}
+                      يتطلب صلاحية ملاحظات{' '}
+                      {activeTab === 'before_print'
+                        ? 'الفرز قبل الطباعة'
+                        : 'الفرز بعد الطباعة'}
                     </span>
                   )}
                 </div>
                 <textarea
-                  rows={3}
+                  rows={2}
                   disabled={!canWriteNotesForCurrentStage}
                   value={qcNotes}
                   onChange={(e) => setQcNotes(e.target.value)}
                   placeholder={
                     canWriteNotesForCurrentStage
-                      ? 'أي ملاحظات حول طباعة، قماش، نظافة تشغيل، الخ (اختياري)...'
+                      ? 'أي ملاحظات حول عيوب الألوان والمقاسات، الطباعة، نظافة التشغيل، الخ (اختياري)...'
                       : 'ليس لديك صلاحية كتابة ملاحظات في هذه المرحلة'
                   }
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 disabled:bg-slate-100 disabled:text-slate-400"
                 />
               </div>
 
-              <div className="pt-2 flex items-center justify-end gap-3">
+              <div className="pt-2 flex flex-wrap items-center justify-end gap-2.5 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setCountingModel(null)}
                   className="px-5 py-2.5 rounded-full border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-100 transition cursor-pointer"
                 >
-                  إلغاء
+                  إغلاق
                 </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2.5 rounded-full bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs shadow-md shadow-purple-600/20 transition flex items-center gap-2 cursor-pointer"
-                >
-                  <CheckCircle className="w-4 h-4" />
-                  <span>اعتماد العد وتوجيه الموديل للخطوة التالية</span>
-                </button>
+                {canEdit && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleSaveMatrixOnly}
+                      className="px-5 py-2.5 rounded-full bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs shadow-xs transition flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Save className="w-4 h-4" />
+                      <span>حفظ الجدول فقط (بدون ترحيل المرحلة)</span>
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-6 py-2.5 rounded-full bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs shadow-md shadow-purple-600/20 transition flex items-center gap-2 cursor-pointer"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      <span>اعتماد جدول العد وتوجيه الموديل للخطوة التالية</span>
+                    </button>
+                  </>
+                )}
               </div>
             </form>
           </div>
@@ -540,7 +887,7 @@ export const QCView: React.FC = () => {
                     تقرير جرد مرحلة: {getStageTitle(activeTab)}
                   </h3>
                   <p className="text-xs text-slate-500">
-                    كشف تفصيلي يبين (العدد المقصوص، العدد الفعلي، والعجز)
+                    كشف تفصيلي يبين (العدد المقصوص، العدد الفعلي السليم، التالف، والعجز)
                   </p>
                 </div>
               </div>
@@ -563,10 +910,14 @@ export const QCView: React.FC = () => {
             </div>
 
             {/* Printable Content Area */}
-            <div className="overflow-y-auto flex-grow p-4 print:p-0" id="qc-printable-report">
+            <div
+              className="overflow-y-auto flex-grow p-4 print:p-0"
+              id="qc-printable-report"
+            >
               <div className="text-center mb-6 border-b border-slate-300 pb-4">
                 <h1 className="text-xl font-black text-slate-900">
-                  {globalSettings?.site_name || 'مصنع الملابس الجاهزة - نظام إدارة الإنتاج'}
+                  {globalSettings?.site_name ||
+                    'مصنع الملابس الجاهزة - نظام إدارة الإنتاج'}
                 </h1>
                 <h2 className="text-base font-bold text-purple-800 mt-1">
                   تقرير تدقيق ومطابقة مرحلة الفرز: {getStageTitle(activeTab)}
@@ -586,7 +937,8 @@ export const QCView: React.FC = () => {
                     <th className="py-2.5 px-3">المقصدار</th>
                     <th className="py-2.5 px-3 text-center">العدد المستهدف</th>
                     <th className="py-2.5 px-3 text-center">العدد المقصوص</th>
-                    <th className="py-2.5 px-3 text-center">العدد الفعلي (المعدود)</th>
+                    <th className="py-2.5 px-3 text-center">العدد السليم</th>
+                    <th className="py-2.5 px-3 text-center">التالف</th>
                     <th className="py-2.5 px-3 text-center">العجز / الفاقد</th>
                     <th className="py-2.5 px-3">ملاحظات</th>
                   </tr>
@@ -595,7 +947,14 @@ export const QCView: React.FC = () => {
                   {currentTabModels.map((model, idx) => {
                     const cut = model.total_cut_pieces || 0;
                     const target = model.target_cut_quantity || 0;
-                    
+                    const stageRecs = qcRecords.filter(
+                      (r) => r.model_id === model.id && r.stage === activeTab
+                    );
+                    const stageDefects = stageRecs.reduce(
+                      (s, r) => s + (r.defect_qty ?? r.defect_pieces ?? 0),
+                      0
+                    );
+
                     let actual = 0;
                     if (activeTab === 'before_print') {
                       actual = model.count_before_print ?? 0;
@@ -609,30 +968,56 @@ export const QCView: React.FC = () => {
 
                     return (
                       <tr key={model.id} className="hover:bg-slate-50">
-                        <td className="py-2 px-3 font-semibold text-slate-400">{idx + 1}</td>
-                        <td className="py-2 px-3 font-black text-slate-900">{model.model_code}</td>
-                        <td className="py-2 px-3 text-slate-700">{model.model_type || '-'}</td>
-                        <td className="py-2 px-3 text-slate-700">{model.cutter_name || '-'}</td>
-                        <td className="py-2 px-3 text-center text-slate-600">{target.toLocaleString('ar-EG')}</td>
-                        <td className="py-2 px-3 text-center font-bold text-slate-900">{cut.toLocaleString('ar-EG')}</td>
-                        <td className="py-2 px-3 text-center font-extrabold text-purple-700">
+                        <td className="py-2 px-3 font-semibold text-slate-400">
+                          {idx + 1}
+                        </td>
+                        <td className="py-2 px-3 font-black text-slate-900">
+                          {model.model_code}
+                        </td>
+                        <td className="py-2 px-3 text-slate-700">
+                          {model.model_type || '-'}
+                        </td>
+                        <td className="py-2 px-3 text-slate-700">
+                          {model.cutter_name || '-'}
+                        </td>
+                        <td className="py-2 px-3 text-center text-slate-600">
+                          {target.toLocaleString('ar-EG')}
+                        </td>
+                        <td className="py-2 px-3 text-center font-bold text-slate-900">
+                          {cut.toLocaleString('ar-EG')}
+                        </td>
+                        <td className="py-2 px-3 text-center font-extrabold text-emerald-700">
                           {actual > 0 ? actual.toLocaleString('ar-EG') : 'قيد العد'}
+                        </td>
+                        <td className="py-2 px-3 text-center font-bold text-rose-600">
+                          {stageDefects > 0
+                            ? stageDefects.toLocaleString('ar-EG')
+                            : '0'}
                         </td>
                         <td className="py-2 px-3 text-center">
                           {actual > 0 ? (
                             deficit > 0 ? (
-                              <span className="font-black text-red-600">{deficit.toLocaleString('ar-EG')} (عجز)</span>
+                              <span className="font-black text-red-600">
+                                {deficit.toLocaleString('ar-EG')} (عجز)
+                              </span>
                             ) : deficit < 0 ? (
-                              <span className="font-bold text-blue-600">{Math.abs(deficit).toLocaleString('ar-EG')} (زيادة)</span>
+                              <span className="font-bold text-blue-600">
+                                {Math.abs(deficit).toLocaleString('ar-EG')} (زيادة)
+                              </span>
                             ) : (
-                              <span className="font-bold text-emerald-600">مطابق (0)</span>
+                              <span className="font-bold text-emerald-600">
+                                مطابق (0)
+                              </span>
                             )
                           ) : (
                             '-'
                           )}
                         </td>
                         <td className="py-2 px-3 text-slate-500 text-[11px]">
-                          {model.design_notes || model.notes_shirt || model.notes_pants || '-'}
+                          {model.design_notes ||
+                            model.notes_shirt ||
+                            model.notes_pants ||
+                            '-'}
                         </td>
                       </tr>
                     );
@@ -641,8 +1026,12 @@ export const QCView: React.FC = () => {
               </table>
 
               <div className="mt-8 pt-6 border-t border-slate-300 flex justify-between items-center text-xs text-slate-600 font-bold px-4">
-                <div>توقيع مسؤول الفرز والكنترول: .......................................</div>
-                <div>توقيع مدير الإنتاج: .......................................</div>
+                <div>
+                  توقيع مسؤول الفرز والكنترول: .......................................
+                </div>
+                <div>
+                  توقيع مدير الإنتاج: .......................................
+                </div>
               </div>
             </div>
 

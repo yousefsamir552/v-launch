@@ -203,7 +203,7 @@ export const api = {
       body: JSON.stringify({ user_name: userName, notes })
     }),
   recordQCStageCount: (modelId: string, data: any) =>
-    request<{ model: any; qcRecord: any }>(`/models/${encodeURIComponent(modelId)}/record_qc_count/`, {
+    request<{ model: any; qcRecord?: any; qcRecords?: any[] }>(`/models/${encodeURIComponent(modelId)}/record_qc_count/`, {
       method: 'POST',
       body: JSON.stringify(data)
     }),
@@ -240,6 +240,11 @@ export const api = {
   getQCRecords: () => request<any[]>('/qc-records/'),
   createQCRecord: (data: any) =>
     request<any>('/qc-records/', { method: 'POST', body: JSON.stringify(data) }),
+  saveQCMatrix: (data: any) =>
+    request<{ model: any; qcRecords: any[] }>('/qc-records/save_matrix/', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
   getDispatches: () => request<any[]>('/dispatches/'),
   createPrintDispatch: (data: any) =>
     request<any>('/dispatches/', { method: 'POST', body: JSON.stringify(data) }),

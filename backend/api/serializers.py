@@ -4,7 +4,7 @@ from .models import (
     Fabric, FabricColor, FabricTransaction,
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
-    CuttingRecord, QCRecord, PrintDispatch,
+    CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog
 )
 
@@ -302,22 +302,68 @@ class ModelTimelineSerializer(serializers.ModelSerializer):
         }
 
 
+class CuttingSpreadLayerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CuttingSpreadLayer
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        return {
+            'id': get_ext_id(instance),
+            'spread_id': get_ext_id(instance.spread),
+            'color_name': instance.color_name,
+            'colorName': instance.color_name,
+            'layers_count': int(instance.layers_count or 0),
+            'layersCount': int(instance.layers_count or 0),
+            'layer_weight': float(instance.layer_weight or 0),
+            'layerWeight': float(instance.layer_weight or 0),
+            'pieces_count': int(instance.pieces_count or 0),
+            'piecesCount': int(instance.pieces_count or 0),
+            'shade_degree': instance.shade_degree or '',
+            'shadeDegree': instance.shade_degree or '',
+            'notes': instance.notes or '',
+        }
+
+
 class CuttingRecordSerializer(serializers.ModelSerializer):
+    color_layers = CuttingSpreadLayerSerializer(many=True, read_only=True)
+
     class Meta:
         model = CuttingRecord
         fields = '__all__'
 
     def to_representation(self, instance):
         ts = instance.created_at_str or (instance.created_at.strftime('%Y-%m-%d %H:%M') if instance.created_at else '')
+        layers_qs = list(instance.color_layers.all())
+        layers_data = CuttingSpreadLayerSerializer(layers_qs, many=True).data
+
+        # Build human-readable summary of colors & layers in this spread
+        if layers_data:
+            colors_summary = ' + '.join(
+                f"{item['color_name']} ({item['layers_count']} راق)"
+                for item in layers_data
+            )
+            total_layers = sum(int(item['layers_count'] or 0) for item in layers_data)
+        else:
+            colors_summary = instance.fabric_color or ''
+            total_layers = int(instance.layers_count or 0)
+
         return {
             'id': get_ext_id(instance),
             'model_id': get_ext_id(instance.model),
-            'color_name': instance.fabric_color,
-            'colorName': instance.fabric_color,
-            'cutter_name': instance.cutter_name,
-            'cutterName': instance.cutter_name,
-            'layers_count': int(instance.layers_count or 0),
-            'layersCount': int(instance.layers_count or 0),
+            'spread_number': int(instance.spread_number or 1),
+            'spreadNumber': int(instance.spread_number or 1),
+            'spreader_name': instance.spreader_name or '',
+            'spreaderName': instance.spreader_name or '',
+            'cutter_name': instance.cutter_name or '',
+            'spreader_name': instance.spreader_name or '',
+            'cutterName': instance.cutter_name or '',
+            'color_name': colors_summary or instance.fabric_color or '',
+            'colorName': colors_summary or instance.fabric_color or '',
+            'color_layers': layers_data,
+            'colorLayers': layers_data,
+            'layers_count': total_layers,
+            'layersCount': total_layers,
             'layer_weight': float(instance.layer_weight or 0),
             'layerWeight': float(instance.layer_weight or 0),
             'pieces_count': int(instance.pieces_count or 0),
