@@ -1524,12 +1524,16 @@ class CuttingRecordViewSet(BasePermViewSet):
                     })
 
         total_layers_from_items = sum(item['layers_count'] for item in parsed_layers)
-        total_weight_from_items = sum(item['layer_weight'] for item in parsed_layers)
-        total_pieces_from_items = sum(item['pieces_count'] for item in parsed_layers)
 
         layers = max(0, int(data.get('layers_count') or data.get('layersCount') or total_layers_from_items or 0))
-        weight = max(0.0, float(data.get('layer_weight') or data.get('layerWeight') or total_weight_from_items or 0))
-        pieces = max(0, int(data.get('pieces_count') or data.get('piecesCount') or total_pieces_from_items or 0))
+        pieces_per_layer = max(0, int(data.get('pieces_per_layer') or data.get('piecesPerLayer') or 0))
+        weight = max(0.0, float(data.get('layer_weight') or data.get('layerWeight') or 0))
+
+        # Automatically calculate cut pieces = layers * pieces_per_layer (fallback to pieces_count if legacy)
+        if pieces_per_layer > 0 and layers > 0:
+            pieces = layers * pieces_per_layer
+        else:
+            pieces = max(0, int(data.get('pieces_count') or data.get('piecesCount') or 0))
 
         if parsed_layers:
             color_name = ' + '.join(f"{item['color_name']} ({item['layers_count']} راق)" for item in parsed_layers)
@@ -1549,6 +1553,7 @@ class CuttingRecordViewSet(BasePermViewSet):
                 cutter_name=cutter,
                 fabric_color=color_name,
                 layers_count=layers,
+                pieces_per_layer=pieces_per_layer,
                 layer_weight=weight,
                 pieces_count=pieces,
                 shade_degree=shade,
@@ -1557,13 +1562,14 @@ class CuttingRecordViewSet(BasePermViewSet):
             )
 
             for item in parsed_layers:
+                item_pcs = item['layers_count'] * pieces_per_layer if pieces_per_layer > 0 else item['pieces_count']
                 CuttingSpreadLayer.objects.create(
                     client_id=item.get('id'),
                     spread=rec,
                     color_name=item['color_name'],
                     layers_count=item['layers_count'],
-                    layer_weight=item['layer_weight'],
-                    pieces_count=item['pieces_count'],
+                    layer_weight=weight,
+                    pieces_count=item_pcs,
                     shade_degree=item['shade_degree'],
                     notes=item['notes'],
                 )
@@ -1576,9 +1582,7 @@ class CuttingRecordViewSet(BasePermViewSet):
             model._skip_timeline_signal = True
             model.save()
 
-            tl_notes = f"فرشة رقم #{spread_num} | الفَرّاش: {spreader or '-'} | المقصدار: {cutter or '-'} | الألوان والراقات: {color_name} | إجمالي الراقات: {layers} | القطع المنتجة: {pieces}"
-            if weight > 0:
-                tl_notes += f" | الوزن: {weight} كجم"
+            tl_notes = f"فرشة رقم #{spread_num} | الفَرّاش: {spreader or '-'} | المقصدار: {cutter or '-'} | الألوان والراقات: {color_name} | إجمالي الراقات: {layers} | عدد القطع في الراق: {pieces_per_layer} | إجمالي وزن الراق: {weight} كجم | القطع المقصوصة: {pieces}"
             if shade:
                 tl_notes += f" | درجة الصبغة: {shade}"
             if notes:
@@ -1600,6 +1604,7 @@ class CuttingRecordViewSet(BasePermViewSet):
                     'color_name': color_name,
                     'color_layers': parsed_layers,
                     'layers_count': layers,
+                    'pieces_per_layer': pieces_per_layer,
                     'layer_weight': weight,
                     'pieces_count': pieces,
                     'total_cut_pieces_so_far': model.total_cut_pieces,

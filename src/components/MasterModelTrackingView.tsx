@@ -638,7 +638,7 @@ export const MasterModelTrackingView: React.FC = () => {
                         </strong>
                       </div>
                       <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
-                        <span className="text-[11px] text-slate-500 font-bold block">وزن الراقة / القماش المقصوص</span>
+                        <span className="text-[11px] text-slate-500 font-bold block">إجمالي وزن الراق</span>
                         <strong className="text-sm font-black text-slate-900">
                           {snap.layer_weight
                             ? `${snap.layer_weight} كجم`
@@ -685,6 +685,8 @@ export const MasterModelTrackingView: React.FC = () => {
                               <th className="py-2 px-3">الفَرّاش</th>
                               <th className="py-2 px-3">الألوان والراقات بالفرشة</th>
                               <th className="py-2 px-3 text-center">إجمالي الراقات</th>
+                              <th className="py-2 px-3 text-center">قطع/راق</th>
+                              <th className="py-2 px-3 text-center">إجمالي وزن الراق</th>
                               <th className="py-2 px-3 text-center">الكمية المقصوصة</th>
                               <th className="py-2 px-3">المقصدار</th>
                               <th className="py-2 px-3">ملاحظات</th>
@@ -703,6 +705,12 @@ export const MasterModelTrackingView: React.FC = () => {
                                   {rec.color_name || rec.colorName || '-'} {rec.shade_degree ? `(${rec.shade_degree})` : ''}
                                 </td>
                                 <td className="py-2 px-3 text-center font-bold text-blue-700">{rec.layers_count}</td>
+                                <td className="py-2 px-3 text-center font-bold text-slate-700">
+                                  {rec.pieces_per_layer ?? rec.piecesPerLayer ?? '-'}
+                                </td>
+                                <td className="py-2 px-3 text-center font-bold text-slate-700">
+                                  {rec.layer_weight} كجم
+                                </td>
                                 <td className="py-2 px-3 text-center font-black text-slate-900">
                                   {rec.pieces_count ?? rec.piecesCount ?? 0} ق
                                 </td>

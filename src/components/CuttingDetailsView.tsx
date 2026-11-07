@@ -11,7 +11,8 @@ import {
   Plus,
   Trash2,
   Layers,
-  Palette
+  Palette,
+  Calculator
 } from 'lucide-react';
 import { CuttingSpreadLayer } from '../types';
 
@@ -71,9 +72,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     }
   ]);
   const [customColorInput, setCustomColorInput] = useState<string>('');
+  const [piecesPerLayer, setPiecesPerLayer] = useState<number>(4);
+  const [layerWeight, setLayerWeight] = useState<number>(1.5);
   const [cutterName, setCutterName] = useState<string>('');
-  const [piecesCount, setPiecesCount] = useState<number>(150);
-  const [spreadWeight, setSpreadWeight] = useState<number>(0);
   const [shadeDegree, setShadeDegree] = useState<string>('');
   const [cuttingNotes, setCuttingNotes] = useState<string>('');
 
@@ -141,6 +142,10 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     0
   );
 
+  // Automatic calculation: عدد القطع المقصوصة = عدد الراقات × عدد القطع في الراق
+  const calculatedPiecesCount =
+    currentSpreadTotalLayers * (Number(piecesPerLayer) > 0 ? Number(piecesPerLayer) : 0);
+
   const handleSubmitSpread = (e: React.FormEvent) => {
     e.preventDefault();
     const validLayers = spreadLayers.filter(
@@ -155,6 +160,14 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
       alert('يرجى إضافة لون واحد وعدد راقات أكبر من صفر داخل الفرشة!');
       return;
     }
+    if (!piecesPerLayer || Number(piecesPerLayer) <= 0) {
+      alert('يرجى إدخال عدد القطع في الراق (يجب أن يكون أكبر من صفر)!');
+      return;
+    }
+    if (!layerWeight || Number(layerWeight) <= 0) {
+      alert('يرجى إدخال إجمالي وزن الراق (مطلوب لحسابات التكلفة والتسعير)!');
+      return;
+    }
     if (!cutterName.trim()) {
       alert('يرجى إدخال اسم المقصدار / القاصص للفرشة بالكامل!');
       return;
@@ -167,8 +180,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
       cutterName: cutterName.trim(),
       colorLayers: validLayers,
       layersCount: currentSpreadTotalLayers,
-      layerWeight: Number(spreadWeight) || 0,
-      piecesCount: Number(piecesCount) || 0,
+      piecesPerLayer: Number(piecesPerLayer),
+      layerWeight: Number(layerWeight),
+      piecesCount: calculatedPiecesCount,
       shadeDegree: shadeDegree.trim(),
       notes: canWriteNotes ? cuttingNotes.trim() : ''
     });
@@ -191,14 +205,24 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
       alert('يجب تسجيل فرشة قص واحدة على الأقل قبل التحويل للفرز!');
       return;
     }
-    if (window.confirm('هل أنت متأكد من إنهاء القص وتحويل الموديل للفرز والكنترول (العد قبل الطباعة)؟')) {
+    if (
+      window.confirm(
+        'هل أنت متأكد من إنهاء القص وتحويل الموديل للفرز والكنترول (العد قبل الطباعة)؟'
+      )
+    ) {
       finishCuttingToQC(modelId, canWriteNotes ? cuttingNotes.trim() : '');
       onFinishedToQC();
     }
   };
 
-  const totalPiecesProduced = modelCuttingRecords.reduce((sum, r) => sum + (r.pieces_count || 0), 0);
-  const totalLayers = modelCuttingRecords.reduce((sum, r) => sum + (r.layers_count || 0), 0);
+  const totalPiecesProduced = modelCuttingRecords.reduce(
+    (sum, r) => sum + (r.pieces_count || 0),
+    0
+  );
+  const totalLayers = modelCuttingRecords.reduce(
+    (sum, r) => sum + (r.layers_count || 0),
+    0
+  );
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -250,7 +274,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             </div>
 
             <p className="text-xs text-slate-500 font-semibold">
-              النوع والتصنيف: <strong className="text-slate-800">{model.model_type || 'أولادي'}</strong>
+              النوع والتصنيف:{' '}
+              <strong className="text-slate-800">{model.model_type || 'أولادي'}</strong>
             </p>
 
             {/* Design & Marker Details */}
@@ -266,12 +291,18 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                 </span>
               )}
               {model.design_notes && (
-                <span className="px-2.5 py-1 rounded-lg bg-amber-50 text-amber-800 font-bold border border-amber-200 line-clamp-1 max-w-[220px]" title={model.design_notes}>
+                <span
+                  className="px-2.5 py-1 rounded-lg bg-amber-50 text-amber-800 font-bold border border-amber-200 line-clamp-1 max-w-[220px]"
+                  title={model.design_notes}
+                >
                   ملاحظات التصميم: {model.design_notes}
                 </span>
               )}
               {model.notes_shirt && (
-                <span className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800 font-bold border border-blue-200 line-clamp-1 max-w-[220px]" title={model.notes_shirt}>
+                <span
+                  className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800 font-bold border border-blue-200 line-clamp-1 max-w-[220px]"
+                  title={model.notes_shirt}
+                >
                   ملاحظات تيشرت: {model.notes_shirt}
                 </span>
               )}
@@ -292,15 +323,30 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             <div
               className="bg-rose-600 h-full rounded-full transition-all duration-300"
               style={{
-                width: `${Math.min(100, (totalPiecesProduced / (model.target_cut_quantity || 1)) * 100)}%`
+                width: `${Math.min(
+                  100,
+                  (totalPiecesProduced / (model.target_cut_quantity || 1)) * 100
+                )}%`
               }}
             />
           </div>
 
           <div className="flex items-center justify-between text-[11px] font-extrabold text-slate-600">
-            <span>المنفذ حتى الآن: <strong className="text-rose-700 font-black">{totalPiecesProduced}</strong></span>
-            <span>عدد الفرشات: <strong className="text-rose-800">{modelCuttingRecords.length}</strong></span>
-            <span>الإنجاز: {Math.round((totalPiecesProduced / (model.target_cut_quantity || 1)) * 100)}%</span>
+            <span>
+              المنفذ حتى الآن:{' '}
+              <strong className="text-rose-700 font-black">{totalPiecesProduced}</strong>
+            </span>
+            <span>
+              عدد الفرشات:{' '}
+              <strong className="text-rose-800">{modelCuttingRecords.length}</strong>
+            </span>
+            <span>
+              الإنجاز:{' '}
+              {Math.round(
+                (totalPiecesProduced / (model.target_cut_quantity || 1)) * 100
+              )}
+              %
+            </span>
           </div>
         </div>
       </div>
@@ -312,7 +358,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-base font-extrabold text-rose-600 flex items-center gap-2">
                 <Layers className="w-5 h-5" />
-                <span>📝 تسجيل فرشة قص جديدة (فرشة #{modelCuttingRecords.length + 1})</span>
+                <span>
+                  📝 تسجيل فرشة قص جديدة (فرشة #{modelCuttingRecords.length + 1})
+                </span>
               </h2>
               <span className="px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[11px] font-black">
                 نظام الفرشات
@@ -454,36 +502,57 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                     </div>
                   </div>
 
-                  {/* Step 3: Total Pieces & Weight of Spread */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        إجمالي القطع الناتجة من الفرشة *
-                      </label>
-                      <input
-                        type="number"
-                        min="1"
-                        required
-                        value={piecesCount}
-                        onChange={(e) => setPiecesCount(parseInt(e.target.value) || 0)}
-                        placeholder="العدد الناتج"
-                        className="w-full px-4 py-2.5 rounded-xl border-2 border-rose-300 bg-rose-50/30 text-sm text-center font-black text-rose-900 focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
-                      />
+                  {/* Step 3: Pieces per Layer & Total Layer Weight (Both Required!) + Auto-Calculated Cut Pieces */}
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          عدد القطع في الراق *
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          required
+                          value={piecesPerLayer || ''}
+                          onChange={(e) =>
+                            setPiecesPerLayer(parseInt(e.target.value) || 0)
+                          }
+                          placeholder="مثال: 4 قطع بالراق"
+                          className="w-full px-4 py-2.5 rounded-xl border-2 border-rose-300 bg-rose-50/30 text-sm text-center font-black text-rose-900 focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          إجمالي وزن الراق (كجم) *
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0.01"
+                          required
+                          value={layerWeight || ''}
+                          onChange={(e) =>
+                            setLayerWeight(parseFloat(e.target.value) || 0)
+                          }
+                          placeholder="وزن الراق للتسعير"
+                          className="w-full px-4 py-2.5 rounded-xl border-2 border-blue-300 bg-blue-50/30 text-sm text-center font-black text-blue-900 focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                        />
+                      </div>
                     </div>
 
-                    <div>
-                      <label className="block text-xs font-bold text-slate-600 mb-1">
-                        إجمالي وزن الفرشة (كجم - اختياري)
-                      </label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={spreadWeight || ''}
-                        onChange={(e) => setSpreadWeight(parseFloat(e.target.value) || 0)}
-                        placeholder="وزن الفرشة بالكيلو"
-                        className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs text-center font-bold focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
-                      />
+                    {/* Automatic Cut Pieces Calculation Box */}
+                    <div className="p-3 rounded-2xl bg-slate-900 text-white flex items-center justify-between text-xs shadow-xs">
+                      <div className="flex items-center gap-2">
+                        <Calculator className="w-4 h-4 text-rose-400 shrink-0" />
+                        <span>
+                          عدد القطع المقصوصة (تلقائي = {currentSpreadTotalLayers}{' '}
+                          راق × {piecesPerLayer || 0} قطع بالراق):
+                        </span>
+                      </div>
+                      <span className="px-3 py-1 rounded-full bg-rose-600 text-white font-black text-sm">
+                        {calculatedPiecesCount} قطعة
+                      </span>
                     </div>
                   </div>
 
@@ -491,7 +560,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                   <div className="p-3.5 rounded-2xl bg-emerald-50/60 border-2 border-emerald-300 space-y-2">
                     <label className="block text-xs font-extrabold text-emerald-950 flex items-center gap-1.5">
                       <Scissors className="w-4 h-4 text-emerald-700" />
-                      <span>3️⃣ اسم المقصدار / القاصص (للفرشة بالكامل مرة واحدة) *</span>
+                      <span>
+                        3️⃣ اسم المقصدار / القاصص (للفرشة بالكامل مرة واحدة) *
+                      </span>
                     </label>
                     <div className="relative">
                       <input
@@ -569,14 +640,29 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                 </div>
               )
             ) : (
-              <p className="text-xs text-slate-400">عرض فقط - الصلاحية غير متوفرة للتعديل</p>
+              <p className="text-xs text-slate-400">
+                عرض فقط - الصلاحية غير متوفرة للتعديل
+              </p>
             )}
           </div>
 
           <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-            <span>إجمالي الفرشات: <strong className="text-slate-900">{modelCuttingRecords.length}</strong></span>
-            <span>مجموع الراقات: <strong className="text-slate-800">{totalLayers}</strong></span>
-            <span>إجمالي القطع: <strong className="text-rose-600 font-bold">{totalPiecesProduced}</strong></span>
+            <span>
+              إجمالي الفرشات:{' '}
+              <strong className="text-slate-900">
+                {modelCuttingRecords.length}
+              </strong>
+            </span>
+            <span>
+              مجموع الراقات:{' '}
+              <strong className="text-slate-800">{totalLayers}</strong>
+            </span>
+            <span>
+              إجمالي القطع:{' '}
+              <strong className="text-rose-600 font-bold">
+                {totalPiecesProduced}
+              </strong>
+            </span>
           </div>
         </div>
 
@@ -586,7 +672,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <div>
                 <h2 className="text-base font-extrabold text-slate-900">
-                  سجل الفرشات المقصوصة للموديل: <span className="text-rose-600">{model.model_code}</span>
+                  سجل الفرشات المقصوصة للموديل:{' '}
+                  <span className="text-rose-600">{model.model_code}</span>
                 </h2>
                 <span className="text-xs text-slate-500 font-semibold">
                   إجمالي الفرشات المسجلة: {modelCuttingRecords.length} فرشة
@@ -608,10 +695,17 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             <div className="space-y-4">
               {modelCuttingRecords.length > 0 ? (
                 modelCuttingRecords.map((rec, idx) => {
-                  const spreadNum = rec.spread_number || rec.spreadNumber || modelCuttingRecords.length - idx;
+                  const spreadNum =
+                    rec.spread_number ||
+                    rec.spreadNumber ||
+                    modelCuttingRecords.length - idx;
                   const layersList = rec.color_layers || rec.colorLayers || [];
-                  const spreader = rec.spreader_name || rec.spreaderName || 'غير محدد';
-                  const cutter = rec.cutter_name || rec.cutterName || 'غير محدد';
+                  const spreader =
+                    rec.spreader_name || rec.spreaderName || 'غير محدد';
+                  const cutter =
+                    rec.cutter_name || rec.cutterName || 'غير محدد';
+                  const pcsPerLay =
+                    rec.pieces_per_layer ?? rec.piecesPerLayer ?? 0;
 
                   return (
                     <div
@@ -632,12 +726,27 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                           </span>
                         </div>
 
-                        <div className="flex items-center gap-2 text-xs">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
                           <span className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 font-bold text-slate-700">
-                            إجمالي الراقات: <strong className="text-rose-700">{rec.layers_count}</strong>
+                            إجمالي الراقات:{' '}
+                            <strong className="text-rose-700">
+                              {rec.layers_count}
+                            </strong>
+                          </span>
+                          {pcsPerLay > 0 && (
+                            <span className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 font-bold text-slate-700">
+                              عدد القطع في الراق:{' '}
+                              <strong className="text-slate-900">
+                                {pcsPerLay}
+                              </strong>
+                            </span>
+                          )}
+                          <span className="px-2.5 py-1 rounded-lg bg-blue-50 border border-blue-200 font-bold text-blue-900">
+                            إجمالي وزن الراق:{' '}
+                            <strong>{rec.layer_weight} كجم</strong>
                           </span>
                           <span className="px-3 py-1 rounded-lg bg-emerald-100 text-emerald-900 font-black border border-emerald-300">
-                            القطع المنتجة: {rec.pieces_count} قطعة
+                            القطع المقصوصة: {rec.pieces_count} قطعة
                           </span>
                         </div>
                       </div>
@@ -666,28 +775,29 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                           </div>
                         ) : (
                           <div className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-800">
-                            {rec.color_name || 'لون أساسي'} ({rec.layers_count} راق)
+                            {rec.color_name || 'لون أساسي'} ({rec.layers_count}{' '}
+                            راق)
                           </div>
                         )}
 
                         {/* Spread Footer: Cutter Name & Metadata */}
                         <div className="pt-3 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-emerald-50 text-emerald-900 border border-emerald-300 font-black">
                               <Scissors className="w-3.5 h-3.5 text-emerald-700" />
                               <span>المقصدار (القاصص): {cutter}</span>
                             </span>
-                            {rec.layer_weight > 0 && (
-                              <span className="text-slate-500 font-semibold">
-                                الوزن: {rec.layer_weight} كجم
-                              </span>
-                            )}
+                            <span className="px-2.5 py-0.5 rounded-lg bg-blue-50 text-blue-800 border border-blue-200 font-bold text-[11px]">
+                              إجمالي وزن الراق: {rec.layer_weight} كجم
+                            </span>
                           </div>
 
                           <div className="text-[11px] text-slate-500">
                             {(rec.notes || rec.shade_degree) && (
                               <span className="font-semibold text-amber-800 bg-amber-50 px-2.5 py-0.5 rounded-lg border border-amber-200">
-                                {[rec.shade_degree, rec.notes].filter(Boolean).join(' | ')}
+                                {[rec.shade_degree, rec.notes]
+                                  .filter(Boolean)
+                                  .join(' | ')}
                               </span>
                             )}
                           </div>
@@ -699,9 +809,12 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
               ) : (
                 <div className="text-center py-12 rounded-2xl border border-dashed border-slate-200 text-slate-400">
                   <Layers className="w-10 h-10 mx-auto mb-2 text-slate-300" />
-                  <p className="font-bold text-slate-600 text-sm">لم يتم تسجيل أي فرشة قص بعد لهذا الموديل.</p>
+                  <p className="font-bold text-slate-600 text-sm">
+                    لم يتم تسجيل أي فرشة قص بعد لهذا الموديل.
+                  </p>
                   <p className="text-xs text-slate-400 mt-1">
-                    استخدم النموذج الجانبي لإضافة الفرشة وتحديد الفَرّاش والألوان والراقات ثم اسم المقصدار.
+                    استخدم النموذج الجانبي لإضافة الفرشة وتحديد الفَرّاش والألوان
+                    والراقات وعدد القطع في الراق وإجمالي وزن الراق ثم اسم المقصدار.
                   </p>
                 </div>
               )}
@@ -715,7 +828,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                 className="w-full py-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <CheckCircle2 className="w-5 h-5" />
-                <span>✔️ إنهاء القص والتحويل للفرز والكنترول (جدول العد قبل الطباعة)</span>
+                <span>
+                  ✔️ إنهاء القص والتحويل للفرز والكنترول (جدول العد قبل الطباعة)
+                </span>
               </button>
             )}
           </div>

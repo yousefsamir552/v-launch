@@ -354,6 +354,8 @@ export interface CuttingRecord {
   recorded_by?: string;
   layers_count: number;
   layersCount?: number;
+  pieces_per_layer?: number;
+  piecesPerLayer?: number;
   layer_weight: number;
   layerWeight?: number;
   pieces_count: number;

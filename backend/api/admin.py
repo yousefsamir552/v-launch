@@ -96,7 +96,7 @@ class CuttingSpreadLayerInline(admin.TabularInline):
 
 @admin.register(CuttingRecord)
 class CuttingRecordAdmin(admin.ModelAdmin):
-    list_display = ('model', 'spread_number', 'spreader_name', 'cutter_name', 'layers_count', 'pieces_count', 'created_at')
+    list_display = ('model', 'spread_number', 'spreader_name', 'cutter_name', 'layers_count', 'pieces_per_layer', 'layer_weight', 'pieces_count', 'created_at')
     inlines = [CuttingSpreadLayerInline]
 
 

@@ -267,8 +267,9 @@ interface AppContextType {
     colorLayers: CuttingSpreadLayer[];
     colorName?: string;
     layersCount?: number;
-    layerWeight?: number;
-    piecesCount: number;
+    piecesPerLayer: number;
+    layerWeight: number;
+    piecesCount?: number;
     shadeDegree?: string;
     notes?: string;
   }) => void;
@@ -2040,8 +2041,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     colorLayers: CuttingSpreadLayer[];
     colorName?: string;
     layersCount?: number;
-    layerWeight?: number;
-    piecesCount: number;
+    piecesPerLayer: number;
+    layerWeight: number;
+    piecesCount?: number;
     shadeDegree?: string;
     notes?: string;
   }) => {
@@ -2051,32 +2053,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const existingModelSpreads = cuttingRecords.filter((r) => r.model_id === data.modelId);
     const spreadNumber = data.spreadNumber || existingModelSpreads.length + 1;
 
+    const piecesPerLayer = Math.max(1, Number(data.piecesPerLayer) || 1);
+    const layerWeight = Math.max(0, Number(data.layerWeight) || 0);
+
     const cleanLayers: CuttingSpreadLayer[] = (data.colorLayers || [])
       .filter((l) => (l.color_name || l.colorName) && Number(l.layers_count ?? l.layersCount ?? 0) > 0)
-      .map((l, idx) => ({
-        id: l.id || `lay-${Date.now()}-${idx}`,
-        color_name: (l.color_name || l.colorName || '').trim(),
-        colorName: (l.color_name || l.colorName || '').trim(),
-        layers_count: Math.max(0, Number(l.layers_count ?? l.layersCount ?? 0)),
-        layersCount: Math.max(0, Number(l.layers_count ?? l.layersCount ?? 0)),
-        layer_weight: Math.max(0, Number(l.layer_weight ?? l.layerWeight ?? 0)),
-        layerWeight: Math.max(0, Number(l.layer_weight ?? l.layerWeight ?? 0)),
-        pieces_count: Math.max(0, Number(l.pieces_count ?? l.piecesCount ?? 0)),
-        piecesCount: Math.max(0, Number(l.pieces_count ?? l.piecesCount ?? 0)),
-        shade_degree: (l.shade_degree || l.shadeDegree || '').trim(),
-        shadeDegree: (l.shade_degree || l.shadeDegree || '').trim(),
-        notes: (l.notes || '').trim()
-      }));
+      .map((l, idx) => {
+        const lCount = Math.max(0, Number(l.layers_count ?? l.layersCount ?? 0));
+        return {
+          id: l.id || `lay-${Date.now()}-${idx}`,
+          color_name: (l.color_name || l.colorName || '').trim(),
+          colorName: (l.color_name || l.colorName || '').trim(),
+          layers_count: lCount,
+          layersCount: lCount,
+          layer_weight: layerWeight,
+          layerWeight: layerWeight,
+          pieces_count: lCount * piecesPerLayer,
+          piecesCount: lCount * piecesPerLayer,
+          shade_degree: (l.shade_degree || l.shadeDegree || '').trim(),
+          shadeDegree: (l.shade_degree || l.shadeDegree || '').trim(),
+          notes: (l.notes || '').trim()
+        };
+      });
 
     const totalLayersCount =
       cleanLayers.length > 0
         ? cleanLayers.reduce((sum, item) => sum + item.layers_count, 0)
         : Math.max(0, Number(data.layersCount) || 0);
-
-    const totalWeight =
-      Number(data.layerWeight) > 0
-        ? Number(data.layerWeight)
-        : cleanLayers.reduce((sum, item) => sum + (item.layer_weight || 0), 0);
 
     const colorsSummary =
       cleanLayers.length > 0
@@ -2085,7 +2088,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const cleanSpreader = (data.spreaderName || '').trim();
     const cleanCutter = (data.cutterName || '').trim();
-    const totalPieces = Math.max(0, Number(data.piecesCount) || 0);
+    const totalPieces =
+      totalLayersCount > 0 && piecesPerLayer > 0
+        ? totalLayersCount * piecesPerLayer
+        : Math.max(0, Number(data.piecesCount) || 0);
 
     const newRecord: CuttingRecord = {
       id: recId,
@@ -2102,8 +2108,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       colorLayers: cleanLayers,
       layers_count: totalLayersCount,
       layersCount: totalLayersCount,
-      layer_weight: totalWeight,
-      layerWeight: totalWeight,
+      pieces_per_layer: piecesPerLayer,
+      piecesPerLayer: piecesPerLayer,
+      layer_weight: layerWeight,
+      layerWeight: layerWeight,
       pieces_count: totalPieces,
       piecesCount: totalPieces,
       shade_degree: data.shadeDegree?.trim() || '',
@@ -2121,7 +2129,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           id: 'tl-' + Date.now(),
           stage: 'في القص',
           title: `تسجيل فرشة قص #${spreadNumber} (${totalPieces} قطعة)`,
-          notes: `فرشة رقم #${spreadNumber} | الفَرّاش: ${cleanSpreader || '-'} | المقصدار: ${cleanCutter} | الألوان والراقات: ${colorsSummary} | إجمالي الراقات: ${totalLayersCount}${totalWeight > 0 ? ` | الوزن: ${totalWeight} كجم` : ''}${cleanNotes ? ` | ملاحظات: ${cleanNotes}` : ''}`,
+          notes: `فرشة رقم #${spreadNumber} | الفَرّاش: ${cleanSpreader || '-'} | المقصدار: ${cleanCutter} | الألوان والراقات: ${colorsSummary} | إجمالي الراقات: ${totalLayersCount} | عدد القطع في الراق: ${piecesPerLayer} | إجمالي وزن الراق: ${layerWeight} كجم | القطع المقصوصة: ${totalPieces}${cleanNotes ? ` | ملاحظات: ${cleanNotes}` : ''}`,
           user: cleanCutter || cleanSpreader,
           timestamp: createdAt,
           details: {
@@ -2133,7 +2141,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             color_name: colorsSummary,
             color_layers: cleanLayers,
             layers_count: totalLayersCount,
-            layer_weight: totalWeight,
+            pieces_per_layer: piecesPerLayer,
+            layer_weight: layerWeight,
             pieces_count: totalPieces,
             total_cut_pieces_so_far: newTotal,
             shade_degree: data.shadeDegree?.trim() || '',
@@ -2162,7 +2171,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         color_name: colorsSummary,
         color_layers: cleanLayers,
         layers_count: totalLayersCount,
-        layer_weight: totalWeight,
+        pieces_per_layer: piecesPerLayer,
+        layer_weight: layerWeight,
         pieces_count: totalPieces,
         shade_degree: data.shadeDegree?.trim() || '',
         notes: cleanNotes,
@@ -2170,8 +2180,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
       .then((saved) => {
         setCuttingRecords((prev) => prev.map((r) => (r.id === recId ? saved : r)));
-        logAction('القص', `تسجيل فرشة قص #${spreadNumber} للموديل: ${totalPieces} قطعة (الفراش: ${cleanSpreader} | المقصدار: ${cleanCutter})`);
-        addFlashMessage(`تم تسجيل الفرشة رقم #${spreadNumber} بنجاح (${totalPieces} قطعة)`);
+        logAction('القص', `تسجيل فرشة قص #${spreadNumber} للموديل: ${totalPieces} قطعة (${totalLayersCount} راق × ${piecesPerLayer} قطعة/راق | إجمالي وزن الراق: ${layerWeight} كجم)`);
+        addFlashMessage(`تم تسجيل الفرشة رقم #${spreadNumber} بنجاح (${totalPieces} قطعة مقصوصة)`);
       })
       .catch((err) => {
         refreshState();
@@ -2208,8 +2218,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       'اسم الفراش (Spreader)',
       'الألوان والراقات داخل الفرشة',
       'إجمالي الراقات',
-      'إجمالي الوزن (كجم)',
-      'إجمالي القطع المنتجة',
+      'عدد القطع في الراق',
+      'إجمالي وزن الراق (كجم)',
+      'عدد القطع المقصوصة (الراقات × قطع الراق)',
       'اسم المقصدار (Cutter)',
       'درجة الصبغة',
       'الملاحظات',
@@ -2221,6 +2232,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       r.spreader_name || r.spreaderName || '-',
       r.color_name || '-',
       r.layers_count.toString(),
+      (r.pieces_per_layer ?? r.piecesPerLayer ?? 0).toString(),
       r.layer_weight.toString(),
       r.pieces_count.toString(),
       r.cutter_name || '-',
