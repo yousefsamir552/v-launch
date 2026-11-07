@@ -120,7 +120,7 @@ export const App: React.FC = () => {
     siteLogo.startsWith('/');
 
   return (
-    <div className="min-h-screen bg-[#f8f9fa] text-slate-900 flex flex-col antialiased">
+    <div className="min-h-screen bg-[#f8f9fa] text-slate-900 flex flex-col lg:pl-72 antialiased">
       <Navbar
         currentTab={currentTab}
         setCurrentTab={(tab) => handleNavigate(tab)}

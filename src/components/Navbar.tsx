@@ -18,7 +18,10 @@ import {
   Calendar,
   CheckCircle2,
   MessageSquare,
-  BarChart3
+  BarChart3,
+  Factory,
+  Calculator,
+  Users
 } from 'lucide-react';
 import { InternalMessagingModal } from './InternalMessagingModal';
 
@@ -37,12 +40,14 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     appNotifications, 
     unreadNotificationsCount, 
     markNotificationRead,
-    unreadMessagesCount
+    unreadMessagesCount,
+    addFlashMessage
   } = useApp();
-  const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const [productionOpen, setProductionOpen] = useState(true);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [messagesModalOpen, setMessagesModalOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [comingSoonModal, setComingSoonModal] = useState<string | null>(null);
 
   const isSudo = currentUser?.username?.toLowerCase() === 'sudo' || currentUser?.is_sudo;
   const siteName = globalSettings?.site_name || 'نظام إدارة المصنع';
@@ -53,7 +58,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     siteLogo.startsWith('data:image/') ||
     siteLogo.startsWith('/');
 
-  const allNavItems = [
+  const productionSubItems = [
     { 
       id: 'dashboard', 
       label: 'الرئيسية', 
@@ -109,21 +114,18 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
       icon: BarChart3,
       color: 'text-amber-600',
       isVisible: hasPermission('reports') || isSudo
-    },
-    {
-      id: 'settings',
-      label: 'الإعدادات',
-      icon: Settings,
-      color: 'text-slate-600',
-      isVisible: canAccessSettings()
     }
-  ];
-
-  const navItems = allNavItems.filter((item) => item.isVisible);
+  ].filter((item) => item.isVisible);
 
   const handleNavClick = (tabId: string) => {
     setCurrentTab(tabId);
     setMobileMenuOpen(false);
+  };
+
+  const handleComingSoon = (sectionName: string) => {
+    const msg = 'قريباً - فضوا يوسف شوية وهو هيظبطه';
+    setComingSoonModal(sectionName);
+    addFlashMessage(msg, 'info');
   };
 
   const isTabActive = (itemId: string) => {
@@ -171,65 +173,60 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     return false;
   };
 
+  const isAnyProductionActive = productionSubItems.some((item) => isTabActive(item.id));
+
   return (
     <>
-      <nav className="no-print bg-white/95 backdrop-blur-md sticky top-0 z-40 border-b border-slate-200/80 shadow-xs">
-        <div className="max-w-7xl mx-auto px-3 sm:px-4 lg:px-6">
-          <div className="flex items-center justify-between h-16">
-            {/* Dynamic Logo & Brand Name (Task 3) */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => handleNavClick('dashboard')}
-                className="flex items-center gap-2.5 font-black text-lg text-slate-900 hover:opacity-90 transition group shrink-0 cursor-pointer"
-              >
-                {isImageLogo ? (
-                  <img
-                    src={siteLogo}
-                    alt={siteName}
-                    className="w-9 h-9 rounded-xl object-contain bg-white border border-slate-200 p-0.5 shadow-2xs group-hover:scale-105 transition-transform"
-                  />
-                ) : (
-                  <span className="text-2xl group-hover:scale-110 transition-transform">
-                    {siteLogo || '🏭'}
-                  </span>
-                )}
-                <span className="tracking-tight hidden sm:inline">{siteName}</span>
-                <span className="sm:hidden font-black text-sm truncate max-w-[120px]">{siteName}</span>
-              </button>
-            </div>
+      {/* Mobile Toggle Button (visible on small screens) */}
+      <button
+        onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+        className="no-print lg:hidden fixed top-4 left-4 z-50 p-2.5 rounded-xl bg-slate-900 text-white shadow-lg cursor-pointer"
+        title="القائمة الجانبية"
+      >
+        {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+      </button>
 
-            {/* Desktop Nav Links */}
-            <div className="hidden lg:flex items-center gap-1.5 overflow-x-auto py-1">
-              {navItems.map((item) => {
-                const Icon = item.icon;
-                const isActive = isTabActive(item.id);
+      {/* Mobile Backdrop */}
+      {mobileMenuOpen && (
+        <div
+          onClick={() => setMobileMenuOpen(false)}
+          className="no-print lg:hidden fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-40"
+        />
+      )}
 
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => handleNavClick(item.id)}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-full text-xs font-bold transition-all duration-150 whitespace-nowrap cursor-pointer ${
-                      isActive
-                        ? 'bg-slate-900 text-white shadow-xs'
-                        : 'text-slate-700 hover:bg-slate-100/90'
-                    }`}
-                  >
-                    <Icon className={`w-4 h-4 ${isActive ? 'text-white' : item.color}`} />
-                    <span>{item.label}</span>
-                  </button>
-                );
-              })}
-            </div>
+      {/* Left Sidebar */}
+      <aside
+        className={`no-print fixed top-0 left-0 bottom-0 z-40 w-72 bg-white border-r border-slate-200/80 shadow-xl lg:shadow-xs flex flex-col justify-between transition-transform duration-200 ${
+          mobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        }`}
+      >
+        {/* 1. Top Section: User Name & Quick Actions */}
+        <div className="p-4 border-b border-slate-200/80 space-y-3">
+          {/* Brand Header */}
+          <div className="flex items-center justify-between">
+            <button
+              onClick={() => handleNavClick('dashboard')}
+              className="flex items-center gap-2 font-black text-sm text-slate-900 hover:opacity-90 transition cursor-pointer"
+            >
+              {isImageLogo ? (
+                <img
+                  src={siteLogo}
+                  alt={siteName}
+                  className="w-7 h-7 rounded-lg object-contain bg-white border border-slate-200 p-0.5"
+                />
+              ) : (
+                <span className="text-xl">{siteLogo || '🏭'}</span>
+              )}
+              <span className="truncate max-w-[140px]">{siteName}</span>
+            </button>
 
-            {/* Notifications & User Profile */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               {/* Internal Messaging Icon Button */}
               <button
                 type="button"
                 onClick={() => {
                   setMessagesModalOpen(true);
                   setNotificationsOpen(false);
-                  setUserDropdownOpen(false);
                 }}
                 className={`relative p-2 rounded-full border transition cursor-pointer ${
                   unreadMessagesCount > 0
@@ -240,20 +237,17 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
               >
                 <MessageSquare className="w-4 h-4" />
                 {unreadMessagesCount > 0 && (
-                  <span className="absolute -top-1 -end-1 min-w-[18px] h-[18px] px-1 bg-indigo-600 text-white rounded-full text-[10px] font-black flex items-center justify-center shadow-xs">
+                  <span className="absolute -top-1 -end-1 min-w-[16px] h-[16px] px-1 bg-indigo-600 text-white rounded-full text-[9px] font-black flex items-center justify-center">
                     {unreadMessagesCount}
                   </span>
                 )}
               </button>
 
-              {/* Notifications Dropdown */}
+              {/* Notifications Button */}
               <div className="relative">
                 <button
                   type="button"
-                  onClick={() => {
-                    setNotificationsOpen(!notificationsOpen);
-                    setUserDropdownOpen(false);
-                  }}
+                  onClick={() => setNotificationsOpen(!notificationsOpen)}
                   className={`relative p-2 rounded-full border transition cursor-pointer ${
                     unreadNotificationsCount > 0
                       ? 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100'
@@ -263,14 +257,14 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                 >
                   <Bell className="w-4 h-4" />
                   {unreadNotificationsCount > 0 && (
-                    <span className="absolute -top-1 -end-1 min-w-[18px] h-[18px] px-1 bg-rose-600 text-white rounded-full text-[10px] font-black flex items-center justify-center animate-pulse shadow-xs">
+                    <span className="absolute -top-1 -end-1 min-w-[16px] h-[16px] px-1 bg-rose-600 text-white rounded-full text-[9px] font-black flex items-center justify-center animate-pulse">
                       {unreadNotificationsCount}
                     </span>
                   )}
                 </button>
 
                 {notificationsOpen && (
-                  <div className="absolute start-0 sm:start-auto sm:end-0 mt-2 w-80 sm:w-96 bg-white rounded-3xl shadow-2xl border border-slate-200 py-3 z-50 animate-in fade-in zoom-in-95 duration-150">
+                  <div className="fixed left-4 top-16 w-80 sm:w-96 bg-white rounded-3xl shadow-2xl border border-slate-200 py-3 z-50 animate-in fade-in zoom-in-95 duration-150">
                     <div className="px-4 pb-2 border-b border-slate-100 flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Bell className="w-4 h-4 text-rose-600" />
@@ -324,11 +318,9 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                                   موديل {notif.model_code}
                                 </span>
                               </div>
-
                               <p className="font-bold text-slate-800 text-[11px] leading-relaxed">
                                 {notif.message}
                               </p>
-
                               <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1">
                                 <span>الموقع: {notif.source_name}</span>
                                 <span className="font-mono font-bold">تاريخ الاستلام: {notif.expected_date}</span>
@@ -343,114 +335,163 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                         </div>
                       )}
                     </div>
-
-                    <div className="px-4 pt-2 border-t border-slate-100 flex items-center justify-between">
-                      <button
-                        onClick={() => {
-                          setCurrentTab('production_control');
-                          setNotificationsOpen(false);
-                        }}
-                        className="text-[11px] font-bold text-indigo-700 hover:underline cursor-pointer"
-                      >
-                        فتح شاشة متابعة الإنتاج &larr;
-                      </button>
-                      <button
-                        onClick={() => setNotificationsOpen(false)}
-                        className="text-[11px] text-slate-400 hover:text-slate-600 cursor-pointer"
-                      >
-                        إغلاق
-                      </button>
-                    </div>
                   </div>
                 )}
               </div>
-
-              {/* Profile Dropdown */}
-              <div className="relative">
-                <button
-                  onClick={() => {
-                    setUserDropdownOpen(!userDropdownOpen);
-                    setNotificationsOpen(false);
-                  }}
-                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200/80 border border-slate-200 transition text-xs text-slate-800 font-semibold cursor-pointer"
-                >
-                  <div className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-bold shadow-xs">
-                    {currentUser?.real_name ? currentUser.real_name[0] : 'U'}
-                  </div>
-                  <div className="hidden md:flex flex-col text-start">
-                    <span className="text-xs font-bold leading-tight line-clamp-1 max-w-[120px]">
-                      {currentUser?.real_name || currentUser?.username}
-                    </span>
-                    <span className="text-[10px] text-slate-500 font-normal">
-                      {isSudo
-                        ? 'حساب طوارئ مطلق'
-                        : currentUser?.role || 'موظف تشغيل'}
-                    </span>
-                  </div>
-                  <ChevronDown className="w-3 h-3 text-slate-500" />
-                </button>
-
-                {userDropdownOpen && (
-                  <div className="absolute start-0 mt-2 w-64 bg-white rounded-2xl shadow-xl border border-slate-200 py-3 z-50 animate-in fade-in zoom-in-95 duration-100">
-                    <div className="px-4 pb-3 border-b border-slate-100 text-start">
-                      <p className="font-bold text-slate-900 text-sm">{currentUser?.real_name}</p>
-                      <p className="text-xs text-slate-500 font-mono">@{currentUser?.username}</p>
-                      <span className="inline-block mt-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                        {isSudo ? 'حساب طوارئ مطلق (Superuser)' : currentUser?.role || 'مستخدم النظام'}
-                      </span>
-                    </div>
-
-                    <div className="p-2">
-                      <button
-                        onClick={() => {
-                          setUserDropdownOpen(false);
-                          onLogout();
-                        }}
-                        className="w-full flex items-center justify-center gap-2 text-xs text-rose-600 hover:bg-rose-50 font-bold py-2.5 rounded-xl transition cursor-pointer"
-                      >
-                        <LogOut className="w-4 h-4" />
-                        <span>تسجيل الخروج من النظام</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Mobile menu hamburger */}
-              <button
-                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-                className="lg:hidden p-2 rounded-xl text-slate-700 hover:bg-slate-100 cursor-pointer"
-              >
-                {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-              </button>
             </div>
           </div>
 
-          {/* Mobile menu dropdown */}
-          {mobileMenuOpen && (
-            <div className="lg:hidden py-3 border-t border-slate-200 flex flex-col gap-1.5">
-              {navItems.map((item) => {
-                const Icon = item.icon;
-                const isActive = isTabActive(item.id);
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => handleNavClick(item.id)}
-                    className={`flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-bold transition ${
-                      isActive ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
-                    }`}
-                  >
-                    <Icon className={`w-4 h-4 ${isActive ? 'text-white' : item.color}`} />
-                    <span>{item.label}</span>
-                  </button>
-                );
-              })}
+          {/* User Profile Card at Top */}
+          <div className="flex items-center justify-between gap-2 p-3 rounded-2xl bg-slate-50 border border-slate-200/80">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-9 h-9 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-black shrink-0 shadow-xs">
+                {currentUser?.real_name ? currentUser.real_name[0] : 'U'}
+              </div>
+              <div className="flex flex-col min-w-0 text-start">
+                <span className="text-xs font-black text-slate-900 truncate">
+                  {currentUser?.real_name || currentUser?.username}
+                </span>
+                <span className="text-[10px] text-slate-500 truncate">
+                  {isSudo ? 'حساب طوارئ مطلق' : currentUser?.role || 'موظف تشغيل'}
+                </span>
+              </div>
             </div>
-          )}
+            <button
+              onClick={onLogout}
+              title="تسجيل الخروج"
+              className="p-2 rounded-xl text-rose-600 hover:bg-rose-50 transition cursor-pointer shrink-0"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
         </div>
-      </nav>
 
-      {/* Rendered outside <nav> (and via Portal) so backdrop-blur on <nav> never clips or misaligns the modal (Task 1) */}
+        {/* Middle Navigation Items */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {/* 2. Production Button (Accordion / Dropdown) */}
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => setProductionOpen(!productionOpen)}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-black transition cursor-pointer ${
+                isAnyProductionActive
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'bg-slate-100/80 text-slate-800 hover:bg-slate-200/70'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Factory className={`w-4 h-4 ${isAnyProductionActive ? 'text-white' : 'text-blue-600'}`} />
+                <span>التصنيع</span>
+              </div>
+              <ChevronDown
+                className={`w-4 h-4 transition-transform duration-200 ${
+                  productionOpen ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+
+            {productionOpen && (
+              <div className="pr-3 pl-1 py-1 space-y-1 border-r-2 border-slate-200 mr-3">
+                {productionSubItems.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = isTabActive(item.id);
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => handleNavClick(item.id)}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer text-start ${
+                        isActive
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : item.color}`} />
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* 3. Accounting Button */}
+          <button
+            type="button"
+            onClick={() => handleComingSoon('الحسابات')}
+            className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-black text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+          >
+            <div className="flex items-center gap-2.5">
+              <Calculator className="w-4 h-4 text-emerald-600" />
+              <span>الحسابات</span>
+            </div>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+              قريباً
+            </span>
+          </button>
+
+          {/* 4. HR Button */}
+          <button
+            type="button"
+            onClick={() => handleComingSoon('شؤون الموظفين')}
+            className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-black text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+          >
+            <div className="flex items-center gap-2.5">
+              <Users className="w-4 h-4 text-purple-600" />
+              <span>شؤون الموظفين</span>
+            </div>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+              قريباً
+            </span>
+          </button>
+        </div>
+
+        {/* 5. Bottom Section: Settings Button */}
+        {canAccessSettings() && (
+          <div className="p-3 border-t border-slate-200/80 bg-slate-50/50">
+            <button
+              type="button"
+              onClick={() => handleNavClick('settings')}
+              className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-black transition cursor-pointer ${
+                isTabActive('settings')
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'text-slate-700 hover:bg-slate-200/70'
+              }`}
+            >
+              <Settings className={`w-4 h-4 ${isTabActive('settings') ? 'text-white' : 'text-slate-600'}`} />
+              <span>الإعدادات</span>
+            </button>
+          </div>
+        )}
+      </aside>
+
+      {/* Coming Soon Modal for Accounting & HR */}
+      {comingSoonModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+          onClick={() => setComingSoonModal(null)}
+        >
+          <div
+            className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-sm w-full p-6 text-center space-y-4 animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center mx-auto text-2xl">
+              ⏳
+            </div>
+            <h3 className="font-black text-base text-slate-900">قسم {comingSoonModal}</h3>
+            <p className="text-sm font-bold text-slate-700 leading-relaxed">
+              قريباً - فضوا يوسف شوية وهو هيظبطه
+            </p>
+            <button
+              type="button"
+              onClick={() => setComingSoonModal(null)}
+              className="w-full py-2.5 rounded-xl bg-slate-900 text-white text-xs font-black hover:bg-slate-800 transition cursor-pointer"
+            >
+              حسناً
+            </button>
+          </div>
+        </div>
+      )}
+
       <InternalMessagingModal
         isOpen={messagesModalOpen}
         onClose={() => setMessagesModalOpen(false)}
