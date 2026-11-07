@@ -260,6 +260,62 @@ def sync_reserved_quantities():
             acc.save(update_fields=['reserved_quantity'])
 
 
+def ensure_schema_columns():
+    """
+    Self-healing schema check: ensures newly added columns and tables for Cutting Spreads
+    exist in the database even if a migration file was not uploaded or not yet applied on Render.
+    """
+    from django.db import connection
+    try:
+        with connection.cursor() as cursor:
+            table_names = connection.introspection.table_names(cursor)
+            if 'api_modelitem' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_modelitem')]
+                if 'spreader_name' not in cols:
+                    cursor.execute('ALTER TABLE api_modelitem ADD COLUMN spreader_name varchar(150) NULL;')
+
+            if 'api_cuttingrecord' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_cuttingrecord')]
+                if 'spread_number' not in cols:
+                    cursor.execute('ALTER TABLE api_cuttingrecord ADD COLUMN spread_number integer NOT NULL DEFAULT 1;')
+                if 'spreader_name' not in cols:
+                    cursor.execute("ALTER TABLE api_cuttingrecord ADD COLUMN spreader_name varchar(150) NOT NULL DEFAULT '';")
+                if 'pieces_per_layer' not in cols:
+                    cursor.execute('ALTER TABLE api_cuttingrecord ADD COLUMN pieces_per_layer integer NOT NULL DEFAULT 0;')
+
+            if 'api_cuttingspreadlayer' not in table_names:
+                if connection.vendor == 'postgresql':
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS api_cuttingspreadlayer (
+                            id bigserial PRIMARY KEY,
+                            client_id varchar(100) NULL,
+                            color_name varchar(150) NOT NULL,
+                            layers_count integer NOT NULL DEFAULT 0,
+                            layer_weight double precision NOT NULL DEFAULT 0.0,
+                            pieces_count integer NOT NULL DEFAULT 0,
+                            shade_degree varchar(100) NOT NULL DEFAULT '',
+                            notes text NOT NULL DEFAULT '',
+                            spread_id bigint NOT NULL REFERENCES api_cuttingrecord(id) ON DELETE CASCADE
+                        );
+                    ''')
+                else:
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS api_cuttingspreadlayer (
+                            id integer PRIMARY KEY AUTOINCREMENT,
+                            client_id varchar(100) NULL,
+                            color_name varchar(150) NOT NULL,
+                            layers_count integer NOT NULL DEFAULT 0,
+                            layer_weight real NOT NULL DEFAULT 0.0,
+                            pieces_count integer NOT NULL DEFAULT 0,
+                            shade_degree varchar(100) NOT NULL DEFAULT '',
+                            notes text NOT NULL DEFAULT '',
+                            spread_id bigint NOT NULL REFERENCES api_cuttingrecord(id) ON DELETE CASCADE
+                        );
+                    ''')
+    except Exception:
+        pass
+
+
 def ensure_initial_seed():
     """
     Ensures the Sudo emergency superuser account, GlobalSettings, and initial roles/catalog exist.
@@ -267,6 +323,7 @@ def ensure_initial_seed():
     or model deletions performed by the admin are permanently respected across all browsers.
     Always guarantees that the 'sudo' emergency account exists and is immutable.
     """
+    ensure_schema_columns()
     # Ensure GlobalSettings singleton exists
     GlobalSettings.get_solo()
 

@@ -24,11 +24,6 @@ class Migration(migrations.Migration):
             name='spreader_name',
             field=models.CharField(blank=True, default='', max_length=150, verbose_name='اسم الفَرّاش (من قام بالفرش)'),
         ),
-        migrations.AddField(
-            model_name='cuttingrecord',
-            name='pieces_per_layer',
-            field=models.IntegerField(default=0, verbose_name='عدد القطع في الراق'),
-        ),
         migrations.AlterField(
             model_name='cuttingrecord',
             name='fabric_color',
@@ -42,7 +37,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='cuttingrecord',
             name='pieces_count',
-            field=models.IntegerField(default=0, verbose_name='عدد القطع المقصوصة (الراقات × قطع الراق)'),
+            field=models.IntegerField(default=0, verbose_name='إجمالي القطع المنتجة بالفرشة'),
         ),
         migrations.AlterField(
             model_name='cuttingrecord',
@@ -52,7 +47,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='cuttingrecord',
             name='layer_weight',
-            field=models.FloatField(default=0.0, verbose_name='إجمالي وزن الراق (كجم)'),
+            field=models.FloatField(default=0.0, verbose_name='إجمالي وزن الفرشة (كجم)'),
         ),
         migrations.AlterField(
             model_name='cuttingrecord',
