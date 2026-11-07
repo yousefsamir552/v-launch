@@ -50,7 +50,8 @@ const DEFAULT_GLOBAL_SETTINGS: GlobalSiteSettings = {
     'يرجى سرعة مراجعة واعتماد الموديل المحول لقسمكم.',
     'تم الانتهاء من المرحلة الحالية وجارٍ تسليم القطع للقسم التالي.',
     'تنبيه: يوجد نقص في بعض المستلزمات، يرجى المراجعة العاجلة.'
-  ]
+  ],
+  favorite_accessory_ids: []
 };
 
 interface AppContextType {
@@ -310,7 +311,11 @@ interface AppContextType {
 
   // Settings Actions
   addSizeDef: (name: string, values: string) => void;
+  updateSizeDef: (id: string, name: string, values: string) => void;
+  deleteSizeDef: (id: string) => void;
   addSupplier: (name: string, phone: string) => void;
+  updateSupplier: (id: string, name: string, phone: string) => void;
+  deleteSupplier: (id: string) => void;
   addUser: (user: Omit<User, 'id'>) => void;
   toggleUserActive: (userId: string) => { success: boolean; message: string };
   updateUserPermissionsAndPassword: (
@@ -2461,6 +2466,78 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
+  const updateSizeDef = (id: string, name: string, values: string) => {
+    const cleanName = name.trim();
+    const cleanValues = values.trim();
+    if (!cleanName || !cleanValues) return;
+
+    setSizeDefs((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, name: cleanName, values: cleanValues } : s))
+    );
+    api
+      .updateSizeDef(id, { name: cleanName, values: cleanValues })
+      .then((saved) => {
+        setSizeDefs((prev) => prev.map((s) => (s.id === id ? saved : s)));
+        logAction('الإعدادات', `تعديل فئة المقاسات: ${cleanName}`);
+        addFlashMessage('تم تعديل فئة المقاسات بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل تعديل المقاس في الباك إند', 'danger');
+      });
+  };
+
+  const deleteSizeDef = (id: string) => {
+    const target = sizeDefs.find((s) => s.id === id);
+    setSizeDefs((prev) => prev.filter((s) => s.id !== id));
+    api
+      .deleteSizeDef(id)
+      .then(() => {
+        logAction('الإعدادات', `حذف فئة المقاسات: ${target?.name || id}`);
+        addFlashMessage('تم حذف فئة المقاسات بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل حذف المقاس من الباك إند', 'danger');
+      });
+  };
+
+  const updateSupplier = (id: string, name: string, phone: string) => {
+    const cleanName = name.trim();
+    const cleanPhone = phone.trim();
+    if (!cleanName) return;
+
+    setSuppliers((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, name: cleanName, phone: cleanPhone } : s))
+    );
+    api
+      .updateSupplier(id, { name: cleanName, phone: cleanPhone })
+      .then((saved) => {
+        setSuppliers((prev) => prev.map((s) => (s.id === id ? saved : s)));
+        logAction('الإعدادات', `تعديل بيانات المورد: ${cleanName}`);
+        addFlashMessage('تم تحديث بيانات المورد بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل تعديل المورد في الباك إند', 'danger');
+      });
+  };
+
+  const deleteSupplier = (id: string) => {
+    const target = suppliers.find((s) => s.id === id);
+    setSuppliers((prev) => prev.filter((s) => s.id !== id));
+    api
+      .deleteSupplier(id)
+      .then(() => {
+        logAction('الإعدادات', `حذف المورد: ${target?.name || id}`);
+        addFlashMessage('تم حذف المورد بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل حذف المورد من الباك إند', 'danger');
+      });
+  };
+
   const addUser = (userData: Omit<User, 'id'>) => {
     if (userData.username.trim().toLowerCase() === 'sudo') {
       addFlashMessage('اسم المستخدم هذا محجوز للنظام ولا يمكن استخدامه', 'danger');
@@ -2827,7 +2904,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         finishSewingToQC,
         finishQCToProduction,
         addSizeDef,
+        updateSizeDef,
+        deleteSizeDef,
         addSupplier,
+        updateSupplier,
+        deleteSupplier,
         addUser,
         toggleUserActive,
         updateUserPermissionsAndPassword,

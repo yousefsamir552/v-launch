@@ -99,9 +99,17 @@ export const api = {
   getSizeDefs: () => request<any[]>('/sizes/'),
   createSizeDef: (data: any) =>
     request<any>('/sizes/', { method: 'POST', body: JSON.stringify(data) }),
+  updateSizeDef: (id: string, data: any) =>
+    request<any>(`/sizes/${encodeURIComponent(id)}/`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteSizeDef: (id: string) =>
+    request<any>(`/sizes/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
   getSuppliers: () => request<any[]>('/suppliers/'),
   createSupplier: (data: any) =>
     request<any>('/suppliers/', { method: 'POST', body: JSON.stringify(data) }),
+  updateSupplier: (id: string, data: any) =>
+    request<any>(`/suppliers/${encodeURIComponent(id)}/`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteSupplier: (id: string) =>
+    request<any>(`/suppliers/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
 
   // الأقمشة والألوان وحركات المخزن (Fabrics & Colors)
   getFabrics: () => request<any[]>('/fabrics/'),

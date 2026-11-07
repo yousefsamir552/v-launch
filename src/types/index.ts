@@ -77,6 +77,7 @@ export interface GlobalSiteSettings {
   whatsapp_supplier_template: string;
   default_sewing_instructions: string;
   internal_message_templates: string[];
+  favorite_accessory_ids?: string[];
   updated_by?: string;
   updated_at?: string;
 }

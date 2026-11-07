@@ -17,7 +17,11 @@ import {
   FileText,
   Sparkles,
   RotateCcw,
-  Lock
+  Lock,
+  Pencil,
+  Check,
+  X,
+  Star
 } from 'lucide-react';
 import { User } from '../types';
 import { EditUserModal } from './EditUserModal';
@@ -35,10 +39,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     sizeDefs,
     suppliers,
     users,
+    accessoryItems,
     globalSettings,
     updateGlobalSettings,
     addSizeDef,
+    updateSizeDef,
+    deleteSizeDef,
     addSupplier,
+    updateSupplier,
+    deleteSupplier,
     addUser,
     deleteUser,
     toggleUserActive,
@@ -72,13 +81,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     return 'users';
   });
 
-  // Size Form State
+  // Size Form & Edit State
   const [sizeName, setSizeName] = useState('');
   const [sizeValues, setSizeValues] = useState('');
+  const [editingSizeId, setEditingSizeId] = useState<string | null>(null);
+  const [editSizeName, setEditSizeName] = useState('');
+  const [editSizeValues, setEditSizeValues] = useState('');
 
-  // Supplier Form State
+  // Supplier Form & Edit State
   const [supName, setSupName] = useState('');
   const [supPhone, setSupPhone] = useState('');
+  const [editingSupId, setEditingSupId] = useState<string | null>(null);
+  const [editSupName, setEditSupName] = useState('');
+  const [editSupPhone, setEditSupPhone] = useState('');
 
   // User Form State
   const [realName, setRealName] = useState('');
@@ -86,7 +101,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
   const [password, setPassword] = useState('');
   const [selectedRoleId, setSelectedRoleId] = useState<string>(roles[0]?.id || '');
 
-  // Global Settings Form State (Task 3)
+  // Global Settings Form State (Task 3 + Favorite Accessories)
   const [siteName, setSiteName] = useState(globalSettings.site_name);
   const [siteLogo, setSiteLogo] = useState(globalSettings.logo);
   const [footerTitle, setFooterTitle] = useState(globalSettings.footer_title);
@@ -95,6 +110,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
   const [sewingInstructions, setSewingInstructions] = useState(globalSettings.default_sewing_instructions);
   const [internalTemplates, setInternalTemplates] = useState<string[]>(
     globalSettings.internal_message_templates || []
+  );
+  const [favoriteAccessoryIds, setFavoriteAccessoryIds] = useState<string[]>(
+    globalSettings.favorite_accessory_ids || []
   );
   const [newInternalTemplate, setNewInternalTemplate] = useState('');
 
@@ -106,6 +124,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     setWhatsappTemplate(globalSettings.whatsapp_supplier_template || '');
     setSewingInstructions(globalSettings.default_sewing_instructions || '');
     setInternalTemplates(globalSettings.internal_message_templates || []);
+    setFavoriteAccessoryIds(globalSettings.favorite_accessory_ids || []);
   }, [globalSettings]);
 
   useEffect(() => {
@@ -125,12 +144,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     setSizeValues('');
   };
 
+  const handleStartEditSize = (id: string, currentName: string, currentValues: string) => {
+    setEditingSizeId(id);
+    setEditSizeName(currentName);
+    setEditSizeValues(currentValues);
+  };
+
+  const handleSaveEditSize = (id: string) => {
+    if (!editSizeName.trim() || !editSizeValues.trim()) return;
+    updateSizeDef(id, editSizeName.trim(), editSizeValues.trim());
+    setEditingSizeId(null);
+  };
+
   const handleAddSupplier = (e: React.FormEvent) => {
     e.preventDefault();
     if (!supName.trim()) return;
     addSupplier(supName.trim(), supPhone.trim());
     setSupName('');
     setSupPhone('');
+  };
+
+  const handleStartEditSupplier = (id: string, currentName: string, currentPhone: string) => {
+    setEditingSupId(id);
+    setEditSupName(currentName);
+    setEditSupPhone(currentPhone || '');
+  };
+
+  const handleSaveEditSupplier = (id: string) => {
+    if (!editSupName.trim()) return;
+    updateSupplier(id, editSupName.trim(), editSupPhone.trim());
+    setEditingSupId(null);
+  };
+
+  const handleToggleFavoriteAccessory = (accId: string) => {
+    setFavoriteAccessoryIds((prev) =>
+      prev.includes(accId) ? prev.filter((id) => id !== accId) : [...prev, accId]
+    );
   };
 
   const handleAddUser = (e: React.FormEvent) => {
@@ -189,7 +238,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
       copyright_text: copyrightText.trim(),
       whatsapp_supplier_template: whatsappTemplate,
       default_sewing_instructions: sewingInstructions,
-      internal_message_templates: internalTemplates
+      internal_message_templates: internalTemplates,
+      favorite_accessory_ids: favoriteAccessoryIds
     });
   };
 
@@ -208,7 +258,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
             <span>⚙️ إعدادات النظام والصلاحيات والإعدادات العامة</span>
           </h2>
           <p className="text-slate-500 text-sm mt-0.5">
-            إدارة الحسابات، الصلاحيات الديناميكية، إعدادات الموقع العامة، فئات المقاسات، والموردين
+            إدارة الحسابات، الصلاحيات الديناميكية، إعدادات الموقع والأدوات العامة، فئات المقاسات، والموردين
           </p>
         </div>
 
@@ -255,7 +305,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
               }`}
             >
               <Globe className="w-3.5 h-3.5" />
-              <span>إعدادات الموقع العامة</span>
+              <span>الإعدادات والأدوات العامة</span>
             </button>
           )}
 
@@ -288,7 +338,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
       {/* Tab 1: Roles Management */}
       {activeTab === 'roles' && hasRolesPerm && <RoleManagementSection />}
 
-      {/* Tab 2: Global Site Settings (Task 3) */}
+      {/* Tab 2: Global Site Settings & General Tools */}
       {activeTab === 'global_settings' && hasGlobalSettingsPerm && (
         <form onSubmit={handleSaveGlobalSettings} className="space-y-6">
           <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs space-y-6">
@@ -299,10 +349,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                 </div>
                 <div>
                   <h3 className="text-lg font-black text-slate-900">
-                    إعدادات الموقع العامة (Global Site Settings)
+                    الإعدادات والأدوات العامة (Global Settings & General Tools)
                   </h3>
                   <p className="text-xs text-slate-500">
-                    تحكم ديناميكي في اسم الموقع بالهيدر، شعار المصنع (Logo)، جملة حقوق الملكية في الفوتر، ونصوص الرسائل والتعليمات الجاهزة.
+                    تحكم ديناميكي في هوية الموقع، نصوص الرسائل، واختيار الإكسسوارات المفضلة/الدائمة للاستخدام السريع في التصميم.
                   </p>
                 </div>
               </div>
@@ -334,7 +384,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    اسم الموقع / المصنع (يظهر في الـ Header والمطبوعات) *
+                    اسم الموقع / المصنع (يظهر في القائمة والمطبوعات) *
                   </label>
                   <input
                     type="text"
@@ -413,7 +463,71 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
               </div>
             </div>
 
-            {/* Part B: Message Templates & Default Sewing Print Instructions (Controlled by edit_message_templates) */}
+            {/* Part B: General Tools - Favorite / Permanent Accessories for Quick Use in Design */}
+            <div className="bg-amber-50/40 rounded-3xl p-5 border border-amber-200/90 space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <h4 className="font-extrabold text-sm text-amber-950 flex items-center gap-2">
+                    <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
+                    <span>🛠️ الأدوات العامة: الإكسسوارات المفضلة / الدائمة (أزرار سريعة في قسم التصميم)</span>
+                  </h4>
+                  <p className="text-xs text-slate-600 mt-0.5">
+                    حدد الإكسسوارات الدائمة (مثل: أستيك، قمر، شريط، إلخ) من مخزن الإكسسوارات ليتم حفظها وظهورها كأزرار إضافة سريعة داخل شاشة التصميم.
+                  </p>
+                </div>
+                <span className="px-3 py-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 text-xs font-black">
+                  محدد حالياً: {favoriteAccessoryIds.length} عنصر
+                </span>
+              </div>
+
+              {accessoryItems.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 max-h-72 overflow-y-auto p-1">
+                  {accessoryItems.map((acc) => {
+                    const isFav = favoriteAccessoryIds.includes(acc.id);
+                    const avail = acc.quantity - acc.reserved_quantity;
+                    return (
+                      <button
+                        key={acc.id}
+                        type="button"
+                        onClick={() => handleToggleFavoriteAccessory(acc.id)}
+                        className={`flex items-center justify-between gap-2 p-3 rounded-2xl border text-start transition cursor-pointer ${
+                          isFav
+                            ? 'bg-amber-500/15 border-amber-500 text-amber-950 shadow-2xs ring-2 ring-amber-400/30'
+                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
+                              {acc.code}
+                            </span>
+                            <span className="font-bold text-xs truncate">{acc.name}</span>
+                          </div>
+                          <span className="text-[10px] text-slate-500 block mt-0.5">
+                            {acc.type_name} • متاح: {avail} {acc.unit}
+                          </span>
+                        </div>
+                        <div
+                          className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 border ${
+                            isFav
+                              ? 'bg-amber-500 border-amber-600 text-white'
+                              : 'bg-slate-100 border-slate-300 text-transparent'
+                          }`}
+                        >
+                          <Star className={`w-3.5 h-3.5 ${isFav ? 'fill-white' : ''}`} />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 bg-white p-4 rounded-2xl border border-slate-200 text-center">
+                  لا توجد إكسسوارات مسجلة في مخزن الإكسسوارات حالياً. أضف أصنافاً في مخزن الإكسسوارات أولاً لتحديد المفضل منها.
+                </p>
+              )}
+            </div>
+
+            {/* Part C: Message Templates & Default Sewing Print Instructions */}
             <div className="bg-emerald-50/40 rounded-3xl p-5 border border-emerald-200/90 space-y-5">
               <div className="flex items-center justify-between">
                 <h4 className="font-extrabold text-sm text-emerald-950 flex items-center gap-2">
@@ -468,7 +582,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                   </p>
                 </div>
 
-                {/* Default Sewing Print Instructions (Task 4 integration) */}
+                {/* Default Sewing Print Instructions */}
                 <div className="bg-white p-4 rounded-2xl border border-emerald-200 space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-black text-slate-900 flex items-center gap-1.5">
@@ -656,7 +770,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
             </div>
           </form>
 
-          {/* Users Table (Sudo is completely excluded) */}
+          {/* Users Table */}
           <div className="overflow-x-auto rounded-2xl border border-slate-200">
             <table className="w-full text-xs text-start">
               <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200 text-center">
@@ -744,7 +858,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
         </div>
       )}
 
-      {/* Tab 4: Sizes & Suppliers */}
+      {/* Tab 4: Sizes & Suppliers (With Edit & Delete buttons connected to Backend) */}
       {activeTab === 'sizes_suppliers' && hasSizesOrSuppliersPerm && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* 1. Size Categories Definition */}
@@ -795,26 +909,95 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                     <tr>
                       <th className="px-4 py-2.5 text-start">الفئة</th>
                       <th className="px-4 py-2.5">المقاسات الداخلية</th>
+                      {canManageSizes() && <th className="px-4 py-2.5">إجراءات</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {sizeDefs.map((s) => (
-                      <tr key={s.id} className="hover:bg-slate-50">
-                        <td className="px-4 py-3 font-extrabold text-slate-900 text-start">{s.name}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center justify-center gap-1 flex-wrap">
-                            {s.values.split(',').map((val, idx) => (
-                              <span
-                                key={idx}
-                                className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-800 font-bold text-[11px]"
-                              >
-                                {val.trim()}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {sizeDefs.map((s) => {
+                      const isEditing = editingSizeId === s.id;
+                      return (
+                        <tr key={s.id} className="hover:bg-slate-50">
+                          <td className="px-4 py-3 font-extrabold text-slate-900 text-start">
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={editSizeName}
+                                onChange={(e) => setEditSizeName(e.target.value)}
+                                className="w-full px-2.5 py-1 rounded-lg border border-blue-300 text-xs font-bold"
+                              />
+                            ) : (
+                              s.name
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={editSizeValues}
+                                onChange={(e) => setEditSizeValues(e.target.value)}
+                                className="w-full px-2.5 py-1 rounded-lg border border-blue-300 text-xs font-bold"
+                              />
+                            ) : (
+                              <div className="flex items-center justify-center gap-1 flex-wrap">
+                                {s.values.split(',').map((val, idx) => (
+                                  <span
+                                    key={idx}
+                                    className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-800 font-bold text-[11px]"
+                                  >
+                                    {val.trim()}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                          {canManageSizes() && (
+                            <td className="px-4 py-3">
+                              <div className="flex items-center justify-center gap-1.5">
+                                {isEditing ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSaveEditSize(s.id)}
+                                      className="p-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition cursor-pointer"
+                                      title="حفظ"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingSizeId(null)}
+                                      className="p-1.5 rounded-lg bg-slate-200 text-slate-700 hover:bg-slate-300 transition cursor-pointer"
+                                      title="إلغاء"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartEditSize(s.id, s.name, s.values)}
+                                      className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 transition cursor-pointer"
+                                      title="تعديل المقاس"
+                                    >
+                                      <Pencil className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => deleteSizeDef(s.id)}
+                                      className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                                      title="حذف المقاس"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -868,15 +1051,86 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                     <tr>
                       <th className="px-4 py-2.5">اسم المورد</th>
                       <th className="px-4 py-2.5">رقم الهاتف</th>
+                      {canManageSuppliers() && <th className="px-4 py-2.5 text-center">إجراءات</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {suppliers.map((sup) => (
-                      <tr key={sup.id} className="hover:bg-slate-50">
-                        <td className="px-4 py-3 font-extrabold text-slate-900">{sup.name}</td>
-                        <td className="px-4 py-3 text-slate-600 font-mono">{sup.phone || '-'}</td>
-                      </tr>
-                    ))}
+                    {suppliers.map((sup) => {
+                      const isEditing = editingSupId === sup.id;
+                      return (
+                        <tr key={sup.id} className="hover:bg-slate-50">
+                          <td className="px-4 py-3 font-extrabold text-slate-900">
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={editSupName}
+                                onChange={(e) => setEditSupName(e.target.value)}
+                                className="w-full px-2.5 py-1 rounded-lg border border-emerald-300 text-xs font-bold"
+                              />
+                            ) : (
+                              sup.name
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600 font-mono">
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={editSupPhone}
+                                onChange={(e) => setEditSupPhone(e.target.value)}
+                                className="w-full px-2.5 py-1 rounded-lg border border-emerald-300 text-xs font-mono"
+                              />
+                            ) : (
+                              sup.phone || '-'
+                            )}
+                          </td>
+                          {canManageSuppliers() && (
+                            <td className="px-4 py-3 text-center">
+                              <div className="flex items-center justify-center gap-1.5">
+                                {isEditing ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSaveEditSupplier(sup.id)}
+                                      className="p-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition cursor-pointer"
+                                      title="حفظ"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingSupId(null)}
+                                      className="p-1.5 rounded-lg bg-slate-200 text-slate-700 hover:bg-slate-300 transition cursor-pointer"
+                                      title="إلغاء"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartEditSupplier(sup.id, sup.name, sup.phone)}
+                                      className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 transition cursor-pointer"
+                                      title="تعديل المورد"
+                                    >
+                                      <Pencil className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => deleteSupplier(sup.id)}
+                                      className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                                      title="حذف المورد"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

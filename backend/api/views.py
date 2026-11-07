@@ -8,7 +8,7 @@ from datetime import date
 import secrets
 
 from .models import (
-    GlobalSettings, Role, UserProfile, SizeDef, Supplier,
+    SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier,
     Fabric, FabricColor, FabricTransaction,
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
@@ -272,6 +272,12 @@ class GlobalSettingsViewSet(viewsets.ViewSet):
             if 'internal_message_templates' in data and isinstance(data['internal_message_templates'], list):
                 obj.internal_message_templates = data['internal_message_templates']
 
+        if 'favorite_accessory_ids' in data and isinstance(data['favorite_accessory_ids'], list):
+            SystemSetting.objects.update_or_create(
+                key='favorite_accessory_ids',
+                defaults={'value': {'ids': data['favorite_accessory_ids']}}
+            )
+
         if profile and not (profile.is_sudo or profile.username.lower() == 'sudo'):
             obj.updated_by = profile.real_name or profile.username
         elif 'updated_by' in data and data['updated_by']:
@@ -488,6 +494,16 @@ class SizeDefViewSet(BasePermViewSet):
         )
         return Response(SizeDefSerializer(obj).data, status=status.HTTP_201_CREATED)
 
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        data = request.data
+        if 'name' in data and data['name']:
+            obj.name = str(data['name']).strip()
+        if 'values' in data and data['values'] is not None:
+            obj.values = str(data['values']).strip()
+        obj.save()
+        return Response(SizeDefSerializer(obj).data)
+
 
 class SupplierViewSet(BasePermViewSet):
     queryset = Supplier.objects.all()
@@ -501,6 +517,16 @@ class SupplierViewSet(BasePermViewSet):
             phone=(data.get('phone') or '').strip(),
         )
         return Response(SupplierSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        data = request.data
+        if 'name' in data and data['name']:
+            obj.name = str(data['name']).strip()
+        if 'phone' in data:
+            obj.phone = str(data['phone'] or '').strip()
+        obj.save()
+        return Response(SupplierSerializer(obj).data)
 
 
 class FabricViewSet(BasePermViewSet):

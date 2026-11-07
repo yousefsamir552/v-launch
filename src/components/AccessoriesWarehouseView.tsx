@@ -7,7 +7,6 @@ import {
   ArrowUpDown,
   X,
   AlertTriangle,
-  Coins,
   ShoppingCart,
   MessageCircle,
   ChevronDown,
@@ -17,7 +16,8 @@ import {
   FolderPlus,
   Trash2,
   Printer,
-  PackageCheck
+  PackageCheck,
+  Pencil
 } from 'lucide-react';
 import { AccessoryItem, AccessoryUnit, AccessoryUsageType, Supplier } from '../types';
 
@@ -27,10 +27,10 @@ export const AccessoriesWarehouseView: React.FC = () => {
     accessoryItems,
     suppliers,
     hasPermission,
-    canViewAccessoryPrices,
     canSendWhatsApp,
     addAccessoryType,
     addAccessoryItem,
+    updateAccessoryItem,
     deleteAccessoryItem,
     recordAccessoryTransaction,
     exportAccessoryInventoryCsv,
@@ -47,14 +47,14 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
   // Modals state
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
+  const [showEditModal, setShowEditModal] = useState<boolean>(false);
   const [showAddTypeModal, setShowAddTypeModal] = useState<boolean>(false);
   const [showTransactionModal, setShowTransactionModal] = useState<boolean>(false);
   const [showPrintInventoryModal, setShowPrintInventoryModal] = useState<boolean>(false);
   const [showPrintAlertsModal, setShowPrintAlertsModal] = useState<boolean>(false);
 
-  // Alert sidebar state & threshold
+  // Alert sidebar state
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
-  const [globalThreshold] = useState<number>(30);
   const [alertSectionTab, setAlertSectionTab] = useState<'all' | 'stock' | 'custom_model'>('all');
   const [modalAlertTab, setModalAlertTab] = useState<'all' | 'stock' | 'custom_model'>('all');
 
@@ -65,6 +65,22 @@ export const AccessoriesWarehouseView: React.FC = () => {
     amount: 10,
     modelCodeRef: '',
     notes: ''
+  });
+
+  // Edit active item state
+  const [editingItem, setEditingItem] = useState<AccessoryItem | null>(null);
+  const [editForm, setEditForm] = useState({
+    typeId: '',
+    code: '',
+    name: '',
+    image: '',
+    unit: 'قطعة' as AccessoryUnit,
+    quantity: 0,
+    supplierId: '',
+    minThreshold: 10,
+    usageType: 'stock' as AccessoryUsageType,
+    customModelCode: '',
+    targetQuantity: 100
   });
 
   // Reorder modal state
@@ -78,7 +94,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const [reorderNotes, setReorderNotes] = useState<string>('');
   const [copiedOrder, setCopiedOrder] = useState<boolean>(false);
 
-  // New Accessory Form state
+  // New Accessory Form state (no price fields, dynamic minThreshold)
   const [addForm, setAddForm] = useState({
     typeId: accessoryTypes[0]?.id || '',
     newTypeName: '',
@@ -87,9 +103,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
     image: '',
     unit: 'قطعة' as AccessoryUnit,
     quantity: 50,
-    pricePerUnit: 5,
     supplierId: suppliers[0]?.id || '',
-    minThreshold: 30,
+    minThreshold: 10,
     usageType: 'stock' as AccessoryUsageType,
     customModelCode: '',
     targetQuantity: 100
@@ -99,7 +114,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const [newTypeNameInput, setNewTypeNameInput] = useState<string>('');
   const [newTypeDescInput, setNewTypeDescInput] = useState<string>('');
 
-  // Calculate low stock / deficit items with ADVANCED USAGE TYPE LOGIC
+  // Calculate low stock / deficit items with custom per-item min_threshold
   const lowStockItems = accessoryItems
     .map((item) => {
       const sup = suppliers.find((s) => s.id === item.supplier_id);
@@ -109,7 +124,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
         if (item.withdrawn_for_model) {
           return { item, supplier: sup, available, threshold: 0, deficit: 0, isLow: false };
         }
-        const targetReq = item.target_quantity || item.min_threshold;
+        const targetReq = item.target_quantity ?? item.min_threshold ?? 0;
         const supplied = item.delivered_quantity ?? item.quantity;
         const deficit = Math.max(0, targetReq - supplied);
         const isLow = deficit > 0;
@@ -122,7 +137,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
           isLow
         };
       } else {
-        const threshold = item.min_threshold ?? globalThreshold;
+        const threshold = Number(item.min_threshold ?? 0);
         const deficit = Math.max(0, threshold - available);
         const isLow = available <= threshold;
         return {
@@ -191,6 +206,52 @@ export const AccessoriesWarehouseView: React.FC = () => {
       setShowTransactionModal(false);
       setActiveItem(null);
     }
+  };
+
+  const handleOpenEdit = (item: AccessoryItem) => {
+    setEditingItem(item);
+    setEditForm({
+      typeId: item.type_id,
+      code: item.code,
+      name: item.name,
+      image: item.image || '',
+      unit: item.unit,
+      quantity: item.quantity,
+      supplierId: item.supplier_id || '',
+      minThreshold: Number(item.min_threshold ?? 0),
+      usageType: item.usage_type || 'stock',
+      customModelCode: item.custom_model_code || '',
+      targetQuantity: Number(item.target_quantity ?? item.min_threshold ?? 0)
+    });
+    setShowEditModal(true);
+  };
+
+  const handleConfirmEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingItem) return;
+
+    const matchedType = accessoryTypes.find((t) => t.id === editForm.typeId);
+    const isCustom = editForm.usageType === 'custom_model';
+    const nextThreshold = Math.max(0, Number(editForm.minThreshold));
+    const nextTarget = isCustom ? Math.max(0, Number(editForm.targetQuantity)) : nextThreshold;
+
+    updateAccessoryItem(editingItem.id, {
+      type_id: editForm.typeId,
+      type_name: matchedType?.name || editingItem.type_name,
+      code: editForm.code.trim().toUpperCase(),
+      name: editForm.name.trim(),
+      image: editForm.image,
+      unit: editForm.unit,
+      quantity: Math.max(0, Number(editForm.quantity)),
+      supplier_id: editForm.supplierId,
+      min_threshold: nextThreshold,
+      usage_type: editForm.usageType,
+      custom_model_code: isCustom ? editForm.customModelCode.trim() : '',
+      target_quantity: nextTarget
+    });
+
+    setShowEditModal(false);
+    setEditingItem(null);
   };
 
   const handleOpenReorder = (item: AccessoryItem, suggestedDeficit?: number) => {
@@ -267,13 +328,14 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const handleCreateAccessory = (e: React.FormEvent) => {
     e.preventDefault();
 
-    let targetTypeId = addForm.typeId || accessoryTypes[0]?.id || "type-1";
+    let targetTypeId = addForm.typeId || accessoryTypes[0]?.id || 'type-1';
     if (addForm.newTypeName.trim()) {
       targetTypeId = addAccessoryType(addForm.newTypeName.trim());
     }
     if (!targetTypeId) return;
 
-    const targetQty = addForm.usageType === 'custom_model' ? Number(addForm.targetQuantity) : Number(addForm.minThreshold);
+    const minThresh = Math.max(0, Number(addForm.minThreshold));
+    const targetQty = addForm.usageType === 'custom_model' ? Math.max(0, Number(addForm.targetQuantity)) : minThresh;
 
     const res = addAccessoryItem({
       type_id: targetTypeId,
@@ -282,9 +344,9 @@ export const AccessoriesWarehouseView: React.FC = () => {
       image: addForm.image,
       unit: addForm.unit,
       quantity: Number(addForm.quantity),
-      price_per_unit: Number(addForm.pricePerUnit),
+      price_per_unit: 0,
       supplier_id: addForm.supplierId,
-      min_threshold: Number(addForm.minThreshold),
+      min_threshold: minThresh,
       usage_type: addForm.usageType,
       custom_model_code: addForm.customModelCode,
       target_quantity: targetQty,
@@ -301,9 +363,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
         image: '',
         unit: 'قطعة',
         quantity: 50,
-        pricePerUnit: 5,
         supplierId: suppliers[0]?.id || '',
-        minThreshold: 30,
+        minThreshold: 10,
         usageType: 'stock',
         customModelCode: '',
         targetQuantity: 100
@@ -320,14 +381,18 @@ export const AccessoriesWarehouseView: React.FC = () => {
     setShowAddTypeModal(false);
   };
 
-  const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>, isEdit: boolean = false) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
       reader.onload = (uploadEvent) => {
         const result = uploadEvent.target?.result as string;
         if (result) {
-          setAddForm((prev) => ({ ...prev, image: result }));
+          if (isEdit) {
+            setEditForm((prev) => ({ ...prev, image: result }));
+          } else {
+            setAddForm((prev) => ({ ...prev, image: result }));
+          }
         }
       };
       reader.readAsDataURL(file);
@@ -357,7 +422,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                   </span>
                 </div>
                 <p className="text-xs text-amber-800 mt-0.5">
-                  حساب دقيق للنواقص: (الكمية المطلوبة - الكمية الموردة). يمكنك طباعة ورقة النواقص لعامل المشتريات أو طلبها مباشرة عبر واتساب.
+                  حساب دقيق للنواقص حسب حد التنبيه المخصص لكل صنف. يمكنك طباعة ورقة النواقص لعامل المشتريات أو طلبها مباشرة عبر واتساب.
                 </p>
               </div>
             </div>
@@ -476,7 +541,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                             </p>
                           ) : (
                             <p className="text-[11px] text-amber-800 mt-0.5">
-                              المتاح: <strong className="text-rose-700">{available}</strong> من حد الأمان ({threshold}) | عجز: <strong>{deficit}</strong> {item.unit}
+                              المتاح: <strong className="text-rose-700">{available}</strong> من حد التنبيه ({threshold}) | عجز: <strong>{deficit}</strong> {item.unit}
                             </p>
                           )}
                         </div>
@@ -497,6 +562,18 @@ export const AccessoriesWarehouseView: React.FC = () => {
                         )}
 
                         <div className="flex items-center gap-1 ms-auto">
+                          {canEdit && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(item)}
+                              className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold rounded-lg transition flex items-center gap-1 cursor-pointer"
+                              title="تعديل حد التنبيه أو بيانات الصنف"
+                            >
+                              <Pencil className="w-3 h-3" />
+                              <span>تعديل</span>
+                            </button>
+                          )}
+
                           {canSendWhatsApp() && (
                             <button
                               type="button"
@@ -542,7 +619,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
               </span>
             </div>
             <p className="text-sm text-slate-500 mt-1">
-              إدارة مستلزمات الإنتاج (بادجات، ورود، دانتيل، سوست، تيكت) بأصناف رصيد مستمر أو استخدام مخصص لموديل معين.
+              إدارة كميات وأنواع مستلزمات الإنتاج (بادجات، ورود، دانتيل، سوست، تيكت) بأصناف رصيد مستمر أو استخدام مخصص لموديل معين.
             </p>
           </div>
 
@@ -653,9 +730,10 @@ export const AccessoriesWarehouseView: React.FC = () => {
           const supplier = suppliers.find((s) => s.id === item.supplier_id);
           const available = Number((item.quantity - item.reserved_quantity).toFixed(2));
           const isCustom = item.usage_type === 'custom_model';
-          const threshold = item.min_threshold ?? globalThreshold;
-          const isLow = available <= threshold;
-          const totalVal = ((item.price_per_unit || 0) * item.quantity).toFixed(0);
+          const threshold = Number(item.min_threshold ?? 0);
+          const isLow = isCustom
+            ? !item.withdrawn_for_model && (item.target_quantity ?? threshold) > (item.delivered_quantity ?? item.quantity)
+            : available <= threshold;
 
           return (
             <div
@@ -695,14 +773,24 @@ export const AccessoriesWarehouseView: React.FC = () => {
                   </div>
 
                   {canEdit && (
-                    <button
-                      type="button"
-                      onClick={() => deleteAccessoryItem(item.id)}
-                      className="absolute top-2 end-2 p-1.5 bg-rose-600/90 text-white rounded-lg shadow-xs hover:bg-rose-700 transition"
-                      title="حذف الصنف"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="absolute top-2 end-2 flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEdit(item)}
+                        className="p-1.5 bg-blue-600/90 text-white rounded-lg shadow-xs hover:bg-blue-700 transition cursor-pointer"
+                        title="تعديل بيانات وحد التنبيه للصنف"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteAccessoryItem(item.id)}
+                        className="p-1.5 bg-rose-600/90 text-white rounded-lg shadow-xs hover:bg-rose-700 transition cursor-pointer"
+                        title="حذف الصنف"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -728,27 +816,25 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
                     <div className="text-end">
                       <span className="text-[10px] text-slate-400 block">
-                        {isCustom ? 'الكمية المستهدفة:' : 'حد الأمان:'}
+                        {isCustom ? 'الكمية المستهدفة:' : 'حد التنبيه:'}
                       </span>
-                      <span className="text-xs font-bold text-slate-700">
-                        {isCustom ? item.target_quantity || item.min_threshold : threshold} {item.unit}
-                      </span>
+                      <div className="flex items-center gap-1 justify-end">
+                        <span className="text-xs font-bold text-slate-700">
+                          {isCustom ? item.target_quantity ?? threshold : threshold} {item.unit}
+                        </span>
+                        {canEdit && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEdit(item)}
+                            className="text-blue-600 hover:text-blue-800 p-0.5 rounded cursor-pointer"
+                            title="تعديل حد التنبيه"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
-
-                  {/* Price display guarded by permission */}
-                  {canViewAccessoryPrices() && (
-                    <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-100">
-                      <div className="flex items-center gap-1 text-slate-600">
-                        <Coins className="w-3.5 h-3.5 text-amber-500" />
-                        <span>السعر:</span>
-                        <strong className="text-slate-900">{item.price_per_unit || 0} ج.م</strong>
-                      </div>
-                      <div className="text-[11px] text-slate-500">
-                        إجمالي: <strong>{totalVal} ج.م</strong>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
 
@@ -829,7 +915,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 1: ADD ACCESSORY ITEM */}
+      {/* MODAL 1: ADD ACCESSORY ITEM (No price fields, dynamic minThreshold) */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
           <div className="bg-white rounded-3xl max-w-xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
@@ -860,7 +946,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     />
                     <div>
                       <span className="font-bold text-xs text-slate-900 block">رصيد مستمر (Stock)</span>
-                      <span className="text-[10px] text-slate-500">صنف دائم يطلب عند انخفاض حد الأمان</span>
+                      <span className="text-[10px] text-slate-500">صنف دائم يطلب عند انخفاض حد التنبيه</span>
                     </div>
                   </label>
 
@@ -896,7 +982,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                       <label className="block text-[11px] font-bold text-slate-700 mb-1">الكمية المطلوبة للموديل *</label>
                       <input
                         type="number"
-                        min="1"
+                        min="0"
                         required
                         value={addForm.targetQuantity}
                         onChange={(e) => setAddForm({ ...addForm, targetQuantity: Number(e.target.value) })}
@@ -975,19 +1061,17 @@ export const AccessoriesWarehouseView: React.FC = () => {
                   />
                 </div>
 
-                {canViewAccessoryPrices() && (
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">سعر الوحدة (ج.م)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={addForm.pricePerUnit}
-                      onChange={(e) => setAddForm({ ...addForm, pricePerUnit: Number(e.target.value) })}
-                      className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 font-bold focus:outline-hidden"
-                    />
-                  </div>
-                )}
+                <div>
+                  <label className="block text-xs font-bold text-amber-800 mb-1">حد التنبيه (الأمان) *</label>
+                  <input
+                    type="number"
+                    min="0"
+                    required
+                    value={addForm.minThreshold}
+                    onChange={(e) => setAddForm({ ...addForm, minThreshold: Number(e.target.value) })}
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-amber-300 bg-amber-50/40 font-black text-amber-950 focus:outline-hidden"
+                  />
+                </div>
               </div>
 
               <div>
@@ -1012,7 +1096,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 <input
                   type="file"
                   accept="image/*"
-                  onChange={handleImageFileUpload}
+                  onChange={(e) => handleImageFileUpload(e, false)}
                   className="w-full text-xs text-slate-500 file:me-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
                 />
               </div>
@@ -1030,6 +1114,209 @@ export const AccessoriesWarehouseView: React.FC = () => {
                   className="px-6 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-full shadow-md shadow-blue-500/20"
                 >
                   حفظ الصنف
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 1.5: EDIT ACCESSORY ITEM (Allows editing min_threshold and all non-price fields) */}
+      {showEditModal && editingItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-blue-600 text-white rounded-xl">
+                  <Pencil className="w-5 h-5" />
+                </div>
+                <h3 className="font-extrabold text-base text-slate-900">
+                  تعديل بيانات وحد التنبيه: {editingItem.name}
+                </h3>
+              </div>
+              <button onClick={() => setShowEditModal(false)} className="text-slate-400 hover:text-slate-700">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmEdit} className="p-6 overflow-y-auto space-y-4">
+              <div className="p-3.5 bg-blue-50/70 rounded-2xl border border-blue-200 space-y-2">
+                <label className="block text-xs font-black text-blue-950">نوع استخدام الإكسسوار:</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="flex items-center gap-2 p-2.5 bg-white rounded-xl border border-blue-200 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="editUsageType"
+                      checked={editForm.usageType === 'stock'}
+                      onChange={() => setEditForm({ ...editForm, usageType: 'stock' })}
+                      className="text-blue-600"
+                    />
+                    <div>
+                      <span className="font-bold text-xs text-slate-900 block">رصيد مستمر (Stock)</span>
+                      <span className="text-[10px] text-slate-500">صنف دائم يطلب عند انخفاض حد التنبيه</span>
+                    </div>
+                  </label>
+
+                  <label className="flex items-center gap-2 p-2.5 bg-white rounded-xl border border-blue-200 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="editUsageType"
+                      checked={editForm.usageType === 'custom_model'}
+                      onChange={() => setEditForm({ ...editForm, usageType: 'custom_model' })}
+                      className="text-blue-600"
+                    />
+                    <div>
+                      <span className="font-bold text-xs text-slate-900 block">استخدام واحد لموديل معين</span>
+                      <span className="text-[10px] text-slate-500">ينتهي طلبه بمجرد توريد وسحب الكمية</span>
+                    </div>
+                  </label>
+                </div>
+
+                {editForm.usageType === 'custom_model' && (
+                  <div className="pt-2 grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">كود الموديل المخصص له *</label>
+                      <input
+                        type="text"
+                        required
+                        value={editForm.customModelCode}
+                        onChange={(e) => setEditForm({ ...editForm, customModelCode: e.target.value })}
+                        className="w-full px-3 py-1.5 text-xs bg-white rounded-xl border border-blue-300 focus:outline-hidden"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">الكمية المطلوبة للموديل *</label>
+                      <input
+                        type="number"
+                        min="0"
+                        required
+                        value={editForm.targetQuantity}
+                        onChange={(e) => setEditForm({ ...editForm, targetQuantity: Number(e.target.value) })}
+                        className="w-full px-3 py-1.5 text-xs bg-white rounded-xl border border-blue-300 focus:outline-hidden font-bold"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">تصنيف الإكسسوار *</label>
+                  <select
+                    value={editForm.typeId}
+                    onChange={(e) => setEditForm({ ...editForm, typeId: e.target.value })}
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden"
+                  >
+                    {accessoryTypes.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">كود الصنف *</label>
+                  <input
+                    type="text"
+                    required
+                    value={editForm.code}
+                    onChange={(e) => setEditForm({ ...editForm, code: e.target.value })}
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 font-mono uppercase focus:outline-hidden"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">اسم الإكسسوار ووصفه *</label>
+                <input
+                  type="text"
+                  required
+                  value={editForm.name}
+                  onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden"
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">الوحدة</label>
+                  <select
+                    value={editForm.unit}
+                    onChange={(e) => setEditForm({ ...editForm, unit: e.target.value as AccessoryUnit })}
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden"
+                  >
+                    <option value="قطعة">قطعة</option>
+                    <option value="دستة">دستة</option>
+                    <option value="متر">متر</option>
+                    <option value="باكو">باكو</option>
+                    <option value="كيس">كيس</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">الرصيد الفعلي الحالي</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={editForm.quantity}
+                    onChange={(e) => setEditForm({ ...editForm, quantity: Number(e.target.value) })}
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 font-bold focus:outline-hidden"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-amber-800 mb-1">حد التنبيه (الأمان) *</label>
+                  <input
+                    type="number"
+                    min="0"
+                    required
+                    value={editForm.minThreshold}
+                    onChange={(e) => setEditForm({ ...editForm, minThreshold: Number(e.target.value) })}
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-amber-300 bg-amber-50/40 font-black text-amber-950 focus:outline-hidden"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">المورد المعتمد</label>
+                <select
+                  value={editForm.supplierId}
+                  onChange={(e) => setEditForm({ ...editForm, supplierId: e.target.value })}
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden"
+                >
+                  <option value="">-- اختر مورد --</option>
+                  {suppliers.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.phone})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">تحديث صورة الإكسسوار</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => handleImageFileUpload(e, true)}
+                  className="w-full text-xs text-slate-500 file:me-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEditModal(false)}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-full"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="px-6 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-full shadow-md shadow-blue-500/20"
+                >
+                  حفظ التعديلات
                 </button>
               </div>
             </form>
@@ -1094,8 +1381,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     <th className="p-2.5 text-center">الرصيد الفعلي</th>
                     <th className="p-2.5 text-center">المحجوز</th>
                     <th className="p-2.5 text-center">المتاح</th>
+                    <th className="p-2.5 text-center">حد التنبيه / المطلوب</th>
                     <th className="p-2.5 text-center">الوحدة</th>
-                    {canViewAccessoryPrices() && <th className="p-2.5 text-center">سعر الوحدة</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1123,12 +1410,10 @@ export const AccessoriesWarehouseView: React.FC = () => {
                       <td className="p-2.5 text-center font-bold text-emerald-700">
                         {item.quantity - item.reserved_quantity}
                       </td>
+                      <td className="p-2.5 text-center font-bold text-slate-700">
+                        {item.usage_type === 'custom_model' ? item.target_quantity ?? item.min_threshold : item.min_threshold}
+                      </td>
                       <td className="p-2.5 text-center text-slate-500">{item.unit}</td>
-                      {canViewAccessoryPrices() && (
-                        <td className="p-2.5 text-center font-mono font-bold text-slate-800">
-                          {item.price_per_unit || 0} ج.م
-                        </td>
-                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -1238,7 +1523,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     <h3 className="font-black text-sm text-slate-900">
                       أولاً: نواقص الإكسسوارات المستمرة (رصيد المخزن العام - Stock)
                     </h3>
-                    <span className="text-xs text-slate-500 font-semibold">({stockDeficits.length} صنف دون حد الأمان)</span>
+                    <span className="text-xs text-slate-500 font-semibold">({stockDeficits.length} صنف دون حد التنبيه)</span>
                   </div>
 
                   {stockDeficits.length > 0 ? (
@@ -1251,7 +1536,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                           <th className="p-2.5">اسم الإكسسوار</th>
                           <th className="p-2.5">التصنيف</th>
                           <th className="p-2.5 text-center">الرصيد المتاح</th>
-                          <th className="p-2.5 text-center">حد الأمان الأدنى</th>
+                          <th className="p-2.5 text-center">حد التنبيه المخصص</th>
                           <th className="p-2.5 text-center font-black text-rose-800">العجز المطلوب شراؤه</th>
                           <th className="p-2.5">المورد المقترح ورقم الهاتف</th>
                         </tr>
