@@ -100,6 +100,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'permissions': instance.custom_permissions or {},
             'is_active': bool(instance.is_active),
             'last_active': instance.last_active.isoformat() if instance.last_active else None,
+            'last_seen': instance.last_seen.isoformat() if instance.last_seen else None,
         }
 
 

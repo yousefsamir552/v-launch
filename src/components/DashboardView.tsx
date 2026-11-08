@@ -32,7 +32,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const {
     models,
     fabricColors,
-    users,
+    onlineUsers,
     cuttingRecords,
     qcRecords,
     printDispatches,
@@ -44,7 +44,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const activeModels = models.filter((m) => !m.is_deleted);
   const totalModels = activeModels.length;
   const totalFabrics = fabricColors.length;
-  const onlineUsers = users.filter((u) => u.is_active).length;
 
   const inDesignCount = activeModels.filter((m) => m.status === 'تصميم' || m.status === 'مرحلة التصميم').length;
   const inCuttingCount = activeModels.filter((m) => m.status === 'في القص' || m.status === 'جاري القص').length;
@@ -219,7 +218,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       )}
 
       {/* Primary 3 Metric Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:items-start">
         <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs hover:shadow-md transition text-center group">
           <div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-800 flex items-center justify-center mx-auto mb-3 group-hover:scale-105 transition-transform">
             <Layers className="w-6 h-6" />
@@ -242,9 +241,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-3 group-hover:scale-105 transition-transform">
             <Users className="w-6 h-6" />
           </div>
-          <h3 className="text-slate-500 text-sm font-semibold mb-1">المستخدمين النشطين</h3>
-          <p className="text-4xl font-extrabold text-emerald-600 tracking-tight">{onlineUsers}</p>
-          <span className="text-xs text-slate-400 mt-2 block">حسابات نشطة ومفعلة</span>
+          <h3 className="text-slate-500 text-sm font-semibold mb-1">المتصلون الآن بالموقع</h3>
+          <p className="text-4xl font-extrabold text-emerald-600 tracking-tight">{onlineUsers.length}</p>
+          <span className="text-xs text-slate-400 mt-2 block">حسابات فاتحة للموقع خلال آخر ٥ دقائق</span>
+
+          <div className="mt-4 pt-4 border-t border-slate-100 text-right space-y-2 max-h-44 overflow-y-auto">
+            {onlineUsers.length > 0 ? (
+              onlineUsers.map((u) => (
+                <div
+                  key={u.id}
+                  className="flex items-center gap-2 rounded-xl bg-emerald-50/60 border border-emerald-100 px-2.5 py-1.5"
+                >
+                  <span className="relative flex h-2.5 w-2.5 shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                  </span>
+                  <div className="min-w-0 flex-1 text-right">
+                    <p className="text-xs font-bold text-slate-800 truncate">
+                      {u.real_name || u.username}
+                    </p>
+                    <p className="text-[10px] text-slate-500 truncate">{u.role || 'موظف تشغيل'}</p>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="text-xs text-slate-400 text-center py-1">لا يوجد متصلون حالياً</p>
+            )}
+          </div>
         </div>
       </div>
 

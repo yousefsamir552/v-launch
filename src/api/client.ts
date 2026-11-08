@@ -62,6 +62,7 @@ export const api = {
       body: JSON.stringify({ username, password })
     }),
   getMe: () => request<{ user: any }>('/auth/me/'),
+  heartbeat: () => request<{ onlineUsers: any[] }>('/auth/heartbeat/'),
   logout: () => request<{ status: string }>('/auth/logout/', { method: 'POST' }),
 
   // جلب الحالة الكاملة للنظام من قاعدة البيانات المركزية

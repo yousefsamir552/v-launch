@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from django.db import models, transaction
 from django.http import Http404
 from django.utils import timezone
-from datetime import date
+from datetime import date, timedelta
 import secrets
 
 from .models import (
@@ -133,7 +133,8 @@ class AuthViewSet(viewsets.ViewSet):
         if not user.auth_token:
             user.auth_token = secrets.token_hex(32)
         user.last_active = timezone.now()
-        user.save(update_fields=['auth_token', 'last_active'])
+        user.last_seen = timezone.now()
+        user.save(update_fields=['auth_token', 'last_active', 'last_seen'])
 
         # Do not log sudo emergency account into public audit logs so regular users never know of its existence
         if not user.is_sudo and user.username.lower() != 'sudo':
@@ -161,9 +162,25 @@ class AuthViewSet(viewsets.ViewSet):
                 status=status.HTTP_401_UNAUTHORIZED
             )
         user.last_active = timezone.now()
-        user.save(update_fields=['last_active'])
+        user.last_seen = timezone.now()
+        user.save(update_fields=['last_active', 'last_seen'])
         return Response({
             'user': UserProfileSerializer(user).data
+        })
+
+    @action(detail=False, methods=['get', 'post'])
+    def heartbeat(self, request):
+        """Lightweight ONLINE heartbeat + live online users list."""
+        user = resolve_request_user_profile(request)
+        if user:
+            UserProfile.objects.filter(pk=user.pk).update(last_seen=timezone.now())
+        visible_users = UserProfile.objects.select_related('role').exclude(
+            username__iexact='sudo'
+        ).exclude(is_sudo=True)
+        online_since = timezone.now() - timedelta(minutes=5)
+        online_users = visible_users.filter(last_seen__gte=online_since)
+        return Response({
+            'onlineUsers': UserProfileSerializer(online_users, many=True).data
         })
 
     @action(detail=False, methods=['post'])
@@ -190,7 +207,15 @@ class StateViewSet(viewsets.ViewSet):
         ensure_initial_seed()
         sync_reserved_quantities()
         req_ctx = {'request': request}
+
+        # Heartbeat: keep the current user's ONLINE marker fresh on every state sync.
+        current_profile = resolve_request_user_profile(request)
+        if current_profile:
+            UserProfile.objects.filter(pk=current_profile.pk).update(last_seen=timezone.now())
+
         visible_users = UserProfile.objects.select_related('role').exclude(username__iexact='sudo').exclude(is_sudo=True)
+        online_since = timezone.now() - timedelta(minutes=5)
+        online_users = visible_users.filter(last_seen__gte=online_since)
         visible_logs = AuditLog.objects.exclude(user_id_ref='user-sudo').exclude(user_name__icontains='sudo')[:200]
         visible_messages = InternalMessage.objects.select_related('sender', 'receiver').exclude(
             sender__username__iexact='sudo'
@@ -200,6 +225,7 @@ class StateViewSet(viewsets.ViewSet):
             'globalSettings': GlobalSettingsSerializer(GlobalSettings.get_solo()).data,
             'roles': RoleSerializer(Role.objects.all(), many=True, context=req_ctx).data,
             'users': UserProfileSerializer(visible_users, many=True, context=req_ctx).data,
+            'onlineUsers': UserProfileSerializer(online_users, many=True, context=req_ctx).data,
             'sizeDefs': SizeDefSerializer(SizeDef.objects.all(), many=True).data,
             'suppliers': SupplierSerializer(Supplier.objects.all(), many=True).data,
             'fabrics': FabricSerializer(Fabric.objects.filter(is_deleted=False), many=True, context=req_ctx).data,

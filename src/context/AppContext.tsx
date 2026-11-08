@@ -77,6 +77,7 @@ interface AppContextType {
     modelCode?: string;
   }) => string;
   users: User[];
+  onlineUsers: User[];
   roles: CustomRole[];
   auditLogs: AuditLog[];
   sizeDefs: SizeDef[];
@@ -409,6 +410,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [globalSettings, setGlobalSettings] = useState<GlobalSiteSettings>(DEFAULT_GLOBAL_SETTINGS);
   const [roles, setRoles] = useState<CustomRole[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
   const [sizeDefs, setSizeDefs] = useState<SizeDef[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [fabrics, setFabrics] = useState<Fabric[]>([]);
@@ -528,6 +530,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setUsers(
           rawUsers.filter((u) => u.username?.toLowerCase() !== 'sudo' && !u.is_sudo)
         );
+        const rawOnlineUsers: User[] = Array.isArray(state.onlineUsers) ? state.onlineUsers : [];
+        setOnlineUsers(
+          rawOnlineUsers.filter((u) => u.username?.toLowerCase() !== 'sudo' && !u.is_sudo)
+        );
         setSizeDefs(Array.isArray(state.sizeDefs) ? state.sizeDefs : []);
         setSuppliers(Array.isArray(state.suppliers) ? state.suppliers : []);
         setFabrics(Array.isArray(state.fabrics) ? state.fabrics : []);
@@ -598,6 +604,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       window.removeEventListener('focus', handleFocus);
     };
   }, [refreshState, setCurrentUser]);
+
+  // Live ONLINE heartbeat: keeps `last_seen` fresh and refreshes the online users list.
+  useEffect(() => {
+    if (!currentUser) {
+      setOnlineUsers([]);
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      if (!localStorage.getItem('factory_erp_auth_token')) return;
+      try {
+        const res = await api.heartbeat();
+        if (cancelled) return;
+        const list: User[] = Array.isArray(res?.onlineUsers) ? res.onlineUsers : [];
+        setOnlineUsers(
+          list.filter((u) => u.username?.toLowerCase() !== 'sudo' && !u.is_sudo)
+        );
+      } catch {
+        // Silently ignore heartbeat errors (offline / session expired handled elsewhere)
+      }
+    };
+    tick();
+    const intervalId = window.setInterval(tick, 45000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [currentUser]);
 
   const login = async (
     username: string,
@@ -3276,6 +3310,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateGlobalSettings,
         formatSupplierWhatsappMessage,
         users,
+        onlineUsers,
         roles,
         auditLogs,
         sizeDefs,

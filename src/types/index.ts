@@ -150,6 +150,7 @@ export interface User {
   permissions: UserPermissions;
   is_active: boolean;
   last_active?: string;
+  last_seen?: string;
 }
 
 export interface AuditLog {

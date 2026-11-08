@@ -232,6 +232,7 @@ class UserProfile(models.Model):
     is_active = models.BooleanField(default=True, verbose_name="نشط")
     custom_permissions = models.JSONField(default=dict, blank=True, verbose_name="تخصيص صلاحيات إضافية")
     last_active = models.DateTimeField(blank=True, null=True, verbose_name="آخر ظهور")
+    last_seen = models.DateTimeField(blank=True, null=True, verbose_name="آخر تواجد (Online)")
     auth_token = models.CharField(max_length=128, blank=True, null=True, db_index=True, verbose_name="رمز الجلسة")
 
     def set_password(self, raw_password: str):

@@ -12,9 +12,7 @@ import {
   Layers,
   FileText,
   Lock,
-  Star,
-  CheckSquare,
-  Square
+  Star
 } from 'lucide-react';
 import { AccessoryItem } from '../types';
 
@@ -122,34 +120,42 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   const favoriteIds = globalSettings?.favorite_accessory_ids || [];
   const generalToolItems = accessoryItems.filter((item) => favoriteIds.includes(item.id));
 
-  const handleToggleGeneralTool = (
+  // Quick-add only: tools already added to the current target section are hidden from the quick box
+  // so they never duplicate. Removal happens from the accessories table itself.
+  const remainingGeneralTools = generalToolItems.filter(
+    (tool) =>
+      !modelAccs.some(
+        (a) =>
+          (a.accessory_id === tool.id || a.accessory_code === tool.code) &&
+          a.target_type === accTargetType
+      )
+  );
+
+  const handleAddGeneralTool = (
     toolItem: AccessoryItem,
     targetType: 'shirt' | 'pants' = accTargetType
   ) => {
     if (!canEdit) return;
-    // Check if this tool is already added to this model for the selected targetType (or any targetType)
+    // Guard against duplicates for the same target section
     const existingEntry = modelAccs.find(
       (a) =>
         (a.accessory_id === toolItem.id || a.accessory_code === toolItem.code) &&
         a.target_type === targetType
     );
+    if (existingEntry) return;
 
-    if (existingEntry) {
-      deleteModelAccessory(existingEntry.id);
-    } else {
-      const consumption = Number(accPieceConsumption) || 1;
-      const plannedTotal = Math.round(consumption * (Number(targetCutQuantity) || 100));
-      addModelAccessory(modelId, {
-        id: toolItem.id,
-        code: toolItem.code,
-        name: toolItem.name,
-        unit: toolItem.unit,
-        image: toolItem.image,
-        target_type: targetType,
-        piece_consumption: consumption,
-        planned_quantity: plannedTotal
-      });
-    }
+    const consumption = Number(accPieceConsumption) || 1;
+    const plannedTotal = Math.round(consumption * (Number(targetCutQuantity) || 100));
+    addModelAccessory(modelId, {
+      id: toolItem.id,
+      code: toolItem.code,
+      name: toolItem.name,
+      unit: toolItem.unit,
+      image: toolItem.image,
+      target_type: targetType,
+      piece_consumption: consumption,
+      planned_quantity: plannedTotal
+    });
   };
 
   const handleUpdateTargetCut = (newQty: number) => {
@@ -553,22 +559,18 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
               </div>
 
               <p className="text-[11px] text-slate-500">
-                اضغط على أي أداة عامة (أو علامة التحديد Checkbox) لإضافتها أو إزالتها فوراً للموديل ضمن قسم{' '}
+                اضغط على أي أداة عامة لإضافتها فوراً كصف عادي في قائمة إكسسوارات الموديل ضمن قسم{' '}
                 <strong className="text-slate-800">
                   {accTargetType === 'shirt' ? 'التيشرت' : 'البنطلون'}
                 </strong>
-                .
+                . الأداة المضافة تختفي من هنا، ويمكن حذفها من جدول الإكسسوارات.
               </p>
 
               {generalToolItems.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {generalToolItems.map((tool) => {
-                    const isSelectedForCurrentTarget = modelAccs.some(
-                      (a) =>
-                        (a.accessory_id === tool.id || a.accessory_code === tool.code) &&
-                        a.target_type === accTargetType
-                    );
-                    const isSelectedForOtherTarget = modelAccs.some(
+                remainingGeneralTools.length > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {remainingGeneralTools.map((tool) => {
+                    const isAddedToOtherTarget = modelAccs.some(
                       (a) =>
                         (a.accessory_id === tool.id || a.accessory_code === tool.code) &&
                         a.target_type !== accTargetType
@@ -576,28 +578,16 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                     const avail = Number((tool.quantity - tool.reserved_quantity).toFixed(2));
 
                     return (
-                      <label
+                      <button
                         key={tool.id}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          handleToggleGeneralTool(tool, accTargetType);
-                        }}
-                        className={`flex items-center justify-between gap-2 p-2.5 rounded-2xl border text-start transition select-none ${
-                          !canEdit ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
-                        } ${
-                          isSelectedForCurrentTarget
-                            ? 'bg-amber-50 border-amber-500 text-amber-950 shadow-2xs ring-2 ring-amber-400/25'
-                            : 'bg-slate-50/70 border-slate-200 text-slate-700 hover:bg-slate-100'
-                        }`}
+                        type="button"
+                        disabled={!canEdit}
+                        onClick={() => handleAddGeneralTool(tool, accTargetType)}
+                        className="flex items-center justify-between gap-2 p-2.5 rounded-2xl border border-slate-200 bg-slate-50/70 text-slate-700 text-start transition cursor-pointer hover:bg-emerald-50 hover:border-emerald-300 disabled:opacity-60 disabled:cursor-not-allowed"
+                        title="إضافة الأداة كصف إكسسوار للموديل"
                       >
                         <div className="flex items-center gap-2 min-w-0">
-                          <input
-                            type="checkbox"
-                            checked={isSelectedForCurrentTarget}
-                            disabled={!canEdit}
-                            onChange={() => {}}
-                            className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 shrink-0 pointer-events-none"
-                          />
+                          <Plus className="w-4 h-4 text-emerald-600 shrink-0" />
                           <div className="min-w-0">
                             <div className="flex items-center gap-1 flex-wrap">
                               <span className="font-extrabold text-xs text-slate-900 truncate">
@@ -609,7 +599,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                             </div>
                             <span className="text-[10px] text-slate-500 block">
                               متاح: {avail} {tool.unit}
-                              {isSelectedForOtherTarget && (
+                              {isAddedToOtherTarget && (
                                 <strong className="text-indigo-600 ms-1">
                                   • (مضاف أيضاً بـ {accTargetType === 'shirt' ? 'البنطلون' : 'التيشرت'})
                                 </strong>
@@ -618,19 +608,18 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                           </div>
                         </div>
 
-                        <span
-                          className={`text-[10px] font-black px-2 py-0.5 rounded-full shrink-0 ${
-                            isSelectedForCurrentTarget
-                              ? 'bg-amber-500 text-slate-950'
-                              : 'bg-white border border-slate-200 text-slate-600'
-                          }`}
-                        >
-                          {isSelectedForCurrentTarget ? '✓ تم الاختيار' : '+ اختر'}
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full shrink-0 bg-emerald-100 border border-emerald-300 text-emerald-800">
+                          + إضافة
                         </span>
-                      </label>
+                      </button>
                     );
                   })}
                 </div>
+                ) : (
+                  <div className="p-3.5 rounded-2xl bg-emerald-50/70 border border-emerald-200 text-center text-xs text-emerald-900 font-bold">
+                    ✓ تمت إضافة كل الأدوات العامة إلى قسم {accTargetType === 'shirt' ? 'التيشرت' : 'البنطلون'}.
+                  </div>
+                )
               ) : (
                 <div className="p-3.5 rounded-2xl bg-amber-50/60 border border-amber-200 text-center text-xs text-amber-900">
                   لم يتم تحديد أدوات عامة مفضلة من شاشة الإعدادات بعد. يمكنك تحديدها من قسم{' '}
@@ -892,74 +881,6 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                   </table>
                 </div>
               </div>
-
-              {/* Quick General Tools Selector Bar also accessible directly below the accessories tables */}
-              {generalToolItems.length > 0 && (
-                <div className="pt-3 border-t border-slate-100 space-y-2.5">
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <span className="text-xs font-extrabold text-amber-950 flex items-center gap-1.5">
-                      <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
-                      <span>الأدوات العامة المحفوظة من الإعدادات (اضغط للاختيار السريع للموديل):</span>
-                    </span>
-                    <div className="flex items-center gap-1 text-[11px]">
-                      <span className="text-slate-500">إضافة إلى:</span>
-                      <button
-                        type="button"
-                        onClick={() => setAccTargetType('shirt')}
-                        className={`px-2.5 py-0.5 rounded-lg font-bold cursor-pointer ${
-                          accTargetType === 'shirt'
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-slate-100 text-slate-600'
-                        }`}
-                      >
-                        تيشرت
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setAccTargetType('pants')}
-                        className={`px-2.5 py-0.5 rounded-lg font-bold cursor-pointer ${
-                          accTargetType === 'pants'
-                            ? 'bg-amber-600 text-white'
-                            : 'bg-slate-100 text-slate-600'
-                        }`}
-                      >
-                        بنطلون
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {generalToolItems.map((tool) => {
-                      const isChecked = modelAccs.some(
-                        (a) =>
-                          (a.accessory_id === tool.id || a.accessory_code === tool.code) &&
-                          a.target_type === accTargetType
-                      );
-                      return (
-                        <button
-                          key={`quick-${tool.id}`}
-                          type="button"
-                          disabled={!canEdit}
-                          onClick={() => handleToggleGeneralTool(tool, accTargetType)}
-                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer ${
-                            isChecked
-                              ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-2xs'
-                              : 'bg-white text-slate-700 border-slate-300 hover:bg-amber-50'
-                          }`}
-                        >
-                          {isChecked ? (
-                            <CheckSquare className="w-3.5 h-3.5 text-slate-950" />
-                          ) : (
-                            <Square className="w-3.5 h-3.5 text-slate-400" />
-                          )}
-                          <span>{tool.name}</span>
-                          <span className="text-[10px] opacity-75 font-mono">({tool.code})</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* DESIGN & OPERATING NOTES (Gated by canAddDesignNotes permission - Task 4) */}
