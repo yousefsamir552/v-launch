@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { 
   Scissors, 
@@ -12,12 +12,10 @@ import {
   Calendar,
   AlertTriangle,
   Clock,
-  Lock,
-  FileText,
-  RotateCcw,
-  Save
+  Lock
 } from 'lucide-react';
-import { Model, ModelAccessory, SewingDispatch, GarmentPart, getPartLabel } from '../types';
+import { Model, SewingDispatch, GarmentPart, getPartLabel } from '../types';
+import { SewingPrintModal } from './SewingPrintModal';
 
 // Per-part card styling (kept independent so every part has its own colour identity).
 const PART_CARD_STYLES: Record<string, { accentColor: string; badgeColor: string; button: string }> = {
@@ -47,37 +45,21 @@ export const SewingView: React.FC = () => {
   const { 
     models, 
     getModelParts,
-    modelAccessories, 
     sewingDispatches, 
     dispatchModelToSewing, 
     receiveModelFromSewing,
     logAction,
     globalSettings,
-    updateGlobalSettings,
-    canAddSewingNotes,
-    canEditMessageTemplates
+    canAddSewingNotes
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedModelForPrint, setSelectedModelForPrint] = useState<Model | null>(null);
-  const [printTab, setPrintTab] = useState<'both' | GarmentPart>('both');
+  // نافذة أمر التشغيل: الموديل + القطعة المطلوب معاينتها/طباعتها (both = الورقتين معاً)
+  const [printTarget, setPrintTarget] = useState<{
+    modelId: string;
+    tab: 'both' | GarmentPart;
+  } | null>(null);
   const [pieceFilter, setPieceFilter] = useState<'all' | GarmentPart>('all');
-
-  // Editable bottom instructions for sewing print sheet (pulled from GlobalSettings)
-  const [printInstructionsText, setPrintInstructionsText] = useState<string>(
-    globalSettings.default_sewing_instructions ||
-      'تم التأكد من أعداد الإكسسوارات ومطابقتها للتشغيلة قبل التسليم للورشة. يرجى الالتزام التام بالمقاسات المعتمدة وتسليم العينة الأولى للفحص.'
-  );
-  const [savingDefaultInstructions, setSavingDefaultInstructions] = useState(false);
-
-  useEffect(() => {
-    if (selectedModelForPrint) {
-      setPrintInstructionsText(
-        globalSettings.default_sewing_instructions ||
-          'تم التأكد من أعداد الإكسسوارات ومطابقتها للتشغيلة قبل التسليم للورشة. يرجى الالتزام التام بالمقاسات المعتمدة وتسليم العينة الأولى للفحص.'
-      );
-    }
-  }, [selectedModelForPrint, globalSettings.default_sewing_instructions]);
 
   // Modal State for Dispatching to Sewing Workshop
   const [showDispatchModal, setShowDispatchModal] = useState(false);
@@ -94,7 +76,6 @@ export const SewingView: React.FC = () => {
   const [receiveNotes, setReceiveNotes] = useState('');
 
   const allowSewingNotes = canAddSewingNotes();
-  const canEditPrintInstructions = allowSewingNotes || canEditMessageTemplates();
 
   // Models ready for sewing: status 'في قسم المكن'
   const readyModels = models.filter(
@@ -205,22 +186,6 @@ export const SewingView: React.FC = () => {
     setReceiveNotes('');
   };
 
-  const handleSaveInstructionsAsGlobalDefault = async () => {
-    if (!canEditMessageTemplates()) return;
-    setSavingDefaultInstructions(true);
-    try {
-      await updateGlobalSettings({
-        default_sewing_instructions: printInstructionsText.trim()
-      });
-    } finally {
-      setSavingDefaultInstructions(false);
-    }
-  };
-
-  const getModelAccs = (modelId: string) => {
-    return modelAccessories.filter((a: ModelAccessory) => a.model_id === modelId);
-  };
-
   // Helper to compute date diff badge
   const getDateStatusBadge = (expectedDateStr?: string, status?: string) => {
     if (!expectedDateStr) return null;
@@ -271,13 +236,10 @@ export const SewingView: React.FC = () => {
     );
   };
 
-  // Find latest dispatches for the selected model
-  const shirtDispatchForPrint = selectedModelForPrint ? sewingDispatches.find(
-    (d) => d.model_id === selectedModelForPrint.id && d.piece_type === 'shirt'
-  ) : null;
-  const pantsDispatchForPrint = selectedModelForPrint ? sewingDispatches.find(
-    (d) => d.model_id === selectedModelForPrint.id && d.piece_type === 'pants'
-  ) : null;
+  // الموديل الخاص بنافذة أمر التشغيل المفتوحة
+  const printTargetModel = printTarget
+    ? models.find((model) => model.id === printTarget.modelId) || null
+    : null;
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -466,10 +428,7 @@ export const SewingView: React.FC = () => {
                       {item.pieceLabel}
                     </span>
                     <button
-                      onClick={() => {
-                        setSelectedModelForPrint(item.model);
-                        setPrintTab(item.pieceType);
-                      }}
+                      onClick={() => setPrintTarget({ modelId: item.model.id, tab: item.pieceType })}
                       className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition text-xs cursor-pointer flex items-center gap-1"
                       title="طباعة ورقة التشغيل الفردية لهذه القطعة"
                     >
@@ -683,10 +642,9 @@ export const SewingView: React.FC = () => {
 
                           {m && (
                             <button
-                              onClick={() => {
-                                setSelectedModelForPrint(m);
-                                setPrintTab(disp.piece_type || 'shirt');
-                              }}
+                              onClick={() =>
+                                setPrintTarget({ modelId: m.id, tab: disp.piece_type || 'shirt' })
+                              }
                               className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition cursor-pointer"
                               title="طباعة ورقة التشغيل الخاصة بهذه القطعة"
                             >
@@ -933,468 +891,13 @@ export const SewingView: React.FC = () => {
         </div>
       )}
 
-      {/* DUAL PRINTABLE MODAL WITH DYNAMIC DATES, STRICT PAGE BREAK, AND MODEL PICTURE ON BOTH */}
-      {selectedModelForPrint && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-5xl w-full p-6 shadow-2xl border border-slate-100 flex flex-col max-h-[92vh]">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-200 gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
-                  <Printer className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-black text-slate-900 text-lg">
-                    أمر تشغيل ورشة المكن: موديل {selectedModelForPrint.model_code}
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    ورقتان منفصلتان تماماً عند الطباعة مع صورة الموديل وقسم التعليمات السفلي المعتمد من الإعدادات العامة.
-                  </p>
-                </div>
-              </div>
-
-              {/* View/Print Tabs Selector */}
-              <div className="flex items-center gap-2">
-                <div className="flex items-center bg-slate-100 p-1 rounded-full border border-slate-200 print:hidden">
-                  <button
-                    onClick={() => setPrintTab('both')}
-                    className={`px-3 py-1.5 rounded-full text-xs font-bold transition cursor-pointer ${
-                      printTab === 'both' ? 'bg-white text-emerald-800 shadow-xs' : 'text-slate-600'
-                    }`}
-                  >
-                    الورقتين معاً
-                  </button>
-                  <button
-                    onClick={() => setPrintTab('shirt')}
-                    className={`px-3 py-1.5 rounded-full text-xs font-bold transition cursor-pointer ${
-                      printTab === 'shirt' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600'
-                    }`}
-                  >
-                    ورقة التيشرت
-                  </button>
-                  <button
-                    onClick={() => setPrintTab('pants')}
-                    className={`px-3 py-1.5 rounded-full text-xs font-bold transition cursor-pointer ${
-                      printTab === 'pants' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600'
-                    }`}
-                  >
-                    ورقة البنطلون
-                  </button>
-                </div>
-
-                <button
-                  onClick={() => window.print()}
-                  className="px-5 py-2 rounded-full bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs shadow-xs transition flex items-center gap-2 cursor-pointer"
-                >
-                  <Printer className="w-4 h-4" />
-                  <span>طباعة الآن</span>
-                </button>
-                <button
-                  onClick={() => setSelectedModelForPrint(null)}
-                  className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Editable Bottom Instructions Control Box (Non-Printable Toolbar) */}
-            <div className="mt-3 p-3.5 rounded-2xl bg-emerald-50/70 border border-emerald-200 print:hidden">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
-                <div className="flex items-center gap-1.5 text-xs font-black text-emerald-950">
-                  <FileText className="w-4 h-4 text-emerald-700" />
-                  <span>نص قسم التعليمات والملاحظات السفلي للورشة (يُسحب افتراضياً من الإعدادات العامة وقابل للتعديل):</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPrintInstructionsText(
-                        globalSettings.default_sewing_instructions ||
-                          'تم التأكد من أعداد الإكسسوارات ومطابقتها للتشغيلة قبل التسليم للورشة. يرجى الالتزام التام بالمقاسات المعتمدة وتسليم العينة الأولى للفحص.'
-                      )
-                    }
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-emerald-200 text-emerald-800 text-[11px] font-bold hover:bg-emerald-100 transition cursor-pointer"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    <span>استعادة النص الافتراضي</span>
-                  </button>
-                  {canEditMessageTemplates() && (
-                    <button
-                      type="button"
-                      disabled={savingDefaultInstructions}
-                      onClick={handleSaveInstructionsAsGlobalDefault}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-700 text-white text-[11px] font-bold hover:bg-emerald-800 transition cursor-pointer disabled:opacity-50"
-                    >
-                      <Save className="w-3 h-3" />
-                      <span>{savingDefaultInstructions ? 'جاري الحفظ...' : 'حفظ كافتراضي بالإعدادات العامة'}</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-              {canEditPrintInstructions ? (
-                <textarea
-                  rows={2}
-                  value={printInstructionsText}
-                  onChange={(e) => setPrintInstructionsText(e.target.value)}
-                  placeholder="مثال: تم التأكد من أعداد الإكسسوارات ومطابقتها للتشغيلة..."
-                  className="w-full px-3.5 py-2 rounded-xl bg-white border border-emerald-300 text-xs font-semibold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
-                />
-              ) : (
-                <p className="text-xs font-semibold text-slate-700 bg-white/80 px-3 py-2 rounded-xl border border-emerald-100">
-                  {printInstructionsText}
-                </p>
-              )}
-            </div>
-
-            {/* DUAL SHEETS CONTAINER */}
-            <div className="overflow-y-auto flex-grow p-4 space-y-8 print-container">
-              
-              {/* PAGE 1: ورقة التيشرت */}
-              {(printTab === 'both' || printTab === 'shirt') && (
-                <div className="border-2 border-dashed border-blue-400 rounded-3xl p-6 bg-white shadow-xs relative print-page-break print:p-0 print:border-none print:shadow-none print:m-0">
-                  {/* Header Badge */}
-                  <div className="flex items-center justify-between pb-4 border-b-2 border-blue-200 mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-2xl bg-blue-600 text-white flex items-center justify-center font-black text-lg">
-                        1
-                      </div>
-                      <div>
-                        <h4 className="text-xl font-black text-blue-950">
-                          أمر تشغيل ورشة المكن — [ورقة التيشرت T-Shirt]
-                        </h4>
-                        <p className="text-xs text-slate-500">
-                          {globalSettings.site_name} • خط خياطة التيشرت
-                        </p>
-                      </div>
-                    </div>
-                    <span className="px-4 py-1.5 rounded-full text-xs font-extrabold bg-blue-100 text-blue-800 border border-blue-300">
-                      ورقة 1 من 2 (خاصة بخط التيشرت)
-                    </span>
-                  </div>
-
-                  {/* Model Details & Picture Grid */}
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-                    {/* Model Image - Contain and Never Cropped */}
-                    <div className="md:col-span-1">
-                      <div className="aspect-3/4 rounded-2xl overflow-hidden border-2 border-blue-200 bg-white p-2 shadow-xs relative flex items-center justify-center">
-                        <img
-                          src={selectedModelForPrint.image}
-                          alt={selectedModelForPrint.model_code}
-                          className="w-full h-full object-contain"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).src =
-                              'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=300&auto=format&fit=crop&q=60';
-                          }}
-                        />
-                        <span className="absolute bottom-2 start-2 end-2 bg-black/70 backdrop-blur-xs text-white text-[10px] font-bold text-center py-1 rounded-lg">
-                          موديل: {selectedModelForPrint.model_code}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Model Metadata Box */}
-                    <div className="md:col-span-3 space-y-4">
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                        <div className="bg-blue-50/70 p-3 rounded-2xl border border-blue-100">
-                          <span className="text-[11px] text-blue-700 font-bold block">كود الموديل</span>
-                          <strong className="text-base font-black text-slate-900">{selectedModelForPrint.model_code}</strong>
-                        </div>
-                        <div className="bg-blue-50/70 p-3 rounded-2xl border border-blue-100">
-                          <span className="text-[11px] text-blue-700 font-bold block">نوع الموديل</span>
-                          <strong className="text-base font-black text-slate-900">{selectedModelForPrint.model_type || 'تيشرت وبنطلون'}</strong>
-                        </div>
-                        <div className="bg-blue-50/70 p-3 rounded-2xl border border-blue-100">
-                          <span className="text-[11px] text-blue-700 font-bold block">العدد المطلوب للتيشرت</span>
-                          <strong className="text-base font-black text-blue-800">
-                            {(shirtDispatchForPrint?.pieces_count || selectedModelForPrint.sewing_shirt_pieces || Number(selectedModelForPrint.sewing_available?.shirt ?? 0) || 0).toLocaleString('ar-EG')} قطعة
-                          </strong>
-                        </div>
-                        <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200">
-                          <span className="text-[11px] text-slate-500 font-bold block">ورشة خياطة التيشرت</span>
-                          <strong className="text-sm font-black text-slate-800">
-                            {shirtDispatchForPrint?.workshop_name || selectedModelForPrint.sewing_shirt_workshop || selectedModelForPrint.sewing_workshop || 'ورشة الخياطة المعتمدة'}
-                          </strong>
-                        </div>
-                        <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200">
-                          <span className="text-[11px] text-slate-500 font-bold block">تاريخ أمر التشغيل</span>
-                          <strong className="text-sm font-black text-slate-800">{new Date().toLocaleDateString('ar-EG')}</strong>
-                        </div>
-                        {/* Dynamic Entered Expected Delivery Date */}
-                        <div className="bg-emerald-50 p-3 rounded-2xl border border-emerald-200">
-                          <span className="text-[11px] text-emerald-700 font-bold block">تاريخ الاستلام المتوقع الفعلي</span>
-                          <strong className="text-sm font-black text-emerald-800 font-mono">
-                            {shirtDispatchForPrint?.expected_delivery_date || selectedModelForPrint.sewing_shirt_expected_date || selectedModelForPrint.sewing_expected_date || 'حسب الاتفاق'}
-                          </strong>
-                        </div>
-                      </div>
-
-                      {/* Instructions & Notes for Shirt */}
-                      <div className="bg-amber-50/60 border border-amber-200 rounded-2xl p-3.5">
-                        <h5 className="text-xs font-black text-amber-900 mb-1 flex items-center gap-1.5">
-                          <span>📌 تعليمات وملاحظات خياطة التيشرت:</span>
-                        </h5>
-                        <p className="text-xs text-slate-800 font-semibold whitespace-pre-wrap leading-relaxed">
-                          {shirtDispatchForPrint?.notes || selectedModelForPrint.notes_shirt || 'الالتزام بمقاسات الصدر والأكتاف والخياطة المزدوجة وفقاً لعينة الاعتماد المرفقة.'}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Shirt Accessories Table */}
-                  <div className="mb-5">
-                    <h5 className="text-xs font-black text-slate-900 mb-2 flex items-center gap-1.5">
-                      <Layers className="w-4 h-4 text-blue-600" />
-                      <span>جدول إكسسوارات ومستلزمات التيشرت (حسب الاستهلاك المحدد للقطعة):</span>
-                    </h5>
-                    <div className="border border-blue-200 rounded-2xl overflow-hidden">
-                      <table className="w-full text-right text-xs">
-                        <thead className="bg-blue-100/70 border-b border-blue-200 text-blue-950 font-bold">
-                          <tr>
-                            <th className="py-2.5 px-4">مسمى الإكسسوار</th>
-                            <th className="py-2.5 px-4 text-center">الاستهلاك لكل قطعة</th>
-                            <th className="py-2.5 px-4 text-center">إجمالي الكمية المصروفة</th>
-                            <th className="py-2.5 px-4 text-center">ملاحظات التوريد</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-blue-50">
-                          {(() => {
-                            const shirtAccs = getModelAccs(selectedModelForPrint.id).filter(
-                              (a: ModelAccessory) => a.target_type === 'shirt'
-                            );
-                            const totalTarget =
-                              shirtDispatchForPrint?.pieces_count ||
-                              selectedModelForPrint.sewing_shirt_pieces ||
-                              Number(selectedModelForPrint.sewing_available?.shirt ?? 0) ||
-                              0;
-
-                            if (shirtAccs.length > 0) {
-                              return shirtAccs.map((acc: ModelAccessory) => {
-                                const totalAcc = (acc.piece_consumption || 1) * totalTarget;
-                                return (
-                                  <tr key={acc.id} className="hover:bg-blue-50/40">
-                                    <td className="py-2.5 px-4 font-bold text-slate-900">{acc.accessory_name}</td>
-                                    <td className="py-2.5 px-4 text-center text-blue-700 font-bold">
-                                      {acc.piece_consumption || 1} {acc.unit || 'ق'}
-                                    </td>
-                                    <td className="py-2.5 px-4 text-center font-black text-slate-900">
-                                      {totalAcc.toLocaleString('ar-EG')} {acc.unit || 'ق'}
-                                    </td>
-                                    <td className="py-2.5 px-4 text-center text-slate-500">تم الصرف من مخزن الإكسسوارات</td>
-                                  </tr>
-                                );
-                              });
-                            }
-                            return (
-                              <tr>
-                                <td colSpan={4} className="py-3 px-4 text-center text-slate-400">
-                                  لا توجد إكسسوارات مسجلة خاصة بالتيشرت في بطاقة هذا الموديل.
-                                </td>
-                              </tr>
-                            );
-                          })()}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  {/* Bottom Instructions & Notes Section pulled from GlobalSettings */}
-                  <div className="mb-5 p-4 rounded-2xl bg-slate-50 border-2 border-blue-200/80">
-                    <h5 className="text-xs font-black text-blue-950 mb-1.5 flex items-center gap-1.5">
-                      <CheckCircle className="w-4 h-4 text-blue-600" />
-                      <span>التعليمات والملاحظات المعتمدة لتسليم الورشة:</span>
-                    </h5>
-                    <p className="text-xs text-slate-800 font-bold whitespace-pre-wrap leading-relaxed">
-                      {printInstructionsText}
-                    </p>
-                  </div>
-
-                  {/* Signatures */}
-                  <div className="pt-6 border-t-2 border-slate-200 flex items-center justify-between text-xs text-slate-700 font-bold">
-                    <div>مشرف خط التيشرت: ........................................</div>
-                    <div>مستلم ورشة الخياطة: ........................................</div>
-                    <div>توقيع مراقب الجودة: ........................................</div>
-                  </div>
-                </div>
-              )}
-
-              {/* PAGE BREAK SEPARATOR VISIBLE ONLY IN EDIT / PREVIEW */}
-              {printTab === 'both' && (
-                <div className="flex items-center justify-center gap-3 py-2 print:hidden text-slate-400 text-xs font-bold border-y border-dashed border-slate-300">
-                  <span>✂️ فاصل صفحة الطباعة (الصفحة التالية ستطبع في ورقة منفصلة تماماً Page Break)</span>
-                </div>
-              )}
-
-              {/* PAGE 2: ورقة البنطلون */}
-              {(printTab === 'both' || printTab === 'pants') && (
-                <div className="border-2 border-dashed border-emerald-400 rounded-3xl p-6 bg-white shadow-xs relative print-page-break print:p-0 print:border-none print:shadow-none print:m-0">
-                  {/* Header Badge */}
-                  <div className="flex items-center justify-between pb-4 border-b-2 border-emerald-200 mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-2xl bg-emerald-600 text-white flex items-center justify-center font-black text-lg">
-                        2
-                      </div>
-                      <div>
-                        <h4 className="text-xl font-black text-emerald-950">
-                          أمر تشغيل ورشة المكن — [ورقة البنطلون Pants]
-                        </h4>
-                        <p className="text-xs text-slate-500">
-                          {globalSettings.site_name} • خط خياطة البنطلون
-                        </p>
-                      </div>
-                    </div>
-                    <span className="px-4 py-1.5 rounded-full text-xs font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                      ورقة 2 من 2 (خاصة بخط البنطلون)
-                    </span>
-                  </div>
-
-                  {/* Model Details & Picture Grid */}
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-                    {/* Model Image - Contain and Never Cropped */}
-                    <div className="md:col-span-1">
-                      <div className="aspect-3/4 rounded-2xl overflow-hidden border-2 border-emerald-200 bg-white p-2 shadow-xs relative flex items-center justify-center">
-                        <img
-                          src={selectedModelForPrint.image}
-                          alt={selectedModelForPrint.model_code}
-                          className="w-full h-full object-contain"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).src =
-                              'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=300&auto=format&fit=crop&q=60';
-                          }}
-                        />
-                        <span className="absolute bottom-2 start-2 end-2 bg-black/70 backdrop-blur-xs text-white text-[10px] font-bold text-center py-1 rounded-lg">
-                          موديل: {selectedModelForPrint.model_code}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Model Metadata Box */}
-                    <div className="md:col-span-3 space-y-4">
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                        <div className="bg-emerald-50/70 p-3 rounded-2xl border border-emerald-100">
-                          <span className="text-[11px] text-emerald-700 font-bold block">كود الموديل</span>
-                          <strong className="text-base font-black text-slate-900">{selectedModelForPrint.model_code}</strong>
-                        </div>
-                        <div className="bg-emerald-50/70 p-3 rounded-2xl border border-emerald-100">
-                          <span className="text-[11px] text-emerald-700 font-bold block">نوع الموديل</span>
-                          <strong className="text-base font-black text-slate-900">{selectedModelForPrint.model_type || 'تيشرت وبنطلون'}</strong>
-                        </div>
-                        <div className="bg-emerald-50/70 p-3 rounded-2xl border border-emerald-100">
-                          <span className="text-[11px] text-emerald-700 font-bold block">العدد المطلوب للبنطلون</span>
-                          <strong className="text-base font-black text-emerald-800">
-                            {(pantsDispatchForPrint?.pieces_count || selectedModelForPrint.sewing_pants_pieces || Number(selectedModelForPrint.sewing_available?.pants ?? 0) || 0).toLocaleString('ar-EG')} قطعة
-                          </strong>
-                        </div>
-                        <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200">
-                          <span className="text-[11px] text-slate-500 font-bold block">ورشة خياطة البنطلون</span>
-                          <strong className="text-sm font-black text-slate-800">
-                            {pantsDispatchForPrint?.workshop_name || selectedModelForPrint.sewing_pants_workshop || selectedModelForPrint.sewing_workshop || 'ورشة الخياطة المعتمدة'}
-                          </strong>
-                        </div>
-                        <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200">
-                          <span className="text-[11px] text-slate-500 font-bold block">تاريخ أمر التشغيل</span>
-                          <strong className="text-sm font-black text-slate-800">{new Date().toLocaleDateString('ar-EG')}</strong>
-                        </div>
-                        {/* Dynamic Entered Expected Delivery Date */}
-                        <div className="bg-emerald-50 p-3 rounded-2xl border border-emerald-200">
-                          <span className="text-[11px] text-emerald-700 font-bold block">تاريخ الاستلام المتوقع الفعلي</span>
-                          <strong className="text-sm font-black text-emerald-800 font-mono">
-                            {pantsDispatchForPrint?.expected_delivery_date || selectedModelForPrint.sewing_pants_expected_date || selectedModelForPrint.sewing_expected_date || 'حسب الاتفاق'}
-                          </strong>
-                        </div>
-                      </div>
-
-                      {/* Instructions & Notes for Pants */}
-                      <div className="bg-amber-50/60 border border-amber-200 rounded-2xl p-3.5">
-                        <h5 className="text-xs font-black text-amber-900 mb-1 flex items-center gap-1.5">
-                          <span>📌 تعليمات وملاحظات خياطة البنطلون:</span>
-                        </h5>
-                        <p className="text-xs text-slate-800 font-semibold whitespace-pre-wrap leading-relaxed">
-                          {pantsDispatchForPrint?.notes || selectedModelForPrint.notes_pants || 'الالتزام بمقاسات الحجر والوسط وتثبيت الجيوب والأستك بدقة وفقاً للمواصفات الفنية.'}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Pants Accessories Table */}
-                  <div className="mb-5">
-                    <h5 className="text-xs font-black text-slate-900 mb-2 flex items-center gap-1.5">
-                      <Layers className="w-4 h-4 text-emerald-600" />
-                      <span>جدول إكسسوارات ومستلزمات البنطلون (أستك، خيوط، كمر، بطانة):</span>
-                    </h5>
-                    <div className="border border-emerald-200 rounded-2xl overflow-hidden">
-                      <table className="w-full text-right text-xs">
-                        <thead className="bg-emerald-100/70 border-b border-emerald-200 text-emerald-950 font-bold">
-                          <tr>
-                            <th className="py-2.5 px-4">مسمى الإكسسوار</th>
-                            <th className="py-2.5 px-4 text-center">الاستهلاك لكل قطعة</th>
-                            <th className="py-2.5 px-4 text-center">إجمالي الكمية المصروفة</th>
-                            <th className="py-2.5 px-4 text-center">ملاحظات التوريد</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-emerald-50">
-                          {(() => {
-                            const pantsAccs = getModelAccs(selectedModelForPrint.id).filter(
-                              (a: ModelAccessory) => a.target_type === 'pants'
-                            );
-                            const totalTarget =
-                              pantsDispatchForPrint?.pieces_count ||
-                              selectedModelForPrint.sewing_pants_pieces ||
-                              Number(selectedModelForPrint.sewing_available?.pants ?? 0) ||
-                              0;
-
-                            if (pantsAccs.length > 0) {
-                              return pantsAccs.map((acc: ModelAccessory) => {
-                                const totalAcc = (acc.piece_consumption || 1) * totalTarget;
-                                return (
-                                  <tr key={acc.id} className="hover:bg-emerald-50/40">
-                                    <td className="py-2.5 px-4 font-bold text-slate-900">{acc.accessory_name}</td>
-                                    <td className="py-2.5 px-4 text-center text-emerald-700 font-bold">
-                                      {acc.piece_consumption || 1} {acc.unit || 'ق'}
-                                    </td>
-                                    <td className="py-2.5 px-4 text-center font-black text-slate-900">
-                                      {totalAcc.toLocaleString('ar-EG')} {acc.unit || 'ق'}
-                                    </td>
-                                    <td className="py-2.5 px-4 text-center text-slate-500">تم الصرف من مخزن الإكسسوارات</td>
-                                  </tr>
-                                );
-                              });
-                            }
-                            return (
-                              <tr>
-                                <td colSpan={4} className="py-3 px-4 text-center text-slate-400">
-                                  لا توجد إكسسوارات مسجلة خاصة بالبنطلون في بطاقة هذا الموديل.
-                                </td>
-                              </tr>
-                            );
-                          })()}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  {/* Bottom Instructions & Notes Section pulled from GlobalSettings */}
-                  <div className="mb-5 p-4 rounded-2xl bg-slate-50 border-2 border-emerald-200/80">
-                    <h5 className="text-xs font-black text-emerald-950 mb-1.5 flex items-center gap-1.5">
-                      <CheckCircle className="w-4 h-4 text-emerald-600" />
-                      <span>التعليمات والملاحظات المعتمدة لتسليم الورشة:</span>
-                    </h5>
-                    <p className="text-xs text-slate-800 font-bold whitespace-pre-wrap leading-relaxed">
-                      {printInstructionsText}
-                    </p>
-                  </div>
-
-                  {/* Signatures */}
-                  <div className="pt-6 border-t-2 border-slate-200 flex items-center justify-between text-xs text-slate-700 font-bold">
-                    <div>مشرف خط البنطلون: ........................................</div>
-                    <div>مستلم ورشة الخياطة: ........................................</div>
-                    <div>توقيع مراقب الجودة: ........................................</div>
-                  </div>
-                </div>
-              )}
-
-            </div>
-          </div>
-        </div>
+      {/* أمر التشغيل النظيف (بنفس تنسيق أوردر القص) — معاينة + قص صورة مؤقت + طباعة A4 */}
+      {printTargetModel && (
+        <SewingPrintModal
+          model={printTargetModel}
+          initialTab={printTarget?.tab || 'both'}
+          onClose={() => setPrintTarget(null)}
+        />
       )}
     </div>
   );
