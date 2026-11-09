@@ -7,6 +7,7 @@ export type SystemSectionKey =
   | 'qc'
   | 'printing'
   | 'sewing'
+  | 'assembly_packaging'
   | 'models_tracking'
   | 'reports';
 
@@ -28,6 +29,8 @@ export interface RolePermissions {
   printing_edit: boolean;
   sewing_view: boolean;
   sewing_edit: boolean;
+  assembly_packaging_view: boolean;
+  assembly_packaging_edit: boolean;
   models_tracking_view: boolean;
   models_tracking_edit: boolean;
   reports_view: boolean;
@@ -101,6 +104,7 @@ export interface UserPermissions {
   qc?: PermissionLevel;
   printing?: PermissionLevel;
   sewing?: PermissionLevel;
+  assembly_packaging?: PermissionLevel;
   models_tracking?: PermissionLevel;
   fabric_warehouse?: PermissionLevel;
   accessories_warehouse?: PermissionLevel;
@@ -223,6 +227,10 @@ export type ModelStatus =
   | 'العد بعد الطباعة'
   | 'في قسم المكن'
   | 'العد بعد المكن'
+  | 'في التشطيب'
+  | 'في المكواة'
+  | 'في التعبئة والتغليف'
+  | 'جاهز للدَست'
   | 'مخزن الإنتاج التام'
   | 'مكتمل الإنتاج'
   | 'فرز وكنترول';
@@ -501,6 +509,87 @@ export interface SewingDispatch {
   notes?: string;
 }
 
+/* ------------------------------------------------------------------ */
+/* Assembly & Packaging (الأسمبلي والأمبالاج)                         */
+/* ------------------------------------------------------------------ */
+
+export type PackagingStepKey =
+  | 'sent_to_photo'
+  | 'received_from_photo'
+  | 'sent_to_print_cards'
+  | 'received_printed_cards';
+
+export const PACKAGING_STEP_ORDER: PackagingStepKey[] = [
+  'sent_to_photo',
+  'received_from_photo',
+  'sent_to_print_cards',
+  'received_printed_cards'
+];
+
+export const PACKAGING_STEP_LABELS: Record<PackagingStepKey, string> = {
+  sent_to_photo: 'إرسال عينة للتصوير',
+  received_from_photo: 'استلام الصور من المصور',
+  sent_to_print_cards: 'إرسال الصور للمطبعة',
+  received_printed_cards: 'استلام الورق المطبوع من المطبعة'
+};
+
+export interface PackagingRequirement {
+  id: string;
+  model_id: string;
+  model_code?: string;
+  sent_to_photo_date?: string | null;
+  received_from_photo_date?: string | null;
+  sent_to_print_cards_date?: string | null;
+  received_printed_cards_date?: string | null;
+  steps?: Record<PackagingStepKey, string | null>;
+  missing_steps: string[];
+  is_complete: boolean;
+  notes?: string;
+  updated_at?: string;
+}
+
+export interface FinishingRecord {
+  id: string;
+  model_id: string;
+  model_code?: string;
+  part_type: GarmentPart;
+  piece_label?: string;
+  entry_date?: string | null;
+  expected_exit_date?: string | null;
+  actual_exit_date?: string | null;
+  status: 'في التشطيب' | 'تم الاستلام';
+  is_received: boolean;
+  is_overdue?: boolean;
+  notes?: string;
+  updated_at?: string;
+}
+
+export type AssemblyStageKey = 'ironing' | 'packaging' | 'dest';
+
+export const ASSEMBLY_STAGE_ORDER: AssemblyStageKey[] = ['ironing', 'packaging', 'dest'];
+
+export const ASSEMBLY_STAGE_LABELS: Record<AssemblyStageKey, string> = {
+  ironing: 'قسم المكواة',
+  packaging: 'قسم التعبئة والتغليف',
+  dest: 'قسم الدَست'
+};
+
+export interface AssemblyStageRecord {
+  id: string;
+  model_id: string;
+  model_code?: string;
+  stage: AssemblyStageKey;
+  stage_label?: string;
+  entry_date?: string | null;
+  expected_exit_date?: string | null;
+  actual_exit_date?: string | null;
+  status: 'جارية الآن' | 'مكتملة';
+  is_completed: boolean;
+  is_overdue?: boolean;
+  notes?: string;
+  updated_at?: string;
+}
+
 export interface InternalMessage {
   id: string;
   sender_id: string;
@@ -513,7 +602,13 @@ export interface InternalMessage {
 }
 
 export type NotificationUrgency = 'tomorrow' | 'today' | 'overdue';
-export type NotificationStage = 'printing' | 'sewing';
+export type NotificationStage =
+  | 'printing'
+  | 'sewing'
+  | 'finishing'
+  | 'ironing'
+  | 'packaging'
+  | 'dest';
 
 export interface AppNotification {
   id: string;

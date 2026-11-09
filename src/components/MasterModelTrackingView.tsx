@@ -14,7 +14,11 @@ import {
   Scale,
   Truck,
   CheckCircle2,
-  Circle
+  Circle,
+  ClipboardList,
+  Flame,
+  Package,
+  PackageCheck
 } from 'lucide-react';
 import {
   Model,
@@ -29,7 +33,9 @@ import {
   GarmentPart,
   GARMENT_COMPOSITION_LABELS,
   getPartLabel,
-  partsForComposition
+  partsForComposition,
+  PACKAGING_STEP_ORDER,
+  PACKAGING_STEP_LABELS
 } from '../types';
 
 /* ------------------------------------------------------------------ */
@@ -43,7 +49,12 @@ type StageKey =
   | 'printing'
   | 'qc_post_print'
   | 'sewing'
-  | 'qc_post_sewing';
+  | 'qc_post_sewing'
+  | 'packaging_requirements'
+  | 'finishing'
+  | 'ironing'
+  | 'packaging'
+  | 'dest';
 
 const STAGE_ORDER: StageKey[] = [
   'design',
@@ -52,7 +63,12 @@ const STAGE_ORDER: StageKey[] = [
   'printing',
   'qc_post_print',
   'sewing',
-  'qc_post_sewing'
+  'qc_post_sewing',
+  'packaging_requirements',
+  'finishing',
+  'ironing',
+  'packaging',
+  'dest'
 ];
 
 interface StageMeta {
@@ -112,6 +128,41 @@ const STAGE_META: Record<StageKey, StageMeta> = {
     accent: 'text-teal-700',
     node: 'bg-teal-600',
     badge: 'bg-teal-50 text-teal-800 border-teal-200'
+  },
+  packaging_requirements: {
+    title: 'متطلبات الأمبالاج',
+    subtitle: 'التصوير وكروت/أكياس التعبئة: إرسال العينة، استلام الصور، الطباعة، استلام الورق',
+    accent: 'text-amber-700',
+    node: 'bg-amber-600',
+    badge: 'bg-amber-50 text-amber-800 border-amber-300'
+  },
+  finishing: {
+    title: 'قسم التشطيب',
+    subtitle: 'دخول وخروج كل قطعة (تيشرت / بنطلون / جاكيت) من التشطيب',
+    accent: 'text-purple-700',
+    node: 'bg-purple-600',
+    badge: 'bg-purple-50 text-purple-800 border-purple-200'
+  },
+  ironing: {
+    title: 'قسم المكواة',
+    subtitle: 'دخول وخروج الموديل من المكواة',
+    accent: 'text-rose-700',
+    node: 'bg-rose-600',
+    badge: 'bg-rose-50 text-rose-800 border-rose-200'
+  },
+  packaging: {
+    title: 'قسم التعبئة والتغليف',
+    subtitle: 'دخول وخروج الموديل من التعبئة والتغليف',
+    accent: 'text-emerald-700',
+    node: 'bg-emerald-700',
+    badge: 'bg-emerald-50 text-emerald-900 border-emerald-300'
+  },
+  dest: {
+    title: 'قسم الدَست',
+    subtitle: 'التغليف النهائي والتجهيز للدَست (يشترط اكتمال متطلبات الأمبالاج)',
+    accent: 'text-indigo-700',
+    node: 'bg-indigo-700',
+    badge: 'bg-indigo-50 text-indigo-900 border-indigo-300'
   }
 };
 
@@ -122,7 +173,12 @@ const STAGE_ICONS: Record<StageKey, React.ReactNode> = {
   printing: <Printer className="w-4 h-4" />,
   qc_post_print: <Scale className="w-4 h-4" />,
   sewing: <Truck className="w-4 h-4" />,
-  qc_post_sewing: <CheckCircle2 className="w-4 h-4" />
+  qc_post_sewing: <CheckCircle2 className="w-4 h-4" />,
+  packaging_requirements: <ClipboardList className="w-4 h-4" />,
+  finishing: <Sparkles className="w-4 h-4" />,
+  ironing: <Flame className="w-4 h-4" />,
+  packaging: <Package className="w-4 h-4" />,
+  dest: <PackageCheck className="w-4 h-4" />
 };
 
 /* ------------------------------------------------------------------ */
@@ -637,7 +693,10 @@ export const MasterModelTrackingView: React.FC = () => {
     fabrics,
     fabricColors,
     globalSettings,
-    sizeDefs
+    sizeDefs,
+    packagingRequirements,
+    finishingRecords,
+    assemblyStageRecords
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -667,6 +726,10 @@ export const MasterModelTrackingView: React.FC = () => {
   /** المرحلة الحالية الحقيقية للموديل (بدون تصنيف نصي هش) */
   const resolveCurrentStageKey = (model: Model): StageKey => {
     const s = model.status || '';
+    if (s.includes('الدَست') || s.includes('دست')) return 'dest';
+    if (s.includes('التشطيب') || s.includes('تشطيب')) return 'finishing';
+    if (s.includes('المكواة') || s.includes('مكواة')) return 'ironing';
+    if (s.includes('التعبئة') || s.includes('تغليف')) return 'packaging';
     if (s.includes('فرز وكنترول')) return 'qc_pre_print';
     if (s.includes('تصميم')) return 'design';
     if (s.includes('قص')) return 'cutting';
@@ -687,7 +750,7 @@ export const MasterModelTrackingView: React.FC = () => {
 
 
   /**
-   * بناء المراحل السبع من السجلات الفعلية (وليست من نص التايم لاين).
+   * بناء المراحل من السجلات الفعلية (وليست من نص التايم لاين).
    * كل مرحلة تعرض بياناتها الخاصة فقط، وبدون أي ازدواج للمراحل.
    */
   const buildStages = (model: Model): BuiltStage[] => {
@@ -750,6 +813,24 @@ export const MasterModelTrackingView: React.FC = () => {
     const sewingWorkshops = sews
       .map((s) => `${getPartLabel(s.piece_type)} ← ${s.workshop_name}`)
       .filter((v, i, arr) => arr.indexOf(v) === i);
+
+    // --- Assembly & Packaging (الأسمبلي والأمبالاج) ---
+    const packReq = packagingRequirements.find((r) => r.model_id === model.id);
+    const finishRecs = finishingRecords.filter((r) => r.model_id === model.id);
+    const assemblyRec = (stage: 'ironing' | 'packaging' | 'dest') =>
+      assemblyStageRecords.find((r) => r.model_id === model.id && r.stage === stage);
+    const packReqEvent = findTimelineEvent(model, ['packaging_requirement_step']);
+    const finishEvent = findTimelineEvent(model, ['finishing_start', 'finishing_receive']);
+    const assemblyEvent = findTimelineEvent(model, [
+      'assembly_stage_start',
+      'assembly_stage_receive'
+    ]);
+    const assemblySummary = (rec?: ReturnType<typeof assemblyRec>) =>
+      rec
+        ? `دخول: ${rec.entry_date || '—'} • متوقع: ${rec.expected_exit_date || '—'} • فعلي: ${
+            rec.actual_exit_date || 'لم يُسجل'
+          }`
+        : 'لم تبدأ بعد';
 
     const currentKey = resolveCurrentStageKey(model);
 
@@ -830,6 +911,61 @@ export const MasterModelTrackingView: React.FC = () => {
         summary: qcPostSew.length
           ? `سليم: ${formatPartsQty(goodByPart(qcPostSew))} • هالك: ${formatPartsQty(defectByPart(qcPostSew))}`
           : 'لم يُسجل العد النهائي بعد'
+      },
+      {
+        key: 'packaging_requirements',
+        ...STAGE_META.packaging_requirements,
+        done: Boolean(packReq?.is_complete),
+        isCurrent: currentKey === 'packaging_requirements',
+        timestamp: packReqEvent?.timestamp || packReq?.updated_at,
+        user: packReqEvent?.user || packReqEvent?.user_name,
+        summary: packReq
+          ? packReq.is_complete
+            ? 'مكتملة: الصور والكروت جاهزة للدَست'
+            : `متبقي: ${(packReq.missing_steps || []).join(' / ')}`
+          : 'لم تُسجل متطلبات الأمبالاج بعد'
+      },
+      {
+        key: 'finishing',
+        ...STAGE_META.finishing,
+        done: finishRecs.length > 0 && finishRecs.every((r) => r.is_received),
+        isCurrent: currentKey === 'finishing',
+        timestamp: finishEvent?.timestamp,
+        user: finishEvent?.user || finishEvent?.user_name,
+        summary: finishRecs.length
+          ? finishRecs
+              .map(
+                (r) => `${r.piece_label || getPartLabel(r.part_type)} ${r.is_received ? '✔' : '⏳'}`
+              )
+              .join(' • ')
+          : 'لم تُسجل قطع التشطيب بعد'
+      },
+      {
+        key: 'ironing',
+        ...STAGE_META.ironing,
+        done: Boolean(assemblyRec('ironing')?.is_completed),
+        isCurrent: currentKey === 'ironing',
+        timestamp: assemblyRec('ironing')?.entry_date || assemblyEvent?.timestamp,
+        user: assemblyEvent?.user || assemblyEvent?.user_name,
+        summary: assemblySummary(assemblyRec('ironing'))
+      },
+      {
+        key: 'packaging',
+        ...STAGE_META.packaging,
+        done: Boolean(assemblyRec('packaging')?.is_completed),
+        isCurrent: currentKey === 'packaging',
+        timestamp: assemblyRec('packaging')?.entry_date || assemblyEvent?.timestamp,
+        user: assemblyEvent?.user || assemblyEvent?.user_name,
+        summary: assemblySummary(assemblyRec('packaging'))
+      },
+      {
+        key: 'dest',
+        ...STAGE_META.dest,
+        done: Boolean(assemblyRec('dest')?.is_completed),
+        isCurrent: currentKey === 'dest',
+        timestamp: assemblyRec('dest')?.entry_date || assemblyEvent?.timestamp,
+        user: assemblyEvent?.user || assemblyEvent?.user_name,
+        summary: assemblySummary(assemblyRec('dest'))
       }
     ];
   };
@@ -861,6 +997,10 @@ export const MasterModelTrackingView: React.FC = () => {
     if (selectedStatusFilter === 'qc')
       return ['qc_pre_print', 'qc_post_print', 'qc_post_sewing'].includes(currentKey);
     if (selectedStatusFilter === 'sewing') return currentKey === 'sewing';
+    if (selectedStatusFilter === 'assembly')
+      return ['packaging_requirements', 'finishing', 'ironing', 'packaging', 'dest'].includes(
+        currentKey
+      );
     if (selectedStatusFilter === 'completed') return model.status.includes('مكتمل') || model.status.includes('الإنتاج التام');
     return true;
   });
@@ -870,12 +1010,21 @@ export const MasterModelTrackingView: React.FC = () => {
   const countCutting = countByStage('cutting');
   const countPrinting = countByStage('printing');
   const countSewing = countByStage('sewing');
+  const countAssembly = activeModels.filter((m) =>
+    ['packaging_requirements', 'finishing', 'ironing', 'packaging', 'dest'].includes(
+      resolveCurrentStageKey(m)
+    )
+  ).length;
   const countCompleted = activeModels.filter(
     (m) => m.status.includes('مكتمل') || m.status.includes('الإنتاج التام')
   ).length;
 
   const getStatusBadgeColor = (status: string) => {
     const s = status || '';
+    if (s.includes('دست') || s.includes('الدَست')) return 'bg-indigo-100 text-indigo-900 border-indigo-300';
+    if (s.includes('التشطيب') || s.includes('تشطيب')) return 'bg-purple-100 text-purple-800 border-purple-300';
+    if (s.includes('المكواة') || s.includes('مكواة')) return 'bg-rose-100 text-rose-800 border-rose-300';
+    if (s.includes('التعبئة') || s.includes('تغليف')) return 'bg-emerald-100 text-emerald-900 border-emerald-300';
     if (s.includes('تصميم')) return 'bg-amber-100 text-amber-800 border-amber-300';
     if (s.includes('قص')) return 'bg-blue-100 text-blue-800 border-blue-300';
     if (s.includes('قبل الطباعة')) return 'bg-purple-100 text-purple-800 border-purple-300';
@@ -911,8 +1060,9 @@ export const MasterModelTrackingView: React.FC = () => {
             <span>حركة وتفاصيل الموديلات (سجل التتبع الشامل)</span>
           </h2>
           <p className="text-slate-500 text-sm mt-0.5">
-            تتبع الموديل عبر 7 مراحل إنتاج حقيقية: التصميم ← القص ← العد قبل الطباعة ← المطابع ← العد بعد
-            الطباعة ← المكن ← الفحص النهائي. كل مرحلة تعرض بياناتها الخاصة فقط.
+            تتبع الموديل عبر 12 مرحلة إنتاج حقيقية: التصميم ← القص ← العد قبل الطباعة ← المطابع ← العد
+            بعد الطباعة ← المكن ← الفحص النهائي ← متطلبات الأمبالاج ← التشطيب ← المكواة ← التعبئة
+            والتغليف ← الدَست. كل مرحلة تعرض بياناتها الخاصة فقط.
           </p>
         </div>
 
@@ -950,6 +1100,10 @@ export const MasterModelTrackingView: React.FC = () => {
           <h4 className="text-2xl font-black text-emerald-800 mt-0.5">{countSewing}</h4>
         </div>
         <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
+          <p className="text-[11px] font-bold text-orange-700">الأسمبلي والأمبالاج</p>
+          <h4 className="text-2xl font-black text-orange-800 mt-0.5">{countAssembly}</h4>
+        </div>
+        <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
           <p className="text-[11px] font-bold text-teal-700">مكتمل الإنتاج</p>
           <h4 className="text-2xl font-black text-teal-800 mt-0.5">{countCompleted}</h4>
         </div>
@@ -965,6 +1119,7 @@ export const MasterModelTrackingView: React.FC = () => {
             { id: 'printing', label: 'المطابع' },
             { id: 'qc', label: 'الفرز' },
             { id: 'sewing', label: 'المكن' },
+            { id: 'assembly', label: 'الأسمبلي والأمبالاج' },
             { id: 'completed', label: 'المكتمل' }
           ].map((pill) => (
             <button
@@ -1341,7 +1496,7 @@ export const MasterModelTrackingView: React.FC = () => {
               </div>
 
 
-              {/* السلسلة الزمنية للمراحل السبع — كل مرحلة ببياناتها فقط */}
+              {/* السلسلة الزمنية للمراحل — كل مرحلة ببياناتها فقط */}
               <div className="flex-grow overflow-y-auto mt-4 pe-1">
                 <div className="relative ps-11">
                   <div className="absolute top-4 bottom-4 start-[18px] w-0.5 bg-slate-200 rounded-full" />
@@ -1556,6 +1711,144 @@ export const MasterModelTrackingView: React.FC = () => {
                       stageLabel="الفحص النهائي بعد المكن"
                     />
                   )}
+
+                  {key === 'packaging_requirements' && (
+                    <div className="space-y-2">
+                      {PACKAGING_STEP_ORDER.map((step) => {
+                        const req = packagingRequirements.find((r) => r.model_id === model.id);
+                        const value = req?.steps?.[step];
+                        return (
+                          <div
+                            key={step}
+                            className={`flex items-center justify-between gap-2 p-3 rounded-2xl border text-xs ${
+                              value
+                                ? 'bg-emerald-50/70 border-emerald-200'
+                                : 'bg-slate-50 border-slate-200'
+                            }`}
+                          >
+                            <span className="font-bold text-slate-800">
+                              {PACKAGING_STEP_LABELS[step]}
+                            </span>
+                            <span className="font-mono font-black text-slate-700">
+                              {value ? String(value).slice(0, 10) : 'لم تُسجل'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                      {(() => {
+                        const req = packagingRequirements.find((r) => r.model_id === model.id);
+                        if (!req) return null;
+                        return req.is_complete ? (
+                          <p className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
+                            ✅ متطلبات الأمبالاج مكتملة — الدَست متاح.
+                          </p>
+                        ) : (
+                          <p className="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
+                            ⚠️ متبقٍ: {(req.missing_steps || []).join(' / ')}
+                          </p>
+                        );
+                      })()}
+                    </div>
+                  )}
+
+                  {key === 'finishing' && (
+                    <div className="space-y-2">
+                      {finishingRecords.filter((r) => r.model_id === model.id).length === 0 ? (
+                        <p className="text-xs font-bold text-slate-500 bg-slate-50 border border-dashed border-slate-200 rounded-2xl p-4 text-center">
+                          لم تُسجل قطع التشطيب بعد.
+                        </p>
+                      ) : (
+                        finishingRecords
+                          .filter((r) => r.model_id === model.id)
+                          .map((rec) => (
+                            <div
+                              key={rec.id}
+                              className={`p-3 rounded-2xl border text-xs flex flex-wrap items-center justify-between gap-2 ${
+                                rec.is_received
+                                  ? 'bg-emerald-50/70 border-emerald-200'
+                                  : 'bg-purple-50/60 border-purple-200'
+                              }`}
+                            >
+                              <strong className="text-slate-800">
+                                {rec.piece_label || getPartLabel(rec.part_type)}
+                              </strong>
+                              <span className="font-mono text-[11px] text-slate-600">
+                                دخول: {rec.entry_date || '—'} • متوقع: {rec.expected_exit_date || '—'} •
+                                فعلي: {rec.actual_exit_date || '—'}
+                              </span>
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                  rec.is_received
+                                    ? 'bg-emerald-600 text-white border-emerald-600'
+                                    : 'bg-white text-purple-800 border-purple-300'
+                                }`}
+                              >
+                                {rec.is_received ? 'تم الاستلام' : 'في التشطيب'}
+                              </span>
+                            </div>
+                          ))
+                      )}
+                    </div>
+                  )}
+
+                  {(key === 'ironing' || key === 'packaging' || key === 'dest') &&
+                    (() => {
+                      const stageKey = key as 'ironing' | 'packaging' | 'dest';
+                      const rec = assemblyStageRecords.find(
+                        (r) => r.model_id === model.id && r.stage === stageKey
+                      );
+                      const req = packagingRequirements.find((r) => r.model_id === model.id);
+                      return (
+                        <div className="space-y-3">
+                          {stageKey === 'dest' && (
+                            <div
+                              className={`text-[11px] font-bold rounded-xl px-3 py-2 border ${
+                                req?.is_complete
+                                  ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                                  : 'text-rose-700 bg-rose-50 border-rose-200'
+                              }`}
+                            >
+                              {req?.is_complete
+                                ? '✅ متطلبات الأمبالاج مكتملة — الدَست مسموح.'
+                                : `⚠️ لا يمكن بدء الدَست قبل اكتمال متطلبات الأمبالاج. المتبقي: ${(
+                                    req?.missing_steps || ['كل الخطوات']
+                                  ).join(' / ')}`}
+                            </div>
+                          )}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                              <span className="block text-[10px] font-bold text-slate-500">
+                                تاريخ الدخول
+                              </span>
+                              <strong className="text-slate-800 font-mono">
+                                {rec?.entry_date || '—'}
+                              </strong>
+                            </div>
+                            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                              <span className="block text-[10px] font-bold text-slate-500">
+                                الخروج المتوقع
+                              </span>
+                              <strong className="text-slate-800 font-mono">
+                                {rec?.expected_exit_date || '—'}
+                              </strong>
+                            </div>
+                            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                              <span className="block text-[10px] font-bold text-slate-500">
+                                الخروج الفعلي
+                              </span>
+                              <strong className="text-slate-800 font-mono">
+                                {rec?.actual_exit_date || '—'}
+                              </strong>
+                            </div>
+                          </div>
+                          <p className="text-xs font-bold text-slate-600">
+                            الحالة:{' '}
+                            {rec ? (rec.is_completed ? 'مكتملة' : 'جارية الآن') : 'لم تبدأ بعد'}
+                            {rec?.notes ? ` • ملاحظات: ${rec.notes}` : ''}
+                          </p>
+                        </div>
+                      );
+                    })()}
                 </div>
 
                 <div className="pt-3 border-t border-slate-200 flex justify-end">

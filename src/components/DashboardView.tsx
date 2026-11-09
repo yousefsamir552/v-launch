@@ -151,10 +151,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
               <div>
                 <h3 className="font-extrabold text-sm text-slate-900">
-                  تنبيهات مواعيد الاستلام الذكية (المطابع وورش المكن)
+                  تنبيهات مواعيد الاستلام الذكية (المطابع وورش المكن والأسمبلي والأمبالاج)
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  متابعة المواعيد المستهدفة، التنبيه المسبق قبل الموعد بيوم، وتنبيهات المتأخرات حتى تسجيل الاستلام الفعلي
+                  متابعة المواعيد المستهدفة للمطابع وورش المكن والتشطيب والمكواة والتعبئة والتغليف،
+                  التنبيه المسبق قبل الموعد بيوم، وتنبيهات المتأخرات حتى تسجيل الاستلام الفعلي
                 </p>
               </div>
             </div>
@@ -174,7 +175,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               return (
                 <div
                   key={notif.id}
-                  onClick={() => onNavigate('production_control')}
+                  onClick={() => {
+                    const assemblyStages = ['finishing', 'ironing', 'packaging', 'dest'];
+                    onNavigate(
+                      assemblyStages.includes(notif.stage) ? 'assembly_packaging' : 'production_control'
+                    );
+                  }}
                   className={`p-3.5 rounded-2xl border transition cursor-pointer flex flex-col justify-between gap-2 ${
                     isOverdue
                       ? 'bg-rose-50/70 border-rose-300 text-rose-950 hover:bg-rose-100/70'
@@ -533,6 +539,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                             onNavigate('printing');
                           } else if (m.status === 'في قسم المكن') {
                             onNavigate('sewing');
+                          } else if (
+                            m.status === 'في التشطيب' ||
+                            m.status === 'في المكواة' ||
+                            m.status === 'في التعبئة والتغليف' ||
+                            m.status === 'جاهز للدَست'
+                          ) {
+                            onNavigate('assembly_packaging');
                           } else if (m.status === 'مكتمل الإنتاج') {
                             onNavigate('production_warehouse');
                           } else {

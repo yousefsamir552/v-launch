@@ -114,6 +114,7 @@ class Role(models.Model):
     can_printing = models.BooleanField(default=False, verbose_name="المطابع والتطريز")
     can_qc = models.BooleanField(default=False, verbose_name="الفرز والكنترول")
     can_sewing = models.BooleanField(default=False, verbose_name="قسم المكن")
+    can_assembly_packaging = models.BooleanField(default=False, verbose_name="الأسمبلي والأمبالاج")
     can_models_tracking = models.BooleanField(default=False, verbose_name="حركة وتفاصيل الموديلات")
     can_reports = models.BooleanField(default=False, verbose_name="التقارير والإحصائيات")
 
@@ -150,6 +151,8 @@ class Role(models.Model):
             'printing_edit': bool(self.can_printing),
             'sewing_view': bool(self.can_sewing),
             'sewing_edit': bool(self.can_sewing),
+            'assembly_packaging_view': bool(self.can_assembly_packaging),
+            'assembly_packaging_edit': bool(self.can_assembly_packaging),
             'models_tracking_view': bool(self.can_models_tracking),
             'models_tracking_edit': bool(self.can_models_tracking),
             'reports_view': bool(self.can_reports),
@@ -198,6 +201,7 @@ class Role(models.Model):
         self.can_qc = bool(merged.get('qc_view') or merged.get('qc_edit'))
         self.can_printing = bool(merged.get('printing_view') or merged.get('printing_edit'))
         self.can_sewing = bool(merged.get('sewing_view') or merged.get('sewing_edit'))
+        self.can_assembly_packaging = bool(merged.get('assembly_packaging_view') or merged.get('assembly_packaging_edit'))
         self.can_models_tracking = bool(merged.get('models_tracking_view') or merged.get('models_tracking_edit'))
         self.can_reports = bool(merged.get('reports_view') or merged.get('reports_edit'))
         self.can_view_fabric_prices = bool(merged.get('view_fabric_prices'))
@@ -275,6 +279,7 @@ class UserProfile(models.Model):
                 'can_printing': 'printing_view',
                 'can_qc': 'qc_view',
                 'can_sewing': 'sewing_view',
+                'can_assembly_packaging': 'assembly_packaging_view',
                 'can_models_tracking': 'models_tracking_view',
                 'can_reports': 'reports_view',
                 'can_view_fabric_prices': 'view_fabric_prices',
@@ -540,6 +545,10 @@ class ModelItem(models.Model):
         ('العد بعد الطباعة', 'العد بعد الطباعة'),
         ('في قسم المكن', 'في قسم المكن (الخياطة)'),
         ('العد بعد المكن', 'العد بعد المكن (الفحص النهائي)'),
+        ('في التشطيب', 'في التشطيب'),
+        ('في المكواة', 'في المكواة'),
+        ('في التعبئة والتغليف', 'في التعبئة والتغليف'),
+        ('جاهز للدَست', 'جاهز للدَست'),
         ('مخزن الإنتاج التام', 'مخزن الإنتاج التام'),
         ('مكتمل الإنتاج', 'مكتمل الإنتاج (مخزن الإنتاج)'),
     ]
@@ -870,6 +879,9 @@ class AppNotification(models.Model):
     STAGE_CHOICES = [
         ('printing', 'المطابع والتطريز'),
         ('sewing', 'ورش المكن والخياطة'),
+        ('finishing', 'قسم التشطيب'),
+        ('ironing', 'قسم المكواة'),
+        ('packaging', 'قسم التعبئة والتغليف'),
     ]
 
     title = models.CharField(max_length=255, verbose_name="عنوان التنبيه")
@@ -934,3 +946,167 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f"[{self.action}] {self.user_name}: {self.details[:40]}"
+
+
+# ---------------------------------------------------------------------------
+# Assembly & Packaging (الأسمبلي والأمبالاج)
+# ---------------------------------------------------------------------------
+# Post-sewing life cycle (no piece counts required):
+#   packaging requirements (photo + printed cards) → finishing → ironing
+#   → packaging → dest (final packing/labeling), then production warehouse.
+# ---------------------------------------------------------------------------
+
+PACKAGING_STEP_CHOICES = [
+    ('sent_to_photo', 'إرسال عينة للتصوير'),
+    ('received_from_photo', 'استلام الصور من المصور'),
+    ('sent_to_print_cards', 'إرسال الصور للمطبعة'),
+    ('received_printed_cards', 'استلام الورق المطبوع من المطبعة'),
+]
+
+PACKAGING_STEP_ORDER = [key for key, _label in PACKAGING_STEP_CHOICES]
+
+PACKAGING_STEP_LABELS = dict(PACKAGING_STEP_CHOICES)
+
+ASSEMBLY_STAGE_CHOICES = [
+    ('ironing', 'قسم المكواة'),
+    ('packaging', 'قسم التعبئة والتغليف'),
+    ('dest', 'قسم الدَست'),
+]
+
+ASSEMBLY_STAGE_KEYS = [key for key, _label in ASSEMBLY_STAGE_CHOICES]
+
+ASSEMBLY_STAGE_LABELS = dict(ASSEMBLY_STAGE_CHOICES)
+
+
+class PackagingRequirement(models.Model):
+    """
+    متطلبات الأمبالاج (الأكياس/الكروت) لموديل واحد:
+    إرسال عينة للتصوير → استلام الصور → إرسال الصور للمطبعة → استلام الورق المطبوع.
+    على مستوى الموديل بالكامل (لا يوجد تقسيم حسب القطع ولا أعداد قطع).
+    """
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    model = models.OneToOneField(
+        ModelItem, on_delete=models.CASCADE, related_name='packaging_requirement', verbose_name="الموديل"
+    )
+    sent_to_photo_date = models.DateField(blank=True, null=True, verbose_name="تاريخ إرسال العينة للتصوير")
+    received_from_photo_date = models.DateField(blank=True, null=True, verbose_name="تاريخ استلام الصور من المصور")
+    sent_to_print_cards_date = models.DateField(blank=True, null=True, verbose_name="تاريخ إرسال الصور للمطبعة")
+    received_printed_cards_date = models.DateField(blank=True, null=True, verbose_name="تاريخ استلام الورق المطبوع")
+    notes = models.TextField(blank=True, null=True, verbose_name="ملاحظات الأمبالاج")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at', '-id']
+
+    @property
+    def missing_steps(self) -> list:
+        """Arabic labels of the packaging steps that are still missing, in order."""
+        missing = []
+        for key in PACKAGING_STEP_ORDER:
+            if not getattr(self, f"{key}_date", None):
+                missing.append(PACKAGING_STEP_LABELS[key])
+        return missing
+
+    @property
+    def is_complete(self) -> bool:
+        return len(self.missing_steps) == 0
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('pack-req')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"متطلبات أمبالاج {self.model.model_code} - {'مكتملة' if self.is_complete else 'غير مكتملة'}"
+
+
+class FinishingRecord(models.Model):
+    """
+    قسم التشطيب (Finishing) — يسجل دخول وخروج كل قطعة من قطع الموديل
+    (تيشرت / بنطلون / جاكيت) بدون أعداد قطع، بنفس نمط SewingDispatch.
+    """
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    model = models.ForeignKey(
+        ModelItem, on_delete=models.CASCADE, related_name='finishing_records', verbose_name="الموديل"
+    )
+    part_type = models.CharField(max_length=20, choices=PART_TYPE_CHOICES, default='shirt', verbose_name="نوع القطعة")
+    piece_label = models.CharField(max_length=50, blank=True, null=True, verbose_name="مسمى القطعة")
+    entry_date = models.DateField(blank=True, null=True, verbose_name="تاريخ دخول التشطيب")
+    expected_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج المتوقع")
+    actual_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الاستلام الفعلي")
+    notes = models.TextField(blank=True, null=True, verbose_name="ملاحظات التشطيب")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        unique_together = ('model', 'part_type')
+
+    @property
+    def is_received(self) -> bool:
+        return bool(self.actual_exit_date)
+
+    @property
+    def is_overdue(self) -> bool:
+        if not self.actual_exit_date and self.expected_exit_date:
+            return self.expected_exit_date < date.today()
+        return False
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('finish')
+        if not self.piece_label:
+            self.piece_label = dict(PART_TYPE_CHOICES).get(self.part_type, '')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"تشطيب {self.model.model_code} [{self.piece_label or self.part_type}]"
+
+
+
+class AssemblyStageRecord(models.Model):
+    """
+    مراحل الأسمبلي والتعبئة على مستوى الموديل بالكامل:
+    المكواة (ironing) → التعبئة والتغليف (packaging) → الدَست (dest).
+    كل مرحلة لها تاريخ دخول وتاريخ خروج متوقع وتاريخ خروج فعلي + ملاحظات.
+    """
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    model = models.ForeignKey(
+        ModelItem, on_delete=models.CASCADE, related_name='assembly_stage_records', verbose_name="الموديل"
+    )
+    stage = models.CharField(max_length=20, choices=ASSEMBLY_STAGE_CHOICES, verbose_name="المرحلة")
+    entry_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الدخول")
+    expected_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج المتوقع")
+    actual_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج الفعلي")
+    notes = models.TextField(blank=True, null=True, verbose_name="ملاحظات المرحلة")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        unique_together = ('model', 'stage')
+
+    @property
+    def stage_label(self) -> str:
+        return ASSEMBLY_STAGE_LABELS.get(self.stage, self.stage)
+
+    @property
+    def is_completed(self) -> bool:
+        return bool(self.actual_exit_date)
+
+    @property
+    def is_overdue(self) -> bool:
+        if not self.actual_exit_date and self.expected_exit_date:
+            return self.expected_exit_date < date.today()
+        return False
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('asm-stage')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.stage_label} - {self.model.model_code}"
+
+

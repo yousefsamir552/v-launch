@@ -234,6 +234,35 @@ export const api = {
       body: JSON.stringify(data)
     }),
 
+  // الأسمبلي والأمبالاج (Assembly & Packaging)
+  getPackagingRequirement: (modelId: string) =>
+    request<any>(`/models/${encodeURIComponent(modelId)}/packaging_requirement/`),
+  setPackagingStep: (modelId: string, data: any) =>
+    request<any>(`/models/${encodeURIComponent(modelId)}/set_packaging_step/`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  startFinishing: (modelId: string, data: any) =>
+    request<any>(`/models/${encodeURIComponent(modelId)}/start_finishing/`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  receiveFinishing: (modelId: string, data: any) =>
+    request<any>(`/models/${encodeURIComponent(modelId)}/receive_finishing/`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  startAssemblyStage: (modelId: string, data: any) =>
+    request<any>(`/models/${encodeURIComponent(modelId)}/start_assembly_stage/`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  receiveAssemblyStage: (modelId: string, data: any) =>
+    request<any>(`/models/${encodeURIComponent(modelId)}/receive_assembly_stage/`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+
   // سجلات القص، الفرز، المطابع، والمكن
   getCuttingRecords: () => request<any[]>('/cutting-records/'),
   createCuttingRecord: (data: any) =>

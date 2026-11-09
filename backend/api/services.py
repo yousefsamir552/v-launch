@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from django.db.models import Sum
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from .models import (
     SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier,
     Fabric, FabricColor, FabricTransaction,
@@ -9,6 +10,8 @@ from .models import (
     CuttingRecord, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
     COMPOSITION_TO_PARTS, DEFAULT_GARMENT_COMPOSITION,
+    PackagingRequirement, FinishingRecord, AssemblyStageRecord,
+    PACKAGING_STEP_ORDER, PACKAGING_STEP_LABELS, ASSEMBLY_STAGE_LABELS,
 )
 from .serializers import resolve_by_id
 
@@ -806,6 +809,121 @@ def generate_smart_delivery_notifications():
     return notifications
 
 
+# ---------------------------------------------------------------------------
+# Assembly & Packaging (الأسمبلي والأمبالاج)
+# ---------------------------------------------------------------------------
+
+def _notification_urgency(exp, today, tomorrow):
+    """Returns (urgency, days_diff) for an expected date, or (None, 0) when out of range."""
+    if not exp:
+        return None, 0
+    if exp < today:
+        return 'overdue', -(today - exp).days
+    if exp == today:
+        return 'today', 0
+    if exp == tomorrow:
+        return 'tomorrow', 1
+    return None, 0
+
+
+def _notifications_for_assembly_stage(stage_key, label, records, today, tomorrow):
+    """Builds delivery notifications for AssemblyStageRecord rows of a single stage."""
+    out = []
+    for rec in records:
+        urgency, days_diff = _notification_urgency(rec.expected_exit_date, today, tomorrow)
+        if not urgency:
+            continue
+        exp = rec.expected_exit_date
+        code = rec.model.model_code
+        m_ext_id = rec.model.client_id or str(rec.model_id)
+        r_ext_id = rec.client_id or str(rec.id)
+        prefix = {'overdue': '🚨', 'today': '⏰', 'tomorrow': '📅'}[urgency]
+        if urgency == 'overdue':
+            msg = (
+                f"تخطى موعد خروج الموديل {code} من {label} بمقدار {abs(days_diff)} يوم، "
+                f"ولم يتم تسجيل الاستلام بعد!"
+            )
+        elif urgency == 'today':
+            msg = f"اليوم هو موعد استلام الموديل {code} من {label}."
+        else:
+            msg = f"غداً موعد استلام الموديل {code} من {label}."
+        out.append({
+            'id': f"notif-asm-{stage_key}-{r_ext_id}-{exp.isoformat()}",
+            'title': f"{prefix} {'تأخر استلام' if urgency == 'overdue' else ('موعد استلام اليوم' if urgency == 'today' else 'موعد استلام غداً')} ({code})",
+            'urgency': urgency,
+            'stage': stage_key,
+            'model_code': code,
+            'model_id': m_ext_id,
+            'source_name': label,
+            'target_name': label,
+            'expected_date': exp.isoformat(),
+            'days_diff': days_diff,
+            'message': msg,
+        })
+    return out
+
+
+def generate_assembly_delivery_notifications():
+    """
+    Delivery date notifications for the post-sewing life cycle:
+    finishing (per part) + ironing / packaging / dest stages.
+    """
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+    notifications = []
+
+    active_finishing = FinishingRecord.objects.filter(actual_exit_date__isnull=True).select_related('model')
+    for rec in active_finishing:
+        urgency, days_diff = _notification_urgency(rec.expected_exit_date, today, tomorrow)
+        if not urgency:
+            continue
+        exp = rec.expected_exit_date
+        code = rec.model.model_code
+        m_ext_id = rec.model.client_id or str(rec.model_id)
+        r_ext_id = rec.client_id or str(rec.id)
+        label = rec.piece_label or ('تيشرت' if rec.part_type == 'shirt' else 'بنطلون')
+        prefix = {'overdue': '🚨', 'today': '⏰', 'tomorrow': '📅'}[urgency]
+        if urgency == 'overdue':
+            msg = (
+                f"تخطى موعد خروج [{label}] موديل {code} من التشطيب بمقدار {abs(days_diff)} يوم، "
+                f"ولم يتم تسجيل الاستلام بعد!"
+            )
+            title = f"🚨 تأخر استلام من التشطيب [{label}] ({code})"
+        elif urgency == 'today':
+            msg = f"اليوم هو موعد استلام [{label}] موديل {code} من التشطيب."
+            title = f"⏰ موعد استلام اليوم [{label}] ({code})"
+        else:
+            msg = f"غداً موعد استلام [{label}] موديل {code} من التشطيب."
+            title = f"📅 موعد استلام غداً [{label}] ({code})"
+        notifications.append({
+            'id': f"notif-finish-{r_ext_id}-{exp.isoformat()}",
+            'title': title,
+            'urgency': urgency,
+            'stage': 'finishing',
+            'model_code': code,
+            'model_id': m_ext_id,
+            'source_name': 'قسم التشطيب',
+            'target_name': 'قسم التشطيب',
+            'expected_date': exp.isoformat(),
+            'days_diff': days_diff,
+            'message': msg,
+        })
+
+    for stage_key in ('ironing', 'packaging', 'dest'):
+        records = AssemblyStageRecord.objects.filter(
+            stage=stage_key, actual_exit_date__isnull=True
+        ).select_related('model')
+        notifications.extend(
+            _notifications_for_assembly_stage(
+                stage_key, ASSEMBLY_STAGE_LABELS.get(stage_key, stage_key), records, today, tomorrow
+            )
+        )
+
+    urgency_weights = {'overdue': 0, 'today': 1, 'tomorrow': 2}
+    notifications.sort(key=lambda n: urgency_weights.get(n['urgency'], 3))
+    return notifications
+
+
 def dispatch_model_to_sewing_service(
     model_id, workshop_name, pieces_count, expected_delivery_date,
     notes=None, user_name='مدير الإنتاج', piece_type='shirt', piece_label=None, client_id=None
@@ -939,3 +1057,358 @@ def receive_model_from_sewing_service(dispatch_id, user_name='مراقب الج�
     )
 
     return dispatch
+
+
+# ---------------------------------------------------------------------------
+# Assembly & Packaging services (الأسمبلي والأمبالاج)
+# ---------------------------------------------------------------------------
+
+def _parse_date_value(value):
+    """Parses a date-ish value safely (returns None for empty / invalid input)."""
+    if value in (None, ''):
+        return None
+    if isinstance(value, date):
+        return value
+    return parse_date(str(value)[:10])
+
+
+def get_or_create_packaging_requirement(model):
+    """Returns the PackagingRequirement of a model, creating it lazily."""
+    if not model:
+        raise ValueError('الموديل غير موجود')
+    requirement, _created = PackagingRequirement.objects.get_or_create(model=model)
+    return requirement
+
+
+def packaging_requirement_summary(model):
+    """Readiness summary used by the UI to gate the dest stage."""
+    requirement = PackagingRequirement.objects.filter(model=model).first()
+    if not requirement:
+        return {
+            'exists': False,
+            'id': '',
+            'is_complete': False,
+            'missing_steps': [PACKAGING_STEP_LABELS[key] for key in PACKAGING_STEP_ORDER],
+        }
+    return {
+        'exists': True,
+        'id': requirement.client_id or str(requirement.id),
+        'is_complete': requirement.is_complete,
+        'missing_steps': requirement.missing_steps,
+    }
+
+
+def set_packaging_step_service(model, step, step_date=None, notes=None,
+                               user_name='مسؤول الأمبالاج'):
+    """Sets one of the four packaging requirement dates and logs a timeline entry."""
+    if step not in PACKAGING_STEP_ORDER:
+        raise ValueError('خطوة متطلبات الأمبالاج غير معروفة')
+    requirement = get_or_create_packaging_requirement(model)
+
+    parsed_date = _parse_date_value(step_date) or date.today()
+    setattr(requirement, f'{step}_date', parsed_date)
+
+    clean_notes = (notes or '').strip()
+    if clean_notes:
+        requirement.notes = clean_notes
+    requirement.save()
+
+    step_label = PACKAGING_STEP_LABELS[step]
+    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+    tl_notes = f"تم تسجيل ({step_label}) بتاريخ {parsed_date.isoformat()}"
+    if requirement.is_complete:
+        tl_notes += " - اكتملت متطلبات الأمبالاج وأصبح الموديل جاهزاً لمرحلة الدَست"
+    elif clean_notes:
+        tl_notes += f" | ملاحظات: {clean_notes}"
+
+    ModelTimeline.objects.create(
+        model=model,
+        stage='الأسمبلي والأمبالاج',
+        title=f"متطلبات الأمبالاج: {step_label}",
+        notes=tl_notes,
+        user=user_name,
+        timestamp_str=now_str,
+        details={
+            'phase_type': 'packaging_requirement_step',
+            'record_id': requirement.client_id or str(requirement.id),
+            'step': step,
+            'step_label': step_label,
+            'step_date': parsed_date.isoformat(),
+            'missing_steps': requirement.missing_steps,
+            'is_complete': requirement.is_complete,
+            'worker_notes': clean_notes,
+            'operator_name': user_name,
+        },
+    )
+    return requirement
+
+
+def start_finishing_service(model, parts=None, entry_date=None, expected_exit_date=None,
+                            notes=None, user_name='مسؤول التشطيب'):
+    """
+    Starts (or updates) the finishing stage for the given model parts.
+    Creates one FinishingRecord per part and moves the model into «في التشطيب».
+    """
+    if not model:
+        raise ValueError('الموديل غير موجود')
+
+    clean_notes = (notes or '').strip()
+    entry = _parse_date_value(entry_date) or date.today()
+    expected = _parse_date_value(expected_exit_date)
+    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+
+    requested = [normalize_part_key(part) for part in (parts or get_model_parts(model))]
+    part_keys = []
+    for part in requested:
+        if part in ('shirt', 'pants', 'jacket') and part not in part_keys:
+            part_keys.append(part)
+    if not part_keys:
+        part_keys = ['shirt']
+
+    records = []
+    for part in part_keys:
+        record, created = FinishingRecord.objects.get_or_create(
+            model=model,
+            part_type=part,
+            defaults={
+                'entry_date': entry,
+                'expected_exit_date': expected,
+                'notes': clean_notes or None,
+            },
+        )
+        if not created:
+            record.entry_date = record.entry_date or entry
+            if expected:
+                record.expected_exit_date = expected
+            if clean_notes:
+                record.notes = clean_notes
+            record.save()
+        records.append(record)
+
+    model.status = 'في التشطيب'
+    model._skip_timeline_signal = True
+    model.save()
+
+    labels = ' / '.join(record.piece_label or record.part_type for record in records)
+    tl_notes = f"تم تسجيل دخول [{labels}] إلى قسم التشطيب بتاريخ {entry.isoformat()}"
+    if expected:
+        tl_notes += f" - الخروج المتوقع: {expected.isoformat()}"
+    if clean_notes:
+        tl_notes += f" | ملاحظات: {clean_notes}"
+
+    ModelTimeline.objects.create(
+        model=model,
+        stage='قسم التشطيب',
+        title=f'دخول التشطيب: {labels}',
+        notes=tl_notes,
+        user=user_name,
+        timestamp_str=now_str,
+        details={
+            'phase_type': 'finishing_start',
+            'record_ids': [record.client_id or str(record.id) for record in records],
+            'parts': part_keys,
+            'entry_date': entry.isoformat(),
+            'expected_exit_date': expected.isoformat() if expected else '',
+            'worker_notes': clean_notes,
+            'operator_name': user_name,
+        },
+    )
+    return records
+
+
+def receive_finishing_service(record_id, actual_exit_date=None, notes=None,
+                              user_name='مسؤول التشطيب'):
+    """
+    Receives one garment part from finishing. When all parts of the model are
+    received the model is promoted to «في المكواة».
+    """
+    record = resolve_by_id(FinishingRecord, record_id)
+    if not record:
+        raise ValueError('سجل التشطيب غير موجود')
+
+    actual = _parse_date_value(actual_exit_date) or date.today()
+    clean_notes = (notes or '').strip()
+    record.actual_exit_date = actual
+    if clean_notes:
+        record.notes = f"{record.notes} | استلام: {clean_notes}".strip(' |') if record.notes else clean_notes
+    record.save()
+
+    model = record.model
+    all_received = not FinishingRecord.objects.filter(
+        model=model, actual_exit_date__isnull=True
+    ).exists()
+    if all_received:
+        model.status = 'في المكواة'
+    model._skip_timeline_signal = True
+    model.save()
+
+    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+    label = record.piece_label or ('تيشرت' if record.part_type == 'shirt' else 'بنطلون')
+    tl_notes = f"تم استلام [{label}] من التشطيب بتاريخ {actual.isoformat()}"
+    if all_received:
+        tl_notes += ' - اكتملت كل قطع التشطيب وتوجيه الموديل تلقائياً إلى قسم المكواة'
+    if clean_notes:
+        tl_notes += f" | ملاحظات: {clean_notes}"
+
+    ModelTimeline.objects.create(
+        model=model,
+        stage='قسم التشطيب',
+        title=f'استلام [{label}] من التشطيب',
+        notes=tl_notes,
+        user=user_name,
+        timestamp_str=now_str,
+        details={
+            'phase_type': 'finishing_receive',
+            'record_id': record.client_id or str(record.id),
+            'part_type': record.part_type,
+            'piece_label': label,
+            'entry_date': record.entry_date.isoformat() if record.entry_date else '',
+            'expected_exit_date': record.expected_exit_date.isoformat() if record.expected_exit_date else '',
+            'actual_exit_date': actual.isoformat(),
+            'all_parts_received': all_received,
+            'worker_notes': clean_notes,
+            'operator_name': user_name,
+        },
+    )
+    return record
+
+
+ASSEMBLY_STAGE_STATUS = {
+    'ironing': 'في المكواة',
+    'packaging': 'في التعبئة والتغليف',
+    'dest': 'جاهز للدَست',
+}
+
+ASSEMBLY_STAGE_NEXT_STATUS = {
+    'ironing': 'في التعبئة والتغليف',
+    'packaging': 'جاهز للدَست',
+    'dest': 'مخزن الإنتاج التام',
+}
+
+
+def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_date=None,
+                                 notes=None, user_name='مسؤول الأسمبلي'):
+    """
+    Starts (or updates) one assembly stage (ironing / packaging / dest).
+    The dest stage is gated by the completion of the packaging requirements.
+    """
+    if not model:
+        raise ValueError('الموديل غير موجود')
+    if stage not in ASSEMBLY_STAGE_STATUS:
+        raise ValueError('مرحلة الأسمبلي غير معروفة')
+
+    if stage == 'dest':
+        summary = packaging_requirement_summary(model)
+        if not summary['is_complete']:
+            missing = ' / '.join(summary['missing_steps'])
+            raise ValueError(
+                f"لا يمكن بدء الدَست: متطلبات الأمبالاج غير مكتملة. المتبقي: {missing}"
+            )
+
+    clean_notes = (notes or '').strip()
+    entry = _parse_date_value(entry_date) or date.today()
+    expected = _parse_date_value(expected_exit_date)
+    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+
+    record, created = AssemblyStageRecord.objects.get_or_create(
+        model=model,
+        stage=stage,
+        defaults={
+            'entry_date': entry,
+            'expected_exit_date': expected,
+            'notes': clean_notes or None,
+        },
+    )
+    if not created:
+        record.entry_date = record.entry_date or entry
+        if expected:
+            record.expected_exit_date = expected
+        if clean_notes:
+            record.notes = clean_notes
+        record.save()
+
+    model.status = ASSEMBLY_STAGE_STATUS[stage]
+    model._skip_timeline_signal = True
+    model.save()
+
+    label = ASSEMBLY_STAGE_LABELS.get(stage, stage)
+    tl_notes = f"تم تسجيل دخول الموديل إلى {label} بتاريخ {entry.isoformat()}"
+    if expected:
+        tl_notes += f" - الخروج المتوقع: {expected.isoformat()}"
+    if clean_notes:
+        tl_notes += f" | ملاحظات: {clean_notes}"
+
+    ModelTimeline.objects.create(
+        model=model,
+        stage=label,
+        title=f'دخول {label}',
+        notes=tl_notes,
+        user=user_name,
+        timestamp_str=now_str,
+        details={
+            'phase_type': 'assembly_stage_start',
+            'record_id': record.client_id or str(record.id),
+            'stage': stage,
+            'stage_label': label,
+            'entry_date': entry.isoformat(),
+            'expected_exit_date': expected.isoformat() if expected else '',
+            'worker_notes': clean_notes,
+            'operator_name': user_name,
+        },
+    )
+    return record
+
+
+def receive_assembly_stage_service(record_id, actual_exit_date=None, notes=None,
+                                   user_name='مسؤول الأسمبلي'):
+    """
+    Completes an assembly stage record and promotes the model to the next stage
+    (dest → مخزن الإنتاج التام).
+    """
+    record = resolve_by_id(AssemblyStageRecord, record_id)
+    if not record:
+        raise ValueError('سجل مرحلة الأسمبلي غير موجود')
+
+    actual = _parse_date_value(actual_exit_date) or date.today()
+    clean_notes = (notes or '').strip()
+    record.actual_exit_date = actual
+    if clean_notes:
+        record.notes = f"{record.notes} | استلام: {clean_notes}".strip(' |') if record.notes else clean_notes
+    record.save()
+
+    model = record.model
+    next_status = ASSEMBLY_STAGE_NEXT_STATUS.get(record.stage)
+    if next_status:
+        model.status = next_status
+        model._skip_timeline_signal = True
+        model.save()
+
+    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+    label = ASSEMBLY_STAGE_LABELS.get(record.stage, record.stage)
+    tl_notes = f"تم استلام الموديل من {label} بتاريخ {actual.isoformat()}"
+    if next_status:
+        tl_notes += f" - الحالة الجديدة: {next_status}"
+    if clean_notes:
+        tl_notes += f" | ملاحظات: {clean_notes}"
+
+    ModelTimeline.objects.create(
+        model=model,
+        stage=label,
+        title=f'استلام من {label}',
+        notes=tl_notes,
+        user=user_name,
+        timestamp_str=now_str,
+        details={
+            'phase_type': 'assembly_stage_receive',
+            'record_id': record.client_id or str(record.id),
+            'stage': record.stage,
+            'stage_label': label,
+            'entry_date': record.entry_date.isoformat() if record.entry_date else '',
+            'expected_exit_date': record.expected_exit_date.isoformat() if record.expected_exit_date else '',
+            'actual_exit_date': actual.isoformat(),
+            'next_status': next_status or '',
+            'worker_notes': clean_notes,
+            'operator_name': user_name,
+        },
+    )
+    return record

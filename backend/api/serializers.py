@@ -5,7 +5,8 @@ from .models import (
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
-    SewingDispatch, AppNotification, InternalMessage, AuditLog
+    SewingDispatch, AppNotification, InternalMessage, AuditLog,
+    PackagingRequirement, FinishingRecord, AssemblyStageRecord
 )
 
 
@@ -545,6 +546,80 @@ class ModelItemSerializer(serializers.ModelSerializer):
             'is_deleted': bool(instance.is_deleted),
             'timeline': ModelTimelineSerializer(instance.timeline.all(), many=True).data,
             'accessories': ModelAccessorySerializer(instance.accessories.all(), many=True).data,
+        }
+
+
+class PackagingRequirementSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PackagingRequirement
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        steps = {
+            'sent_to_photo': to_date_str(instance.sent_to_photo_date) or None,
+            'received_from_photo': to_date_str(instance.received_from_photo_date) or None,
+            'sent_to_print_cards': to_date_str(instance.sent_to_print_cards_date) or None,
+            'received_printed_cards': to_date_str(instance.received_printed_cards_date) or None,
+        }
+        return {
+            'id': get_ext_id(instance),
+            'model_id': get_ext_id(instance.model),
+            'model_code': instance.model.model_code,
+            'sent_to_photo_date': steps['sent_to_photo'],
+            'received_from_photo_date': steps['received_from_photo'],
+            'sent_to_print_cards_date': steps['sent_to_print_cards'],
+            'received_printed_cards_date': steps['received_printed_cards'],
+            'steps': steps,
+            'missing_steps': instance.missing_steps,
+            'is_complete': instance.is_complete,
+            'notes': instance.notes or '',
+            'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
+        }
+
+
+class FinishingRecordSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FinishingRecord
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        return {
+            'id': get_ext_id(instance),
+            'model_id': get_ext_id(instance.model),
+            'model_code': instance.model.model_code,
+            'part_type': instance.part_type or 'shirt',
+            'piece_label': instance.piece_label or instance.get_part_type_display(),
+            'entry_date': to_date_str(instance.entry_date) or None,
+            'expected_exit_date': to_date_str(instance.expected_exit_date) or None,
+            'actual_exit_date': to_date_str(instance.actual_exit_date) or None,
+            'status': 'تم الاستلام' if instance.is_received else 'في التشطيب',
+            'is_received': instance.is_received,
+            'is_overdue': instance.is_overdue,
+            'notes': instance.notes or '',
+            'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
+        }
+
+
+class AssemblyStageRecordSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AssemblyStageRecord
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        return {
+            'id': get_ext_id(instance),
+            'model_id': get_ext_id(instance.model),
+            'model_code': instance.model.model_code,
+            'stage': instance.stage,
+            'stage_label': instance.stage_label,
+            'entry_date': to_date_str(instance.entry_date) or None,
+            'expected_exit_date': to_date_str(instance.expected_exit_date) or None,
+            'actual_exit_date': to_date_str(instance.actual_exit_date) or None,
+            'status': 'مكتملة' if instance.is_completed else 'جارية الآن',
+            'is_completed': instance.is_completed,
+            'is_overdue': instance.is_overdue,
+            'notes': instance.notes or '',
+            'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
         }
 
 

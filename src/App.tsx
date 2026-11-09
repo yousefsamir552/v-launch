@@ -11,6 +11,7 @@ import { CuttingDetailsView } from './components/CuttingDetailsView';
 import { QCDetailsView } from './components/QCDetailsView';
 import { ProductionControlView } from './components/ProductionControlView';
 import { MasterModelTrackingView } from './components/MasterModelTrackingView';
+import { AssemblyPackagingView } from './components/AssemblyPackagingView';
 import { SettingsView } from './components/SettingsView';
 import { AuditLogsView } from './components/AuditLogsView';
 import { ReportsView } from './components/ReportsView';
@@ -72,6 +73,7 @@ export const App: React.FC = () => {
       );
     }
     if (tab === 'models_tracking') return hasPermission('models_tracking');
+    if (tab === 'assembly_packaging') return hasPermission('assembly_packaging');
     if (tab === 'reports') return hasPermission('reports');
     if (tab === 'settings') return canAccessSettings();
     if (tab === 'logs') return canViewAuditLogs();
@@ -180,6 +182,9 @@ export const App: React.FC = () => {
             onFinishedApproval={() => handleNavigate('production_control')}
           />
         )}
+
+        {/* Assembly & Packaging Section (الأسمبلي والأمبالاج) */}
+        {currentTab === 'assembly_packaging' && <AssemblyPackagingView />}
 
         {/* Master Model Tracking */}
         {currentTab === 'models_tracking' && <MasterModelTrackingView />}

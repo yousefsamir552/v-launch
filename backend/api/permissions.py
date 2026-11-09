@@ -15,6 +15,7 @@ class HasDynamicSectionPermission(permissions.BasePermission):
         'printing': 'can_printing',
         'qc': 'can_qc',
         'sewing': 'can_sewing',
+        'assembly_packaging': 'can_assembly_packaging',
         'tracking': 'can_models_tracking',
     }
 

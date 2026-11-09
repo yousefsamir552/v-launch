@@ -36,7 +36,12 @@ import {
   ModelTimelineEvent,
   SewingDispatch,
   AppNotification,
-  InternalMessage
+  InternalMessage,
+  PackagingRequirement,
+  PackagingStepKey,
+  FinishingRecord,
+  AssemblyStageRecord,
+  AssemblyStageKey
 } from '../types';
 
 interface FlashMessage {
@@ -99,6 +104,9 @@ interface AppContextType {
   qcRecords: QCRecord[];
   printDispatches: PrintDispatch[];
   sewingDispatches: SewingDispatch[];
+  packagingRequirements: PackagingRequirement[];
+  finishingRecords: FinishingRecord[];
+  assemblyStageRecords: AssemblyStageRecord[];
   appNotifications: AppNotification[];
   unreadNotificationsCount: number;
   markNotificationRead: (id: string) => void;
@@ -352,6 +360,26 @@ interface AppContextType {
   finishSewingToQC: (modelId: string, notes?: string) => void;
   finishQCToProduction: (modelId: string, notes?: string) => void;
 
+  // Assembly & Packaging Actions (الأسمبلي والأمبالاج)
+  getPackagingRequirement: (modelId: string) => PackagingRequirement | undefined;
+  setPackagingStep: (modelId: string, step: PackagingStepKey, date?: string, notes?: string) => void;
+  startFinishing: (data: {
+    modelId: string;
+    parts?: GarmentPart[];
+    entryDate?: string;
+    expectedExitDate?: string;
+    notes?: string;
+  }) => void;
+  receiveFinishing: (recordId: string, actualExitDate?: string, notes?: string) => void;
+  startAssemblyStage: (data: {
+    modelId: string;
+    stage: AssemblyStageKey;
+    entryDate?: string;
+    expectedExitDate?: string;
+    notes?: string;
+  }) => void;
+  receiveAssemblyStage: (recordId: string, actualExitDate?: string, notes?: string) => void;
+
   // Settings Actions
   addSizeDef: (name: string, values: string) => void;
   updateSizeDef: (id: string, name: string, values: string) => void;
@@ -443,6 +471,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [qcRecords, setQcRecords] = useState<QCRecord[]>([]);
   const [printDispatches, setPrintDispatches] = useState<PrintDispatch[]>([]);
   const [sewingDispatches, setSewingDispatches] = useState<SewingDispatch[]>([]);
+  const [packagingRequirements, setPackagingRequirements] = useState<PackagingRequirement[]>([]);
+  const [finishingRecords, setFinishingRecords] = useState<FinishingRecord[]>([]);
+  const [assemblyStageRecords, setAssemblyStageRecords] = useState<AssemblyStageRecord[]>([]);
   const [internalMessages, setInternalMessages] = useState<InternalMessage[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [flashMessages, setFlashMessages] = useState<FlashMessage[]>([]);
@@ -568,6 +599,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setQcRecords(Array.isArray(state.qcRecords) ? state.qcRecords : []);
         setPrintDispatches(Array.isArray(state.printDispatches) ? state.printDispatches : []);
         setSewingDispatches(Array.isArray(state.sewingDispatches) ? state.sewingDispatches : []);
+        setPackagingRequirements(
+          Array.isArray(state.packagingRequirements) ? state.packagingRequirements : []
+        );
+        setFinishingRecords(Array.isArray(state.finishingRecords) ? state.finishingRecords : []);
+        setAssemblyStageRecords(
+          Array.isArray(state.assemblyStageRecords) ? state.assemblyStageRecords : []
+        );
         setInternalMessages(Array.isArray(state.internalMessages) ? state.internalMessages : []);
         const rawLogs: AuditLog[] = Array.isArray(state.auditLogs) ? state.auditLogs : [];
         setAuditLogs(
@@ -834,6 +872,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         printing_edit: true,
         sewing_view: true,
         sewing_edit: true,
+        assembly_packaging_view: true,
+        assembly_packaging_edit: true,
         models_tracking_view: true,
         models_tracking_edit: true,
         reports_view: true,
@@ -3100,6 +3140,341 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
+  // -----------------------------------------------------------------
+  // Assembly & Packaging Actions (الأسمبلي والأمبالاج)
+  // -----------------------------------------------------------------
+
+  const getPackagingRequirement = useCallback(
+    (modelId: string): PackagingRequirement | undefined =>
+      packagingRequirements.find((req) => req.model_id === modelId),
+    [packagingRequirements]
+  );
+
+  const setPackagingStep = (
+    modelId: string,
+    step: PackagingStepKey,
+    date?: string,
+    notes?: string
+  ) => {
+    const targetModel = models.find((m) => m.id === modelId);
+    const resolvedDate = date || new Date().toISOString().slice(0, 10);
+    const cleanNotes = notes?.trim() || '';
+
+    const existing = packagingRequirements.find((req) => req.model_id === modelId);
+    const merged = {
+      ...(existing || {}),
+      id: existing?.id || `pack-req-${Date.now()}`,
+      model_id: modelId,
+      model_code: targetModel?.model_code,
+      [`${step}_date`]: resolvedDate,
+      steps: {
+        ...(existing?.steps || {}),
+        [step]: resolvedDate
+      },
+      notes: cleanNotes || existing?.notes || '',
+      missing_steps: existing?.missing_steps || [],
+      is_complete: existing?.is_complete || false
+    } as PackagingRequirement;
+
+    setPackagingRequirements((prev) =>
+      existing
+        ? prev.map((req) => (req.model_id === modelId ? merged : req))
+        : [...prev, merged]
+    );
+
+    api
+      .setPackagingStep(modelId, {
+        step,
+        date: resolvedDate,
+        notes: cleanNotes,
+        user_name: currentUser?.real_name || 'مسؤول الأمبالاج'
+      })
+      .then((res) => {
+        const saved: PackagingRequirement | undefined = res?.packagingRequirement;
+        if (saved) {
+          setPackagingRequirements((prev) => [
+            saved,
+            ...prev.filter((req) => req.model_id !== modelId)
+          ]);
+        }
+        refreshState();
+        logAction(
+          'الأسمبلي والأمبالاج',
+          `تسجيل خطوة أمبالاج (${step}) للموديل ${targetModel?.model_code}`
+        );
+        addFlashMessage('تم تسجيل خطوة متطلبات الأمبالاج بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل تسجيل خطوة الأمبالاج في الباك إند', 'danger');
+      });
+  };
+
+  const startFinishing = (data: {
+    modelId: string;
+    parts?: GarmentPart[];
+    entryDate?: string;
+    expectedExitDate?: string;
+    notes?: string;
+  }) => {
+    const targetModel = models.find((m) => m.id === data.modelId);
+    const parts = data.parts && data.parts.length ? data.parts : getModelParts(data.modelId);
+    const cleanNotes = data.notes?.trim() || '';
+
+    setModels((prev) =>
+      prev.map((m) => (m.id === data.modelId ? { ...m, status: 'في التشطيب' } : m))
+    );
+    const optimistic: FinishingRecord[] = parts.map((part, index) => ({
+      id: `finish-${Date.now()}-${index}`,
+      model_id: data.modelId,
+      model_code: targetModel?.model_code,
+      part_type: part,
+      piece_label: getPartLabel(part),
+      entry_date: data.entryDate || new Date().toISOString().slice(0, 10),
+      expected_exit_date: data.expectedExitDate || null,
+      actual_exit_date: null,
+      status: 'في التشطيب',
+      is_received: false,
+      notes: cleanNotes
+    }));
+    setFinishingRecords((prev) => [
+      ...optimistic,
+      ...prev.filter((rec) => rec.model_id !== data.modelId)
+    ]);
+
+    api
+      .startFinishing(data.modelId, {
+        parts,
+        entry_date: data.entryDate,
+        expected_exit_date: data.expectedExitDate,
+        notes: cleanNotes,
+        user_name: currentUser?.real_name || 'مسؤول التشطيب'
+      })
+      .then((res) => {
+        const saved: FinishingRecord[] = Array.isArray(res?.finishingRecords)
+          ? res.finishingRecords
+          : [];
+        if (saved.length) {
+          setFinishingRecords((prev) => [
+            ...saved,
+            ...prev.filter((rec) => rec.model_id !== data.modelId)
+          ]);
+        }
+        refreshState();
+        logAction(
+          'قسم التشطيب',
+          `دخول قطع (${parts.map((p) => getPartLabel(p)).join(' / ')}) للموديل ${targetModel?.model_code} للتشطيب`
+        );
+        addFlashMessage('تم تسجيل دخول القطع لقسم التشطيب بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل تسجيل التشطيب في الباك إند', 'danger');
+      });
+  };
+
+  const receiveFinishing = (recordId: string, actualExitDate?: string, notes?: string) => {
+    const record = finishingRecords.find((rec) => rec.id === recordId);
+    if (!record) return;
+    const targetModel = models.find((m) => m.id === record.model_id);
+    const resolvedDate = actualExitDate || new Date().toISOString().slice(0, 10);
+    const cleanNotes = notes?.trim() || '';
+
+    const updated = finishingRecords.map((rec) =>
+      rec.id === recordId
+        ? {
+            ...rec,
+            actual_exit_date: resolvedDate,
+            status: 'تم الاستلام' as const,
+            is_received: true,
+            notes: cleanNotes
+              ? `${rec.notes || ''} | استلام: ${cleanNotes}`.replace(/^\s*\|\s*/, '')
+              : rec.notes
+          }
+        : rec
+    );
+    setFinishingRecords(updated);
+
+    const stillPending = updated.some(
+      (rec) => rec.model_id === record.model_id && !rec.is_received
+    );
+    if (!stillPending) {
+      setModels((prev) =>
+        prev.map((m) => (m.id === record.model_id ? { ...m, status: 'في المكواة' } : m))
+      );
+    }
+
+    api
+      .receiveFinishing(record.model_id, {
+        record_id: recordId,
+        actual_exit_date: resolvedDate,
+        notes: cleanNotes,
+        user_name: currentUser?.real_name || 'مسؤول التشطيب'
+      })
+      .then((res) => {
+        const saved: FinishingRecord[] = Array.isArray(res?.finishingRecords)
+          ? res.finishingRecords
+          : [];
+        if (saved.length) {
+          setFinishingRecords((prev) => [
+            ...saved,
+            ...prev.filter((rec) => rec.model_id !== record.model_id)
+          ]);
+        }
+        refreshState();
+        logAction(
+          'قسم التشطيب',
+          `استلام قطعة ${record.piece_label || getPartLabel(record.part_type)} من التشطيب للموديل ${targetModel?.model_code}`
+        );
+        addFlashMessage('تم تسجيل استلام القطعة من التشطيب بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل تسجيل استلام التشطيب في الباك إند', 'danger');
+      });
+  };
+
+  const ASSEMBLY_STAGE_STATUS_MAP: Record<AssemblyStageKey, DesignModel['status']> = {
+    ironing: 'في المكواة',
+    packaging: 'في التعبئة والتغليف',
+    dest: 'جاهز للدَست'
+  };
+
+  const ASSEMBLY_STAGE_NEXT_STATUS_MAP: Record<AssemblyStageKey, DesignModel['status']> = {
+    ironing: 'في التعبئة والتغليف',
+    packaging: 'جاهز للدَست',
+    dest: 'مخزن الإنتاج التام'
+  };
+
+  const startAssemblyStage = (data: {
+    modelId: string;
+    stage: AssemblyStageKey;
+    entryDate?: string;
+    expectedExitDate?: string;
+    notes?: string;
+  }) => {
+    const targetModel = models.find((m) => m.id === data.modelId);
+    const cleanNotes = data.notes?.trim() || '';
+    const resolvedEntry = data.entryDate || new Date().toISOString().slice(0, 10);
+
+    setModels((prev) =>
+      prev.map((m) =>
+        m.id === data.modelId ? { ...m, status: ASSEMBLY_STAGE_STATUS_MAP[data.stage] } : m
+      )
+    );
+    setAssemblyStageRecords((prev) => {
+      const others = prev.filter(
+        (rec) => !(rec.model_id === data.modelId && rec.stage === data.stage)
+      );
+      return [
+        {
+          id: `asm-${data.stage}-${Date.now()}`,
+          model_id: data.modelId,
+          model_code: targetModel?.model_code,
+          stage: data.stage,
+          entry_date: resolvedEntry,
+          expected_exit_date: data.expectedExitDate || null,
+          actual_exit_date: null,
+          status: 'جارية الآن' as const,
+          is_completed: false,
+          notes: cleanNotes
+        },
+        ...others
+      ];
+    });
+
+    api
+      .startAssemblyStage(data.modelId, {
+        stage: data.stage,
+        entry_date: resolvedEntry,
+        expected_exit_date: data.expectedExitDate,
+        notes: cleanNotes,
+        user_name: currentUser?.real_name || 'مسؤول الأسمبلي'
+      })
+      .then((res) => {
+        const saved: AssemblyStageRecord | undefined = res?.assemblyStageRecord;
+        if (saved) {
+          setAssemblyStageRecords((prev) => [
+            saved,
+            ...prev.filter(
+              (rec) => !(rec.model_id === data.modelId && rec.stage === data.stage)
+            )
+          ]);
+        }
+        refreshState();
+        logAction(
+          'الأسمبلي والأمبالاج',
+          `بدء مرحلة (${data.stage}) للموديل ${targetModel?.model_code}`
+        );
+        addFlashMessage('تم تسجيل بدء المرحلة بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل بدء المرحلة في الباك إند', 'danger');
+      });
+  };
+
+  const receiveAssemblyStage = (
+    recordId: string,
+    actualExitDate?: string,
+    notes?: string
+  ) => {
+    const record = assemblyStageRecords.find((rec) => rec.id === recordId);
+    if (!record) return;
+    const targetModel = models.find((m) => m.id === record.model_id);
+    const resolvedDate = actualExitDate || new Date().toISOString().slice(0, 10);
+    const cleanNotes = notes?.trim() || '';
+
+    setAssemblyStageRecords((prev) =>
+      prev.map((rec) =>
+        rec.id === recordId
+          ? {
+              ...rec,
+              actual_exit_date: resolvedDate,
+              status: 'مكتملة' as const,
+              is_completed: true,
+              notes: cleanNotes
+                ? `${rec.notes || ''} | استلام: ${cleanNotes}`.replace(/^\s*\|\s*/, '')
+                : rec.notes
+            }
+          : rec
+      )
+    );
+    setModels((prev) =>
+      prev.map((m) =>
+        m.id === record.model_id
+          ? { ...m, status: ASSEMBLY_STAGE_NEXT_STATUS_MAP[record.stage] }
+          : m
+      )
+    );
+
+    api
+      .receiveAssemblyStage(record.model_id, {
+        record_id: recordId,
+        actual_exit_date: resolvedDate,
+        notes: cleanNotes,
+        user_name: currentUser?.real_name || 'مسؤول الأسمبلي'
+      })
+      .then((res) => {
+        const saved: AssemblyStageRecord | undefined = res?.assemblyStageRecord;
+        if (saved) {
+          setAssemblyStageRecords((prev) => prev.map((rec) => (rec.id === saved.id ? saved : rec)));
+        }
+        refreshState();
+        logAction(
+          'الأسمبلي والأمبالاج',
+          `استلام الموديل ${targetModel?.model_code} من مرحلة (${record.stage})`
+        );
+        addFlashMessage('تم تسجيل استلام المرحلة بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل استلام المرحلة في الباك إند', 'danger');
+      });
+  };
+
+
+
   // Settings Actions
   const addSizeDef = (name: string, values: string) => {
     const newSize: SizeDef = {
@@ -3467,9 +3842,145 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
 
+    // 3. Finishing (التشطيب) — per part records
+    finishingRecords.forEach((rec) => {
+      if (rec.is_received || !rec.expected_exit_date) return;
+      const model = models.find((m) => m.id === rec.model_id);
+      const modelCode = model?.model_code || 'موديل';
+      const label = rec.piece_label || getPartLabel(rec.part_type);
+
+      const expDate = new Date(rec.expected_exit_date);
+      expDate.setHours(0, 0, 0, 0);
+      const diffDays = Math.round((expDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      const notifId = `notif-finish-${rec.id}-${rec.expected_exit_date}`;
+
+      if (diffDays < 0) {
+        list.push({
+          id: notifId,
+          model_id: rec.model_id,
+          model_code: modelCode,
+          stage: 'finishing',
+          source_name: 'قسم التشطيب',
+          expected_date: rec.expected_exit_date,
+          urgency: 'overdue',
+          days_diff: diffDays,
+          title: `🚨 تأخر استلام من التشطيب [${label}] (${modelCode})`,
+          message: `تخطى موعد خروج [${label}] موديل ${modelCode} من التشطيب بمقدار ${Math.abs(
+            diffDays
+          )} يوم، ولم يتم تسجيل الاستلام بعد!`,
+          is_read: readNotificationIds.includes(notifId),
+          created_at: rec.entry_date || rec.expected_exit_date
+        });
+      } else if (diffDays === 0) {
+        list.push({
+          id: notifId,
+          model_id: rec.model_id,
+          model_code: modelCode,
+          stage: 'finishing',
+          source_name: 'قسم التشطيب',
+          expected_date: rec.expected_exit_date,
+          urgency: 'today',
+          days_diff: 0,
+          title: `⏰ موعد استلام اليوم [${label}] (${modelCode})`,
+          message: `اليوم موعد استلام [${label}] موديل ${modelCode} من قسم التشطيب.`,
+          is_read: readNotificationIds.includes(notifId),
+          created_at: rec.entry_date || rec.expected_exit_date
+        });
+      } else if (diffDays === 1) {
+        list.push({
+          id: notifId,
+          model_id: rec.model_id,
+          model_code: modelCode,
+          stage: 'finishing',
+          source_name: 'قسم التشطيب',
+          expected_date: rec.expected_exit_date,
+          urgency: 'tomorrow',
+          days_diff: 1,
+          title: `📅 موعد استلام غداً [${label}] (${modelCode})`,
+          message: `غداً موعد استلام [${label}] موديل ${modelCode} من قسم التشطيب.`,
+          is_read: readNotificationIds.includes(notifId),
+          created_at: rec.entry_date || rec.expected_exit_date
+        });
+      }
+    });
+
+    // 4. Assembly stages (المكواة / التعبئة والتغليف / الدَست)
+    const assemblyStageNames: Record<AssemblyStageKey, string> = {
+      ironing: 'قسم المكواة',
+      packaging: 'قسم التعبئة والتغليف',
+      dest: 'قسم الدَست'
+    };
+    assemblyStageRecords.forEach((rec) => {
+      if (rec.is_completed || !rec.expected_exit_date) return;
+      const model = models.find((m) => m.id === rec.model_id);
+      const modelCode = model?.model_code || 'موديل';
+      const stageName = assemblyStageNames[rec.stage] || rec.stage;
+
+      const expDate = new Date(rec.expected_exit_date);
+      expDate.setHours(0, 0, 0, 0);
+      const diffDays = Math.round((expDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      const notifId = `notif-asm-${rec.stage}-${rec.id}-${rec.expected_exit_date}`;
+
+      if (diffDays < 0) {
+        list.push({
+          id: notifId,
+          model_id: rec.model_id,
+          model_code: modelCode,
+          stage: rec.stage,
+          source_name: stageName,
+          expected_date: rec.expected_exit_date,
+          urgency: 'overdue',
+          days_diff: diffDays,
+          title: `🚨 تأخر استلام (${modelCode})`,
+          message: `تخطى موعد خروج الموديل ${modelCode} من ${stageName} بمقدار ${Math.abs(
+            diffDays
+          )} يوم، ولم يتم تسجيل الاستلام بعد!`,
+          is_read: readNotificationIds.includes(notifId),
+          created_at: rec.entry_date || rec.expected_exit_date
+        });
+      } else if (diffDays === 0) {
+        list.push({
+          id: notifId,
+          model_id: rec.model_id,
+          model_code: modelCode,
+          stage: rec.stage,
+          source_name: stageName,
+          expected_date: rec.expected_exit_date,
+          urgency: 'today',
+          days_diff: 0,
+          title: `⏰ موعد استلام اليوم (${modelCode})`,
+          message: `اليوم موعد استلام الموديل ${modelCode} من ${stageName}.`,
+          is_read: readNotificationIds.includes(notifId),
+          created_at: rec.entry_date || rec.expected_exit_date
+        });
+      } else if (diffDays === 1) {
+        list.push({
+          id: notifId,
+          model_id: rec.model_id,
+          model_code: modelCode,
+          stage: rec.stage,
+          source_name: stageName,
+          expected_date: rec.expected_exit_date,
+          urgency: 'tomorrow',
+          days_diff: 1,
+          title: `📅 موعد استلام غداً (${modelCode})`,
+          message: `غداً موعد استلام الموديل ${modelCode} من ${stageName}.`,
+          is_read: readNotificationIds.includes(notifId),
+          created_at: rec.entry_date || rec.expected_exit_date
+        });
+      }
+    });
+
     const priorityOrder = { overdue: 0, today: 1, tomorrow: 2 };
     return list.sort((a, b) => priorityOrder[a.urgency] - priorityOrder[b.urgency]);
-  }, [printDispatches, sewingDispatches, models, readNotificationIds]);
+  }, [
+    printDispatches,
+    sewingDispatches,
+    finishingRecords,
+    assemblyStageRecords,
+    models,
+    readNotificationIds
+  ]);
 
   const unreadNotificationsCount = useMemo(() => {
     return appNotifications.filter((n) => n.urgency === 'overdue' || !n.is_read).length;
@@ -3504,6 +4015,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         qcRecords,
         printDispatches,
         sewingDispatches,
+        packagingRequirements,
+        finishingRecords,
+        assemblyStageRecords,
         appNotifications,
         unreadNotificationsCount,
         markNotificationRead,
@@ -3583,6 +4097,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         receiveModelFromSewing,
         finishSewingToQC,
         finishQCToProduction,
+        getPackagingRequirement,
+        setPackagingStep,
+        startFinishing,
+        receiveFinishing,
+        startAssemblyStage,
+        receiveAssemblyStage,
         addSizeDef,
         updateSizeDef,
         deleteSizeDef,

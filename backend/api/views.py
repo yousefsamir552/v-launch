@@ -17,6 +17,8 @@ from .models import (
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
     COMPOSITION_TO_PARTS, DEFAULT_GARMENT_COMPOSITION,
     PART_TYPE_CHOICES, PART_TYPE_KEYS,
+    PackagingRequirement, FinishingRecord, AssemblyStageRecord,
+    PACKAGING_STEP_ORDER, ASSEMBLY_STAGE_KEYS,
 )
 from .serializers import (
     resolve_by_id, get_ext_id,
@@ -26,15 +28,24 @@ from .serializers import (
     ModelItemSerializer, ModelRequirementSerializer, ModelAccessorySerializer,
     ModelTimelineSerializer, CuttingRecordSerializer, CuttingSpreadLayerSerializer, QCRecordSerializer,
     PrintDispatchSerializer, SewingDispatchSerializer,
-    AppNotificationSerializer, InternalMessageSerializer, AuditLogSerializer
+    AppNotificationSerializer, InternalMessageSerializer, AuditLogSerializer,
+    PackagingRequirementSerializer, FinishingRecordSerializer, AssemblyStageRecordSerializer
 )
 from .services import (
     ensure_initial_seed,
     sync_reserved_quantities,
     get_accessory_deficits,
     generate_smart_delivery_notifications,
+    generate_assembly_delivery_notifications,
     dispatch_model_to_sewing_service,
     receive_model_from_sewing_service,
+    get_or_create_packaging_requirement,
+    packaging_requirement_summary,
+    set_packaging_step_service,
+    start_finishing_service,
+    receive_finishing_service,
+    start_assembly_stage_service,
+    receive_assembly_stage_service,
     normalize_part_key,
     recompute_model_part_totals,
 )
@@ -246,6 +257,9 @@ class StateViewSet(viewsets.ViewSet):
             'qcRecords': QCRecordSerializer(QCRecord.objects.select_related('model').all(), many=True).data,
             'printDispatches': PrintDispatchSerializer(PrintDispatch.objects.select_related('model').all(), many=True, context=req_ctx).data,
             'sewingDispatches': SewingDispatchSerializer(SewingDispatch.objects.select_related('model').all(), many=True, context=req_ctx).data,
+            'packagingRequirements': PackagingRequirementSerializer(PackagingRequirement.objects.select_related('model').all(), many=True).data,
+            'finishingRecords': FinishingRecordSerializer(FinishingRecord.objects.select_related('model').all(), many=True).data,
+            'assemblyStageRecords': AssemblyStageRecordSerializer(AssemblyStageRecord.objects.select_related('model').all(), many=True).data,
             'internalMessages': InternalMessageSerializer(visible_messages, many=True).data,
             'auditLogs': AuditLogSerializer(visible_logs, many=True).data,
         })
@@ -1458,6 +1472,147 @@ class ModelItemViewSet(BasePermViewSet):
         )
         return Response(ModelTimelineSerializer(tl).data, status=status.HTTP_201_CREATED)
 
+    # ------------------------------------------------------------------
+    # Assembly & Packaging (الأسمبلي والأمبالاج)
+    # ------------------------------------------------------------------
+
+    @action(detail=True, methods=['get'])
+    def packaging_requirement(self, request, pk=None):
+        """Returns (creating lazily) the packaging requirement record of the model."""
+        model = self.get_object()
+        requirement = get_or_create_packaging_requirement(model)
+        return Response({
+            'packagingRequirement': PackagingRequirementSerializer(requirement).data,
+            'readiness': packaging_requirement_summary(model),
+        })
+
+    @action(detail=True, methods=['post'])
+    def set_packaging_step(self, request, pk=None):
+        """Sets one of the four packaging requirement dates (photo / cards)."""
+        model = self.get_object()
+        data = request.data or {}
+        step = str(data.get('step') or '').strip()
+        step_date = data.get('date') or data.get('step_date') or data.get('stepDate')
+        notes = data.get('notes') or ''
+        user_name = data.get('user_name') or data.get('user') or 'مسؤول الأمبالاج'
+        try:
+            requirement = set_packaging_step_service(
+                model, step, step_date=step_date, notes=notes, user_name=user_name
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            'model': ModelItemSerializer(model, context={'request': request}).data,
+            'packagingRequirement': PackagingRequirementSerializer(requirement).data,
+            'readiness': packaging_requirement_summary(model),
+        })
+
+    @action(detail=True, methods=['post'])
+    def start_finishing(self, request, pk=None):
+        """Starts the finishing stage for the requested model parts."""
+        model = self.get_object()
+        data = request.data or {}
+        parts = data.get('parts')
+        if isinstance(parts, str):
+            parts = [parts]
+        if not isinstance(parts, list):
+            parts = None
+        try:
+            records = start_finishing_service(
+                model,
+                parts=parts,
+                entry_date=data.get('entry_date') or data.get('entryDate'),
+                expected_exit_date=data.get('expected_exit_date') or data.get('expectedExitDate'),
+                notes=data.get('notes') or '',
+                user_name=data.get('user_name') or data.get('user') or 'مسؤول التشطيب',
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            'model': ModelItemSerializer(model, context={'request': request}).data,
+            'finishingRecords': FinishingRecordSerializer(records, many=True).data,
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def receive_finishing(self, request, pk=None):
+        """Receives one part from finishing; promotes the model when all parts are in."""
+        model = self.get_object()
+        data = request.data or {}
+        record_id = data.get('record_id') or data.get('recordId')
+        if not record_id:
+            return Response({'detail': 'معرف سجل التشطيب مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            record = receive_finishing_service(
+                record_id,
+                actual_exit_date=data.get('actual_exit_date') or data.get('actualExitDate'),
+                notes=data.get('notes') or '',
+                user_name=data.get('user_name') or data.get('user') or 'مسؤول التشطيب',
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        model.refresh_from_db()
+        return Response({
+            'model': ModelItemSerializer(model, context={'request': request}).data,
+            'finishingRecord': FinishingRecordSerializer(record).data,
+            'finishingRecords': FinishingRecordSerializer(
+                FinishingRecord.objects.filter(model=model).order_by('part_type'), many=True
+            ).data,
+        })
+
+    @action(detail=True, methods=['post'])
+    def start_assembly_stage(self, request, pk=None):
+        """Starts one assembly stage: ironing / packaging / dest."""
+        model = self.get_object()
+        data = request.data or {}
+        stage = str(data.get('stage') or '').strip()
+        if stage not in ASSEMBLY_STAGE_KEYS:
+            return Response(
+                {'detail': 'مرحلة الأسمبلي غير معروفة (المتاح: ironing / packaging / dest)'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            record = start_assembly_stage_service(
+                model,
+                stage,
+                entry_date=data.get('entry_date') or data.get('entryDate'),
+                expected_exit_date=data.get('expected_exit_date') or data.get('expectedExitDate'),
+                notes=data.get('notes') or '',
+                user_name=data.get('user_name') or data.get('user') or 'مسؤول الأسمبلي',
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            'model': ModelItemSerializer(model, context={'request': request}).data,
+            'assemblyStageRecord': AssemblyStageRecordSerializer(record).data,
+            'readiness': packaging_requirement_summary(model),
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def receive_assembly_stage(self, request, pk=None):
+        """Completes one assembly stage record and moves the model to the next stage."""
+        model = self.get_object()
+        data = request.data or {}
+        record_id = data.get('record_id') or data.get('recordId')
+        if not record_id:
+            return Response({'detail': 'معرف سجل المرحلة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            record = receive_assembly_stage_service(
+                record_id,
+                actual_exit_date=data.get('actual_exit_date') or data.get('actualExitDate'),
+                notes=data.get('notes') or '',
+                user_name=data.get('user_name') or data.get('user') or 'مسؤول الأسمبلي',
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        model.refresh_from_db()
+        return Response({
+            'model': ModelItemSerializer(model, context={'request': request}).data,
+            'assemblyStageRecord': AssemblyStageRecordSerializer(record).data,
+            'assemblyStageRecords': AssemblyStageRecordSerializer(
+                AssemblyStageRecord.objects.filter(model=model).order_by('stage'), many=True
+            ).data,
+        })
+
 
 class ModelRequirementViewSet(BasePermViewSet):
     queryset = ModelRequirement.objects.select_related('model', 'color').all()
@@ -1995,6 +2150,9 @@ class NotificationViewSet(viewsets.ViewSet):
     def list(self, request):
         ensure_initial_seed()
         notifs = generate_smart_delivery_notifications()
+        notifs.extend(generate_assembly_delivery_notifications())
+        urgency_weights = {'overdue': 0, 'today': 1, 'tomorrow': 2}
+        notifs.sort(key=lambda n: urgency_weights.get(n.get('urgency'), 3))
         return Response({
             'notifications': notifs,
             'total_count': len(notifs),

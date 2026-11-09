@@ -21,7 +21,8 @@ import {
   BarChart3,
   Factory,
   Calculator,
-  Users
+  Users,
+  Boxes
 } from 'lucide-react';
 import { InternalMessagingModal } from './InternalMessagingModal';
 
@@ -102,6 +103,13 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
         hasPermission('reports')
     },
     {
+      id: 'assembly_packaging',
+      label: 'الأسمبلي والأمبالاج',
+      icon: Boxes,
+      color: 'text-orange-600',
+      isVisible: hasPermission('assembly_packaging')
+    },
+    {
       id: 'models_tracking',
       label: 'حركة الموديلات',
       icon: GitCommit,
@@ -162,6 +170,9 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
       return true;
     }
     if (itemId === 'models_tracking' && currentTab === 'models_tracking') {
+      return true;
+    }
+    if (itemId === 'assembly_packaging' && currentTab === 'assembly_packaging') {
       return true;
     }
     if (
@@ -288,7 +299,17 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                               key={notif.id}
                               onClick={() => {
                                 markNotificationRead(notif.id);
-                                setCurrentTab('production_control');
+                                const assemblyStages = [
+                                  'finishing',
+                                  'ironing',
+                                  'packaging',
+                                  'dest'
+                                ];
+                                setCurrentTab(
+                                  assemblyStages.includes(notif.stage)
+                                    ? 'assembly_packaging'
+                                    : 'production_control'
+                                );
                                 setNotificationsOpen(false);
                               }}
                               className={`p-3 rounded-2xl transition cursor-pointer text-xs flex flex-col gap-1 border ${

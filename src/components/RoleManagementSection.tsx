@@ -102,6 +102,14 @@ export const SYSTEM_SECTIONS: {
     bgColor: 'bg-emerald-50 border-emerald-200'
   },
   {
+    key: 'assembly_packaging',
+    label: 'الأسمبلي والأمبالاج',
+    description: 'متطلبات الأمبالاج (الصور والكروت) والتشطيب والمكواة والتعبئة والتغليف والدَست',
+    icon: Boxes,
+    color: 'text-orange-600',
+    bgColor: 'bg-orange-50 border-orange-200'
+  },
+  {
     key: 'models_tracking',
     label: 'حركة الموديلات',
     description: 'شاشة مركزية شاملة لكافة الموديلات والبحث وتتبع خط الإنتاج الزمني',
@@ -222,6 +230,8 @@ export const DEFAULT_PERMISSIONS: RolePermissions = {
   printing_edit: false,
   sewing_view: false,
   sewing_edit: false,
+  assembly_packaging_view: false,
+  assembly_packaging_edit: false,
   models_tracking_view: false,
   models_tracking_edit: false,
   reports_view: false,
