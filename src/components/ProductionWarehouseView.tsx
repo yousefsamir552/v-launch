@@ -6,9 +6,10 @@ export const ProductionWarehouseView: React.FC = () => {
   const { models } = useApp();
   const [showPrintModal, setShowPrintModal] = useState(false);
 
-  // Finished production models
+  // Finished production models — فقط الموديلات التي وصلت فعلاً لمخزن الإنتاج التام
+  // (بعد اكتمال التشطيب ← المكواة ← التعبئة والتغليف ← الدَست).
   const finishedModels = models.filter(
-    (m) => !m.is_deleted && (m.status === 'مخزن الإنتاج التام' || m.status === 'جاهز للطباعة / التجميع' || m.count_after_sewing)
+    (m) => !m.is_deleted && (m.status === 'مخزن الإنتاج التام' || m.status === 'مكتمل الإنتاج')
   );
 
   const totalFinishedPieces = finishedModels.reduce((sum, m) => sum + (m.count_after_sewing || m.count_after_print || m.target_cut_quantity || 0), 0);
@@ -29,7 +30,8 @@ export const ProductionWarehouseView: React.FC = () => {
               </span>
             </div>
             <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-              حصر المنتجات النهائية والتشغيلات المكتملة بعد الفحص والعد النهائي لتجهيزها للتوزيع
+              حصر المنتجات النهائية المكتملة بعد التشطيب والمكواة والتعبئة والتغليف والدَست، الجاهزة
+              للتسليم والتوزيع
             </p>
           </div>
         </div>

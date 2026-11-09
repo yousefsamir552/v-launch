@@ -2714,7 +2714,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return {
           ...patched,
           count_after_sewing: totalGoodFromMatrix,
-          ...(data.advanceStage ? { status: 'مخزن الإنتاج التام' } : {})
+          ...(data.advanceStage ? { status: 'في التشطيب' } : {})
         };
       })
     );

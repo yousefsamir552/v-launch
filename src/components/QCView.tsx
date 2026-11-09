@@ -243,7 +243,7 @@ export const QCView: React.FC = () => {
       case 'after_print':
         return 'التحويل لقسم المكن (الخياطة)';
       case 'after_sewing':
-        return 'التحويل لمخزن الإنتاج التام';
+        return 'التحويل لقسم التشطيب';
     }
   };
 

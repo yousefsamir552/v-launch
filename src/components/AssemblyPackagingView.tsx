@@ -25,9 +25,8 @@ import {
 
 type TabKey = 'requirements' | 'finishing' | 'ironing' | 'packaging' | 'dest';
 
-/** الحالات التي تدخل فيها الموديلات إلى قسم الأسمبلي والأمبالاج (بعد المكن). */
+/** الحالات التي تدخل فيها الموديلات إلى قسم الأسمبلي والأمبالاج (بعد اعتماد العد بعد المكن). */
 const ELIGIBLE_STATUSES: string[] = [
-  'العد بعد المكن',
   'في التشطيب',
   'في المكواة',
   'في التعبئة والتغليف',
@@ -35,6 +34,24 @@ const ELIGIBLE_STATUSES: string[] = [
   'مخزن الإنتاج التام',
   'مكتمل الإنتاج'
 ];
+
+/** المرحلة الحالية الفعلية للموديل أثناء قسم الأسمبلي والأمبالاج. */
+const CURRENT_ASSEMBLY_STAGE: Record<string, { label: string; tone: string }> = {
+  'في التشطيب': { label: 'قسم التشطيب', tone: 'bg-purple-100 text-purple-800 border-purple-300' },
+  'في المكواة': { label: 'قسم المكواة', tone: 'bg-rose-100 text-rose-800 border-rose-300' },
+  'في التعبئة والتغليف': {
+    label: 'قسم التعبئة والتغليف',
+    tone: 'bg-emerald-100 text-emerald-800 border-emerald-300'
+  },
+  'جاهز للدَست': { label: 'قسم الدَست', tone: 'bg-indigo-100 text-indigo-800 border-indigo-300' }
+};
+
+/** الحالة التي يجب أن يكون عليها الموديل قبل بدء المرحلة (تسلسل إلزامي). */
+const STAGE_REQUIRED_STATUS: Record<AssemblyStageKey, DesignModel['status']> = {
+  ironing: 'في المكواة',
+  packaging: 'في التعبئة والتغليف',
+  dest: 'جاهز للدَست'
+};
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -108,6 +125,21 @@ const StatusBadge: React.FC<{ status?: string }> = ({ status }) => {
   );
 };
 
+const CurrentStageBadge: React.FC<{ status?: string }> = ({ status }) => {
+  const stage = status ? CURRENT_ASSEMBLY_STAGE[status] : undefined;
+  if (!stage) return null;
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="text-[10px] font-bold text-slate-500">المرحلة الحالية للموديل:</span>
+      <span
+        className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black border ${stage.tone}`}
+      >
+        {stage.label}
+      </span>
+    </div>
+  );
+};
+
 const ModelHeader: React.FC<{ model: DesignModel }> = ({ model }) => (
   <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100">
     <div className="flex items-center gap-3">
@@ -173,6 +205,7 @@ const RequirementsCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({
       }`}
     >
       <ModelHeader model={model} />
+      <CurrentStageBadge status={model.status} />
 
       <div className="flex items-center justify-between text-[11px] font-bold">
         <span className="text-slate-600">
@@ -428,7 +461,9 @@ const StageCard: React.FC<{
 
   const isDest = stage === 'dest';
   const requirementComplete = Boolean(requirement?.is_complete);
-  const blocked = isDest && !requirementComplete;
+  // لا تُبدأ المرحلة إلا بعد استلام المرحلة السابقة لها (تسلسل إلزامي).
+  const outOfSequence = !record && model.status !== STAGE_REQUIRED_STATUS[stage];
+  const blocked = (isDest && !requirementComplete) || outOfSequence;
   const stageLabel = ASSEMBLY_STAGE_LABELS[stage];
 
   return (
@@ -483,10 +518,19 @@ const StageCard: React.FC<{
         <div className="text-[10px] font-bold text-rose-800 bg-rose-50 border border-rose-200 rounded-xl px-2.5 py-2 leading-relaxed flex items-start gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
           <span>
-            لا يمكن بدء الدَست قبل اكتمال متطلبات الأمبالاج.
-            {requirement?.missing_steps?.length
-              ? ` المتبقي: ${requirement.missing_steps.join(' / ')}`
-              : ' يرجى تسجيل خطوات الأمبالاج الأربعة أولاً.'}
+            {outOfSequence ? (
+              <>
+                لا يمكن بدء مرحلة {stageLabel} قبل استلام المرحلة السابقة لها.
+                {` الحالة الحالية للموديل: ${model.status}.`}
+              </>
+            ) : (
+              <>
+                لا يمكن بدء الدَست قبل اكتمال متطلبات الأمبالاج.
+                {requirement?.missing_steps?.length
+                  ? ` المتبقي: ${requirement.missing_steps.join(' / ')}`
+                  : ' يرجى تسجيل خطوات الأمبالاج الأربعة أولاً.'}
+              </>
+            )}
           </span>
         </div>
       )}

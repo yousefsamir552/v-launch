@@ -1329,8 +1329,10 @@ class ModelItemViewSet(BasePermViewSet):
             elif stage == 'after_sewing':
                 model.count_after_sewing = counted
                 if advance_stage:
-                    model.status = 'مخزن الإنتاج التام'
-                tl_text = f"مصفوفة الفحص النهائي بعد المكن — إجمالي السليم: {counted} قطعة | إجمالي التالف: {defects} {'-> تحويل لمخزن الإنتاج التام' if advance_stage else ''}"
+                    # بعد اعتماد العد بعد المكن ينتقل الموديل لقسم التشطيب
+                    # وليس لمخزن الإنتاج التام (المخزن لا يُستلم إلا بعد اكتمال الدَست).
+                    model.status = 'في التشطيب'
+                tl_text = f"مصفوفة الفحص النهائي بعد المكن — إجمالي السليم: {counted} قطعة | إجمالي التالف: {defects} {'-> تحويل لقسم التشطيب' if advance_stage else ''}"
                 if notes:
                     tl_text += f" | ملاحظات: {notes}"
                 ModelTimeline.objects.create(

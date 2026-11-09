@@ -54,7 +54,8 @@ type StageKey =
   | 'finishing'
   | 'ironing'
   | 'packaging'
-  | 'dest';
+  | 'dest'
+  | 'production_warehouse';
 
 const STAGE_ORDER: StageKey[] = [
   'design',
@@ -64,11 +65,11 @@ const STAGE_ORDER: StageKey[] = [
   'qc_post_print',
   'sewing',
   'qc_post_sewing',
-  'packaging_requirements',
   'finishing',
   'ironing',
   'packaging',
-  'dest'
+  'dest',
+  'production_warehouse'
 ];
 
 interface StageMeta {
@@ -163,6 +164,13 @@ const STAGE_META: Record<StageKey, StageMeta> = {
     accent: 'text-indigo-700',
     node: 'bg-indigo-700',
     badge: 'bg-indigo-50 text-indigo-900 border-indigo-300'
+  },
+  production_warehouse: {
+    title: 'مخزن الإنتاج التام',
+    subtitle: 'الاستلام النهائي للبضاعة الجاهزة بعد اكتمال التشطيب والمكواة والتعبئة والدَست',
+    accent: 'text-slate-700',
+    node: 'bg-slate-800',
+    badge: 'bg-slate-100 text-slate-900 border-slate-300'
   }
 };
 
@@ -178,7 +186,8 @@ const STAGE_ICONS: Record<StageKey, React.ReactNode> = {
   finishing: <Sparkles className="w-4 h-4" />,
   ironing: <Flame className="w-4 h-4" />,
   packaging: <Package className="w-4 h-4" />,
-  dest: <PackageCheck className="w-4 h-4" />
+  dest: <PackageCheck className="w-4 h-4" />,
+  production_warehouse: <Package className="w-4 h-4" />
 };
 
 /* ------------------------------------------------------------------ */
@@ -744,7 +753,8 @@ export const MasterModelTrackingView: React.FC = () => {
       s.includes('جاهز')
     )
       return 'printing';
-    if (s.includes('مكتمل') || s.includes('الإنتاج التام') || s.includes('مخزن')) return 'qc_post_sewing';
+    if (s.includes('مكتمل') || s.includes('الإنتاج التام') || s.includes('مخزن'))
+      return 'production_warehouse';
     return 'design';
   };
 
@@ -825,6 +835,11 @@ export const MasterModelTrackingView: React.FC = () => {
       'assembly_stage_start',
       'assembly_stage_receive'
     ]);
+    // لحظة الاستلام النهائي في مخزن الإنتاج التام (إما عبر اعتماد الجودة أو استلام الدَست).
+    const prodWhEvent = (model.timeline || []).find((e) => {
+      const d = (e.details as any) || {};
+      return d.phase_type === 'production_warehouse' || d.next_status === 'مخزن الإنتاج التام';
+    });
     const assemblySummary = (rec?: ReturnType<typeof assemblyRec>) =>
       rec
         ? `دخول: ${rec.entry_date || '—'} • متوقع: ${rec.expected_exit_date || '—'} • فعلي: ${
@@ -913,19 +928,6 @@ export const MasterModelTrackingView: React.FC = () => {
           : 'لم يُسجل العد النهائي بعد'
       },
       {
-        key: 'packaging_requirements',
-        ...STAGE_META.packaging_requirements,
-        done: Boolean(packReq?.is_complete),
-        isCurrent: currentKey === 'packaging_requirements',
-        timestamp: packReqEvent?.timestamp || packReq?.updated_at,
-        user: packReqEvent?.user || packReqEvent?.user_name,
-        summary: packReq
-          ? packReq.is_complete
-            ? 'مكتملة: الصور والكروت جاهزة للدَست'
-            : `متبقي: ${(packReq.missing_steps || []).join(' / ')}`
-          : 'لم تُسجل متطلبات الأمبالاج بعد'
-      },
-      {
         key: 'finishing',
         ...STAGE_META.finishing,
         done: finishRecs.length > 0 && finishRecs.every((r) => r.is_received),
@@ -965,7 +967,25 @@ export const MasterModelTrackingView: React.FC = () => {
         isCurrent: currentKey === 'dest',
         timestamp: assemblyRec('dest')?.entry_date || assemblyEvent?.timestamp,
         user: assemblyEvent?.user || assemblyEvent?.user_name,
-        summary: assemblySummary(assemblyRec('dest'))
+        summary: `${assemblySummary(assemblyRec('dest'))}${
+          packReq
+            ? packReq.is_complete
+              ? ' • متطلبات الأمبالاج مكتملة'
+              : ` • متطلبات الأمبالاج ناقصة: ${(packReq.missing_steps || []).join(' / ')}`
+            : ' • متطلبات الأمبالاج غير مسجلة'
+        }`
+      },
+      {
+        key: 'production_warehouse',
+        ...STAGE_META.production_warehouse,
+        done: model.status === 'مخزن الإنتاج التام' || model.status === 'مكتمل الإنتاج',
+        isCurrent: currentKey === 'production_warehouse',
+        timestamp: prodWhEvent?.timestamp || assemblyRec('dest')?.actual_exit_date || undefined,
+        user: prodWhEvent?.user || prodWhEvent?.user_name || 'أمين مخزن الإنتاج التام',
+        summary:
+          model.status === 'مخزن الإنتاج التام' || model.status === 'مكتمل الإنتاج'
+            ? 'البضاعة الجاهزة مُودَعة في مخزن الإنتاج التام'
+            : 'لم يُستلم الموديل في مخزن الإنتاج التام بعد (بانتظار اكتمال الدَست)'
       }
     ];
   };
@@ -998,9 +1018,7 @@ export const MasterModelTrackingView: React.FC = () => {
       return ['qc_pre_print', 'qc_post_print', 'qc_post_sewing'].includes(currentKey);
     if (selectedStatusFilter === 'sewing') return currentKey === 'sewing';
     if (selectedStatusFilter === 'assembly')
-      return ['packaging_requirements', 'finishing', 'ironing', 'packaging', 'dest'].includes(
-        currentKey
-      );
+      return ['finishing', 'ironing', 'packaging', 'dest'].includes(currentKey);
     if (selectedStatusFilter === 'completed') return model.status.includes('مكتمل') || model.status.includes('الإنتاج التام');
     return true;
   });
@@ -1011,9 +1029,7 @@ export const MasterModelTrackingView: React.FC = () => {
   const countPrinting = countByStage('printing');
   const countSewing = countByStage('sewing');
   const countAssembly = activeModels.filter((m) =>
-    ['packaging_requirements', 'finishing', 'ironing', 'packaging', 'dest'].includes(
-      resolveCurrentStageKey(m)
-    )
+    ['finishing', 'ironing', 'packaging', 'dest'].includes(resolveCurrentStageKey(m))
   ).length;
   const countCompleted = activeModels.filter(
     (m) => m.status.includes('مكتمل') || m.status.includes('الإنتاج التام')
@@ -1061,8 +1077,8 @@ export const MasterModelTrackingView: React.FC = () => {
           </h2>
           <p className="text-slate-500 text-sm mt-0.5">
             تتبع الموديل عبر 12 مرحلة إنتاج حقيقية: التصميم ← القص ← العد قبل الطباعة ← المطابع ← العد
-            بعد الطباعة ← المكن ← الفحص النهائي ← متطلبات الأمبالاج ← التشطيب ← المكواة ← التعبئة
-            والتغليف ← الدَست. كل مرحلة تعرض بياناتها الخاصة فقط.
+            بعد الطباعة ← المكن ← العد بعد المكن ← التشطيب ← المكواة ← التعبئة والتغليف ← الدَست ←
+            مخزن الإنتاج التام. كل مرحلة تعرض بياناتها الخاصة فقط.
           </p>
         </div>
 
@@ -1712,7 +1728,7 @@ export const MasterModelTrackingView: React.FC = () => {
                     />
                   )}
 
-                  {key === 'packaging_requirements' && (
+                  {(key === 'packaging_requirements' || key === 'dest') && (
                     <div className="space-y-2">
                       {PACKAGING_STEP_ORDER.map((step) => {
                         const req = packagingRequirements.find((r) => r.model_id === model.id);
@@ -1877,7 +1893,7 @@ export const MasterModelTrackingView: React.FC = () => {
                 <div>
                   <h3 className="font-extrabold text-slate-900 text-lg">كشف جرد الموديلات الشامل</h3>
                   <p className="text-xs text-slate-500">
-                    كشف تفصيلي بجميع الموديلات ومواقعها الحالية في خط الإنتاج (7 مراحل)
+                    كشف تفصيلي بجميع الموديلات ومواقعها الحالية في خط الإنتاج (12 مرحلة)
                   </p>
                 </div>
               </div>

@@ -546,7 +546,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                             m.status === 'جاهز للدَست'
                           ) {
                             onNavigate('assembly_packaging');
-                          } else if (m.status === 'مكتمل الإنتاج') {
+                          } else if (m.status === 'مكتمل الإنتاج' || m.status === 'مخزن الإنتاج التام') {
                             onNavigate('production_warehouse');
                           } else {
                             onNavigate('model_details', m.id);
