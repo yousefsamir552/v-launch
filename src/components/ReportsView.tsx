@@ -443,6 +443,7 @@ export const ReportsView: React.FC = () => {
     printDispatches,
     sewingDispatches,
     getModelSizeList,
+    sizeDefs,
     logAction,
     addFlashMessage
   } = useApp();
@@ -860,11 +861,19 @@ export const ReportsView: React.FC = () => {
     [activeModels]
   );
 
-  const modelSizeOptions = useMemo(() => {
-    const all = new Set<string>();
-    activeModels.forEach((m) => getModelSizeList(m.id).forEach((s) => all.add(s)));
-    return Array.from(all);
-  }, [activeModels, getModelSizeList]);
+  // فلتر المقاسات: نعرض فئات المقاسات المُجمّعة (وسط / صغار / كبار ...) بدلاً من
+  // تفنيط الأرقام الفردية الصغيرة، ليكون التقرير منظماً ومقروءاً بسرعة.
+  const modelSizeCategoryOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    activeModels.forEach((m) => {
+      if (!m.size_category_id) return;
+      const def = sizeDefs.find((s) => s.id === m.size_category_id);
+      if (def && !map.has(def.id)) map.set(def.id, def.name);
+    });
+    return Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ar'));
+  }, [activeModels, sizeDefs]);
 
   const filteredModelRows = useMemo(() => {
     const q = modelSearch.trim().toLowerCase();
@@ -876,7 +885,7 @@ export const ReportsView: React.FC = () => {
         if (!haystack.includes(q)) return false;
       }
       if (typeFilter !== 'all' && (row.model.model_type || '') !== typeFilter) return false;
-      if (sizeFilter !== 'all' && !row.sizes.includes(sizeFilter)) return false;
+      if (sizeFilter !== 'all' && (row.model.size_category_id || '') !== sizeFilter) return false;
       if (
         compositionFilter !== 'all' &&
         (row.model.garment_composition || 'two_pieces') !== compositionFilter
@@ -1669,10 +1678,10 @@ export const ReportsView: React.FC = () => {
                 onChange={(e) => setSizeFilter(e.target.value)}
                 className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50/60 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-white cursor-pointer"
               >
-                <option value="all">كل المقاسات</option>
-                {modelSizeOptions.map((s) => (
-                  <option key={s} value={s}>
-                    مقاس {s}
+                <option value="all">كل فئات المقاسات</option>
+                {modelSizeCategoryOptions.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
                   </option>
                 ))}
               </select>

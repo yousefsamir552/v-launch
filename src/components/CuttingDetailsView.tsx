@@ -12,9 +12,13 @@ import {
   Trash2,
   Layers,
   Palette,
-  Calculator
+  Calculator,
+  Printer,
+  Ruler,
+  StickyNote
 } from 'lucide-react';
 import { CuttingSpreadLayer, GarmentPart, getPartLabel } from '../types';
+import { printCuttingOrder } from '../utils/printCuttingOrder';
 
 interface CuttingDetailsViewProps {
   modelId: string;
@@ -34,6 +38,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     cuttingRecords,
     getModelParts,
     getModelColorList,
+    getModelSizeList,
+    sizeDefs,
     addCuttingRecord,
     finishCuttingToQC,
     exportCuttingCsv,
@@ -46,6 +52,11 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   const model = models.find((m) => m.id === modelId);
   const modelReqs = requirements.filter((r) => r.model_id === modelId);
   const modelCuttingRecords = cuttingRecords.filter((r) => r.model_id === modelId);
+
+  // Approved sizes for the model (from its size category) + the category name itself.
+  const modelSizes = getModelSizeList(modelId);
+  const sizeCategoryName =
+    (model && sizeDefs.find((s) => s.id === model.size_category_id)?.name) || '';
 
   // Garment parts for this model — each part is cut & counted independently.
   const modelParts = getModelParts(modelId);
@@ -231,6 +242,19 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     }
   };
 
+  const handlePrintCuttingOrder = () => {
+    printCuttingOrder({
+      modelCode: model.model_code,
+      modelType: model.model_type,
+      targetQuantity: model.target_cut_quantity,
+      sizes: modelSizes,
+      sizeCategoryName,
+      imageUrl: model.image,
+      designNotes: model.design_notes,
+      cutterName: cutterName.trim() || undefined
+    });
+  };
+
   // Totals are per selected part — parts are never summed into one number.
   const totalPiecesProduced = partRecords.reduce(
     (sum, r) => sum + (r.pieces_count || 0),
@@ -253,16 +277,28 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
           <span>← العودة لقائمة القص</span>
         </button>
 
-        {canEdit && (
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
-            onClick={() => setIsAddingSpread((prev) => !prev)}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow-md shadow-rose-600/20 transition cursor-pointer"
+            onClick={handlePrintCuttingOrder}
+            title="طباعة ورقة أوردر القص الرسمية"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs shadow-md shadow-slate-900/20 transition cursor-pointer"
           >
-            <Plus className="w-4 h-4" />
-            <span>+ إضافة فرشة جديدة (Add Spread)</span>
+            <Printer className="w-4 h-4" />
+            <span>🖨️ طباعة أوردر القص</span>
           </button>
-        )}
+
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => setIsAddingSpread((prev) => !prev)}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow-md shadow-rose-600/20 transition cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>+ إضافة فرشة جديدة (Add Spread)</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Garment part selector — each part is cut & counted independently */}
@@ -320,6 +356,31 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
               <strong className="text-slate-800">{model.model_type || 'أولادي'}</strong>
             </p>
 
+            {/* Approved sizes for the model (Sizes Badges) */}
+            <div className="flex items-center gap-1.5 flex-wrap pt-1">
+              <span className="inline-flex items-center gap-1 text-[11px] font-extrabold text-slate-500">
+                <Ruler className="w-3.5 h-3.5 text-rose-600" />
+                المقاسات المعتمدة:
+              </span>
+              {sizeCategoryName && (
+                <span className="px-2.5 py-0.5 rounded-full bg-rose-600 text-white text-[11px] font-black border border-rose-700">
+                  {sizeCategoryName}
+                </span>
+              )}
+              {modelSizes.length > 0 ? (
+                modelSizes.map((s) => (
+                  <span
+                    key={s}
+                    className="px-2.5 py-0.5 rounded-lg bg-rose-50 text-rose-800 border border-rose-200 text-[11px] font-black"
+                  >
+                    {s}
+                  </span>
+                ))
+              ) : (
+                <span className="text-[11px] font-bold text-slate-400">غير محددة</span>
+              )}
+            </div>
+
             {/* Design & Marker Details */}
             <div className="flex flex-wrap items-center gap-2 pt-1 text-[11px]">
               {model.main_marker_url && (
@@ -330,14 +391,6 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
               {model.print_marker_url && (
                 <span className="px-2.5 py-1 rounded-lg bg-teal-50 text-teal-800 font-mono font-bold border border-teal-200">
                   ماركر الطباعة: {model.print_marker_url}
-                </span>
-              )}
-              {model.design_notes && (
-                <span
-                  className="px-2.5 py-1 rounded-lg bg-amber-50 text-amber-800 font-bold border border-amber-200 line-clamp-1 max-w-[220px]"
-                  title={model.design_notes}
-                >
-                  ملاحظات التصميم: {model.design_notes}
                 </span>
               )}
               {model.notes_shirt && (
@@ -392,6 +445,21 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Design Notes Card — notes written for the model in the Design section */}
+      {model.design_notes && (
+        <div className="bg-amber-50/70 rounded-3xl border border-amber-200 p-4 shadow-xs flex items-start gap-3">
+          <span className="w-9 h-9 rounded-xl bg-amber-100 border border-amber-200 flex items-center justify-center shrink-0">
+            <StickyNote className="w-4 h-4 text-amber-700" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-[11px] font-black text-amber-800 mb-1">📝 ملاحظات التصميم</p>
+            <p className="text-sm font-bold text-slate-800 whitespace-pre-wrap break-words leading-relaxed">
+              {model.design_notes}
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Col 5: Spread (الفرشة) Input Form */}
