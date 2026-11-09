@@ -27,6 +27,15 @@ def get_ext_id(obj) -> str:
     return obj.client_id or str(obj.id)
 
 
+def to_date_str(value) -> str:
+    """Return an ISO date string for date objects or raw string inputs (never raises)."""
+    if not value:
+        return ''
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()
+    return str(value)
+
+
 class GlobalSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = GlobalSettings
@@ -423,8 +432,12 @@ class PrintDispatchSerializer(serializers.ModelSerializer):
             'id': get_ext_id(instance),
             'model_id': get_ext_id(instance.model),
             'shop_name': instance.print_house,
+            'piece_type': instance.piece_type or 'shirt',
+            'piece_label': instance.piece_label or instance.get_piece_type_display(),
+            'print_location': instance.print_location or '',
+            'print_details': instance.print_details or '',
             'dispatched_at': disp_at,
-            'expected_delivery_date': instance.expected_delivery_date.isoformat() if instance.expected_delivery_date else '',
+            'expected_delivery_date': to_date_str(instance.expected_delivery_date),
             'pieces_count': pcs,
             'print_type': instance.print_type or 'سلك سكرين مائي',
             'cost_per_piece': cost,
@@ -452,7 +465,7 @@ class SewingDispatchSerializer(serializers.ModelSerializer):
             'workshop_name': instance.workshop_name,
             'pieces_count': int(instance.pieces_count or 0),
             'dispatched_at': disp_at,
-            'expected_delivery_date': instance.expected_delivery_date.isoformat() if instance.expected_delivery_date else '',
+            'expected_delivery_date': to_date_str(instance.expected_delivery_date),
             'status': instance.status,
             'piece_type': instance.piece_type or 'shirt',
             'piece_label': instance.piece_label or ('تيشرت' if instance.piece_type == 'shirt' else 'بنطلون'),

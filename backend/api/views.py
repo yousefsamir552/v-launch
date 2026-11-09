@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from django.db import models, transaction
 from django.http import Http404
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from datetime import date, timedelta
 import secrets
 
@@ -15,6 +16,7 @@ from .models import (
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
     COMPOSITION_TO_PARTS, DEFAULT_GARMENT_COMPOSITION,
+    PART_TYPE_CHOICES, PART_TYPE_KEYS,
 )
 from .serializers import (
     resolve_by_id, get_ext_id,
@@ -1137,6 +1139,8 @@ class ModelItemViewSet(BasePermViewSet):
         workshop_name = request.data.get('workshop_name') or request.data.get('workshopName')
         pieces_count = int(request.data.get('pieces_count') or request.data.get('piecesCount') or 0)
         expected_date = request.data.get('expected_delivery_date') or request.data.get('expectedDeliveryDate')
+        if expected_date and not isinstance(expected_date, date):
+            expected_date = parse_date(str(expected_date)[:10])
         notes = (request.data.get('notes', '') or '') if can_sewing_notes else ''
         user = request.data.get('user') or request.data.get('user_name') or 'مدير الإنتاج'
         piece_type = request.data.get('piece_type') or request.data.get('pieceType') or 'shirt'
@@ -1852,8 +1856,16 @@ class PrintDispatchViewSet(BasePermViewSet):
         shop_name = (data.get('shop_name') or data.get('shopName') or data.get('print_house') or '').strip()
         pieces = max(0, int(data.get('pieces_count') or data.get('piecesCount') or 0))
         print_type = (data.get('print_type') or data.get('printType') or 'سلك سكرين مائي').strip()
+        piece_type = (data.get('piece_type') or data.get('pieceType') or 'shirt').strip() or 'shirt'
+        if piece_type not in PART_TYPE_KEYS:
+            piece_type = 'shirt'
+        piece_label = (data.get('piece_label') or data.get('pieceLabel') or '').strip() or dict(PART_TYPE_CHOICES).get(piece_type, '')
+        print_location = (data.get('print_location') or data.get('printLocation') or '').strip()
+        print_details = (data.get('print_details') or data.get('printDetails') or '').strip()
         cost = float(data.get('cost_per_piece') or data.get('costPerPiece') or 0)
         exp_date = data.get('expected_delivery_date') or data.get('expectedDeliveryDate') or None
+        if exp_date and not isinstance(exp_date, date):
+            exp_date = parse_date(str(exp_date)[:10])
         notes = (data.get('notes') or '').strip() if can_printing_notes else ''
         now_str = data.get('dispatched_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
         user_name = data.get('user_name') or 'مسؤول المطابع'
@@ -1862,8 +1874,12 @@ class PrintDispatchViewSet(BasePermViewSet):
             client_id=data.get('id') or data.get('client_id'),
             model=model,
             print_house=shop_name,
+            piece_type=piece_type,
+            piece_label=piece_label,
             pieces_count=pieces,
             print_type=print_type,
+            print_location=print_location,
+            print_details=print_details or None,
             cost_per_piece=cost,
             expected_delivery_date=exp_date if exp_date else None,
             dispatched_at_str=now_str,
@@ -1879,7 +1895,9 @@ class PrintDispatchViewSet(BasePermViewSet):
         model._skip_timeline_signal = True
         model.save()
 
-        tl_notes = f"تم إرسال {pieces} قطعة للتشغيل ({print_type}){f' - موعد الاستلام المتوقع: {exp_date}' if exp_date else ''}"
+        tl_notes = f"تم إرسال {pieces} قطعة ({piece_label}) للتشغيل ({print_type}){f' - موعد الاستلام المتوقع: {exp_date}' if exp_date else ''}"
+        if print_location:
+            tl_notes += f" | مكان الطباعة: {print_location}"
         if notes:
             tl_notes += f" | ملاحظات: {notes}"
 
@@ -1894,7 +1912,11 @@ class PrintDispatchViewSet(BasePermViewSet):
                 'phase_type': 'printing_dispatch',
                 'record_id': get_ext_id(disp),
                 'shop_name': shop_name,
+                'piece_type': piece_type,
+                'piece_label': piece_label,
                 'print_type': print_type,
+                'print_location': print_location,
+                'print_details': print_details,
                 'pieces_count': pieces,
                 'cost_per_piece': cost,
                 'expected_delivery_date': str(exp_date or ''),
@@ -1934,7 +1956,10 @@ class PrintDispatchViewSet(BasePermViewSet):
                     'phase_type': 'printing_received',
                     'record_id': get_ext_id(disp),
                     'shop_name': disp.print_house,
+                    'piece_type': disp.piece_type or 'shirt',
+                    'piece_label': disp.piece_label or '',
                     'print_type': disp.print_type,
+                    'print_location': disp.print_location or '',
                     'pieces_count': disp.pieces_count,
                     'received_at': now_str,
                     'status': new_status,

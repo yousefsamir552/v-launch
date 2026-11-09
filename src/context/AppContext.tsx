@@ -327,6 +327,10 @@ interface AppContextType {
     shopName: string;
     piecesCount: number;
     printType: string;
+    pieceType?: GarmentPart;
+    pieceLabel?: string;
+    printLocation?: string;
+    printDetails?: string;
     expectedDeliveryDate?: string;
     costPerPiece?: number;
     totalCost?: number;
@@ -2789,6 +2793,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     shopName: string;
     piecesCount: number;
     printType: string;
+    pieceType?: GarmentPart;
+    pieceLabel?: string;
+    printLocation?: string;
+    printDetails?: string;
     expectedDeliveryDate?: string;
     costPerPiece?: number;
     totalCost?: number;
@@ -2798,11 +2806,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const dispId = 'disp-' + Date.now();
     const dispatchedAt = new Date().toLocaleString('ar-EG', { hour12: false });
     const cleanNotes = canAddPrintingNotes() || canAddQCBeforePrintNotes() ? (data.notes?.trim() || '') : '';
+    const pieceType = data.pieceType || 'shirt';
+    const pieceLabel = (data.pieceLabel || '').trim() || getPartLabel(pieceType);
+    const printLocation = (data.printLocation || '').trim();
+    const printDetails = (data.printDetails || '').trim();
 
     const newDisp: PrintDispatch = {
       id: dispId,
       model_id: data.modelId,
       shop_name: data.shopName.trim(),
+      piece_type: pieceType,
+      piece_label: pieceLabel,
+      print_location: printLocation,
+      print_details: printDetails,
       dispatched_at: dispatchedAt,
       expected_delivery_date: data.expectedDeliveryDate,
       pieces_count: Math.max(0, data.piecesCount),
@@ -2834,6 +2850,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         id: dispId,
         model_id: data.modelId,
         shop_name: data.shopName.trim(),
+        piece_type: pieceType,
+        piece_label: pieceLabel,
+        print_location: printLocation,
+        print_details: printDetails,
         pieces_count: Math.max(0, data.piecesCount),
         print_type: data.printType.trim(),
         cost_per_piece: data.costPerPiece || 0,

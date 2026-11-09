@@ -9,7 +9,7 @@ import {
   X,
   Lock
 } from 'lucide-react';
-import { DispatchStatus } from '../types';
+import { DispatchStatus, GarmentPart, getPartLabel, partsForComposition } from '../types';
 
 export const DispatchAssemblyView: React.FC = () => {
   const {
@@ -38,6 +38,17 @@ export const DispatchAssemblyView: React.FC = () => {
   const [shopName, setShopName] = useState('');
   const [piecesCount, setPiecesCount] = useState<number>(100);
   const [printType, setPrintType] = useState('سلك سكرين مائي');
+  const [pieceType, setPieceType] = useState<GarmentPart>('shirt');
+  const [printLocation, setPrintLocation] = useState('صدر');
+  const [printDetails, setPrintDetails] = useState('');
+
+  // Garment parts available for the currently selected model (تيشرت / بنطلون / جاكيت)
+  const selectedModel = readyModels.find((m) => m.id === modelId) || null;
+  const selectedModelParts = partsForComposition(selectedModel?.garment_composition);
+  // القطعة المختارة يجب أن تكون من قطع الموديل فعلياً، وإلا نرجع لأول قطعة متاحة
+  const effectivePieceType: GarmentPart = selectedModelParts.includes(pieceType)
+    ? pieceType
+    : selectedModelParts[0] || 'shirt';
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() + 2);
@@ -55,6 +66,10 @@ export const DispatchAssemblyView: React.FC = () => {
       shopName: shopName.trim(),
       piecesCount: Number(piecesCount) || 0,
       printType: printType.trim(),
+      pieceType: effectivePieceType,
+      pieceLabel: getPartLabel(effectivePieceType),
+      printLocation: printLocation.trim(),
+      printDetails: printDetails.trim(),
       expectedDeliveryDate,
       costPerPiece: canEditPrintingCosts() ? Number(costPerPiece) : undefined,
       notes: allowPrintNotes ? notes.trim() : ''
@@ -63,6 +78,7 @@ export const DispatchAssemblyView: React.FC = () => {
     setShowModal(false);
     setShopName('');
     setNotes('');
+    setPrintDetails('');
   };
 
   const getStatusBadge = (status: DispatchStatus) => {
@@ -190,6 +206,7 @@ export const DispatchAssemblyView: React.FC = () => {
                 <th className="px-6 py-3.5">كود الموديل</th>
                 <th className="px-6 py-3.5">المطبعة / ورشة التطريز</th>
                 <th className="px-6 py-3.5 text-center">القطع المسلمة</th>
+                <th className="px-6 py-3.5 text-center">نوع القطعة</th>
                 <th className="px-6 py-3.5">نوع الطباعة / التشغيل</th>
                 {canViewPrintingCosts() && (
                   <>
@@ -228,8 +245,21 @@ export const DispatchAssemblyView: React.FC = () => {
                       <td className="px-6 py-4 text-center font-black text-slate-900 text-sm">
                         {disp.pieces_count}
                       </td>
+                      <td className="px-6 py-4 text-center">
+                        <span className="px-2 py-0.5 rounded-md bg-teal-700 text-white font-bold text-[10px] whitespace-nowrap">
+                          {disp.piece_label || getPartLabel(disp.piece_type || 'shirt')}
+                        </span>
+                      </td>
                       <td className="px-6 py-4 text-slate-600 font-medium">
                         {disp.print_type}
+                        {disp.print_location && (
+                          <span className="block text-[10px] text-teal-700 font-bold">
+                            📍 {disp.print_location}
+                          </span>
+                        )}
+                        {disp.print_details && (
+                          <span className="block text-[10px] text-slate-400">{disp.print_details}</span>
+                        )}
                         {disp.notes && <span className="block text-[10px] text-slate-400">{disp.notes}</span>}
                       </td>
 
@@ -317,7 +347,7 @@ export const DispatchAssemblyView: React.FC = () => {
                 })
               ) : (
                 <tr>
-                  <td colSpan={canViewPrintingCosts() ? 9 : 7} className="text-center py-8 text-slate-400">
+                  <td colSpan={canViewPrintingCosts() ? 10 : 8} className="text-center py-8 text-slate-400">
                     لا توجد تشغيلات مسجلة للمطابع والتطريز بعد.
                   </td>
                 </tr>
@@ -350,7 +380,15 @@ export const DispatchAssemblyView: React.FC = () => {
                 <select
                   required
                   value={modelId}
-                  onChange={(e) => setModelId(e.target.value)}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    setModelId(nextId);
+                    const nextModel = readyModels.find((m) => m.id === nextId);
+                    const nextParts = partsForComposition(nextModel?.garment_composition);
+                    if (nextParts.length && !nextParts.includes(pieceType)) {
+                      setPieceType(nextParts[0]);
+                    }
+                  }}
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
                 >
                   {readyModels.map((m) => (
@@ -373,6 +411,59 @@ export const DispatchAssemblyView: React.FC = () => {
                   placeholder="مثال: مطبعة النجوم الحديثة، ورشة الهدى للتطريز..."
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
                 />
+              </div>
+
+              {/* نوع القطعة المرسلة (مقسمة حسب قطع الموديل) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  نوع القطعة المرسلة *
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {selectedModelParts.map((part) => {
+                    const active = effectivePieceType === part;
+                    return (
+                      <button
+                        key={part}
+                        type="button"
+                        onClick={() => setPieceType(part)}
+                        className={`py-2 px-2 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                          active
+                            ? 'bg-teal-700 text-white border-teal-700 shadow-sm'
+                            : 'bg-white text-slate-700 border-slate-300 hover:border-teal-400'
+                        }`}
+                      >
+                        {getPartLabel(part)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    مكان الطباعة (صدر / ظهر / كم / تطريز)
+                  </label>
+                  <input
+                    type="text"
+                    value={printLocation}
+                    onChange={(e) => setPrintLocation(e.target.value)}
+                    placeholder="مثال: صدر + ظهر، كم، تطريز شعار..."
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    تفاصيل الطباعة
+                  </label>
+                  <input
+                    type="text"
+                    value={printDetails}
+                    onChange={(e) => setPrintDetails(e.target.value)}
+                    placeholder="مثال: طباعة شعار أمامي 3 ألوان..."
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">

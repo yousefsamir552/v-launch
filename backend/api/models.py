@@ -788,8 +788,13 @@ class PrintDispatch(models.Model):
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, related_name="dispatches")
     print_house = models.CharField(max_length=200, verbose_name="اسم المطبعة")
+    # نوع القطعة المرسلة للمطبعة (تيشرت / بنطلون / جاكيت / قطعة واحدة) لمطابقة تقسيم الموديل
+    piece_type = models.CharField(max_length=20, choices=PART_TYPE_CHOICES, default='shirt', verbose_name="نوع القطعة")
+    piece_label = models.CharField(max_length=50, blank=True, null=True, verbose_name="مسمى القطعة")
     pieces_count = models.IntegerField(default=0, verbose_name="عدد القطع المرسلة")
     print_type = models.CharField(max_length=100, default="سلك سكرين مائي", verbose_name="نوع الطباعة")
+    print_location = models.CharField(max_length=200, blank=True, default='', verbose_name="مكان الطباعة (صدر / ظهر / كم / تطريز)")
+    print_details = models.TextField(blank=True, null=True, verbose_name="تفاصيل الطباعة")
     cost_per_piece = models.DecimalField(max_digits=10, decimal_places=2, default=0.0, verbose_name="سعر الطباعة للقطعة")
     dispatch_date = models.DateField(auto_now_add=True, verbose_name="تاريخ الإرسال")
     dispatched_at_str = models.CharField(max_length=100, blank=True, null=True)

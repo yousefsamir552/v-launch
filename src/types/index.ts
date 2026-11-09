@@ -470,6 +470,10 @@ export interface PrintDispatch {
   id: string;
   model_id: string;
   shop_name: string;
+  piece_type?: GarmentPart;
+  piece_label?: string; // "تيشرت" / "بنطلون" / "جاكيت"
+  print_location?: string; // مكان الطباعة: صدر / ظهر / كم / تطريز
+  print_details?: string; // تفاصيل الطباعة الحرة
   dispatched_at: string;
   expected_delivery_date?: string;
   pieces_count: number;
