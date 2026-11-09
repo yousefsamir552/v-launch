@@ -377,7 +377,7 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
           <div className="flex items-center gap-2 flex-wrap">
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-[11px] font-black text-slate-700">
               <Users className="w-3.5 h-3.5 text-purple-600" />
-              الموظفين: {employees.length}
+              الموظفين: {rankSafeEmployees.length}
             </span>
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-[11px] font-black text-slate-700">
               <Briefcase className="w-3.5 h-3.5 text-purple-600" />
@@ -797,8 +797,16 @@ const EmployeesPanel: React.FC<{
   isLoading: boolean;
   onRefresh: () => void | Promise<void>;
 }> = ({ employees, jobTitles, isLoading, onRefresh }) => {
-  const { addFlashMessage, logAction, visibleRankOptions, currentUserRank } = useApp();
+  const { addFlashMessage, logAction, visibleRankOptions, rankLabelFor, currentUserRank } = useApp();
   const rankOptions = visibleRankOptions();
+  // إخفاء مفهوم الرتب تماماً عمّن لا يملك إلا خياراً واحداً (رتبة 3، ورتبة 2 المفروضة على العام).
+  const canChooseRank = currentUserRank !== 3 && rankOptions.length > 1;
+  const forcedRankLevel = Number(rankOptions[rankOptions.length - 1]?.value ?? 3);
+  // تسمية المستوى تُبنى دائماً من منظور المستخدم الحالي (بدون أرقام ولا مستويات أعلى).
+  const rankLabelOf = (employee: HREmployee): string =>
+    currentUserRank === 3
+      ? ''
+      : rankLabelFor(Number(employee.rank_level ?? 3)) || employee.rank_label || '';
 
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState('');
@@ -840,7 +848,7 @@ const EmployeesPanel: React.FC<{
     setForm({
       ...emptyEmployeeForm,
       job_id: jobTitles[0]?.id || '',
-      rank_level: Number(visibleRankOptions()[visibleRankOptions().length - 1]?.value ?? 3)
+      rank_level: forcedRankLevel
     });
     setFormError('');
     setIsFormOpen(true);
@@ -860,7 +868,8 @@ const EmployeesPanel: React.FC<{
       photo: employee.photo || '',
       notes: employee.notes || '',
       is_active: employee.is_active !== false,
-      rank_level: Number(employee.rank_level ?? 3)
+      // من لا يملك خيارات رتبة يُثبت تلقائياً على المستوى العام (3).
+      rank_level: canChooseRank ? Number(employee.rank_level ?? 3) : forcedRankLevel
     });
     setFormError('');
     setIsFormOpen(true);
@@ -903,7 +912,7 @@ const EmployeesPanel: React.FC<{
       photo: form.photo.trim(),
       notes: form.notes.trim(),
       is_active: form.is_active,
-      rank_level: form.rank_level
+      rank_level: canChooseRank ? form.rank_level : forcedRankLevel
     };
 
     try {
@@ -1037,9 +1046,9 @@ const EmployeesPanel: React.FC<{
                         {(emp.name || '?').charAt(0)}
                       </span>
                       <span className="font-black text-slate-800 truncate">{emp.name}</span>
-                      {currentUserRank !== 3 && (
+                      {rankLabelOf(emp) && (
                         <span className="px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-700 border border-violet-200 text-[9px] font-black whitespace-nowrap">
-                          {emp.rank_label || `المستوى ${emp.rank_level ?? 3}`}
+                          {rankLabelOf(emp)}
                         </span>
                       )}
                     </div>
@@ -1172,9 +1181,9 @@ const EmployeesPanel: React.FC<{
               </div>
             </div>
 
-            {currentUserRank !== 3 && (
+            {canChooseRank && (
               <div>
-                <label className={labelClass}>الرتبة الهرمية للموظف</label>
+                <label className={labelClass}>نطاق الرؤية والتحكم للموظف</label>
                 <select
                   value={form.rank_level}
                   onChange={(event) => updateForm({ rank_level: Number(event.target.value) })}

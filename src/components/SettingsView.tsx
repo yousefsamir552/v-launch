@@ -60,14 +60,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     canViewGlobalSettings,
     canEditHeaderSettings,
     canEditMessageTemplates,
+    currentUser,
     visibleRankOptions,
+    visibleRankLevels,
+    rankLabelFor,
     currentUserRank
   } = useApp();
 
   // Strictly filter out sudo so regular users never see or know of sudo (Task 2)
-  const visibleUsers = users.filter(
-    (u) => u.username?.toLowerCase() !== 'sudo' && !u.is_sudo
-  );
+  // + كل مستخدم يرى فقط من هم أقل منه في نطاق الرؤية (ورتبته هو شخصياً).
+  const visibleUsers = users.filter((u) => {
+    if (u.username?.toLowerCase() === 'sudo' || u.is_sudo) return false;
+    if (currentUserRank === 0) return true;
+    const userRank = Number(u.rank_level ?? 3);
+    if (userRank === 0) return false;
+    return visibleRankLevels().includes(userRank as 0 | 1 | 2 | 3) || u.id === currentUser?.id;
+  });
 
   const hasUsersPerm = canManageUsers();
   const hasRolesPerm = canManagePermissions();
@@ -101,8 +109,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
   const [realName, setRealName] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [selectedRoleId, setSelectedRoleId] = useState<string>(roles[0]?.id || '');
   const rankOptions = visibleRankOptions();
+  // الأدوار القابلة للإسناد: لا يمكن إسناد دور مستواه مساوٍ أو أعلى من مستواك.
+  const assignableRoles = roles.filter((r) => {
+    const roleRank = Number(r.rank_level ?? 3);
+    return roleRank !== 0 && visibleRankLevels().includes(roleRank as 0 | 1 | 2 | 3);
+  });
+  const [selectedRoleId, setSelectedRoleId] = useState<string>(assignableRoles[0]?.id || '');
   const [newUserRank, setNewUserRank] = useState<number>(
     () => Number(visibleRankOptions()[visibleRankOptions().length - 1]?.value ?? 3)
   );
@@ -192,8 +205,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     e.preventDefault();
     if (!realName.trim() || !username.trim() || !password) return;
 
-    const effectiveRoleId = selectedRoleId || roles[0]?.id || '';
-    const matchedRole = roles.find((r) => r.id === effectiveRoleId);
+    const effectiveRoleId = selectedRoleId || assignableRoles[0]?.id || '';
+    const matchedRole = assignableRoles.find((r) => r.id === effectiveRoleId);
 
     addUser({
       real_name: realName.trim(),
@@ -758,7 +771,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                   onChange={(e) => setSelectedRoleId(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-xs font-semibold focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
                 >
-                  {roles.map((r) => (
+                  {assignableRoles.map((r) => (
                     <option key={r.id} value={r.id}>
                       {r.name}
                     </option>
@@ -766,10 +779,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                 </select>
               </div>
 
-              {currentUserRank !== 3 && (
+              {currentUserRank !== 3 && rankOptions.length > 1 && (
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                    الرتبة الهرمية
+                    نطاق الرؤية والتحكم
                   </label>
                   <select
                     value={newUserRank}
@@ -804,7 +817,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                   <th className="px-4 py-3 text-start">الاسم</th>
                   <th className="px-4 py-3">اسم المستخدم</th>
                   <th className="px-4 py-3">الدور / الصلاحية</th>
-                  {currentUserRank !== 3 && <th className="px-4 py-3">الرتبة</th>}
+                  {currentUserRank !== 3 && <th className="px-4 py-3">نطاق الرؤية</th>}
                   <th className="px-4 py-3">الحالة</th>
                   <th className="px-4 py-3">الإجراء</th>
                 </tr>
@@ -831,7 +844,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                       {currentUserRank !== 3 && (
                         <td className="px-4 py-3.5">
                           <span className="px-2.5 py-0.5 rounded-full bg-purple-50 text-purple-800 font-bold border border-purple-200">
-                            {u.rank_label || `المستوى ${u.rank_level ?? 3}`}
+                            {rankLabelFor(Number(u.rank_level ?? 3)) || u.rank_label || ''}
                           </span>
                         </td>
                       )}
@@ -849,40 +862,47 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                       </td>
 
                       <td className="px-4 py-3.5">
-                        <div className="flex items-center justify-center gap-2">
-                          <button
-                            onClick={() => toggleUserActive(u.id)}
-                            className={`px-3 py-1 rounded-full text-xs font-bold transition border cursor-pointer ${
-                              u.is_active
-                                ? 'border-rose-300 text-rose-700 hover:bg-rose-50'
-                                : 'border-emerald-300 text-emerald-700 hover:bg-emerald-50'
-                            }`}
-                          >
-                            {u.is_active ? 'إيقاف' : 'تفعيل'}
-                          </button>
+                        {u.id === currentUser?.id ? (
+                          <span className="text-[11px] font-black text-slate-400">حسابك</span>
+                        ) : (
+                          <div className="flex items-center justify-center gap-2">
+                            <button
+                              onClick={() => toggleUserActive(u.id)}
+                              className={`px-3 py-1 rounded-full text-xs font-bold transition border cursor-pointer ${
+                                u.is_active
+                                  ? 'border-rose-300 text-rose-700 hover:bg-rose-50'
+                                  : 'border-emerald-300 text-emerald-700 hover:bg-emerald-50'
+                              }`}
+                            >
+                              {u.is_active ? 'إيقاف' : 'تفعيل'}
+                            </button>
 
-                          <button
-                            onClick={() => setSelectedUserForModal(u)}
-                            className="px-3.5 py-1 rounded-full border border-blue-200 bg-blue-50/70 hover:bg-blue-600 hover:text-white text-blue-700 font-bold text-xs transition flex items-center gap-1 cursor-pointer"
-                          >
-                            <Shield className="w-3.5 h-3.5" />
-                            <span>تخصيص الصلاحيات</span>
-                          </button>
+                            <button
+                              onClick={() => setSelectedUserForModal(u)}
+                              className="px-3.5 py-1 rounded-full border border-blue-200 bg-blue-50/70 hover:bg-blue-600 hover:text-white text-blue-700 font-bold text-xs transition flex items-center gap-1 cursor-pointer"
+                            >
+                              <Shield className="w-3.5 h-3.5" />
+                              <span>تخصيص الصلاحيات</span>
+                            </button>
 
-                          <button
-                            onClick={() => deleteUser(u.id)}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
-                            title="حذف حساب الموظف"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
+                            <button
+                              onClick={() => deleteUser(u.id)}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                              title="حذف حساب الموظف"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={5} className="py-8 text-center text-slate-400">
+                    <td
+                      colSpan={currentUserRank !== 3 ? 6 : 5}
+                      className="py-8 text-center text-slate-400"
+                    >
                       لا يوجد موظفون مسجلون حالياً. يمكنك إضافة موظف جديد من النموذج أعلاه.
                     </td>
                   </tr>

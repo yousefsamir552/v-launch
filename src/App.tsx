@@ -56,6 +56,21 @@ export const App: React.FC = () => {
 
   const isHrTab = (tab: string): boolean => tab in HR_TAB_SECTIONS;
 
+  // الشاشات المدمجة في القائمة الجانبية: عنصر واحد يغطي أكثر من صلاحية HR دقيقة
+  // (الموظفين + الوظائف، الحضور + القواعد، السُلف + الجزاءات).
+  const HR_TAB_SECTIONS_GROUPED: Record<string, HRSectionKey[]> = {
+    hr_employees: ['employees', 'jobs'],
+    hr_attendance: ['attendance', 'rules'],
+    hr_loans: ['loans', 'penalties'],
+    hr_payroll: ['payroll']
+  };
+
+  const canAccessHrTab = (tab: string): boolean => {
+    const grouped = HR_TAB_SECTIONS_GROUPED[tab];
+    if (grouped) return grouped.some((sectionKey) => canAccessHRSection(sectionKey));
+    return canAccessHRSection(HR_TAB_SECTIONS[tab]);
+  };
+
   const canAccessTab = (tab: string): boolean => {
     if (isSudo) return true;
     if (tab === 'dashboard') return true;
@@ -93,7 +108,7 @@ export const App: React.FC = () => {
     if (tab === 'settings') return canAccessSettings();
     if (tab === 'logs') return canViewAuditLogs();
     if (isHrTab(tab)) {
-      return canAccessHRSection(HR_TAB_SECTIONS[tab]);
+      return canAccessHrTab(tab);
     }
     return true;
   };
@@ -219,7 +234,7 @@ export const App: React.FC = () => {
 
         {/* Human Resources (HR) - الموارد البشرية */}
         {isHrTab(currentTab) &&
-          (canAccessHRSection(HR_TAB_SECTIONS[currentTab]) ? (
+          (canAccessHrTab(currentTab) ? (
             <>
               {currentTab === 'hr_employees' && (
                 <HRView initialSection="staff" initialSubTab="employees" />

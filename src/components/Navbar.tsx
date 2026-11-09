@@ -23,7 +23,8 @@ import {
   Calculator,
   Users,
   Boxes,
-  Briefcase
+  Scale,
+  Wallet
 } from 'lucide-react';
 import { InternalMessagingModal } from './InternalMessagingModal';
 
@@ -129,54 +130,35 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     }
   ].filter((item) => item.isVisible);
 
-  // الموارد البشرية (HR) - عناصر القائمة الفرعية (صلاحية مستقلة لكل تبويب)
+  // الموارد البشرية (HR) - 4 عناصر رئيسية فقط.
+  // الصفحات المدمجة (موظفين + وظائف)، (حضور + قواعد)، (سلف + جزاءات) تُفتح كشاشة واحدة
+  // بتبويبات داخلية تُفلتر هي نفسها حسب الصلاحيات السبعة الدقيقة داخل HRView.
   const hrSubItems = [
     {
       id: 'hr_employees',
-      label: 'ملفات الموظفين',
+      label: 'الموظفين والوظائف',
       icon: Users,
       color: 'text-purple-600',
-      isVisible: canAccessHRSection('employees')
-    },
-    {
-      id: 'hr_jobs',
-      label: 'إدارة الوظائف',
-      icon: Briefcase,
-      color: 'text-purple-600',
-      isVisible: canAccessHRSection('jobs')
+      isVisible: canAccessHRSection('employees') || canAccessHRSection('jobs')
     },
     {
       id: 'hr_attendance',
       label: 'الحضور والانصراف',
       icon: Clock,
       color: 'text-purple-600',
-      isVisible: canAccessHRSection('attendance')
-    },
-    {
-      id: 'hr_rules',
-      label: 'قواعد المواعيد',
-      icon: Calendar,
-      color: 'text-purple-600',
-      isVisible: canAccessHRSection('rules')
+      isVisible: canAccessHRSection('attendance') || canAccessHRSection('rules')
     },
     {
       id: 'hr_loans',
-      label: 'السُلف',
-      icon: Calculator,
+      label: 'السُلف والجزاءات',
+      icon: Scale,
       color: 'text-purple-600',
-      isVisible: canAccessHRSection('loans')
-    },
-    {
-      id: 'hr_penalties',
-      label: 'الجزاءات',
-      icon: AlertCircle,
-      color: 'text-purple-600',
-      isVisible: canAccessHRSection('penalties')
+      isVisible: canAccessHRSection('loans') || canAccessHRSection('penalties')
     },
     {
       id: 'hr_payroll',
       label: 'مسير المرتبات',
-      icon: BarChart3,
+      icon: Wallet,
       color: 'text-purple-600',
       isVisible: canAccessHRSection('payroll')
     }
@@ -431,7 +413,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                   {currentUser?.real_name || currentUser?.username}
                 </span>
                 <span className="text-[10px] text-slate-500 truncate">
-                  {isSudo ? 'حساب طوارئ مطلق' : currentUser?.role || 'موظف تشغيل'}
+                  {isSudo ? 'مدير النظام' : currentUser?.role || 'موظف تشغيل'}
                 </span>
               </div>
             </div>

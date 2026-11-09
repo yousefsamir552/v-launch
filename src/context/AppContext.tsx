@@ -809,6 +809,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addRole = (data: Omit<CustomRole, 'id'>) => {
     const newRole: CustomRole = {
       ...data,
+      // حماية الرتب: دور جديد لا يحمل رتبة أعلى من رتبة منشئه.
+      rank_level: clampRankToVisible(data.rank_level),
       id: 'role-' + Date.now(),
       users_count: 0,
       created_at: new Date().toISOString()
@@ -829,9 +831,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateRole = (id: string, updates: Partial<CustomRole>) => {
     const previousRoles = [...roles];
-    setRoles((prev) => prev.map((r) => (r.id === id ? { ...r, ...updates } : r)));
+    // حماية الرتب: منع رفع الدور إلى رتبة مساوية أو أعلى من رتبة المستخدم الحالي،
+    // ومنع تعديل أدوار أعلى من رتبته أصلاً.
+    const targetRole = roles.find((r) => r.id === id);
+    if (targetRole && !isRankVisibleToActor(targetRole.rank_level)) {
+      addFlashMessage('لا تمتلك صلاحية تعديل هذا الدور', 'danger');
+      return;
+    }
+    const safeUpdates: Partial<CustomRole> = {
+      ...updates,
+      ...(updates.rank_level !== undefined
+        ? { rank_level: clampRankToVisible(updates.rank_level) }
+        : {})
+    };
+    setRoles((prev) => prev.map((r) => (r.id === id ? { ...r, ...safeUpdates } : r)));
     api
-      .updateRole(id, updates)
+      .updateRole(id, safeUpdates)
       .then((saved) => {
         setRoles((prev) => prev.map((r) => (r.id === id ? saved : r)));
         logAction('الصلاحيات', `تحديث صلاحيات الدور: ${updates.name || id}`);
@@ -844,6 +859,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteRole = (id: string): { success: boolean; message: string } => {
+    const role = roles.find((r) => r.id === id);
+    // حماية الرتب: لا يمكن حذف دور أعلى من رتبة المستخدم الحالي.
+    if (role && !isRankVisibleToActor(role.rank_level)) {
+      return { success: false, message: 'لا تمتلك صلاحية حذف هذا الدور' };
+    }
     const roleUsers = users.filter((u) => u.role_id === id);
     if (roleUsers.length > 0) {
       return {
@@ -851,7 +871,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         message: `لا يمكن حذف هذا الدور لوجود ${roleUsers.length} موظف مرتبط به حالياً.`
       };
     }
-    const role = roles.find((r) => r.id === id);
     const previousRoles = [...roles];
     setRoles((prev) => prev.filter((r) => r.id !== id));
     api
@@ -1098,9 +1117,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ];
     }
     if (currentUserRank === 1) {
+      // بدون أي أرقام أو إشارة لوجود مستوى أعلى.
       return [
-        { value: 2, label: 'مستوى إشرافي/متقدم', description: 'يتبع الإدارة العليا ويدير المستوى العام' },
-        { value: 3, label: 'مستوى عام', description: 'المستوى التنفيذي العام' }
+        { value: 2, label: 'مستوى إشرافي متقدم', description: 'يشرف ويدير المستوى التشغيلي العام' },
+        { value: 3, label: 'مستوى تشغيلي عام', description: 'المستوى التنفيذي العام' }
       ];
     }
     return [{ value: 3, label: 'المستوى العام', description: 'المستوى التنفيذي العام' }];
@@ -1115,8 +1135,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     if (currentUserRank === 0) return labels[rank] || '';
     if (currentUserRank === 1) {
-      if (rank === 1) return 'المستوى الأعلى / إدارة عليا';
-      return rank === 2 ? 'مستوى إشرافي/متقدم' : rank === 3 ? 'مستوى عام' : '';
+      // المستوى الأعلى لا يُعرض أبداً لصاحب هذا المستوى.
+      if (rank === 1) return '';
+      return rank === 2 ? 'مستوى إشرافي متقدم' : rank === 3 ? 'مستوى تشغيلي عام' : '';
     }
     if (currentUserRank === 2) {
       if (rank === 2) return 'مستوى إداري متقدم';
@@ -1124,6 +1145,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     // الرتبة 3: إخفاء كامل لمفهوم الرتب.
     return '';
+  };
+
+  // -------------------------------------------------------------------------
+  // حماية الرتب عند المنح: لا يمكن منح/رؤية رتبة مساوية أو أعلى من رتبة الفاعل.
+  // -------------------------------------------------------------------------
+  const isRankVisibleToActor = (rankValue?: number): boolean => {
+    const rank = Number(rankValue ?? 3);
+    if (rank === 0) return false;
+    if (currentUserRank === 0) return true;
+    return visibleRankLevels().includes(rank as RankLevel);
+  };
+
+  const clampRankToVisible = (rankValue?: number): RankLevel => {
+    const requested = Number(rankValue ?? 3);
+    if (currentUserRank === 0) {
+      return (requested === 0 ? 3 : requested) as RankLevel;
+    }
+    const allowed = visibleRankOptions().map((opt) => Number(opt.value));
+    if (allowed.includes(requested)) return requested as RankLevel;
+    return Number(allowed[allowed.length - 1] ?? 3) as RankLevel;
   };
 
   // Department Notes Permission Checkers (Task 4)
@@ -3695,8 +3736,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       addFlashMessage('اسم المستخدم هذا محجوز للنظام ولا يمكن استخدامه', 'danger');
       return;
     }
+    // حماية الرتب: لا يمكن منح رتبة مساوية أو أعلى من رتبة المستخدم الحالي.
+    const safeRank = clampRankToVisible(userData.rank_level);
     const newUser: User = {
       ...userData,
+      rank_level: safeRank,
       is_sudo: false,
       id: 'user-' + Date.now()
     };
@@ -3718,7 +3762,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const targetUser = users.find((u) => u.id === userId);
     if (!targetUser) return { success: false, message: 'المستخدم غير موجود' };
     if (targetUser.username?.toLowerCase() === 'sudo' || targetUser.is_sudo) {
-      return { success: false, message: 'لا يمكن تعطيل حساب الطوارئ المطلق' };
+      return { success: false, message: 'لا يمكن تعطيل هذا الحساب' };
+    }
+    if (targetUser.id === currentUser?.id) {
+      return { success: false, message: 'لا يمكنك تعطيل حسابك الشخصي' };
+    }
+    if (!isRankVisibleToActor(targetUser.rank_level)) {
+      return { success: false, message: 'لا تمتلك صلاحية تعديل هذا المستخدم' };
     }
 
     const nextState = !targetUser.is_active;
@@ -3752,9 +3802,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ) => {
     const target = users.find((u) => u.id === userId);
     if (target && (target.username?.toLowerCase() === 'sudo' || target.is_sudo)) {
-      addFlashMessage('حساب الطوارئ المطلق غير قابل للتعديل', 'danger');
+      addFlashMessage('غير مسموح بتعديل هذا الحساب', 'danger');
       return;
     }
+    // حماية الرتب: منع تعديل من هم في رتبتك أو أعلى، ومنع منح رتبة أعلى من رتبتك.
+    if (target && target.id !== currentUser?.id && !isRankVisibleToActor(target.rank_level)) {
+      addFlashMessage('لا تمتلك صلاحية تعديل هذا المستخدم', 'danger');
+      return;
+    }
+    const safeNewRank: RankLevel | undefined =
+      newRank === undefined
+        ? undefined
+        : target && target.id === currentUser?.id
+          ? // لا يمكن للمستخدم تعديل رتبته بنفسه (منع تصعيد الذات).
+            Number(target.rank_level ?? 3) as RankLevel
+          : clampRankToVisible(newRank);
 
     setUsers((prev) =>
       prev.map((u) => {
@@ -3764,7 +3826,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           permissions: { ...permissions },
           ...(newRole ? { role: newRole } : {}),
           ...(roleId ? { role_id: roleId } : {}),
-          ...(newRank !== undefined ? { rank_level: newRank } : {})
+          ...(safeNewRank !== undefined ? { rank_level: safeNewRank } : {})
         };
       })
     );
@@ -3775,7 +3837,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...(newPassword ? { password: newPassword } : {}),
         ...(newRole ? { role: newRole } : {}),
         ...(roleId ? { role_id: roleId } : {}),
-        ...(newRank !== undefined ? { rank_level: newRank } : {})
+        ...(safeNewRank !== undefined ? { rank_level: safeNewRank } : {})
       })
       .then((saved) => {
         setUsers((prev) => prev.map((u) => (u.id === userId ? saved : u)));
@@ -3795,7 +3857,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const target = users.find((u) => u.id === userId);
     if (!target) return { success: false, message: 'المستخدم غير موجود' };
     if (target.username?.toLowerCase() === 'sudo' || target.is_sudo) {
-      return { success: false, message: 'لا يمكن حذف حساب الطوارئ المطلق' };
+      return { success: false, message: 'لا يمكن حذف هذا الحساب' };
+    }
+    if (target.id === currentUser?.id) {
+      return { success: false, message: 'لا يمكنك حذف حسابك الشخصي' };
+    }
+    if (!isRankVisibleToActor(target.rank_level)) {
+      return { success: false, message: 'لا تمتلك صلاحية حذف هذا المستخدم' };
     }
     const previousUsers = [...users];
     setUsers((prev) => prev.filter((u) => u.id !== userId));

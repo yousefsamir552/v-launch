@@ -35,13 +35,21 @@ interface EditUserModalProps {
 }
 
 export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSave }) => {
-  const { roles, visibleRankOptions, currentUserRank } = useApp();
+  const { roles, visibleRankOptions, visibleRankLevels, currentUserRank } = useApp();
   const [selectedRoleId, setSelectedRoleId] = useState<string>(user.role_id || '');
   const [roleName, setRoleName] = useState<string>(user.role);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
   const rankOptions = visibleRankOptions();
+  // الأدوار القابلة للإسناد: مستويات أقل من مستوى المستخدم الحالي فقط.
+  const assignableRoles = roles.filter((r) => {
+    const roleRank = Number(r.rank_level ?? 3);
+    return roleRank !== 0 && visibleRankLevels().includes(roleRank as 0 | 1 | 2 | 3);
+  });
+  // لا يُعرض اختيار النطاق إلا لمن يملك أكثر من خيار واحد (رتبة 3 و2 يُثبتان على العام).
+  const canChooseRank = currentUserRank !== 3 && rankOptions.length > 1;
+  const forcedRankLevel = Number(rankOptions[rankOptions.length - 1]?.value ?? 3);
   const [rankLevel, setRankLevel] = useState<number>(() => {
     const allowed = visibleRankOptions().map((opt) => Number(opt.value));
     const current = Number(user.rank_level ?? 3);
@@ -65,7 +73,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
 
   const handleRoleChange = (roleId: string) => {
     setSelectedRoleId(roleId);
-    const matched = roles.find((r) => r.id === roleId);
+    const matched = assignableRoles.find((r) => r.id === roleId);
     if (matched) {
       setRoleName(matched.name);
       setCustomPerms({
@@ -106,7 +114,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
       password || undefined,
       roleName,
       selectedRoleId || undefined,
-      rankLevel
+      canChooseRank ? rankLevel : forcedRankLevel
     );
     onClose();
   };
@@ -177,7 +185,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
               className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-hidden bg-white"
             >
               <option value="">-- اختر دوراً من الأدوار المتاحة --</option>
-              {roles.map((r) => (
+              {assignableRoles.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name} {r.description ? `(${r.description})` : ''}
                 </option>
@@ -186,10 +194,10 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
           </div>
 
           {/* Strict hierarchical rank (hidden from rank-3 viewers) */}
-          {currentUserRank !== 3 && (
+          {canChooseRank && (
             <div className="space-y-2">
               <label className="block text-xs font-bold text-slate-800">
-                الرتبة الهرمية للمستخدم (تحدد من يرى ويُدير من في النظام):
+                نطاق الرؤية والتحكم للمستخدم:
               </label>
               <select
                 value={rankLevel}
@@ -203,7 +211,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                 ))}
               </select>
               <p className="text-[10px] text-slate-500 leading-relaxed">
-                كل رتبة ترى وتدير الرتب الأقل منها فقط، ولا يمكن منح رتبة مساوية أو أعلى من رتبتك.
+                يحدد هذا النطاق ما يمكن للمستخدم رؤيته وإدارته داخل النظام.
               </p>
             </div>
           )}

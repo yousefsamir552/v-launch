@@ -340,6 +340,7 @@ export const RoleManagementSection: React.FC = () => {
     deleteRole,
     canManagePermissions,
     visibleRankOptions,
+    visibleRankLevels,
     currentUserRank,
     rankLabelFor
   } = useApp();
@@ -359,6 +360,38 @@ export const RoleManagementSection: React.FC = () => {
   const [roleRank, setRoleRank] = useState<number>(() =>
     Number(visibleRankOptions()[visibleRankOptions().length - 1]?.value ?? 3)
   );
+
+  // ---------------------------------------------------------------------------
+  // الرتب: لا تُعرض إلا المستويات الأقل من مستوى المستخدم الحالي (Strict Less-Than).
+  // من لا يملك أكثر من خيار واحد (رتبة 2 / رتبة 3) يُثبت تلقائياً على المستوى العام
+  // ولا يظهر له تبويب "الأدوار والرتب" ولا أي مسمى أو شارة للمستويات.
+  // ---------------------------------------------------------------------------
+  const visibleRanks = visibleRankLevels();
+  const canGrantRanks = rankOptions.length > 1;
+  const showRankSection = currentUserRank !== 3 && canGrantRanks;
+  const normalizedRank = (value?: number): 0 | 1 | 2 | 3 => {
+    const rank = Number(value ?? 3);
+    return rank === 0 || rank === 1 || rank === 2 || rank === 3 ? rank : 3;
+  };
+  // كروت الأدوار المعروضة: المستويات المرئية فقط (دون إظهار رتبة الإدارة العليا أبداً).
+  const rankSafeRoles = roles.filter((role) => {
+    const roleRank = normalizedRank(role.rank_level);
+    if (roleRank === 0) return false;
+    return visibleRanks.includes(roleRank);
+  });
+  // تسمية المستوى نسبية للمستخدم الحالي، وفارغة تماماً لصاحب الرتبة 3.
+  const roleRankLabel = (role: CustomRole): string =>
+    currentUserRank === 3
+      ? ''
+      : rankLabelFor(normalizedRank(role.rank_level)) || role.rank_label || '';
+  // المستخدمون الذين يحق للمستخدم الحالي رؤيتهم داخل بطاقات الأدوار.
+  const isUserVisibleToViewer = (user: (typeof users)[number]): boolean => {
+    if (user.username?.toLowerCase() === 'sudo' || user.is_sudo) return false;
+    const userRank = normalizedRank(user.rank_level);
+    if (userRank === 0) return false;
+    if (currentUserRank === 0) return true;
+    return visibleRanks.includes(userRank);
+  };
 
   if (!canManagePermissions()) {
     return (
@@ -383,6 +416,8 @@ export const RoleManagementSection: React.FC = () => {
   };
 
   const openEditModal = (role: CustomRole) => {
+    // حماية إضافية: لا يمكن فتح دور خارج نطاق رؤية المستخدم الحالي.
+    if (!rankSafeRoles.some((visibleRole) => visibleRole.id === role.id)) return;
     setEditingRole(role);
     setRoleName(role.name);
     setRoleDescription(role.description || '');
@@ -391,7 +426,7 @@ export const RoleManagementSection: React.FC = () => {
       ...role.permissions
     });
     const allowedRanks = visibleRankOptions().map((opt) => Number(opt.value));
-    const currentRank = Number(role.rank_level ?? 3);
+    const currentRank = normalizedRank(role.rank_level);
     setRoleRank(
       allowedRanks.includes(currentRank) ? currentRank : allowedRanks[allowedRanks.length - 1] ?? 3
     );
@@ -543,19 +578,26 @@ export const RoleManagementSection: React.FC = () => {
     e.preventDefault();
     if (!roleName.trim()) return;
 
+    // الرتبة لا يمكن أن تكون مساوية أو أعلى من رتبة المستخدم الحالي:
+    // يُسمح فقط بالرتب المتاحة له، وإلا يُثبت الدور على المستوى العام (3).
+    const allowedRanks = visibleRankOptions().map((opt) => Number(opt.value));
+    const safeRank = allowedRanks.includes(Number(roleRank))
+      ? Number(roleRank)
+      : Number(allowedRanks[allowedRanks.length - 1] ?? 3);
+
     if (editingRole) {
       updateRole(editingRole.id, {
         name: roleName.trim(),
         description: roleDescription.trim(),
         permissions,
-        rank_level: roleRank
+        rank_level: safeRank
       });
     } else {
       addRole({
         name: roleName.trim(),
         description: roleDescription.trim(),
         permissions,
-        rank_level: roleRank
+        rank_level: safeRank
       });
     }
 
@@ -589,12 +631,17 @@ export const RoleManagementSection: React.FC = () => {
 
       {/* Roles Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-        {roles.map((role) => {
+        {rankSafeRoles.length === 0 && (
+          <div className="col-span-full bg-white rounded-3xl border border-slate-200/90 p-8 text-center">
+            <ShieldAlert className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+            <p className="text-xs font-bold text-slate-500">
+              لا توجد أدوار وظيفية متاحة للإدارة ضمن نطاق صلاحياتك الحالية.
+            </p>
+          </div>
+        )}
+        {rankSafeRoles.map((role) => {
           const userCount = users.filter(
-            (u) =>
-              u.username?.toLowerCase() !== 'sudo' &&
-              !u.is_sudo &&
-              (u.role_id === role.id || u.role === role.name)
+            (u) => isUserVisibleToViewer(u) && (u.role_id === role.id || u.role === role.name)
           ).length;
           const allowedSectionsCount = SYSTEM_SECTIONS.filter(
             (s) => role.permissions[`${s.key}_view` as keyof RolePermissions]
@@ -629,12 +676,10 @@ export const RoleManagementSection: React.FC = () => {
                       <span className="text-[11px] font-semibold text-slate-400">
                         {userCount} موظف مرتبط
                       </span>
-                      {currentUserRank !== 3 && (
+                      {roleRankLabel(role) && (
                         <span className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-50 text-violet-800 border border-violet-200 text-[10px] font-black">
                           <ShieldCheck className="w-3 h-3" />
-                          {role.rank_label ||
-                            rankLabelFor(Number(role.rank_level ?? 3)) ||
-                            'المستوى العام'}
+                          {roleRankLabel(role)}
                         </span>
                       )}
                     </div>
@@ -831,13 +876,21 @@ export const RoleManagementSection: React.FC = () => {
                 </div>
               </div>
 
-              {/* Permissions Section Switcher (4 main sections) */}
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+              {/* Permissions Section Switcher (3 main sections + رتب عند السماح) */}
+              <div
+                className={`grid grid-cols-2 gap-2 ${
+                  showRankSection ? 'lg:grid-cols-4' : 'lg:grid-cols-3'
+                }`}
+              >
                 {[
                   { id: 'manufacturing', label: 'التصنيع', hint: 'الأقسام والملاحظات والأسعار', icon: Boxes },
                   { id: 'hr', label: 'الموارد البشرية', hint: 'تبويبات HR المستقلة', icon: Users },
                   { id: 'admin', label: 'الإدارة والإعدادات', hint: 'الحسابات والإعدادات العامة', icon: Settings },
-                  { id: 'roles', label: 'الأدوار والرتب', hint: 'الرتبة الهرمية للدور', icon: ShieldCheck }
+                  // يظهر تبويب الأدوار والرتب فقط لمن يملك خيارات مستوى فعلية
+                  // (رتبة 3 لا يعلم بوجود نظام رتب أصلاً، ورتبة 2 مثبتة على العام).
+                  ...(showRankSection
+                    ? [{ id: 'roles', label: 'الأدوار والرتب', hint: 'نطاق الرؤية والتحكم للدور', icon: ShieldCheck }]
+                    : [])
                 ].map((tab) => {
                   const Icon = tab.icon;
                   const active = permSection === tab.id;
@@ -1248,7 +1301,7 @@ export const RoleManagementSection: React.FC = () => {
               )}
 
               {/* ===== SECTION 5: ROLES & RANKS ===== */}
-              {permSection === 'roles' && (
+              {permSection === 'roles' && showRankSection && (
                 <div className="bg-violet-50/60 rounded-3xl p-5 border border-violet-200/90 space-y-4">
                   <div className="flex items-center gap-2.5">
                     <div className="p-2 bg-violet-600 text-white rounded-xl shadow-xs">
@@ -1256,11 +1309,10 @@ export const RoleManagementSection: React.FC = () => {
                     </div>
                     <div>
                       <h4 className="font-black text-sm text-violet-950">
-                        الرتبة الهرمية للدور (Strict Hierarchy Rank)
+                        نطاق الرؤية والتحكم للدور
                       </h4>
                       <p className="text-[11px] text-violet-800">
-                        الرتبة تحدد من يرى ويُدير من: كل رتبة ترى الرتب الأقل منها فقط. الرتبة 0
-                        محصورة في حساب الطوارئ sudo ولا تظهر هنا.
+                        اختر النطاق المناسب لهذا الدور: كل نطاق يرى ويدير النطاقات الأقل منه فقط.
                       </p>
                     </div>
                   </div>
@@ -1290,12 +1342,9 @@ export const RoleManagementSection: React.FC = () => {
                     ))}
                   </div>
 
-                  {editingRole && (
+                  {editingRole && roleRankLabel(editingRole) && (
                     <p className="text-[11px] font-bold text-violet-800">
-                      الرتبة الحالية للدور:{' '}
-                      {editingRole.rank_label ||
-                        rankLabelFor(Number(editingRole.rank_level ?? 3)) ||
-                        'المستوى العام'}
+                      النطاق الحالي للدور: {roleRankLabel(editingRole)}
                     </p>
                   )}
                 </div>
