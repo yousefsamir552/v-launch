@@ -27,6 +27,11 @@ import {
   CustomRole,
   SystemSectionKey,
   RolePermissions,
+  HRSectionKey,
+  HR_SECTION_KEYS,
+  HR_SECTION_PERM_MAP,
+  RankLevel,
+  RankOption,
   GlobalSiteSettings,
   AccessoryType,
   AccessoryItem,
@@ -137,6 +142,15 @@ interface AppContextType {
   canEditMessageTemplates: () => boolean;
   canAccessSettings: () => boolean;
   canManageHR: () => boolean;
+
+  // Strict Hierarchical Ranks (الرتب الهرمية الصارمة)
+  currentUserRank: number;
+  visibleRankLevels: () => RankLevel[];
+  visibleRankOptions: () => RankOption[];
+  rankLabelFor: (rank: number) => string;
+
+  // Per-tab HR permissions (الصلاحيات المستقلة لتبويبات الموارد البشرية)
+  canAccessHRSection: (section: HRSectionKey) => boolean;
 
   // Department Notes Permission Checkers (Task 4)
   canAddDesignNotes: () => boolean;
@@ -395,7 +409,8 @@ interface AppContextType {
     permissions: User['permissions'],
     newPassword?: string,
     newRole?: string,
-    roleId?: string
+    roleId?: string,
+    newRank?: number
   ) => void;
   deleteUser: (userId: string) => { success: boolean; message: string };
 
@@ -896,6 +911,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         edit_header_settings: true,
         edit_message_templates: true,
         can_manage_hr: true,
+        hr_jobs: true,
+        hr_employees: true,
+        hr_attendance: true,
+        hr_rules: true,
+        hr_loans: true,
+        hr_penalties: true,
+        hr_payroll: true,
         can_add_design_notes: true,
         can_add_cutting_notes: true,
         can_add_qc_before_print_notes: true,
@@ -1029,8 +1051,80 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Human Resources (HR) Permission Checker
   // Falls back to manage_permissions so already-privileged admins keep access
   // even before the new flag is toggled on for their role.
-  const canManageHR = (): boolean =>
-    hasSpecificPermission('can_manage_hr') || hasSpecificPermission('manage_permissions');
+  const isCurrentUserSudo = (): boolean =>
+    Boolean(
+      currentUser &&
+        (currentUser.username?.toLowerCase() === 'sudo' || currentUser.is_sudo)
+    );
+
+  /**
+   * الصلاحية المستقلة لكل تبويب داخل الموارد البشرية.
+   * `can_manage_hr` و`manage_permissions` يظلان بمثابة تصريح عام لكل التبويبات.
+   */
+  const canAccessHRSection = (section: HRSectionKey): boolean => {
+    if (!currentUser) return false;
+    if (isCurrentUserSudo()) return true;
+    if (hasSpecificPermission('can_manage_hr') || hasSpecificPermission('manage_permissions')) {
+      return true;
+    }
+    return hasSpecificPermission(HR_SECTION_PERM_MAP[section]);
+  };
+
+  // أي صلاحية من صلاحيات HR السبعة تفتح القسم العام.
+  const canManageHR = (): boolean => HR_SECTION_KEYS.some((section) => canAccessHRSection(section));
+
+  // -------------------------------------------------------------------------
+  // Strict Hierarchical Ranks (الرتب الهرمية الصارمة والمخفية)
+  // 0 = Sudo → {0,1,2,3} | 1 → {2,3} | 2 → {3} | 3 → {3} (أقران فقط)
+  // -------------------------------------------------------------------------
+  const currentUserRank: RankLevel = (() => {
+    if (isCurrentUserSudo()) return 0;
+    const rank = Number(currentUser?.rank_level ?? 3);
+    return (rank === 0 || rank === 1 || rank === 2 || rank === 3 ? rank : 3) as RankLevel;
+  })();
+
+  const visibleRankLevels = (): RankLevel[] => {
+    if (currentUserRank === 0) return [0, 1, 2, 3];
+    if (currentUserRank === 1) return [2, 3];
+    return [3];
+  };
+
+  const visibleRankOptions = (): RankOption[] => {
+    if (currentUserRank === 0) {
+      return [
+        { value: 1, label: 'المستوى الأول - إدارة عليا', description: 'رؤية وتحكم في المستويين الثاني والثالث' },
+        { value: 2, label: 'المستوى الثاني - إشرافي', description: 'رؤية وتحكم في المستوى العام فقط' },
+        { value: 3, label: 'المستوى الثالث - عام', description: 'أقل صلاحيات إدارية على الآخرين' }
+      ];
+    }
+    if (currentUserRank === 1) {
+      return [
+        { value: 2, label: 'مستوى إشرافي/متقدم', description: 'يتبع الإدارة العليا ويدير المستوى العام' },
+        { value: 3, label: 'مستوى عام', description: 'المستوى التنفيذي العام' }
+      ];
+    }
+    return [{ value: 3, label: 'المستوى العام', description: 'المستوى التنفيذي العام' }];
+  };
+
+  const rankLabelFor = (rank: number): string => {
+    const labels: Record<number, string> = {
+      0: 'السيادة المطلقة (Sudo)',
+      1: 'المستوى الأول - إدارة عليا',
+      2: 'المستوى الثاني - إشرافي',
+      3: 'المستوى الثالث - عام'
+    };
+    if (currentUserRank === 0) return labels[rank] || '';
+    if (currentUserRank === 1) {
+      if (rank === 1) return 'المستوى الأعلى / إدارة عليا';
+      return rank === 2 ? 'مستوى إشرافي/متقدم' : rank === 3 ? 'مستوى عام' : '';
+    }
+    if (currentUserRank === 2) {
+      if (rank === 2) return 'مستوى إداري متقدم';
+      return rank === 3 ? 'المستوى العام' : '';
+    }
+    // الرتبة 3: إخفاء كامل لمفهوم الرتب.
+    return '';
+  };
 
   // Department Notes Permission Checkers (Task 4)
   const canAddDesignNotes = (): boolean => hasSpecificPermission('can_add_design_notes');
@@ -3653,7 +3747,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     permissions: User['permissions'],
     newPassword?: string,
     newRole?: string,
-    roleId?: string
+    roleId?: string,
+    newRank?: number
   ) => {
     const target = users.find((u) => u.id === userId);
     if (target && (target.username?.toLowerCase() === 'sudo' || target.is_sudo)) {
@@ -3668,7 +3763,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...u,
           permissions: { ...permissions },
           ...(newRole ? { role: newRole } : {}),
-          ...(roleId ? { role_id: roleId } : {})
+          ...(roleId ? { role_id: roleId } : {}),
+          ...(newRank !== undefined ? { rank_level: newRank } : {})
         };
       })
     );
@@ -3678,7 +3774,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         permissions,
         ...(newPassword ? { password: newPassword } : {}),
         ...(newRole ? { role: newRole } : {}),
-        ...(roleId ? { role_id: roleId } : {})
+        ...(roleId ? { role_id: roleId } : {}),
+        ...(newRank !== undefined ? { rank_level: newRank } : {})
       })
       .then((saved) => {
         setUsers((prev) => prev.map((u) => (u.id === userId ? saved : u)));
@@ -4047,6 +4144,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         canEditMessageTemplates,
         canAccessSettings,
         canManageHR,
+        currentUserRank,
+        visibleRankLevels,
+        visibleRankOptions,
+        rankLabelFor,
+        canAccessHRSection,
         canAddDesignNotes,
         canAddCuttingNotes,
         canAddQCBeforePrintNotes,

@@ -11,6 +11,49 @@ export type SystemSectionKey =
   | 'models_tracking'
   | 'reports';
 
+/** التبويبات السبعة المستقلة لقسم الموارد البشرية. */
+export type HRSectionKey =
+  | 'jobs'
+  | 'employees'
+  | 'attendance'
+  | 'rules'
+  | 'loans'
+  | 'penalties'
+  | 'payroll';
+
+export const HR_SECTION_KEYS: HRSectionKey[] = [
+  'jobs',
+  'employees',
+  'attendance',
+  'rules',
+  'loans',
+  'penalties',
+  'payroll'
+];
+
+/** ربط كل تبويب HR بمفتاح الصلاحية الخاص به. */
+export const HR_SECTION_PERM_MAP: Record<HRSectionKey, string> = {
+  jobs: 'hr_jobs',
+  employees: 'hr_employees',
+  attendance: 'hr_attendance',
+  rules: 'hr_rules',
+  loans: 'hr_loans',
+  penalties: 'hr_penalties',
+  payroll: 'hr_payroll'
+};
+
+/**
+ * الرتب الهرمية الصارمة:
+ * 0 = Sudo (محصورة في حساب الطوارئ)، 1 = إدارة عليا، 2 = إشرافية، 3 = عام.
+ */
+export type RankLevel = 0 | 1 | 2 | 3;
+
+export interface RankOption {
+  value: RankLevel;
+  label: string;
+  description: string;
+}
+
 export interface RolePermissions {
   // Section access permissions (View / Edit)
   fabric_warehouse_view: boolean;
@@ -60,6 +103,15 @@ export interface RolePermissions {
   // Human Resources (HR) section permission
   can_manage_hr?: boolean;
 
+  // Granular per-tab HR permissions
+  hr_jobs?: boolean;
+  hr_employees?: boolean;
+  hr_attendance?: boolean;
+  hr_rules?: boolean;
+  hr_loans?: boolean;
+  hr_penalties?: boolean;
+  hr_payroll?: boolean;
+
   // Global Site Settings permissions (Task 3)
   view_global_settings?: boolean;
   edit_header_settings?: boolean;
@@ -95,6 +147,9 @@ export interface CustomRole {
   permissions: RolePermissions;
   users_count?: number;
   created_at?: string;
+  /** الرتبة الهرمية للدور (0 محصورة في sudo). */
+  rank_level?: number;
+  rank_label?: string;
 }
 
 export type PermissionLevel = 'view' | 'edit';
@@ -159,6 +214,9 @@ export interface User {
   is_active: boolean;
   last_active?: string;
   last_seen?: string;
+  /** الرتبة الهرمية للمستخدم (0 محصورة في sudo). */
+  rank_level?: number;
+  rank_label?: string;
 }
 
 export interface AuditLog {
@@ -803,6 +861,9 @@ export interface HREmployee {
   is_active?: boolean;
   created_at?: string;
   updated_at?: string;
+  /** الرتبة الهرمية للموظف. */
+  rank_level?: number;
+  rank_label?: string;
 }
 
 export interface HRAttendanceSettings {

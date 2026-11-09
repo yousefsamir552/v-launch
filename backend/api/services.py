@@ -519,6 +519,21 @@ def ensure_schema_columns():
                             spread_id bigint NOT NULL REFERENCES api_cuttingrecord(id) ON DELETE CASCADE
                         );
                     ''')
+
+            # Strict hierarchical ranks: self-heal the rank_level columns.
+            for rank_table in ('api_role', 'api_userprofile', 'api_hremployee'):
+                if rank_table not in table_names:
+                    continue
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, rank_table)]
+                if 'rank_level' not in cols:
+                    cursor.execute(
+                        f'ALTER TABLE {rank_table} ADD COLUMN rank_level integer NOT NULL DEFAULT 3;'
+                    )
+                    if rank_table == 'api_userprofile':
+                        cursor.execute(
+                            "UPDATE api_userprofile SET rank_level = 0 "
+                            "WHERE is_sudo = true OR LOWER(username) = 'sudo';"
+                        )
     except Exception:
         pass
 

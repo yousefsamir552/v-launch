@@ -59,7 +59,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     canViewAuditLogs,
     canViewGlobalSettings,
     canEditHeaderSettings,
-    canEditMessageTemplates
+    canEditMessageTemplates,
+    visibleRankOptions,
+    currentUserRank
   } = useApp();
 
   // Strictly filter out sudo so regular users never see or know of sudo (Task 2)
@@ -100,6 +102,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [selectedRoleId, setSelectedRoleId] = useState<string>(roles[0]?.id || '');
+  const rankOptions = visibleRankOptions();
+  const [newUserRank, setNewUserRank] = useState<number>(
+    () => Number(visibleRankOptions()[visibleRankOptions().length - 1]?.value ?? 3)
+  );
 
   // Global Settings Form State (Task 3 + Favorite Accessories)
   const [siteName, setSiteName] = useState(globalSettings.site_name);
@@ -196,6 +202,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
       role: matchedRole ? matchedRole.name : 'موظف تشغيل',
       role_id: effectiveRoleId || undefined,
       is_active: true,
+      rank_level: newUserRank,
       permissions: matchedRole?.permissions
         ? { ...DEFAULT_PERMISSIONS, ...matchedRole.permissions }
         : { ...DEFAULT_PERMISSIONS }
@@ -758,6 +765,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                   ))}
                 </select>
               </div>
+
+              {currentUserRank !== 3 && (
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                    الرتبة الهرمية
+                  </label>
+                  <select
+                    value={newUserRank}
+                    onChange={(e) => setNewUserRank(Number(e.target.value))}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-xs font-semibold focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  >
+                    {rankOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end pt-2">
@@ -778,6 +804,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                   <th className="px-4 py-3 text-start">الاسم</th>
                   <th className="px-4 py-3">اسم المستخدم</th>
                   <th className="px-4 py-3">الدور / الصلاحية</th>
+                  {currentUserRank !== 3 && <th className="px-4 py-3">الرتبة</th>}
                   <th className="px-4 py-3">الحالة</th>
                   <th className="px-4 py-3">الإجراء</th>
                 </tr>
@@ -800,6 +827,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                           {u.role}
                         </span>
                       </td>
+
+                      {currentUserRank !== 3 && (
+                        <td className="px-4 py-3.5">
+                          <span className="px-2.5 py-0.5 rounded-full bg-purple-50 text-purple-800 font-bold border border-purple-200">
+                            {u.rank_label || `المستوى ${u.rank_level ?? 3}`}
+                          </span>
+                        </td>
+                      )}
 
                       <td className="px-4 py-3.5">
                         {u.is_active ? (
@@ -1144,8 +1179,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
         <EditUserModal
           user={selectedUserForModal}
           onClose={() => setSelectedUserForModal(null)}
-          onSave={(userId, permissions, newPassword, newRole, roleId) => {
-            updateUserPermissionsAndPassword(userId, permissions, newPassword, newRole, roleId);
+          onSave={(userId, permissions, newPassword, newRole, roleId, newRank) => {
+            updateUserPermissionsAndPassword(userId, permissions, newPassword, newRole, roleId, newRank);
             setSelectedUserForModal(null);
           }}
         />

@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { User, UserPermissions, RolePermissions } from '../types';
+import { User, UserPermissions, RolePermissions, HR_SECTION_PERM_MAP } from '../types';
 import { useApp } from '../context/AppContext';
 import {
   SYSTEM_SECTIONS,
   NOTES_PERMISSIONS_LIST,
   ADMIN_AND_SETTINGS_PERMISSIONS_LIST,
+  HR_PERMISSIONS_LIST,
   DEFAULT_PERMISSIONS
 } from './RoleManagementSection';
 import {
@@ -16,7 +17,8 @@ import {
   FileText,
   Settings,
   Coins,
-  Sliders
+  Sliders,
+  Users
 } from 'lucide-react';
 
 interface EditUserModalProps {
@@ -27,16 +29,24 @@ interface EditUserModalProps {
     permissions: UserPermissions,
     newPassword?: string,
     newRole?: string,
-    roleId?: string
+    roleId?: string,
+    newRank?: number
   ) => void;
 }
 
 export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSave }) => {
-  const { roles } = useApp();
+  const { roles, visibleRankOptions, currentUserRank } = useApp();
   const [selectedRoleId, setSelectedRoleId] = useState<string>(user.role_id || '');
   const [roleName, setRoleName] = useState<string>(user.role);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  const rankOptions = visibleRankOptions();
+  const [rankLevel, setRankLevel] = useState<number>(() => {
+    const allowed = visibleRankOptions().map((opt) => Number(opt.value));
+    const current = Number(user.rank_level ?? 3);
+    return allowed.includes(current) ? current : allowed[allowed.length - 1] ?? 3;
+  });
 
   const isSudoUser = user.username?.toLowerCase() === 'sudo' || Boolean(user.is_sudo);
 
@@ -95,7 +105,8 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
       customPerms as UserPermissions,
       password || undefined,
       roleName,
-      selectedRoleId || undefined
+      selectedRoleId || undefined,
+      rankLevel
     );
     onClose();
   };
@@ -173,6 +184,29 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
               ))}
             </select>
           </div>
+
+          {/* Strict hierarchical rank (hidden from rank-3 viewers) */}
+          {currentUserRank !== 3 && (
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-800">
+                الرتبة الهرمية للمستخدم (تحدد من يرى ويُدير من في النظام):
+              </label>
+              <select
+                value={rankLevel}
+                onChange={(e) => setRankLevel(Number(e.target.value))}
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold focus:ring-2 focus:ring-purple-500 focus:outline-hidden bg-white"
+              >
+                {rankOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label} — {opt.description}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[10px] text-slate-500 leading-relaxed">
+                كل رتبة ترى وتدير الرتب الأقل منها فقط، ولا يمكن منح رتبة مساوية أو أعلى من رتبتك.
+              </p>
+            </div>
+          )}
 
           {/* Direct User Permission Customization (Task 2, 3, 4) */}
           <div className="space-y-5">
@@ -279,6 +313,36 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                     </div>
                   </label>
                 ))}
+              </div>
+            </div>
+
+            {/* HR per-tab permissions */}
+            <div className="p-4 rounded-2xl bg-rose-50/60 border border-rose-200 space-y-3">
+              <div className="flex items-center gap-2 text-xs font-extrabold text-rose-950">
+                <Users className="w-4 h-4 text-rose-600" />
+                <span>صلاحيات تبويبات الموارد البشرية (مستقلة لكل تبويب):</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {HR_PERMISSIONS_LIST.map((hp) => {
+                  const permKey = HR_SECTION_PERM_MAP[hp.key];
+                  return (
+                    <label
+                      key={hp.key}
+                      className="flex items-center gap-2.5 p-2.5 rounded-xl bg-white border border-rose-200 cursor-pointer hover:border-rose-400 transition"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={Boolean(customPerms[permKey])}
+                        onChange={() => togglePermKey(permKey)}
+                        className="w-4 h-4 text-rose-600 rounded-sm"
+                      />
+                      <div className="text-start">
+                        <span className="font-bold text-xs text-slate-900 block">{hp.label}</span>
+                        <span className="text-[10px] text-slate-500">{hp.description}</span>
+                      </div>
+                    </label>
+                  );
+                })}
               </div>
             </div>
 

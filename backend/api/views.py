@@ -23,6 +23,10 @@ from .models import (
     HRAttendanceRecord, HRPenalty, HRLoan,
     HR_DEPARTMENT_LABELS, WEEK_DAY_LABELS, HR_ATTENDANCE_STATUS_CHOICES,
     HR_REVIEW_STATUS_CHOICES, HR_PENALTY_TYPE_CHOICES,
+    RANK_SUDO, RANK_LEVEL_ONE, RANK_LEVEL_TWO, RANK_LEVEL_THREE,
+    DEFAULT_RANK_LEVEL, RANK_LEVEL_KEYS, HR_PERM_KEYS,
+    coerce_rank_level, visible_rank_levels, grantable_rank_levels,
+    can_manage_rank, rank_visibility_label,
 )
 from .serializers import (
     resolve_by_id, get_ext_id,
@@ -96,6 +100,65 @@ def resolve_request_user_profile(request):
     username = request.headers.get('X-User-Username', '').strip()
     if username:
         return UserProfile.objects.select_related('role').filter(username__iexact=username, is_active=True).first()
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Strict hierarchical rank helpers (see models.py for the rank constants).
+# ---------------------------------------------------------------------------
+def get_viewer_profile(request):
+    return getattr(request, 'user_profile', None)
+
+
+def is_sudo_profile(profile) -> bool:
+    return bool(profile and (profile.is_sudo or profile.username.lower() == 'sudo'))
+
+
+def get_viewer_rank(request) -> int:
+    """رتبة المستخدم الحالي (0 = sudo، أو استدعاء داخلي بلا هوية)."""
+    profile = get_viewer_profile(request)
+    if profile is None:
+        return RANK_SUDO
+    if is_sudo_profile(profile):
+        return RANK_SUDO
+    return coerce_rank_level(profile.rank_level)
+
+
+def rank_scoped_queryset(queryset, request, field='rank_level'):
+    """يقيد الـ queryset بالرتب المرئية للناظر فقط (Strict Less-Than)."""
+    return queryset.filter(**{f'{field}__in': visible_rank_levels(get_viewer_rank(request))})
+
+
+def resolve_rank_for_grant(request, requested=None, default=DEFAULT_RANK_LEVEL):
+    """يعيد (rank, error_response).
+
+    رتبتا 2 و3 مُجبرتان على منح الرتبة 3 فقط، بينما sudo/1 يمنحان الرتب
+    المسموحة لهما وفق ``grantable_rank_levels``.
+    """
+    viewer_rank = get_viewer_rank(request)
+    if viewer_rank in (RANK_LEVEL_TWO, RANK_LEVEL_THREE):
+        return RANK_LEVEL_THREE, None
+    allowed = grantable_rank_levels(viewer_rank)
+    rank = coerce_rank_level(requested, default=default)
+    if rank not in allowed:
+        return None, Response(
+            {
+                'detail': 'لا تملك صلاحية منح هذه الرتبة.',
+                'allowed_rank_levels': allowed,
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return rank, None
+
+
+def can_manage_target(request, target_rank) -> bool:
+    return can_manage_rank(get_viewer_rank(request), target_rank)
+
+
+def hidden_employee_error(request, employee):
+    """يرجع استجابة 404 إذا كان الموظف خارج نطاق رؤية الناظر، وإلا None."""
+    if employee is not None and not can_manage_target(request, employee.rank_level):
+        return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_404_NOT_FOUND)
     return None
 
 
@@ -188,9 +251,10 @@ class AuthViewSet(viewsets.ViewSet):
                 timestamp=timezone.now().strftime('%Y-%m-%d %H:%M')
             )
 
+        request.user_profile = user
         return Response({
             'token': user.auth_token,
-            'user': UserProfileSerializer(user).data
+            'user': UserProfileSerializer(user, context={'request': request}).data
         })
 
     @action(detail=False, methods=['get'])
@@ -202,11 +266,12 @@ class AuthViewSet(viewsets.ViewSet):
                 {'detail': 'الجلسة غير صالحة أو تم إيقاف الحساب'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
+        request.user_profile = user
         user.last_active = timezone.now()
         user.last_seen = timezone.now()
         user.save(update_fields=['last_active', 'last_seen'])
         return Response({
-            'user': UserProfileSerializer(user).data
+            'user': UserProfileSerializer(user, context={'request': request}).data
         })
 
     @action(detail=False, methods=['get', 'post'])
@@ -214,10 +279,14 @@ class AuthViewSet(viewsets.ViewSet):
         """Lightweight ONLINE heartbeat + live online users list."""
         user = resolve_request_user_profile(request)
         if user:
+            request.user_profile = user
             UserProfile.objects.filter(pk=user.pk).update(last_seen=timezone.now())
         visible_users = UserProfile.objects.select_related('role').exclude(
             username__iexact='sudo'
         ).exclude(is_sudo=True)
+        visible_users = rank_scoped_queryset(visible_users, request)
+        if user and not is_sudo_profile(user):
+            visible_users = (visible_users | UserProfile.objects.filter(pk=user.pk)).distinct()
         online_since = timezone.now() - timedelta(minutes=5)
         online_users = visible_users.filter(last_seen__gte=online_since)
         return Response({
@@ -252,9 +321,20 @@ class StateViewSet(viewsets.ViewSet):
         # Heartbeat: keep the current user's ONLINE marker fresh on every state sync.
         current_profile = resolve_request_user_profile(request)
         if current_profile:
+            # Attach the resolved profile so rank scoping/serializers see the viewer.
+            request.user_profile = current_profile
             UserProfile.objects.filter(pk=current_profile.pk).update(last_seen=timezone.now())
 
         visible_users = UserProfile.objects.select_related('role').exclude(username__iexact='sudo').exclude(is_sudo=True)
+        viewer_rank = get_viewer_rank(request)
+        visible_ranks = visible_rank_levels(viewer_rank)
+        if current_profile is not None and not is_sudo_profile(current_profile):
+            # الرتب المرئية + الحساب الشخصي دائماً.
+            visible_users = (
+                visible_users.filter(rank_level__in=visible_ranks)
+                | visible_users.filter(pk=current_profile.pk)
+            ).distinct()
+        visible_roles = Role.objects.exclude(rank_level=RANK_SUDO).filter(rank_level__in=visible_ranks)
         online_since = timezone.now() - timedelta(minutes=5)
         online_users = visible_users.filter(last_seen__gte=online_since)
         visible_logs = AuditLog.objects.exclude(user_id_ref='user-sudo').exclude(user_name__icontains='sudo')[:200]
@@ -264,7 +344,7 @@ class StateViewSet(viewsets.ViewSet):
 
         return Response({
             'globalSettings': GlobalSettingsSerializer(GlobalSettings.get_solo()).data,
-            'roles': RoleSerializer(Role.objects.all(), many=True, context=req_ctx).data,
+            'roles': RoleSerializer(visible_roles, many=True, context=req_ctx).data,
             'users': UserProfileSerializer(visible_users, many=True, context=req_ctx).data,
             'onlineUsers': UserProfileSerializer(online_users, many=True, context=req_ctx).data,
             'sizeDefs': SizeDefSerializer(SizeDef.objects.all(), many=True).data,
@@ -363,30 +443,52 @@ class RoleViewSet(BasePermViewSet):
     queryset = Role.objects.all()
     serializer_class = RoleSerializer
 
-    def create(self, request, *args, **kwargs):
+    def get_queryset(self):
+        """الرتب المرئية فقط: sudo يرى الكل، 1 يرى {2,3}، 2 يرى {3}، 3 يرى {3}."""
+        return rank_scoped_queryset(
+            Role.objects.exclude(rank_level=RANK_SUDO), self.request
+        )
+
+    def _check_manage_permissions(self, request):
         profile = getattr(request, 'user_profile', None)
         if profile and not profile.has_perm('manage_permissions'):
             return Response({'detail': 'ليس لديك صلاحية إدارة الصلاحيات والأدوار'}, status=status.HTTP_403_FORBIDDEN)
+        return None
+
+    def create(self, request, *args, **kwargs):
+        denied = self._check_manage_permissions(request)
+        if denied:
+            return denied
 
         data = request.data
         name = (data.get('name') or '').strip()
         if not name:
             return Response({'detail': 'اسم الدور مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        rank, rank_error = resolve_rank_for_grant(request, data.get('rank_level'))
+        if rank_error:
+            return rank_error
         role = Role(
             client_id=data.get('id') or data.get('client_id'),
             name=name,
             description=data.get('description') or '',
             permissions_json=data.get('permissions') or {},
+            rank_level=rank,
         )
         role.save()
-        return Response(RoleSerializer(role).data, status=status.HTTP_201_CREATED)
+        return Response(
+            RoleSerializer(role, context=self.get_serializer_context()).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     def update(self, request, *args, **kwargs):
-        profile = getattr(request, 'user_profile', None)
-        if profile and not profile.has_perm('manage_permissions'):
-            return Response({'detail': 'ليس لديك صلاحية إدارة الصلاحيات والأدوار'}, status=status.HTTP_403_FORBIDDEN)
+        denied = self._check_manage_permissions(request)
+        if denied:
+            return denied
 
         role = self.get_object()
+        if not can_manage_target(request, role.rank_level):
+            return Response({'detail': 'لا تملك صلاحية تعديل دور بهذه الرتبة'}, status=status.HTTP_403_FORBIDDEN)
+
         data = request.data
         if 'name' in data and data['name']:
             role.name = data['name'].strip()
@@ -394,17 +496,24 @@ class RoleViewSet(BasePermViewSet):
             role.description = data['description'] or ''
         if 'permissions' in data and isinstance(data['permissions'], dict):
             role.sync_booleans_from_permissions(data['permissions'])
+        if data.get('rank_level') not in (None, ''):
+            new_rank, rank_error = resolve_rank_for_grant(request, data.get('rank_level'))
+            if rank_error:
+                return rank_error
+            role.rank_level = new_rank
         role.save()
         # Update cached role_title on non-sudo users assigned to this role
         UserProfile.objects.filter(role=role).exclude(username__iexact='sudo').exclude(is_sudo=True).update(role_title=role.name)
-        return Response(RoleSerializer(role).data)
+        return Response(RoleSerializer(role, context=self.get_serializer_context()).data)
 
     def destroy(self, request, *args, **kwargs):
-        profile = getattr(request, 'user_profile', None)
-        if profile and not profile.has_perm('manage_permissions'):
-            return Response({'detail': 'ليس لديك صلاحية إدارة الصلاحيات والأدوار'}, status=status.HTTP_403_FORBIDDEN)
+        denied = self._check_manage_permissions(request)
+        if denied:
+            return denied
 
         role = self.get_object()
+        if not can_manage_target(request, role.rank_level):
+            return Response({'detail': 'لا تملك صلاحية حذف دور بهذه الرتبة'}, status=status.HTTP_403_FORBIDDEN)
         non_sudo_users = role.users.exclude(username__iexact='sudo').exclude(is_sudo=True)
         if non_sudo_users.exists():
             return Response(
@@ -423,6 +532,19 @@ class UserProfileViewSet(BasePermViewSet):
     """
     queryset = UserProfile.objects.select_related('role').exclude(username__iexact='sudo').exclude(is_sudo=True)
     serializer_class = UserProfileSerializer
+
+    def get_queryset(self):
+        """يقيّد المستخدمين الظاهرين بالرتب المسموحة + الحساب الشخصي دائماً."""
+        base = UserProfile.objects.select_related('role').exclude(
+            username__iexact='sudo'
+        ).exclude(is_sudo=True)
+        profile = get_viewer_profile(self.request)
+        if profile is None or is_sudo_profile(profile):
+            return base
+        viewer_rank = coerce_rank_level(profile.rank_level)
+        visible = base.filter(rank_level__in=visible_rank_levels(viewer_rank))
+        # كل رتبة ترى حسابها الشخصي بغض النظر عن قواعد الرؤية.
+        return (visible | base.filter(pk=profile.pk)).distinct()
 
     def _is_targeting_sudo(self, pk_or_id) -> bool:
         if not pk_or_id:
@@ -456,6 +578,19 @@ class UserProfileViewSet(BasePermViewSet):
         if not role_obj and data.get('role'):
             role_obj = Role.objects.filter(name=data.get('role')).first()
 
+        if role_obj is not None and not can_manage_target(request, role_obj.rank_level):
+            return Response(
+                {'detail': 'لا تملك صلاحية تعيين دور بهذه الرتبة'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        preferred_rank = data.get('rank_level')
+        if preferred_rank in (None, '') and role_obj is not None:
+            preferred_rank = role_obj.rank_level
+        rank, rank_error = resolve_rank_for_grant(request, preferred_rank)
+        if rank_error:
+            return rank_error
+
         user = UserProfile(
             client_id=data.get('id') or data.get('client_id'),
             username=username,
@@ -466,6 +601,7 @@ class UserProfileViewSet(BasePermViewSet):
             is_sudo=False,  # Sudo is strictly reserved for the immutable emergency account
             is_active=data.get('is_active', True),
             custom_permissions=data.get('permissions') or data.get('custom_permissions') or {},
+            rank_level=rank,
         )
         user.set_password(password or '123')
         user.save()
@@ -486,6 +622,14 @@ class UserProfileViewSet(BasePermViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
 
+        viewer = get_viewer_profile(request)
+        is_self = bool(viewer and viewer.pk == user.pk)
+        if not is_self and not can_manage_target(request, user.rank_level):
+            return Response(
+                {'detail': 'لا تملك صلاحية تعديل مستخدم بهذه الرتبة'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         data = request.data
         if 'real_name' in data and data['real_name']:
             user.real_name = data['real_name'].strip()
@@ -504,11 +648,23 @@ class UserProfileViewSet(BasePermViewSet):
             role_obj = resolve_by_id(Role, data.get('role_id'))
             if not role_obj and data.get('role'):
                 role_obj = Role.objects.filter(name=data.get('role')).first()
+            if role_obj and role_obj.id != user.role_id and not can_manage_target(request, role_obj.rank_level):
+                return Response(
+                    {'detail': 'لا تملك صلاحية تعيين دور بهذه الرتبة'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             if role_obj:
                 user.role = role_obj
                 user.role_title = role_obj.name
             elif data.get('role'):
                 user.role_title = data.get('role')
+
+        # تغيير الرتبة: لا يرفع المستخدم رتبته ولا يعدّل رتبة نفسه.
+        if not is_self and data.get('rank_level') not in (None, ''):
+            new_rank, rank_error = resolve_rank_for_grant(request, data.get('rank_level'))
+            if rank_error:
+                return rank_error
+            user.rank_level = new_rank
 
         new_password = data.get('password')
         if new_password:
@@ -529,6 +685,11 @@ class UserProfileViewSet(BasePermViewSet):
             return Response(
                 {'detail': 'لا يمكن حذف حساب الطوارئ المطلق'},
                 status=status.HTTP_403_FORBIDDEN
+            )
+        if not can_manage_target(request, user.rank_level):
+            return Response(
+                {'detail': 'لا تملك صلاحية حذف مستخدم بهذه الرتبة'},
+                status=status.HTTP_403_FORBIDDEN,
             )
         user.delete()
         return Response({'status': 'deleted'})
@@ -2295,6 +2456,7 @@ class HRJobTitleViewSet(BasePermViewSet):
     queryset = HRJobTitle.objects.all()
     serializer_class = HRJobTitleSerializer
     permission_classes = [CanManageHR]
+    required_hr_section = 'jobs'
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -2349,6 +2511,12 @@ class HREmployeeViewSet(BasePermViewSet):
     queryset = HREmployee.objects.select_related('job').all()
     serializer_class = HREmployeeSerializer
     permission_classes = [CanManageHR]
+    required_hr_section = 'employees'
+
+    def get_queryset(self):
+        return rank_scoped_queryset(
+            HREmployee.objects.select_related('job').all(), self.request
+        )
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -2372,6 +2540,10 @@ class HREmployeeViewSet(BasePermViewSet):
         if mode not in ('auto', 'manual_review'):
             mode = 'auto'
 
+        rank, rank_error = resolve_rank_for_grant(request, data.get('rank_level'))
+        if rank_error:
+            return rank_error
+
         obj = HREmployee(
             client_id=(data.get('id') or data.get('client_id') or None),
             employee_code=employee_code,
@@ -2384,6 +2556,7 @@ class HREmployeeViewSet(BasePermViewSet):
             photo=data.get('photo') or None,
             notes=data.get('notes') or None,
             is_active=bool(data.get('is_active', True)),
+            rank_level=rank,
         )
         birth_date = data.get('birth_date')
         if birth_date:
@@ -2393,6 +2566,11 @@ class HREmployeeViewSet(BasePermViewSet):
 
     def update(self, request, *args, **kwargs):
         obj = self.get_object()
+        if not can_manage_target(request, obj.rank_level):
+            return Response(
+                {'detail': 'لا تملك صلاحية تعديل موظف بهذه الرتبة'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         data = request.data
 
         if data.get('name') is not None:
@@ -2436,11 +2614,21 @@ class HREmployeeViewSet(BasePermViewSet):
         if 'birth_date' in data:
             bd = data.get('birth_date')
             obj.birth_date = parse_date(str(bd)) if bd else None
+        if data.get('rank_level') not in (None, ''):
+            new_rank, rank_error = resolve_rank_for_grant(request, data.get('rank_level'))
+            if rank_error:
+                return rank_error
+            obj.rank_level = new_rank
         obj.save()
-        return Response(HREmployeeSerializer(obj).data)
+        return Response(HREmployeeSerializer(obj, context=self.get_serializer_context()).data)
 
     def destroy(self, request, *args, **kwargs):
         obj = self.get_object()
+        if not can_manage_target(request, obj.rank_level):
+            return Response(
+                {'detail': 'لا تملك صلاحية حذف موظف بهذه الرتبة'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         obj.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -2448,6 +2636,7 @@ class HREmployeeViewSet(BasePermViewSet):
 class HRAttendanceSettingsViewSet(viewsets.ViewSet):
     """إعدادات الحضور والانصراف العامة (Singleton)."""
     permission_classes = [CanManageHR]
+    required_hr_section = 'rules'
 
     def list(self, request):
         ensure_initial_seed()
@@ -2488,12 +2677,23 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
     queryset = HRAttendanceRecord.objects.select_related('employee', 'employee__job').all()
     serializer_class = HRAttendanceRecordSerializer
     permission_classes = [CanManageHR]
+    required_hr_section = 'attendance'
+
+    def get_queryset(self):
+        return rank_scoped_queryset(
+            HRAttendanceRecord.objects.select_related('employee', 'employee__job').all(),
+            self.request,
+            field='employee__rank_level',
+        )
 
     def create(self, request, *args, **kwargs):
         data = request.data
         employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
         if not employee:
             return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+        hidden = hidden_employee_error(request, employee)
+        if hidden:
+            return hidden
         try:
             ded_days = float(data.get('calculated_deduction_days') or 0)
             ded_hours = float(data.get('calculated_deduction_hours') or 0)
@@ -2538,6 +2738,9 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
             if not employee:
                 return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+            hidden = hidden_employee_error(request, employee)
+            if hidden:
+                return hidden
             obj.employee = employee
         if data.get('date'):
             rec_date = parse_date(str(data.get('date')))
@@ -2634,7 +2837,8 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         month_start, month_end = self._sheet_month(request)
         settings_obj = HRAttendanceSettings.get_solo()
         employees = list(
-            HREmployee.objects.filter(is_active=True).order_by('employee_code', 'name')
+            rank_scoped_queryset(HREmployee.objects.filter(is_active=True), request)
+            .order_by('employee_code', 'name')
         )
         if not employees:
             return Response(
@@ -2676,7 +2880,7 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         settings_obj = HRAttendanceSettings.get_solo()
-        employees = list(HREmployee.objects.all())
+        employees = list(rank_scoped_queryset(HREmployee.objects.all(), request))
         by_code = {}
         by_name = {}
         for employee in employees:
@@ -2788,7 +2992,11 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
                 workdays += 1
             cursor += timedelta(days=1)
 
-        records = HRAttendanceRecord.objects.filter(date__gte=month_start, date__lte=month_end)
+        records = HRAttendanceRecord.objects.filter(
+            date__gte=month_start,
+            date__lte=month_end,
+            employee__rank_level__in=visible_rank_levels(get_viewer_rank(request)),
+        )
         total_records = records.count()
         present = records.filter(status='present').count()
         absent = records.filter(status='absent').count()
@@ -2833,7 +3041,10 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             'month_start': month_start.isoformat(),
             'month_end': month_end.isoformat(),
             'workdays': workdays,
-            'total_employees': HREmployee.objects.filter(is_active=True).count(),
+            'total_employees': HREmployee.objects.filter(
+                is_active=True,
+                rank_level__in=visible_rank_levels(get_viewer_rank(request)),
+            ).count(),
             'total_records': total_records,
             'present': present,
             'absent': absent,
@@ -2855,12 +3066,23 @@ class HRPenaltyViewSet(BasePermViewSet):
     queryset = HRPenalty.objects.select_related('employee').all()
     serializer_class = HRPenaltySerializer
     permission_classes = [CanManageHR]
+    required_hr_section = 'penalties'
+
+    def get_queryset(self):
+        return rank_scoped_queryset(
+            HRPenalty.objects.select_related('employee').all(),
+            self.request,
+            field='employee__rank_level',
+        )
 
     def create(self, request, *args, **kwargs):
         data = request.data
         employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
         if not employee:
             return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+        hidden = hidden_employee_error(request, employee)
+        if hidden:
+            return hidden
         try:
             value = float(data.get('value') or 0)
         except (TypeError, ValueError):
@@ -2889,6 +3111,9 @@ class HRPenaltyViewSet(BasePermViewSet):
             employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
             if not employee:
                 return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+            hidden = hidden_employee_error(request, employee)
+            if hidden:
+                return hidden
             obj.employee = employee
         if data.get('date'):
             pen_date = parse_date(str(data.get('date')))
@@ -2918,12 +3143,23 @@ class HRLoanViewSet(BasePermViewSet):
     queryset = HRLoan.objects.select_related('employee').all()
     serializer_class = HRLoanSerializer
     permission_classes = [CanManageHR]
+    required_hr_section = 'loans'
+
+    def get_queryset(self):
+        return rank_scoped_queryset(
+            HRLoan.objects.select_related('employee').all(),
+            self.request,
+            field='employee__rank_level',
+        )
 
     def create(self, request, *args, **kwargs):
         data = request.data
         employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
         if not employee:
             return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+        hidden = hidden_employee_error(request, employee)
+        if hidden:
+            return hidden
         try:
             amount = float(data.get('amount') or 0)
         except (TypeError, ValueError):
@@ -2948,6 +3184,9 @@ class HRLoanViewSet(BasePermViewSet):
             employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
             if not employee:
                 return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+            hidden = hidden_employee_error(request, employee)
+            if hidden:
+                return hidden
             obj.employee = employee
         if data.get('date'):
             loan_date = parse_date(str(data.get('date')))

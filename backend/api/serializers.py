@@ -8,7 +8,9 @@ from .models import (
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
     PackagingRequirement, FinishingRecord, AssemblyStageRecord,
     HRJobTitle, HREmployee, HRAttendanceSettings,
-    HRAttendanceRecord, HRPenalty, HRLoan
+    HRAttendanceRecord, HRPenalty, HRLoan,
+    RANK_SUDO, RANK_LEVEL_THREE, DEFAULT_RANK_LEVEL,
+    coerce_rank_level, rank_visibility_label,
 )
 
 
@@ -37,6 +39,27 @@ def to_date_str(value) -> str:
     if hasattr(value, 'isoformat'):
         return value.isoformat()
     return str(value)
+
+
+def viewer_rank_from_context(context) -> int:
+    """رتبة المستخدم الحالي من سياق الطلب (0 عند غياب الهوية = رؤية إدارية كاملة)."""
+    request = (context or {}).get('request')
+    profile = getattr(request, 'user_profile', None) if request else None
+    if profile is None:
+        return RANK_SUDO
+    if profile.is_sudo or profile.username.lower() == 'sudo':
+        return RANK_SUDO
+    return coerce_rank_level(profile.rank_level)
+
+
+def rank_payload(instance, context) -> dict:
+    """حقول الرتبة مع مسمى نسبي حسب رتبة الناظر (يُخفى المسمى للرتبة 3)."""
+    viewer_rank = viewer_rank_from_context(context)
+    rank = coerce_rank_level(getattr(instance, 'rank_level', DEFAULT_RANK_LEVEL))
+    payload = {'rank_level': rank}
+    if viewer_rank != RANK_LEVEL_THREE:
+        payload['rank_label'] = rank_visibility_label(viewer_rank, rank)
+    return payload
 
 
 def to_time_str(value, fallback: str = '') -> str:
@@ -94,6 +117,7 @@ class RoleSerializer(serializers.ModelSerializer):
             'permissions': instance.get_permissions_dict(),
             'users_count': self.get_users_count(instance),
             'created_at': instance.created_at.isoformat() if instance.created_at else '',
+            **rank_payload(instance, self.context),
         }
 
 
@@ -123,6 +147,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'is_active': bool(instance.is_active),
             'last_active': instance.last_active.isoformat() if instance.last_active else None,
             'last_seen': instance.last_seen.isoformat() if instance.last_seen else None,
+            **rank_payload(instance, self.context),
         }
 
 
@@ -718,6 +743,7 @@ class HREmployeeSerializer(serializers.ModelSerializer):
             'is_active': bool(instance.is_active),
             'created_at': instance.created_at.isoformat() if instance.created_at else '',
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
+            **rank_payload(instance, self.context),
         }
 
 

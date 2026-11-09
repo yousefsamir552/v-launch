@@ -57,9 +57,11 @@ import {
 } from '../types';
 
 type HRSection = 'staff' | 'attendance' | 'loans_penalties' | 'payroll';
+type HRSubTab = 'employees' | 'jobs' | 'records' | 'rules' | 'loans' | 'penalties';
 
 interface HRViewProps {
   initialSection?: HRSection;
+  initialSubTab?: HRSubTab;
 }
 
 const inputClass =
@@ -191,13 +193,36 @@ const formatDayLabel = (iso: string) => {
   return `${WEEK_DAY_AR[parsed.getDay()]} ${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
 };
 
-export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
-  const { addFlashMessage, canManageHR } = useApp();
+export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initialSubTab }) => {
+  const { addFlashMessage, canManageHR, canAccessHRSection, visibleRankLevels } = useApp();
 
   const [section, setSection] = useState<HRSection>(initialSection);
-  const [staffTab, setStaffTab] = useState<'employees' | 'jobs'>('employees');
-  const [attendanceTab, setAttendanceTab] = useState<'records' | 'rules'>('rules');
-  const [loansTab, setLoansTab] = useState<'loans' | 'penalties'>('loans');
+  const [staffTab, setStaffTab] = useState<'employees' | 'jobs'>(
+    initialSubTab === 'jobs' ? 'jobs' : 'employees'
+  );
+  const [attendanceTab, setAttendanceTab] = useState<'records' | 'rules'>(
+    initialSubTab === 'rules' ? 'rules' : 'records'
+  );
+  const [loansTab, setLoansTab] = useState<'loans' | 'penalties'>(
+    initialSubTab === 'penalties' ? 'penalties' : 'loans'
+  );
+
+  // Per-tab HR permissions (each tab has its own independent permission).
+  const hrPerm = {
+    jobs: canAccessHRSection('jobs'),
+    employees: canAccessHRSection('employees'),
+    attendance: canAccessHRSection('attendance'),
+    rules: canAccessHRSection('rules'),
+    loans: canAccessHRSection('loans'),
+    penalties: canAccessHRSection('penalties'),
+    payroll: canAccessHRSection('payroll')
+  };
+  const sectionAccess: Record<HRSection, boolean> = {
+    staff: hrPerm.employees || hrPerm.jobs,
+    attendance: hrPerm.attendance || hrPerm.rules,
+    loans_penalties: hrPerm.loans || hrPerm.penalties,
+    payroll: hrPerm.payroll
+  };
 
   const [jobTitles, setJobTitles] = useState<HRJobTitle[]>([]);
   const [employees, setEmployees] = useState<HREmployee[]>([]);
@@ -208,13 +233,19 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
     setSection(initialSection);
   }, [initialSection]);
 
+  useEffect(() => {
+    if (initialSubTab === 'employees' || initialSubTab === 'jobs') setStaffTab(initialSubTab);
+    else if (initialSubTab === 'records' || initialSubTab === 'rules') setAttendanceTab(initialSubTab);
+    else if (initialSubTab === 'loans' || initialSubTab === 'penalties') setLoansTab(initialSubTab);
+  }, [initialSubTab]);
+
   const loadHRData = useCallback(async () => {
     setIsLoading(true);
     try {
       const [jobsRes, employeesRes, settingsRes] = await Promise.all([
-        api.getHRJobTitles(),
-        api.getHREmployees(),
-        api.getHRAttendanceSettings()
+        api.getHRJobTitles().catch(() => []),
+        api.getHREmployees().catch(() => []),
+        api.getHRAttendanceSettings().catch(() => null)
       ]);
       setJobTitles(Array.isArray(jobsRes) ? jobsRes : []);
       setEmployees(Array.isArray(employeesRes) ? employeesRes : []);
@@ -265,22 +296,22 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
   const tabs =
     section === 'staff'
       ? [
-          { id: 'employees', label: 'قائمة الموظفين' },
-          { id: 'jobs', label: 'إدارة الوظائف' }
+          ...(hrPerm.employees ? [{ id: 'employees', label: 'قائمة الموظفين' }] : []),
+          ...(hrPerm.jobs ? [{ id: 'jobs', label: 'إدارة الوظائف' }] : [])
         ]
       : section === 'attendance'
         ? [
-            { id: 'records', label: 'سجل الحضور والبصمة' },
-            { id: 'rules', label: 'القواعد العامة للمواعيد' }
+            ...(hrPerm.attendance ? [{ id: 'records', label: 'سجل الحضور والبصمة' }] : []),
+            ...(hrPerm.rules ? [{ id: 'rules', label: 'القواعد العامة للمواعيد' }] : [])
           ]
         : section === 'loans_penalties'
           ? [
-              { id: 'loans', label: 'السُلف' },
-              { id: 'penalties', label: 'الجزاءات' }
+              ...(hrPerm.loans ? [{ id: 'loans', label: 'السُلف' }] : []),
+              ...(hrPerm.penalties ? [{ id: 'penalties', label: 'الجزاءات' }] : [])
             ]
           : [];
 
-  const activeTab =
+  const rawActiveTab =
     section === 'staff'
       ? staffTab
       : section === 'attendance'
@@ -289,6 +320,14 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
           ? loansTab
           : 'payroll';
 
+  // حماية إضافية: لو التبويب الحالي غير مصرح به، انتقل لأول تبويب متاح.
+  const activeTab =
+    section === 'payroll'
+      ? 'payroll'
+      : tabs.some((tab) => tab.id === rawActiveTab)
+        ? rawActiveTab
+        : tabs[0]?.id || '';
+
   const handleTabChange = (tabId: string) => {
     if (section === 'staff') setStaffTab(tabId as 'employees' | 'jobs');
     else if (section === 'attendance') setAttendanceTab(tabId as 'records' | 'rules');
@@ -296,7 +335,7 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
   };
 
   // Defense-in-depth: never render the HR panels without the dynamic permission.
-  if (!canManageHR()) {
+  if (!canManageHR() || !sectionAccess[section]) {
     return (
       <div className="p-4" dir="rtl">
         <div className="max-w-2xl mx-auto bg-white rounded-3xl border border-rose-200 shadow-xs p-8 text-center space-y-3">
@@ -315,6 +354,12 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
       </div>
     );
   }
+
+  // Client-side defense: restrict everything to the rank levels visible to the viewer.
+  const allowedRanks = visibleRankLevels();
+  const rankSafeEmployees = employees.filter((emp) =>
+    allowedRanks.includes(Number(emp.rank_level ?? 3) as 0 | 1 | 2 | 3)
+  );
 
   return (
     <div className="space-y-4" dir="rtl">
@@ -371,7 +416,7 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
 
       {section === 'staff' && activeTab === 'employees' && (
         <EmployeesPanel
-          employees={employees}
+          employees={rankSafeEmployees}
           jobTitles={jobTitles}
           isLoading={isLoading}
           onRefresh={loadHRData}
@@ -381,7 +426,7 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
       {section === 'staff' && activeTab === 'jobs' && (
         <JobsPanel
           jobTitles={jobTitles}
-          employees={employees}
+          employees={rankSafeEmployees}
           isLoading={isLoading}
           onRefresh={loadHRData}
         />
@@ -392,18 +437,18 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
       )}
 
       {section === 'attendance' && activeTab === 'records' && (
-        <AttendanceRecordsPanel employees={employees} />
+        <AttendanceRecordsPanel employees={rankSafeEmployees} />
       )}
 
       {section === 'loans_penalties' && activeTab === 'loans' && (
-        <LoansPanel employees={employees} />
+        <LoansPanel employees={rankSafeEmployees} />
       )}
 
       {section === 'loans_penalties' && activeTab === 'penalties' && (
-        <PenaltiesPanel employees={employees} />
+        <PenaltiesPanel employees={rankSafeEmployees} />
       )}
 
-      {section === 'payroll' && <PayrollPanel employees={employees} />}
+      {section === 'payroll' && <PayrollPanel employees={rankSafeEmployees} />}
     </div>
   );
 };
@@ -728,6 +773,7 @@ type EmployeeForm = {
   photo: string;
   notes: string;
   is_active: boolean;
+  rank_level: number;
 };
 
 const emptyEmployeeForm: EmployeeForm = {
@@ -741,7 +787,8 @@ const emptyEmployeeForm: EmployeeForm = {
   phone: '',
   photo: '',
   notes: '',
-  is_active: true
+  is_active: true,
+  rank_level: 3
 };
 
 const EmployeesPanel: React.FC<{
@@ -750,7 +797,8 @@ const EmployeesPanel: React.FC<{
   isLoading: boolean;
   onRefresh: () => void | Promise<void>;
 }> = ({ employees, jobTitles, isLoading, onRefresh }) => {
-  const { addFlashMessage, logAction } = useApp();
+  const { addFlashMessage, logAction, visibleRankOptions, currentUserRank } = useApp();
+  const rankOptions = visibleRankOptions();
 
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState('');
@@ -789,7 +837,11 @@ const EmployeesPanel: React.FC<{
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ ...emptyEmployeeForm, job_id: jobTitles[0]?.id || '' });
+    setForm({
+      ...emptyEmployeeForm,
+      job_id: jobTitles[0]?.id || '',
+      rank_level: Number(visibleRankOptions()[visibleRankOptions().length - 1]?.value ?? 3)
+    });
     setFormError('');
     setIsFormOpen(true);
   };
@@ -807,7 +859,8 @@ const EmployeesPanel: React.FC<{
       phone: employee.phone || '',
       photo: employee.photo || '',
       notes: employee.notes || '',
-      is_active: employee.is_active !== false
+      is_active: employee.is_active !== false,
+      rank_level: Number(employee.rank_level ?? 3)
     });
     setFormError('');
     setIsFormOpen(true);
@@ -849,7 +902,8 @@ const EmployeesPanel: React.FC<{
       phone: form.phone.trim(),
       photo: form.photo.trim(),
       notes: form.notes.trim(),
-      is_active: form.is_active
+      is_active: form.is_active,
+      rank_level: form.rank_level
     };
 
     try {
@@ -983,6 +1037,11 @@ const EmployeesPanel: React.FC<{
                         {(emp.name || '?').charAt(0)}
                       </span>
                       <span className="font-black text-slate-800 truncate">{emp.name}</span>
+                      {currentUserRank !== 3 && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-700 border border-violet-200 text-[9px] font-black whitespace-nowrap">
+                          {emp.rank_label || `المستوى ${emp.rank_level ?? 3}`}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="px-3 py-2.5 font-bold text-slate-700">{emp.job_title || '-'}</td>
@@ -1112,6 +1171,23 @@ const EmployeesPanel: React.FC<{
                 />
               </div>
             </div>
+
+            {currentUserRank !== 3 && (
+              <div>
+                <label className={labelClass}>الرتبة الهرمية للموظف</label>
+                <select
+                  value={form.rank_level}
+                  onChange={(event) => updateForm({ rank_level: Number(event.target.value) })}
+                  className={inputClass}
+                >
+                  {rankOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label} — {opt.description}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div>
               <label className={labelClass}>طريقة تطبيق قواعد التأخير والخصم</label>

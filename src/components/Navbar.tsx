@@ -22,7 +22,8 @@ import {
   Factory,
   Calculator,
   Users,
-  Boxes
+  Boxes,
+  Briefcase
 } from 'lucide-react';
 import { InternalMessagingModal } from './InternalMessagingModal';
 
@@ -38,6 +39,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     hasPermission,
     canAccessSettings,
     canManageHR,
+    canAccessHRSection,
     globalSettings,
     appNotifications, 
     unreadNotificationsCount, 
@@ -127,35 +129,56 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     }
   ].filter((item) => item.isVisible);
 
-  // الموارد البشرية (HR) - عناصر القائمة الفرعية
+  // الموارد البشرية (HR) - عناصر القائمة الفرعية (صلاحية مستقلة لكل تبويب)
   const hrSubItems = [
     {
       id: 'hr_employees',
-      label: 'الموظفين والوظائف',
+      label: 'ملفات الموظفين',
       icon: Users,
       color: 'text-purple-600',
-      isVisible: true
+      isVisible: canAccessHRSection('employees')
+    },
+    {
+      id: 'hr_jobs',
+      label: 'إدارة الوظائف',
+      icon: Briefcase,
+      color: 'text-purple-600',
+      isVisible: canAccessHRSection('jobs')
     },
     {
       id: 'hr_attendance',
       label: 'الحضور والانصراف',
       icon: Clock,
       color: 'text-purple-600',
-      isVisible: true
+      isVisible: canAccessHRSection('attendance')
     },
     {
-      id: 'hr_loans_penalties',
-      label: 'السُلف والجزاءات',
+      id: 'hr_rules',
+      label: 'قواعد المواعيد',
+      icon: Calendar,
+      color: 'text-purple-600',
+      isVisible: canAccessHRSection('rules')
+    },
+    {
+      id: 'hr_loans',
+      label: 'السُلف',
       icon: Calculator,
       color: 'text-purple-600',
-      isVisible: true
+      isVisible: canAccessHRSection('loans')
+    },
+    {
+      id: 'hr_penalties',
+      label: 'الجزاءات',
+      icon: AlertCircle,
+      color: 'text-purple-600',
+      isVisible: canAccessHRSection('penalties')
     },
     {
       id: 'hr_payroll',
       label: 'مسير المرتبات',
       icon: BarChart3,
       color: 'text-purple-600',
-      isVisible: true
+      isVisible: canAccessHRSection('payroll')
     }
   ].filter((item) => item.isVisible);
 

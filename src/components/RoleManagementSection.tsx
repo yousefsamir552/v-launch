@@ -1,6 +1,11 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { CustomRole, RolePermissions, SystemSectionKey } from '../types';
+import {
+  CustomRole,
+  RolePermissions,
+  SystemSectionKey,
+  HRSectionKey
+} from '../types';
 import {
   ShieldAlert,
   ShieldCheck,
@@ -26,7 +31,8 @@ import {
   Edit3,
   FileText,
   Settings,
-  Globe
+  Globe,
+  Users
 } from 'lucide-react';
 
 export const SYSTEM_SECTIONS: {
@@ -197,12 +203,6 @@ export const ADMIN_AND_SETTINGS_PERMISSIONS_LIST: {
     description: 'الاطلاع على سجل العمليات والتحركات والتدقيق الأمني للنظام'
   },
   {
-    key: 'can_manage_hr',
-    label: 'صلاحية إدارة الموارد البشرية (HR)',
-    description: 'الوصول إلى قسم الموظفين والحضور والانصراف والسلف والجزاءات ومسير المرتبات',
-    badge: 'قسم كامل'
-  },
-  {
     key: 'view_global_settings',
     label: 'عرض صفحة إعدادات الموقع العامة',
     description: 'الدخول إلى تبويب الإعدادات العامة للموقع'
@@ -216,6 +216,57 @@ export const ADMIN_AND_SETTINGS_PERMISSIONS_LIST: {
     key: 'edit_message_templates',
     label: 'صلاحية تعديل الرسائل الجاهزة وتعليمات طباعة المكن',
     description: 'تعديل نص رسالة الواتساب للموردين، الرسائل الداخلية الجاهزة، والنص الافتراضي لتعليمات طباعة المكن'
+  }
+];
+
+/** التبويبات السبعة المستقلة للموارد البشرية مع مفتاح الصلاحية الخاص بكل تبويب. */
+export const HR_PERMISSIONS_LIST: {
+  key: HRSectionKey;
+  permKey: keyof RolePermissions;
+  label: string;
+  description: string;
+}[] = [
+  {
+    key: 'jobs',
+    permKey: 'hr_jobs',
+    label: 'إدارة الوظائف',
+    description: 'إضافة وتعديل وحذف وظائف المصنع وأقسامها'
+  },
+  {
+    key: 'employees',
+    permKey: 'hr_employees',
+    label: 'ملفات الموظفين',
+    description: 'إضافة وتعديل بيانات الموظفين والرواتب الأساسية'
+  },
+  {
+    key: 'attendance',
+    permKey: 'hr_attendance',
+    label: 'الحضور والانصراف',
+    description: 'رفع شيت البصمة ومتابعة سجل الحضور اليومي'
+  },
+  {
+    key: 'rules',
+    permKey: 'hr_rules',
+    label: 'قواعد المواعيد والخصم',
+    description: 'ضبط مواعيد العمل وقواعد التأخير والغياب'
+  },
+  {
+    key: 'loans',
+    permKey: 'hr_loans',
+    label: 'السُلف',
+    description: 'تسجيل السلف المالية للموظفين'
+  },
+  {
+    key: 'penalties',
+    permKey: 'hr_penalties',
+    label: 'الجزاءات',
+    description: 'تسجيل الجزاءات بالأيام أو الساعات'
+  },
+  {
+    key: 'payroll',
+    permKey: 'hr_payroll',
+    label: 'مسير المرتبات',
+    description: 'احتساب وصرف المرتبات بعد الخصومات'
   }
 ];
 
@@ -260,6 +311,13 @@ export const DEFAULT_PERMISSIONS: RolePermissions = {
   manage_sizes: false,
   view_audit_logs: false,
   can_manage_hr: false,
+  hr_jobs: false,
+  hr_employees: false,
+  hr_attendance: false,
+  hr_rules: false,
+  hr_loans: false,
+  hr_penalties: false,
+  hr_payroll: false,
   view_global_settings: false,
   edit_header_settings: false,
   edit_message_templates: false,
@@ -274,7 +332,17 @@ export const DEFAULT_PERMISSIONS: RolePermissions = {
 };
 
 export const RoleManagementSection: React.FC = () => {
-  const { roles, users, addRole, updateRole, deleteRole, canManagePermissions } = useApp();
+  const {
+    roles,
+    users,
+    addRole,
+    updateRole,
+    deleteRole,
+    canManagePermissions,
+    visibleRankOptions,
+    currentUserRank,
+    rankLabelFor
+  } = useApp();
   const [modalOpen, setModalOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<CustomRole | null>(null);
 
@@ -282,6 +350,15 @@ export const RoleManagementSection: React.FC = () => {
   const [roleName, setRoleName] = useState('');
   const [roleDescription, setRoleDescription] = useState('');
   const [permissions, setPermissions] = useState<RolePermissions>(DEFAULT_PERMISSIONS);
+
+  // Permissions modal main section (4 sections) + role rank
+  const rankOptions = visibleRankOptions();
+  const [permSection, setPermSection] = useState<'manufacturing' | 'hr' | 'admin' | 'roles'>(
+    'manufacturing'
+  );
+  const [roleRank, setRoleRank] = useState<number>(() =>
+    Number(visibleRankOptions()[visibleRankOptions().length - 1]?.value ?? 3)
+  );
 
   if (!canManagePermissions()) {
     return (
@@ -300,6 +377,8 @@ export const RoleManagementSection: React.FC = () => {
     setRoleName('');
     setRoleDescription('');
     setPermissions({ ...DEFAULT_PERMISSIONS });
+    setRoleRank(Number(visibleRankOptions()[visibleRankOptions().length - 1]?.value ?? 3));
+    setPermSection('manufacturing');
     setModalOpen(true);
   };
 
@@ -311,6 +390,12 @@ export const RoleManagementSection: React.FC = () => {
       ...DEFAULT_PERMISSIONS,
       ...role.permissions
     });
+    const allowedRanks = visibleRankOptions().map((opt) => Number(opt.value));
+    const currentRank = Number(role.rank_level ?? 3);
+    setRoleRank(
+      allowedRanks.includes(currentRank) ? currentRank : allowedRanks[allowedRanks.length - 1] ?? 3
+    );
+    setPermSection('manufacturing');
     setModalOpen(true);
   };
 
@@ -383,6 +468,13 @@ export const RoleManagementSection: React.FC = () => {
         next.manage_sizes = true;
         next.view_audit_logs = true;
         next.can_manage_hr = true;
+        next.hr_jobs = true;
+        next.hr_employees = true;
+        next.hr_attendance = true;
+        next.hr_rules = true;
+        next.hr_loans = true;
+        next.hr_penalties = true;
+        next.hr_payroll = true;
         next.view_global_settings = true;
         next.edit_header_settings = true;
         next.edit_message_templates = true;
@@ -407,6 +499,13 @@ export const RoleManagementSection: React.FC = () => {
         next.manage_permissions = false;
         next.manage_users = false;
         next.can_manage_hr = false;
+        next.hr_jobs = false;
+        next.hr_employees = false;
+        next.hr_attendance = false;
+        next.hr_rules = false;
+        next.hr_loans = false;
+        next.hr_penalties = false;
+        next.hr_payroll = false;
         next.edit_header_settings = false;
         next.edit_message_templates = false;
         next.can_add_design_notes = false;
@@ -448,13 +547,15 @@ export const RoleManagementSection: React.FC = () => {
       updateRole(editingRole.id, {
         name: roleName.trim(),
         description: roleDescription.trim(),
-        permissions
+        permissions,
+        rank_level: roleRank
       });
     } else {
       addRole({
         name: roleName.trim(),
         description: roleDescription.trim(),
-        permissions
+        permissions,
+        rank_level: roleRank
       });
     }
 
@@ -506,6 +607,9 @@ export const RoleManagementSection: React.FC = () => {
 
           const hasNotesPerms = NOTES_PERMISSIONS_LIST.some((np) => Boolean(role.permissions[np.key]));
           const hasAdminPerms = Boolean(role.permissions.manage_permissions || role.permissions.manage_users);
+          const hasHrPerms =
+            Boolean(role.permissions.can_manage_hr) ||
+            HR_PERMISSIONS_LIST.some((hp) => Boolean(role.permissions[hp.permKey]));
 
           return (
             <div
@@ -525,6 +629,14 @@ export const RoleManagementSection: React.FC = () => {
                       <span className="text-[11px] font-semibold text-slate-400">
                         {userCount} موظف مرتبط
                       </span>
+                      {currentUserRank !== 3 && (
+                        <span className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-50 text-violet-800 border border-violet-200 text-[10px] font-black">
+                          <ShieldCheck className="w-3 h-3" />
+                          {role.rank_label ||
+                            rankLabelFor(Number(role.rank_level ?? 3)) ||
+                            'المستوى العام'}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -596,6 +708,12 @@ export const RoleManagementSection: React.FC = () => {
                       <span className="bg-purple-50 text-purple-800 border border-purple-200 px-2 py-0.5 rounded-full flex items-center gap-1">
                         <FileText className="w-3 h-3 text-purple-600" />
                         كتابة ملاحظات
+                      </span>
+                    )}
+                    {hasHrPerms && (
+                      <span className="bg-rose-50 text-rose-800 border border-rose-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <Users className="w-3 h-3 text-rose-600" />
+                        موارد بشرية
                       </span>
                     )}
                     {hasFinancial && (
@@ -713,6 +831,48 @@ export const RoleManagementSection: React.FC = () => {
                 </div>
               </div>
 
+              {/* Permissions Section Switcher (4 main sections) */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                {[
+                  { id: 'manufacturing', label: 'التصنيع', hint: 'الأقسام والملاحظات والأسعار', icon: Boxes },
+                  { id: 'hr', label: 'الموارد البشرية', hint: 'تبويبات HR المستقلة', icon: Users },
+                  { id: 'admin', label: 'الإدارة والإعدادات', hint: 'الحسابات والإعدادات العامة', icon: Settings },
+                  { id: 'roles', label: 'الأدوار والرتب', hint: 'الرتبة الهرمية للدور', icon: ShieldCheck }
+                ].map((tab) => {
+                  const Icon = tab.icon;
+                  const active = permSection === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() =>
+                        setPermSection(tab.id as 'manufacturing' | 'hr' | 'admin' | 'roles')
+                      }
+                      className={`p-3 rounded-2xl border text-start transition cursor-pointer ${
+                        active
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-md'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-blue-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 font-black text-xs">
+                        <Icon className="w-4 h-4" />
+                        <span>{tab.label}</span>
+                      </div>
+                      <span
+                        className={`block text-[10px] mt-0.5 ${
+                          active ? 'text-blue-100' : 'text-slate-500'
+                        }`}
+                      >
+                        {tab.hint}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* ===== SECTION 1: MANUFACTURING ===== */}
+              {permSection === 'manufacturing' && (
+                <>
               {/* SECTION 1: System Modules (View / Edit Grid) */}
               <div>
                 <h4 className="text-sm font-extrabold text-slate-900 mb-3 flex items-center gap-2">
@@ -820,6 +980,80 @@ export const RoleManagementSection: React.FC = () => {
                 </div>
               </div>
 
+                </>
+              )}
+
+              {/* ===== SECTION 2: HUMAN RESOURCES (Per-Tab) ===== */}
+              {permSection === 'hr' && (
+                <div className="bg-rose-50/60 rounded-3xl p-5 border border-rose-200/90 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-rose-600 text-white rounded-xl shadow-xs">
+                      <Users className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-black text-sm text-rose-950">
+                        صلاحيات تبويبات الموارد البشرية (Per-Tab HR Permissions)
+                      </h4>
+                      <p className="text-[11px] text-rose-800">
+                        كل تبويب له صلاحية مستقلة. منح «إدارة الموارد البشرية» العامة يفتح كل
+                        التبويبات السبعة تلقائياً.
+                      </p>
+                    </div>
+                  </div>
+
+                  <label className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-rose-300 hover:border-rose-500 cursor-pointer transition shadow-2xs">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(permissions.can_manage_hr)}
+                      onChange={() => handleToggleBooleanPerm('can_manage_hr')}
+                      className="w-4 h-4 text-rose-600 rounded-sm focus:ring-rose-500"
+                    />
+                    <div className="text-start">
+                      <span className="font-black text-xs text-rose-950 block">
+                        صلاحية إدارة الموارد البشرية كاملة (Master)
+                      </span>
+                      <span className="text-[10px] text-slate-500">
+                        تمنح كل تبويبات الموارد البشرية السبعة دفعة واحدة
+                      </span>
+                    </div>
+                  </label>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {HR_PERMISSIONS_LIST.map((hp) => {
+                      const masterOn = Boolean(permissions.can_manage_hr);
+                      const enabled = masterOn || Boolean(permissions[hp.permKey]);
+                      return (
+                        <label
+                          key={hp.key}
+                          className={`flex items-center gap-3 p-3 rounded-2xl border transition shadow-2xs ${
+                            enabled
+                              ? 'bg-white border-rose-300'
+                              : 'bg-slate-50/70 border-slate-200 opacity-80'
+                          } ${masterOn ? 'cursor-not-allowed' : 'cursor-pointer hover:border-rose-400'}`}
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={masterOn}
+                            checked={enabled}
+                            onChange={() => handleToggleBooleanPerm(hp.permKey)}
+                            className="w-4 h-4 text-rose-600 rounded-sm focus:ring-rose-500"
+                          />
+                          <div className="text-start">
+                            <span className="font-bold text-xs text-slate-900 block">
+                              {hp.label}
+                            </span>
+                            <span className="text-[10px] text-slate-500">{hp.description}</span>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ===== SECTION 3: ADMIN & SETTINGS ===== */}
+              {permSection === 'admin' && (
+                <>
               {/* SECTION 3: Dynamic Administrative & Global Site Settings Permissions (Tasks 2 & 3) */}
               <div className="bg-indigo-50/60 rounded-3xl p-5 border border-indigo-200/90 space-y-4">
                 <div className="flex items-center gap-2.5">
@@ -864,6 +1098,12 @@ export const RoleManagementSection: React.FC = () => {
                 </div>
               </div>
 
+                </>
+              )}
+
+              {/* ===== SECTION 4: MANUFACTURING (Financial & WhatsApp) ===== */}
+              {permSection === 'manufacturing' && (
+                <>
               {/* SECTION 4: Fine-grained Financial & WhatsApp Permissions */}
               <div className="bg-amber-50/60 rounded-3xl p-5 border border-amber-200/90 space-y-4">
                 <div className="flex items-center justify-between">
@@ -1003,6 +1243,63 @@ export const RoleManagementSection: React.FC = () => {
                   </label>
                 </div>
               </div>
+
+                </>
+              )}
+
+              {/* ===== SECTION 5: ROLES & RANKS ===== */}
+              {permSection === 'roles' && (
+                <div className="bg-violet-50/60 rounded-3xl p-5 border border-violet-200/90 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-violet-600 text-white rounded-xl shadow-xs">
+                      <ShieldCheck className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-black text-sm text-violet-950">
+                        الرتبة الهرمية للدور (Strict Hierarchy Rank)
+                      </h4>
+                      <p className="text-[11px] text-violet-800">
+                        الرتبة تحدد من يرى ويُدير من: كل رتبة ترى الرتب الأقل منها فقط. الرتبة 0
+                        محصورة في حساب الطوارئ sudo ولا تظهر هنا.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2">
+                    {rankOptions.map((opt) => (
+                      <label
+                        key={opt.value}
+                        className={`flex items-center gap-3 p-3 rounded-2xl border cursor-pointer transition ${
+                          roleRank === Number(opt.value)
+                            ? 'bg-white border-violet-500 ring-2 ring-violet-100'
+                            : 'bg-white/70 border-violet-200 hover:border-violet-400'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="role-rank"
+                          checked={roleRank === Number(opt.value)}
+                          onChange={() => setRoleRank(Number(opt.value))}
+                          className="w-4 h-4 text-violet-600"
+                        />
+                        <div className="text-start">
+                          <span className="font-bold text-xs text-slate-900 block">{opt.label}</span>
+                          <span className="text-[10px] text-slate-500">{opt.description}</span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+
+                  {editingRole && (
+                    <p className="text-[11px] font-bold text-violet-800">
+                      الرتبة الحالية للدور:{' '}
+                      {editingRole.rank_label ||
+                        rankLabelFor(Number(editingRole.rank_level ?? 3)) ||
+                        'المستوى العام'}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Form Action Buttons */}
               <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3 shrink-0">

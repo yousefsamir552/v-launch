@@ -1,5 +1,22 @@
 from rest_framework import permissions
-from .models import UserProfile
+from .models import UserProfile, HR_PERM_KEYS
+
+# ---------------------------------------------------------------------------
+# Per-tab HR permissions.
+# A viewset declares ``required_hr_section = '<key>'`` to demand one specific
+# HR permission. Viewsets without it accept ANY of the HR permissions.
+# The legacy master permission 'can_manage_hr' (and 'manage_permissions')
+# still grants every HR tab for backward compatibility.
+# ---------------------------------------------------------------------------
+HR_SECTION_PERM_MAP = {
+    'jobs': 'hr_jobs',
+    'employees': 'hr_employees',
+    'attendance': 'hr_attendance',
+    'rules': 'hr_rules',
+    'loans': 'hr_loans',
+    'penalties': 'hr_penalties',
+    'payroll': 'hr_payroll',
+}
 
 class HasDynamicSectionPermission(permissions.BasePermission):
     """
@@ -71,10 +88,17 @@ class CanSendWhatsApp(permissions.BasePermission):
 
 class CanManageHR(permissions.BasePermission):
     """
-    Enforces access to the Human Resources (HR) section based on the dynamic
-    'can_manage_hr' permission. Sudo users bypass the check (handled by has_perm).
-    The profile is resolved from Bearer token / X-Auth-Token / X-User-Username,
-    mirroring resolve_request_user_profile in views.py.
+    Enforces access to the Human Resources (HR) section.
+
+    * If the view declares ``required_hr_section`` (jobs/employees/attendance/
+      rules/loans/penalties/payroll), only that specific permission is accepted.
+    * Otherwise ANY of the seven granular HR permissions is accepted.
+    * The legacy master permissions 'can_manage_hr' and 'manage_permissions'
+      grant every HR tab.
+
+    Sudo users bypass the check (handled by has_perm). The profile is resolved
+    from Bearer token / X-Auth-Token / X-User-Username, mirroring
+    resolve_request_user_profile in views.py.
     """
 
     def has_permission(self, request, view):
@@ -85,7 +109,28 @@ class CanManageHR(permissions.BasePermission):
             # No identifiable user (e.g. internal/CLI calls): stay consistent
             # with the rest of the permission classes and allow through.
             return True
-        return profile.has_perm('can_manage_hr')
+
+        if profile.is_sudo or profile.username.lower() == 'sudo':
+            return True
+
+        # Legacy master permissions grant every HR tab.
+        if profile.has_perm('can_manage_hr') or profile.has_perm('manage_permissions'):
+            return True
+
+        required_section = getattr(view, 'required_hr_section', None)
+        if required_section:
+            perm_key = HR_SECTION_PERM_MAP.get(required_section, required_section)
+            if profile.has_perm(perm_key):
+                return True
+            # قراءة البيانات المساندة (وظائف/موظفين/إعدادات) متاحة لأي تبويب HR
+            # حتى تعمل شاشات السلف/الجزاءات/مسير المرتبات بشكل صحيح.
+            if request.method in permissions.SAFE_METHODS and any(
+                profile.has_perm(key) for key in HR_PERM_KEYS
+            ):
+                return True
+            return False
+
+        return any(profile.has_perm(perm_key) for perm_key in HR_PERM_KEYS)
 
     @staticmethod
     def _resolve_profile(request):

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from './context/AppContext';
+import { HRSectionKey } from './types';
 import { Navbar } from './components/Navbar';
 import { FlashAlerts } from './components/FlashAlerts';
 import { DashboardView } from './components/DashboardView';
@@ -26,7 +27,7 @@ export const App: React.FC = () => {
     hasPermission,
     canAccessSettings,
     canViewAuditLogs,
-    canManageHR,
+    canAccessHRSection,
     globalSettings
   } = useApp();
 
@@ -43,11 +44,17 @@ export const App: React.FC = () => {
     }
   }, [globalSettings?.site_name]);
 
-  const isHrTab = (tab: string): boolean =>
-    tab === 'hr_employees' ||
-    tab === 'hr_attendance' ||
-    tab === 'hr_loans_penalties' ||
-    tab === 'hr_payroll';
+  const HR_TAB_SECTIONS: Record<string, HRSectionKey> = {
+    hr_jobs: 'jobs',
+    hr_employees: 'employees',
+    hr_attendance: 'attendance',
+    hr_rules: 'rules',
+    hr_loans: 'loans',
+    hr_penalties: 'penalties',
+    hr_payroll: 'payroll'
+  };
+
+  const isHrTab = (tab: string): boolean => tab in HR_TAB_SECTIONS;
 
   const canAccessTab = (tab: string): boolean => {
     if (isSudo) return true;
@@ -85,13 +92,8 @@ export const App: React.FC = () => {
     if (tab === 'reports') return hasPermission('reports');
     if (tab === 'settings') return canAccessSettings();
     if (tab === 'logs') return canViewAuditLogs();
-    if (
-      tab === 'hr_employees' ||
-      tab === 'hr_attendance' ||
-      tab === 'hr_loans_penalties' ||
-      tab === 'hr_payroll'
-    ) {
-      return canManageHR();
+    if (isHrTab(tab)) {
+      return canAccessHRSection(HR_TAB_SECTIONS[tab]);
     }
     return true;
   };
@@ -217,11 +219,24 @@ export const App: React.FC = () => {
 
         {/* Human Resources (HR) - الموارد البشرية */}
         {isHrTab(currentTab) &&
-          (canManageHR() ? (
+          (canAccessHRSection(HR_TAB_SECTIONS[currentTab]) ? (
             <>
-              {currentTab === 'hr_employees' && <HRView initialSection="staff" />}
-              {currentTab === 'hr_attendance' && <HRView initialSection="attendance" />}
-              {currentTab === 'hr_loans_penalties' && <HRView initialSection="loans_penalties" />}
+              {currentTab === 'hr_employees' && (
+                <HRView initialSection="staff" initialSubTab="employees" />
+              )}
+              {currentTab === 'hr_jobs' && <HRView initialSection="staff" initialSubTab="jobs" />}
+              {currentTab === 'hr_attendance' && (
+                <HRView initialSection="attendance" initialSubTab="records" />
+              )}
+              {currentTab === 'hr_rules' && (
+                <HRView initialSection="attendance" initialSubTab="rules" />
+              )}
+              {currentTab === 'hr_loans' && (
+                <HRView initialSection="loans_penalties" initialSubTab="loans" />
+              )}
+              {currentTab === 'hr_penalties' && (
+                <HRView initialSection="loans_penalties" initialSubTab="penalties" />
+              )}
               {currentTab === 'hr_payroll' && <HRView initialSection="payroll" />}
             </>
           ) : (

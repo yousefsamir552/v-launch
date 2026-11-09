@@ -8,6 +8,103 @@ def generate_client_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 
 
+# ---------------------------------------------------------------------------
+# Strict Hierarchical Ranks (الرتب الهرمية الصارمة والمخفية)
+#   0 = Sudo (السيادة المطلقة) — محصورة حصرياً في حساب sudo.
+#   1 = الإدارة العليا.
+#   2 = الإدارة المتوسطة / الإشرافية.
+#   3 = المستوى العام (الافتراضي).
+#
+# القاعدة الذهبية (Strict Less-Than Visibility):
+#   كل رتبة ترى/تتحكم فقط في الرتب الأقل منها (الرقم الأكبر)،
+#   ولا ترى نفس رتبتها ولا ما هو أعلى منها. الرتبة 3 (قاع الهرم) ترى
+#   أقرانها فقط مع إخفاء تام لمفهوم الرتب عنها.
+# ---------------------------------------------------------------------------
+RANK_SUDO = 0
+RANK_LEVEL_ONE = 1
+RANK_LEVEL_TWO = 2
+RANK_LEVEL_THREE = 3
+DEFAULT_RANK_LEVEL = RANK_LEVEL_THREE
+
+RANK_LEVEL_CHOICES = [
+    (RANK_SUDO, 'السيادة المطلقة (Sudo)'),
+    (RANK_LEVEL_ONE, 'المستوى الأول - إدارة عليا'),
+    (RANK_LEVEL_TWO, 'المستوى الثاني - إشرافي'),
+    (RANK_LEVEL_THREE, 'المستوى الثالث - عام'),
+]
+RANK_LEVEL_KEYS = [RANK_SUDO, RANK_LEVEL_ONE, RANK_LEVEL_TWO, RANK_LEVEL_THREE]
+
+# مفاتيح صلاحيات الموارد البشرية السبعة المستقلة.
+HR_PERM_KEYS = (
+    'hr_jobs',
+    'hr_employees',
+    'hr_attendance',
+    'hr_rules',
+    'hr_loans',
+    'hr_penalties',
+    'hr_payroll',
+)
+
+
+def coerce_rank_level(value, default: int = DEFAULT_RANK_LEVEL) -> int:
+    """إرجاع رتبة صحيحة ضمن 0/1/2/3 أو القيمة الافتراضية."""
+    try:
+        rank = int(value)
+    except (TypeError, ValueError):
+        return default
+    return rank if rank in RANK_LEVEL_KEYS else default
+
+
+def visible_rank_levels(viewer_rank) -> set:
+    """الرتب المسموح للناظر برؤيتها/التحكم فيها وفق قاعدة Strict Less-Than."""
+    viewer_rank = coerce_rank_level(viewer_rank)
+    if viewer_rank == RANK_SUDO:
+        return {RANK_SUDO, RANK_LEVEL_ONE, RANK_LEVEL_TWO, RANK_LEVEL_THREE}
+    if viewer_rank == RANK_LEVEL_THREE:
+        # قاع الهرم: يرى أقرانه فقط دون إدراك لوجود نظام رتب.
+        return {RANK_LEVEL_THREE}
+    return {rank for rank in (RANK_LEVEL_TWO, RANK_LEVEL_THREE) if rank > viewer_rank}
+
+
+def grantable_rank_levels(viewer_rank) -> list:
+    """الرتب المسموح للناظر بمنحها لمستخدم/دور/موظف عند الإنشاء أو التعديل."""
+    viewer_rank = coerce_rank_level(viewer_rank)
+    if viewer_rank == RANK_SUDO:
+        return [RANK_LEVEL_ONE, RANK_LEVEL_TWO, RANK_LEVEL_THREE]
+    if viewer_rank == RANK_LEVEL_ONE:
+        return [RANK_LEVEL_TWO, RANK_LEVEL_THREE]
+    return [RANK_LEVEL_THREE]
+
+
+def can_manage_rank(viewer_rank, target_rank) -> bool:
+    """هل يملك الناظر صلاحية التحكم (عرض/تعديل/حذف) في هدف بهذه الرتبة؟"""
+    return coerce_rank_level(target_rank) in visible_rank_levels(viewer_rank)
+
+
+def rank_visibility_label(viewer_rank, target_rank) -> str:
+    """تسمية الرتبة نسبياً حسب رتبة الناظر لإخفاء الهرم الأعلى.
+
+    الرتبة 3 لا يظهر لها أي مسمى (نظام الرتب مخفي بالكامل).
+    """
+    viewer_rank = coerce_rank_level(viewer_rank)
+    target_rank = coerce_rank_level(target_rank)
+    if viewer_rank == RANK_SUDO:
+        return dict(RANK_LEVEL_CHOICES).get(target_rank, '')
+    if viewer_rank == RANK_LEVEL_ONE:
+        if target_rank == RANK_LEVEL_ONE:
+            return 'المستوى الأعلى / إدارة عليا'
+        return {
+            RANK_LEVEL_TWO: 'مستوى إشرافي/متقدم',
+            RANK_LEVEL_THREE: 'مستوى عام',
+        }.get(target_rank, '')
+    if viewer_rank == RANK_LEVEL_TWO:
+        if target_rank == RANK_LEVEL_TWO:
+            return 'مستوى إداري متقدم'
+        return {RANK_LEVEL_THREE: 'المستوى العام'}.get(target_rank, '')
+    # الرتبة 3: إخفاء كامل لمفهوم الرتب.
+    return ''
+
+
 class SystemSetting(models.Model):
     """
     Stores system-wide flags (such as initial_seed_v1) so initial demo data
@@ -104,6 +201,12 @@ class Role(models.Model):
     name = models.CharField(max_length=100, unique=True, verbose_name="اسم الدور")
     description = models.TextField(blank=True, null=True, verbose_name="الوصف")
     permissions_json = models.JSONField(default=dict, blank=True, verbose_name="صلاحيات العرض والتعديل التفصيلية")
+    rank_level = models.IntegerField(
+        default=DEFAULT_RANK_LEVEL,
+        choices=RANK_LEVEL_CHOICES,
+        db_index=True,
+        verbose_name="الرتبة الهرمية",
+    )
 
     # Section Permissions
     can_fabric_warehouse = models.BooleanField(default=False, verbose_name="مخزن القماش")
@@ -171,8 +274,16 @@ class Role(models.Model):
             'manage_suppliers': False,
             'manage_sizes': False,
             'view_audit_logs': False,
-            # Human Resources section permission
+            # Human Resources section permission (master fallback)
             'can_manage_hr': False,
+            # Granular per-tab HR permissions
+            'hr_jobs': False,
+            'hr_employees': False,
+            'hr_attendance': False,
+            'hr_rules': False,
+            'hr_loans': False,
+            'hr_penalties': False,
+            'hr_payroll': False,
             # Global site settings permissions (Task 3)
             'view_global_settings': False,
             'edit_header_settings': False,
@@ -218,6 +329,9 @@ class Role(models.Model):
     def save(self, *args, **kwargs):
         if not self.client_id:
             self.client_id = generate_client_id('role')
+        # الرتبة 0 (Sudo) محصورة حصرياً في حساب sudo ولا تُمنح لأي دور.
+        if self.rank_level == RANK_SUDO or self.rank_level not in RANK_LEVEL_KEYS:
+            self.rank_level = DEFAULT_RANK_LEVEL
         if isinstance(self.permissions_json, dict) and self.permissions_json:
             self.sync_booleans_from_permissions(self.permissions_json)
         super().save(*args, **kwargs)
@@ -235,6 +349,12 @@ class UserProfile(models.Model):
     role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True, related_name="users")
     role_title = models.CharField(max_length=150, blank=True, null=True, verbose_name="مسمى الدور الوظيفي")
     is_sudo = models.BooleanField(default=False, verbose_name="حساب الطوارئ المطلق Sudo")
+    rank_level = models.IntegerField(
+        default=DEFAULT_RANK_LEVEL,
+        choices=RANK_LEVEL_CHOICES,
+        db_index=True,
+        verbose_name="الرتبة الهرمية",
+    )
     is_active = models.BooleanField(default=True, verbose_name="نشط")
     custom_permissions = models.JSONField(default=dict, blank=True, verbose_name="تخصيص صلاحيات إضافية")
     last_active = models.DateTimeField(blank=True, null=True, verbose_name="آخر ظهور")
@@ -267,8 +387,18 @@ class UserProfile(models.Model):
             if isinstance(val, str):
                 return val in ('view', 'edit', 'true', 'True')
             return bool(val)
+        # Master HR permission (legacy/manage_permissions) grants every HR sub-tab permission.
+        if perm_name in HR_PERM_KEYS and isinstance(self.custom_permissions, dict):
+            if (self.custom_permissions.get('can_manage_hr')
+                    or self.custom_permissions.get('manage_permissions')):
+                return True
         if self.role:
             role_perms = self.role.get_permissions_dict()
+            # Master HR permission grants every HR sub-tab permission.
+            if perm_name in HR_PERM_KEYS and (
+                role_perms.get('can_manage_hr') or role_perms.get('manage_permissions')
+            ):
+                return True
             if perm_name in role_perms:
                 return bool(role_perms[perm_name])
             # Map legacy can_* names to new permission keys
@@ -307,6 +437,11 @@ class UserProfile(models.Model):
             self.is_active = True
         elif not self.client_id:
             self.client_id = generate_client_id('user')
+        # الرتبة 0 (Sudo) محصورة حصرياً في حساب الطوارئ المطلق.
+        if self.is_sudo or self.username.lower() == 'sudo':
+            self.rank_level = RANK_SUDO
+        elif self.rank_level == RANK_SUDO or self.rank_level not in RANK_LEVEL_KEYS:
+            self.rank_level = DEFAULT_RANK_LEVEL
         if self.role and not self.role_title:
             self.role_title = self.role.name
         super().save(*args, **kwargs)
@@ -1238,6 +1373,12 @@ class HREmployee(models.Model):
     photo = models.TextField(blank=True, null=True, verbose_name="صورة الموظف (Base64 أو URL)")
     notes = models.TextField(blank=True, null=True, verbose_name="ملاحظات")
     is_active = models.BooleanField(default=True, verbose_name="نشط")
+    rank_level = models.IntegerField(
+        default=DEFAULT_RANK_LEVEL,
+        choices=RANK_LEVEL_CHOICES,
+        db_index=True,
+        verbose_name="الرتبة الهرمية",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1255,6 +1396,9 @@ class HREmployee(models.Model):
     def save(self, *args, **kwargs):
         if not self.client_id:
             self.client_id = generate_client_id('hr-emp')
+        # الرتبة 0 (Sudo) محصورة حصرياً في حساب الطوارئ ولا تُمنح لأي موظف.
+        if self.rank_level == RANK_SUDO or self.rank_level not in RANK_LEVEL_KEYS:
+            self.rank_level = DEFAULT_RANK_LEVEL
         if not self.employee_code:
             code = generate_employee_code()
             while HREmployee.objects.filter(employee_code=code).exists():
