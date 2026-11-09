@@ -26,7 +26,9 @@ import {
   CheckCircle2,
   XCircle,
   UsersRound,
-  LayoutList
+  LayoutList,
+  History,
+  Printer
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { api } from '../api/client';
@@ -700,6 +702,7 @@ type EmployeeForm = {
   national_id: string;
   birth_date: string;
   phone: string;
+  photo: string;
   notes: string;
   is_active: boolean;
 };
@@ -713,6 +716,7 @@ const emptyEmployeeForm: EmployeeForm = {
   national_id: '',
   birth_date: '',
   phone: '',
+  photo: '',
   notes: '',
   is_active: true
 };
@@ -778,6 +782,7 @@ const EmployeesPanel: React.FC<{
       national_id: employee.national_id || '',
       birth_date: employee.birth_date || '',
       phone: employee.phone || '',
+      photo: employee.photo || '',
       notes: employee.notes || '',
       is_active: employee.is_active !== false
     });
@@ -819,6 +824,7 @@ const EmployeesPanel: React.FC<{
       national_id: form.national_id.trim(),
       birth_date: form.birth_date || null,
       phone: form.phone.trim(),
+      photo: form.photo.trim(),
       notes: form.notes.trim(),
       is_active: form.is_active
     };
@@ -1129,6 +1135,17 @@ const EmployeesPanel: React.FC<{
             </div>
 
             <div>
+              <label className={labelClass}>رابط صورة الموظف (اختياري)</label>
+              <input
+                value={form.photo}
+                onChange={(event) => updateForm({ photo: event.target.value })}
+                placeholder="https://..."
+                className={`${inputClass} font-mono`}
+                dir="ltr"
+              />
+            </div>
+
+            <div>
               <label className={labelClass}>ملاحظات</label>
               <textarea
                 value={form.notes}
@@ -1182,7 +1199,7 @@ const EmployeesPanel: React.FC<{
             setDeleteTarget(null);
             setDeleteError('');
           }}
-          maxWidthClass="max-w-md"
+          maxWidthClass="max-w-2xl"
         >
           <div className="space-y-3">
             <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-bold">
@@ -2003,6 +2020,55 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
     }
   };
 
+  // طباعة تقرير حضور يومي (يعتمد على السجلات المعروضة حالياً)
+  const handlePrintDailyReport = () => {
+    const list = [...visibleRecords].sort((a, b) => a.date.localeCompare(b.date));
+    if (list.length === 0) {
+      addFlashMessage('لا توجد سجلات لطباعتها', 'danger');
+      return;
+    }
+    const rowsHtml = list
+      .map((record) => {
+        const employee = employees.find((item) => item.id === record.employee_id);
+        return `<tr>
+          <td>${record.date}</td>
+          <td>${record.employee_name || employee?.name || '-'}</td>
+          <td>${record.employee_code || employee?.employee_code || '-'}</td>
+          <td>${record.check_in || '—'}</td>
+          <td>${record.check_out || '—'}</td>
+          <td>${ATTENDANCE_STATUS_LABELS[record.status] || record.status}</td>
+          <td>${Number(record.calculated_deduction_days) || 0} يوم / ${Number(record.calculated_deduction_hours) || 0} ساعة</td>
+        </tr>`;
+      })
+      .join('');
+    const title = selectedDay
+      ? `تقرير حضور يوم ${formatDayLabel(selectedDay)}`
+      : `تقرير حضور شهر ${month}`;
+    const win = window.open('', '_blank', 'width=1000,height=700');
+    if (!win) {
+      addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة لطباعة التقرير', 'danger');
+      return;
+    }
+    win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
+      <title>${title}</title>
+      <style>
+        body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#0f172a}
+        h1{font-size:18px;margin:0 0 4px}
+        p.meta{font-size:12px;color:#64748b;margin:0 0 16px}
+        table{width:100%;border-collapse:collapse;font-size:12px}
+        th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:center}
+        th{background:#f1f5f9}
+      </style></head><body>
+      <h1>${title}</h1>
+      <p class="meta">عدد السجلات: ${list.length} — حضور: ${summary.present} — غياب: ${summary.absents} — بانتظار المراجعة: ${summary.pending}</p>
+      <table><thead><tr><th>التاريخ</th><th>الموظف</th><th>الكود</th><th>الحضور</th><th>الانصراف</th><th>الحالة</th><th>الخصم</th></tr></thead>
+      <tbody>${rowsHtml}</tbody></table>
+      </body></html>`);
+    win.document.close();
+    win.focus();
+    win.print();
+  };
+
   // إدخال بصمة يدوية لم تُسجل على الماكينة
   const openManualTime = (record: HRAttendanceRecord) => {
     setTimeTarget(record);
@@ -2083,31 +2149,42 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {/* زرّي الإكسيل ملتصقين: تحميل قالب فارغ + رفع شيت البصمة وتفريغه بالـ ID */}
+          <div className="inline-flex rounded-xl overflow-hidden border border-slate-200 shadow-xs">
+            <button
+              type="button"
+              onClick={() => void handleDownloadTemplate()}
+              disabled={isDownloading}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white text-slate-700 text-[11px] font-black hover:bg-slate-50 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed border-l border-slate-200"
+            >
+              {isDownloading ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
+              تحميل قالب فارغ
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-600 text-white text-[11px] font-black hover:bg-emerald-700 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isUploading ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Upload className="w-4 h-4" />
+              )}
+              رفع شيت البصمة وتفريغه بالـ ID
+            </button>
+          </div>
           <button
             type="button"
-            onClick={() => void handleDownloadTemplate()}
-            disabled={isDownloading}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 text-[11px] font-black hover:bg-slate-50 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={handlePrintDailyReport}
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 text-white text-[11px] font-black hover:bg-indigo-700 transition cursor-pointer"
           >
-            {isDownloading ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <Download className="w-4 h-4" />
-            )}
-            تحميل قالب البصمة الفارغ
-          </button>
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isUploading}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 text-white text-[11px] font-black hover:bg-emerald-700 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isUploading ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <Upload className="w-4 h-4" />
-            )}
-            رفع شيت البصمة
+            <FileText className="w-4 h-4" />
+            طباعة تقرير حضور يومي
           </button>
           <button
             type="button"
@@ -2172,8 +2249,8 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
         </div>
       </div>
 
-      {/* بطاقات الإحصاءات — مصدرها السيرفر مع الرجوع للاحتساب المحلي عند التعذر */}
-      <div className="px-4 pt-4 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
+      {/* بطاقات الإحصاءات الثلاث: الالتزام — متوسط الغياب اليومي — أكثر قسم غياب */}
+      <div className="px-4 pt-4 grid grid-cols-1 md:grid-cols-3 gap-2">
         <AttendanceStatCard
           label="نسبة الالتزام"
           value={`${stats?.compliance_percent ?? localCompliance}%`}
@@ -2182,43 +2259,22 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
           icon={<CheckCircle2 className="w-4 h-4" />}
         />
         <AttendanceStatCard
-          label="أيام الغياب"
-          value={stats?.absent ?? summary.absents}
-          hint={`متوسط يومي ${stats?.average_daily_absence ?? 0}`}
+          label="متوسط الغياب اليومي"
+          value={stats?.average_daily_absence ?? 0}
+          hint={`إجمالي أيام الغياب: ${stats?.absent ?? summary.absents}`}
           tone="rose"
           icon={<AlertTriangle className="w-4 h-4" />}
         />
         <AttendanceStatCard
-          label="بانتظار المراجعة"
-          value={stats?.pending_review ?? summary.pending}
-          hint="خصومات تحتاج اعتماد يدوي"
-          tone="amber"
-          icon={<Clock className="w-4 h-4" />}
-        />
-        <AttendanceStatCard
-          label="بصمة ناقصة"
-          value={stats?.missing_punch ?? 0}
-          hint="حضور بدون انصراف أو العكس"
-          tone="blue"
-          icon={<FileSpreadsheet className="w-4 h-4" />}
-        />
-        <AttendanceStatCard
-          label="خصم ساعات"
-          value={stats?.deduction_hours ?? summary.deductionHours}
-          hint={`${stats?.late_records ?? 0} سجل تأخير`}
-          tone="indigo"
-          icon={<Timer className="w-4 h-4" />}
-        />
-        <AttendanceStatCard
-          label="خصم أيام"
-          value={stats?.deduction_days ?? summary.deductionDays}
+          label="أكثر قسم فيه غياب"
+          value={stats?.worst_department?.label || '—'}
           hint={
             stats?.worst_department
-              ? `أعلى غياب: ${stats.worst_department.label}`
-              : `أيام العمل ${stats?.workdays ?? 0}`
+              ? `${stats.worst_department.absent} غياب من ${stats.worst_department.total} سجل (${stats.worst_department.rate}%)`
+              : 'لا توجد بيانات كافية'
           }
-          tone="slate"
-          icon={<Banknote className="w-4 h-4" />}
+          tone="indigo"
+          icon={<Building2 className="w-4 h-4" />}
         />
       </div>
 
@@ -2430,10 +2486,11 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
                       <p>{record.date}</p>
                       <p className="text-[10px] font-bold text-slate-400 flex items-center gap-1">
                         {formatDayLabel(record.date)}
-                        {record.review_status === 'pending_review' && (
+                        {(record.review_status === 'pending_review' ||
+                          employee?.rule_application_mode === 'manual_review') && (
                           <span
                             className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500"
-                            title="بانتظار المراجعة"
+                            title="موظف بنظام المراجعة اليدوية"
                           />
                         )}
                       </p>
@@ -2451,7 +2508,7 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
                         {record.check_in || '—'}
                       </span>
                       {!record.check_in && (
-                        <p className="text-[9px] font-black text-rose-500 mt-0.5">لم تُسجل</p>
+                        <p className="text-[9px] font-black text-rose-500 mt-0.5">نسيان بصمة</p>
                       )}
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-bold text-slate-600">
@@ -2459,7 +2516,7 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
                         {record.check_out || '—'}
                       </span>
                       {!record.check_out && (
-                        <p className="text-[9px] font-black text-rose-500 mt-0.5">لم تُسجل</p>
+                        <p className="text-[9px] font-black text-rose-500 mt-0.5">نسيان بصمة</p>
                       )}
                     </td>
                     <td className="px-4 py-3 text-center">
@@ -2478,6 +2535,17 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
                       </span>
                       {record.is_excused && (
                         <p className="mt-1 text-[10px] font-bold text-slate-500">بعذر</p>
+                      )}
+                      {record.status === 'missing_punch' && (
+                        <button
+                          type="button"
+                          onClick={() => openManualTime(record)}
+                          className="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-700 text-[9px] font-black hover:bg-amber-100 transition cursor-pointer"
+                          title="نسيان بصمة — إدخال الوقت الناقص يدوياً"
+                        >
+                          <AlertTriangle className="w-3 h-3" />
+                          نسيان بصمة — إدخال الوقت
+                        </button>
                       )}
                     </td>
                     <td className="px-4 py-3 text-center whitespace-nowrap">
@@ -2507,14 +2575,14 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
                             onClick={() => void handleReview(record, 'approved')}
                             className="px-2 py-0.5 rounded-md bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition cursor-pointer"
                           >
-                            اعتماد
+                            قبول الخصم
                           </button>
                           <button
                             type="button"
                             onClick={() => void handleReview(record, 'rejected')}
-                            className="px-2 py-0.5 rounded-md bg-slate-200 text-slate-700 text-[10px] font-black hover:bg-slate-300 transition cursor-pointer"
+                            className="px-2 py-0.5 rounded-md bg-rose-600 text-white text-[10px] font-black hover:bg-rose-700 transition cursor-pointer"
                           >
-                            رفض
+                            رفض الخصم
                           </button>
                         </div>
                       )}
@@ -2533,13 +2601,14 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
                           type="button"
                           onClick={() => openExcuse(record)}
                           title={record.is_excused ? 'تعديل / إلغاء العذر' : 'تسجيل عذر'}
-                          className={`p-1.5 rounded-lg transition cursor-pointer ${
+                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black transition cursor-pointer ${
                             record.is_excused
-                              ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100'
-                              : 'text-slate-400 hover:bg-emerald-50 hover:text-emerald-600'
+                              ? 'text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100'
+                              : 'text-slate-600 bg-slate-50 border border-slate-200 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200'
                           }`}
                         >
-                          <FileText className="w-3.5 h-3.5" />
+                          <FileText className="w-3 h-3" />
+                          {record.is_excused ? 'إلغاء العذر' : 'تسجيل عذر'}
                         </button>
                         <button
                           type="button"
@@ -2955,6 +3024,14 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
 };
 
 
+interface LoanDueRow {
+  employee: HREmployee;
+  salary: number;
+  workdays: number;
+  previousLoans: number;
+  currentDue: number;
+}
+
 const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
   const { addFlashMessage, logAction } = useApp();
 
@@ -2970,12 +3047,21 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
   const [deleteTarget, setDeleteTarget] = useState<HRLoan | null>(null);
   const [deleteError, setDeleteError] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
+  const [attendanceRecords, setAttendanceRecords] = useState<HRAttendanceRecord[]>([]);
+  const [penalties, setPenalties] = useState<HRPenalty[]>([]);
+  const [dueSearch, setDueSearch] = useState('');
 
   const loadLoans = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await api.getHRLoans();
-      setLoans(Array.isArray(res) ? res : []);
+      const [loansRes, attendanceRes, penaltiesRes] = await Promise.all([
+        api.getHRLoans(),
+        api.getHRAttendanceRecords().catch(() => [] as HRAttendanceRecord[]),
+        api.getHRPenalties().catch(() => [] as HRPenalty[])
+      ]);
+      setLoans(Array.isArray(loansRes) ? loansRes : []);
+      setAttendanceRecords(Array.isArray(attendanceRes) ? attendanceRes : []);
+      setPenalties(Array.isArray(penaltiesRes) ? penaltiesRes : []);
     } catch (err: any) {
       addFlashMessage(err?.message || 'فشل تحميل السُلف من السيرفر', 'danger');
     } finally {
@@ -3001,15 +3087,219 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     [filteredLoans]
   );
 
+  // فترة الاستحقاق: من أول الشهر حتى أمس، مع اعتبار الأحد أجازة مدفوعة (30 يوماً حسابية)
+  const duePeriod = useMemo(() => {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    const dates: string[] = [];
+    for (let cursor = new Date(monthStart); cursor <= yesterday; cursor.setDate(cursor.getDate() + 1)) {
+      if (cursor.getDay() !== 0) {
+        dates.push(
+          `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(
+            cursor.getDate()
+          ).padStart(2, '0')}`
+        );
+      }
+    }
+    return {
+      monthKey: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
+      yesterdayLabel: `${String(yesterday.getDate()).padStart(2, '0')}/${String(
+        yesterday.getMonth() + 1
+      ).padStart(2, '0')}/${yesterday.getFullYear()}`,
+      workdays: Math.min(dates.length, 30),
+      dates
+    };
+  }, []);
+
+  // احتساب المستحق لكل موظف حتى أمس: المرتب ÷ 30 × أيام العمل − الغياب − الجزاءات − السُلف السابقة
+  const loanDueRows = useMemo<LoanDueRow[]>(() => {
+    const rangeSet = new Set(duePeriod.dates);
+    return employees.map((employee) => {
+      const salary = Number(employee.monthly_salary) || 0;
+      const dayRate = salary / 30;
+      const employeeRecords = attendanceRecords.filter(
+        (record) => record.employee_id === employee.id && rangeSet.has(record.date)
+      );
+      const absentDays = employeeRecords.filter(
+        (record) => record.status === 'absent' && !record.is_excused
+      ).length;
+      const employeePenalties = penalties.filter(
+        (penalty) => penalty.employee_id === employee.id && rangeSet.has(penalty.date)
+      );
+      const penaltyDays = employeePenalties
+        .filter((penalty) => penalty.penalty_type === 'days')
+        .reduce((sum, penalty) => sum + (Number(penalty.value) || 0), 0);
+      const penaltyHours = employeePenalties
+        .filter((penalty) => penalty.penalty_type === 'hours')
+        .reduce((sum, penalty) => sum + (Number(penalty.value) || 0), 0);
+      const previousLoans = loans
+        .filter((loan) => loan.employee_id === employee.id && rangeSet.has(loan.date))
+        .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
+      const earned = dayRate * duePeriod.workdays;
+      const deduction = dayRate * absentDays + dayRate * penaltyDays + (dayRate / 8) * penaltyHours;
+      const currentDue = Math.max(0, earned - deduction - previousLoans);
+      return {
+        employee,
+        salary,
+        workdays: duePeriod.workdays,
+        previousLoans,
+        currentDue
+      };
+    });
+  }, [employees, attendanceRecords, penalties, loans, duePeriod]);
+
+  const dueGroups = useMemo(() => {
+    const query = dueSearch.trim().toLowerCase();
+    const map = new Map<string, LoanDueRow[]>();
+    loanDueRows
+      .filter(
+        (row) =>
+          !query ||
+          `${row.employee.name} ${row.employee.employee_code}`.toLowerCase().includes(query)
+      )
+      .forEach((row) => {
+        const key = row.employee.department || 'other';
+        if (!map.has(key)) map.set(key, []);
+        map.get(key)!.push(row);
+      });
+    return Array.from(map.entries()).map(([key, rows]) => ({
+      key,
+      label: key === 'other' ? 'بدون قسم' : HR_DEPARTMENT_LABELS[key as HRDepartmentKey] || key,
+      rows
+    }));
+  }, [loanDueRows, dueSearch]);
+
+  const dueTotals = useMemo(
+    () =>
+      loanDueRows.reduce(
+        (acc, row) => {
+          acc.salary += row.salary;
+          acc.previousLoans += row.previousLoans;
+          acc.currentDue += row.currentDue;
+          return acc;
+        },
+        { salary: 0, previousLoans: 0, currentDue: 0 }
+      ),
+    [loanDueRows]
+  );
+
+  const selectedEmployeeDue = useMemo(
+    () => loanDueRows.find((row) => row.employee.id === form.employee_id)?.currentDue || 0,
+    [loanDueRows, form.employee_id]
+  );
+
+  const printEmptyLoanForm = () => {
+    const win = window.open('', '_blank', 'width=900,height=750');
+    if (!win) {
+      addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
+      return;
+    }
+    win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
+      <title>ورقة سلفة</title>
+      <style>
+        body{font-family:Tahoma,Arial,sans-serif;padding:28px;color:#0f172a}
+        h1{font-size:20px;text-align:center;margin:0 0 4px}
+        p.sub{text-align:center;color:#64748b;font-size:12px;margin:0 0 24px}
+        table{width:100%;border-collapse:collapse;font-size:13px}
+        td{border:1px solid #94a3b8;padding:14px 10px;height:38px}
+        td.label{background:#f1f5f9;font-weight:bold;width:32%}
+        .sign{margin-top:56px;display:flex;justify-content:space-between;font-size:13px}
+      </style></head><body>
+      <h1>نموذج طلب سلفة</h1>
+      <p class="sub">إدارة الموارد البشرية</p>
+      <table>
+        <tr><td class="label">اسم الموظف</td><td></td></tr>
+        <tr><td class="label">كود الموظف</td><td></td></tr>
+        <tr><td class="label">القسم</td><td></td></tr>
+        <tr><td class="label">الوظيفة</td><td></td></tr>
+        <tr><td class="label">قيمة السلفة</td><td></td></tr>
+        <tr><td class="label">تاريخ الطلب</td><td></td></tr>
+        <tr><td class="label">سبب السلفة</td><td></td></tr>
+        <tr><td class="label">طريقة السداد</td><td></td></tr>
+      </table>
+      <div class="sign"><span>توقيع الموظف: ....................</span><span>اعتماد الإدارة: ....................</span></div>
+      </body></html>`);
+    win.document.close();
+    win.focus();
+    win.print();
+  };
+
+  const printLoansReport = () => {
+    if (loanDueRows.length === 0) {
+      addFlashMessage('لا توجد بيانات لطباعتها', 'danger');
+      return;
+    }
+    const body = dueGroups
+      .map(
+        (group) => `<h2>${group.label} <span>(${group.rows.length} موظف)</span></h2>
+        <table>
+          <thead><tr>
+            <th>الكود</th><th>الموظف</th><th>المرتب</th><th>أيام العمل حتى أمس</th>
+            <th>السُلف السابقة</th><th>المستحق الحالي</th>
+          </tr></thead>
+          <tbody>
+            ${group.rows
+              .map(
+                (row) => `<tr>
+                  <td>${row.employee.employee_code || '-'}</td>
+                  <td>${row.employee.name}</td>
+                  <td>${formatMoney(row.salary)}</td>
+                  <td>${row.workdays}</td>
+                  <td>${formatMoney(row.previousLoans)}</td>
+                  <td>${formatMoney(row.currentDue)}</td>
+                </tr>`
+              )
+              .join('')}
+          </tbody>
+        </table>`
+      )
+      .join('');
+    const win = window.open('', '_blank', 'width=1100,height=820');
+    if (!win) {
+      addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
+      return;
+    }
+    win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
+      <title>تقرير السُلف والمستحقات</title>
+      <style>
+        body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#0f172a}
+        h1{font-size:19px;margin:0 0 4px}
+        p.sub{font-size:12px;color:#64748b;margin:0 0 18px}
+        h2{font-size:14px;margin:18px 0 6px}
+        h2 span{font-size:11px;color:#64748b;font-weight:normal}
+        table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
+        th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:center}
+        th{background:#f1f5f9}
+      </style></head><body>
+      <h1>تقرير السُلف والمستحقات</h1>
+      <p class="sub">شهر ${duePeriod.monthKey} — من أول الشهر حتى ${duePeriod.yesterdayLabel} (أيام العمل: ${duePeriod.workdays})</p>
+      ${body}
+      <p class="sub">إجمالي المرتبات: ${formatMoney(dueTotals.salary)} — إجمالي السُلف السابقة: ${formatMoney(
+        dueTotals.previousLoans
+      )} — إجمالي المستحق الحالي: ${formatMoney(dueTotals.currentDue)}</p>
+      </body></html>`);
+    win.document.close();
+    win.focus();
+    win.print();
+  };
+
   const updateForm = (patch: Partial<typeof form>) =>
     setForm((prev) => ({ ...prev, ...patch }));
 
-  const openCreate = () => {
+  const openCreateFor = (employeeId?: string) => {
     setEditing(null);
-    setForm({ employee_id: employees[0]?.id || '', date: todayISO(), amount: '', notes: '' });
+    setForm({
+      employee_id: employeeId || employees[0]?.id || '',
+      date: todayISO(),
+      amount: '',
+      notes: ''
+    });
     setFormError('');
     setIsFormOpen(true);
   };
+
+  const openCreate = () => openCreateFor();
 
   const openEdit = (loan: HRLoan) => {
     setEditing(loan);
@@ -3099,14 +3389,32 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
             كل سلفة تُخصم من مرتب نفس الشهر، ولا يمكن أن يتجاوز إجمالي السُلف قيمة المرتب.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={openCreate}
-          className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-purple-600 text-white text-[11px] font-black hover:bg-purple-700 transition cursor-pointer shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          إضافة سلفة
-        </button>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={printEmptyLoanForm}
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 text-[11px] font-black hover:bg-slate-50 transition cursor-pointer"
+          >
+            <Printer className="w-4 h-4" />
+            طباعة ورق سلفة فاضي
+          </button>
+          <button
+            type="button"
+            onClick={printLoansReport}
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 text-white text-[11px] font-black hover:bg-indigo-700 transition cursor-pointer"
+          >
+            <FileText className="w-4 h-4" />
+            تقرير السُلف
+          </button>
+          <button
+            type="button"
+            onClick={openCreate}
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-purple-600 text-white text-[11px] font-black hover:bg-purple-700 transition cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            صرف سلفة
+          </button>
+        </div>
       </div>
 
       <div className="p-4 bg-slate-50/60 border-b border-slate-100 grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -3137,8 +3445,120 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         </span>
         <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-[11px] font-black text-amber-700">
           <Banknote className="w-3.5 h-3.5" />
-          إجمالي السُلف: {formatMoney(totalAmount)}
+          إجمالي السُلف المسجلة: {formatMoney(totalAmount)}
         </span>
+        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 border border-rose-200 text-[11px] font-black text-rose-700">
+          <Banknote className="w-3.5 h-3.5" />
+          السُلف السابقة: {formatMoney(dueTotals.previousLoans)}
+        </span>
+        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] font-black text-emerald-700">
+          <Wallet className="w-3.5 h-3.5" />
+          المستحق الحالي: {formatMoney(dueTotals.currentDue)}
+        </span>
+      </div>
+
+      {/* استحقاق السُلف: من أول الشهر حتى أمس، مجمّع حسب القسم */}
+      <div className="px-4 py-3 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-2">
+        <div>
+          <h3 className="text-xs font-black text-slate-900">استحقاق السُلف حتى أمس</h3>
+          <p className="text-[10px] font-bold text-slate-500 mt-0.5">
+            من أول الشهر حتى {duePeriod.yesterdayLabel} — أيام العمل: {duePeriod.workdays} (الأحد
+            أجازة مدفوعة)
+          </p>
+        </div>
+        <input
+          value={dueSearch}
+          onChange={(event) => setDueSearch(event.target.value)}
+          placeholder="بحث بالاسم أو الكود"
+          className={`${inputClass} md:w-64`}
+        />
+      </div>
+
+      {isLoading ? (
+        <div className="p-10 text-center text-xs font-bold text-slate-400">جاري التحميل...</div>
+      ) : dueGroups.length === 0 ? (
+        <div className="p-8 text-center">
+          <Users className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+          <p className="text-xs font-black text-slate-700">لا توجد بيانات استحقاق</p>
+          <p className="text-[11px] font-bold text-slate-500 mt-1">
+            {dueSearch.trim()
+              ? 'لا توجد نتائج مطابقة لبحثك.'
+              : 'أضف موظفين لعرض المستحقات.'}
+          </p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-slate-50 text-slate-500">
+              <tr>
+                <th className="text-right px-4 py-2.5 font-black whitespace-nowrap">الكود</th>
+                <th className="text-right px-4 py-2.5 font-black whitespace-nowrap">الموظف</th>
+                <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">المرتب</th>
+                <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">
+                  أيام العمل حتى أمس
+                </th>
+                <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">
+                  السُلف السابقة
+                </th>
+                <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">
+                  المستحق الحالي
+                </th>
+                <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">إجراءات</th>
+              </tr>
+            </thead>
+            {dueGroups.map((group) => (
+              <tbody key={group.key} className="divide-y divide-slate-100">
+                <tr className="bg-slate-50/80">
+                  <td colSpan={7} className="px-4 py-2 font-black text-slate-700">
+                    {group.label}{' '}
+                    <span className="text-[10px] font-bold text-slate-400">
+                      ({group.rows.length} موظف)
+                    </span>
+                  </td>
+                </tr>
+                {group.rows.map((row) => (
+                  <tr key={row.employee.id} className="hover:bg-slate-50/60">
+                    <td className="px-4 py-3 font-mono font-bold text-slate-600 whitespace-nowrap">
+                      {row.employee.employee_code || '-'}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <p className="font-black text-slate-900">{row.employee.name}</p>
+                      <p className="font-bold text-[10px] text-slate-400">
+                        {row.employee.job_title || ''}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3 text-center font-mono font-bold text-slate-700 whitespace-nowrap">
+                      {formatMoney(row.salary)}
+                    </td>
+                    <td className="px-4 py-3 text-center font-mono font-bold text-slate-600">
+                      {row.workdays}
+                    </td>
+                    <td className="px-4 py-3 text-center font-mono font-bold text-amber-600 whitespace-nowrap">
+                      {formatMoney(row.previousLoans)}
+                    </td>
+                    <td className="px-4 py-3 text-center font-mono font-black text-emerald-700 whitespace-nowrap">
+                      {formatMoney(row.currentDue)}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <button
+                        type="button"
+                        onClick={() => openCreateFor(row.employee.id)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-purple-600 text-white text-[10px] font-black hover:bg-purple-700 transition cursor-pointer"
+                      >
+                        <Plus className="w-3 h-3" />
+                        صرف سلفة
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            ))}
+          </table>
+        </div>
+      )}
+
+      <div className="px-4 py-3 border-b border-slate-100">
+        <h3 className="text-xs font-black text-slate-900">سجل السُلف المسجلة</h3>
       </div>
 
       {isLoading ? (
@@ -3218,7 +3638,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
 
       {isFormOpen && (
         <Modal
-          title={editing ? 'تعديل سلفة' : 'إضافة سلفة جديدة'}
+          title={editing ? 'تعديل سلفة' : 'صرف سلفة جديدة'}
           subtitle="تُخصم السلفة بالكامل من مرتب نفس الشهر في مسير المرتبات"
           onClose={closeForm}
           maxWidthClass="max-w-xl"
@@ -3262,6 +3682,9 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                 placeholder="0.00"
                 className={`${inputClass} font-mono`}
               />
+              <p className="text-[10px] font-bold text-slate-500 mt-1">
+                المستحق الحالي للموظف حتى أمس: {formatMoney(selectedEmployeeDue)}
+              </p>
             </div>
 
             <div>
@@ -3359,6 +3782,8 @@ const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) =>
   const [isLoading, setIsLoading] = useState(true);
   const [month, setMonth] = useState(currentMonth());
   const [employeeFilter, setEmployeeFilter] = useState('');
+  const [search, setSearch] = useState('');
+  const [historyEmployeeId, setHistoryEmployeeId] = useState<string | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editing, setEditing] = useState<HRPenalty | null>(null);
   const [form, setForm] = useState({
@@ -3392,12 +3817,43 @@ const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) =>
   }, [loadPenalties]);
 
   const filteredPenalties = useMemo(() => {
+    const query = search.trim().toLowerCase();
     return penalties.filter((penalty) => {
       if (month && !(penalty.date || '').startsWith(month)) return false;
       if (employeeFilter && penalty.employee_id !== employeeFilter) return false;
+      if (query) {
+        const employee = employees.find((item) => item.id === penalty.employee_id);
+        const haystack = `${penalty.employee_name || employee?.name || ''} ${
+          penalty.employee_code || employee?.employee_code || ''
+        } ${penalty.reason || ''}`.toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
       return true;
     });
-  }, [penalties, month, employeeFilter]);
+  }, [penalties, month, employeeFilter, search, employees]);
+
+  // سجل جزاءات الموظف مجمّعاً حسب الشهور
+  const historyEmployee = useMemo(
+    () => employees.find((item) => item.id === historyEmployeeId) || null,
+    [employees, historyEmployeeId]
+  );
+
+  const historyPenalties = useMemo(() => {
+    if (!historyEmployeeId) return [];
+    return penalties
+      .filter((penalty) => penalty.employee_id === historyEmployeeId)
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  }, [penalties, historyEmployeeId]);
+
+  const historyByMonth = useMemo(() => {
+    const map = new Map<string, HRPenalty[]>();
+    historyPenalties.forEach((penalty) => {
+      const key = (penalty.date || '').slice(0, 7) || 'غير محدد';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(penalty);
+    });
+    return Array.from(map.entries());
+  }, [historyPenalties]);
 
   const summary = useMemo(() => {
     let days = 0;
@@ -3459,6 +3915,15 @@ const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) =>
       setFormError('قيمة الجزاء يجب أن تكون أكبر من صفر');
       return;
     }
+    const maxAllowed = form.penalty_type === 'days' ? 3 : 8;
+    if (value > maxAllowed) {
+      setFormError(
+        form.penalty_type === 'days'
+          ? 'الحد الأقصى لمقدار الجزاء ٣ أيام'
+          : 'الحد الأقصى لمقدار الجزاء ٨ ساعات'
+      );
+      return;
+    }
 
     setIsSaving(true);
     setFormError('');
@@ -3506,6 +3971,23 @@ const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) =>
     }
   };
 
+  // خيارات ثابتة لمقدار الجزاء (الحد الأقصى ٣ أيام أو ٨ ساعات)
+  const penaltyPresets =
+    form.penalty_type === 'days'
+      ? [
+          { value: '0.25', label: 'ربع يوم' },
+          { value: '0.5', label: 'نصف يوم' },
+          { value: '1', label: 'يوم' },
+          { value: '2', label: 'يومان' },
+          { value: '3', label: '٣ أيام' }
+        ]
+      : [
+          { value: '1', label: 'ساعة' },
+          { value: '2', label: 'ساعتان' },
+          { value: '3', label: '٣ ساعات' },
+          { value: '4', label: '٤ ساعات' }
+        ];
+
   return (
     <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
       <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
@@ -3521,11 +4003,17 @@ const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) =>
           className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-purple-600 text-white text-[11px] font-black hover:bg-purple-700 transition cursor-pointer shrink-0"
         >
           <Plus className="w-4 h-4" />
-          إضافة جزاء
+          تطبيق جزاء
         </button>
       </div>
 
-      <div className="p-4 bg-slate-50/60 border-b border-slate-100 grid grid-cols-1 md:grid-cols-2 gap-2">
+      <div className="p-4 bg-slate-50/60 border-b border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-2">
+        <input
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="بحث بالاسم أو الكود أو السبب"
+          className={inputClass}
+        />
         <input
           type="month"
           value={month}
@@ -3621,6 +4109,14 @@ const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) =>
                       <div className="flex items-center justify-center gap-1">
                         <button
                           type="button"
+                          onClick={() => setHistoryEmployeeId(penalty.employee_id)}
+                          title="سجل الجزاءات"
+                          className="p-1.5 rounded-lg text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 transition cursor-pointer"
+                        >
+                          <History className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => openEdit(penalty)}
                           title="تعديل"
                           className="p-1.5 rounded-lg text-slate-400 hover:bg-purple-50 hover:text-purple-600 transition cursor-pointer"
@@ -3704,12 +4200,29 @@ const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) =>
                 <input
                   type="number"
                   min="0"
+                  max={form.penalty_type === 'days' ? 3 : 8}
                   step="0.25"
                   value={form.value}
                   onChange={(event) => updateForm({ value: event.target.value })}
                   placeholder="0"
                   className={`${inputClass} font-mono`}
                 />
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {penaltyPresets.map((preset) => (
+                    <button
+                      key={preset.value}
+                      type="button"
+                      onClick={() => updateForm({ value: preset.value })}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-black border transition cursor-pointer ${
+                        form.value === preset.value
+                          ? 'bg-purple-600 text-white border-purple-600'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -3806,6 +4319,101 @@ const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) =>
           </div>
         </Modal>
       )}
+
+      {historyEmployeeId && (
+        <Modal
+          title={`سجل جزاءات ${historyEmployee?.name || ''}`}
+          subtitle="جميع الجزاءات المسجلة للموظف مجمّعة حسب الشهور"
+          onClose={() => setHistoryEmployeeId(null)}
+          maxWidthClass="max-w-3xl"
+        >
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-[11px] font-black text-slate-700">
+                <Scale className="w-3.5 h-3.5 text-purple-600" />
+                إجمالي الجزاءات: {historyPenalties.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  const employeeId = historyEmployeeId;
+                  setHistoryEmployeeId(null);
+                  setEditing(null);
+                  setForm({
+                    employee_id: employeeId,
+                    date: todayISO(),
+                    penalty_type: 'days',
+                    value: '',
+                    reason: ''
+                  });
+                  setFormError('');
+                  setIsFormOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-600 text-white text-[11px] font-black hover:bg-purple-700 transition cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                تطبيق جزاء
+              </button>
+            </div>
+
+            {historyByMonth.length === 0 ? (
+              <div className="p-8 text-center">
+                <Scale className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+                <p className="text-xs font-black text-slate-700">لا توجد جزاءات مسجلة لهذا الموظف</p>
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+                {historyByMonth.map(([monthKey, items]) => {
+                  const daysTotal = items
+                    .filter((item) => item.penalty_type === 'days')
+                    .reduce((sum, item) => sum + (Number(item.value) || 0), 0);
+                  const hoursTotal = items
+                    .filter((item) => item.penalty_type === 'hours')
+                    .reduce((sum, item) => sum + (Number(item.value) || 0), 0);
+                  return (
+                    <div key={monthKey} className="rounded-2xl border border-slate-200 overflow-hidden">
+                      <div className="px-3 py-2 bg-slate-50 flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-[11px] font-black text-slate-800 font-mono">{monthKey}</p>
+                        <p className="text-[10px] font-black text-slate-500">
+                          {items.length} جزاء — {daysTotal} يوم — {hoursTotal} ساعة
+                        </p>
+                      </div>
+                      <table className="w-full text-xs">
+                        <thead className="bg-white text-slate-400">
+                          <tr>
+                            <th className="text-right px-3 py-2 font-black">التاريخ</th>
+                            <th className="text-center px-3 py-2 font-black">النوع</th>
+                            <th className="text-center px-3 py-2 font-black">القيمة</th>
+                            <th className="text-right px-3 py-2 font-black">السبب</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {items.map((penalty) => (
+                            <tr key={penalty.id}>
+                              <td className="px-3 py-2 font-mono font-bold text-slate-600">
+                                {penalty.date}
+                              </td>
+                              <td className="px-3 py-2 text-center font-bold text-slate-600">
+                                {PENALTY_TYPE_LABELS[penalty.penalty_type] || penalty.penalty_type}
+                              </td>
+                              <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
+                                {Number(penalty.value) || 0}
+                              </td>
+                              <td className="px-3 py-2 font-bold text-slate-600">
+                                {penalty.reason || '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };
@@ -3833,6 +4441,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
   const [penalties, setPenalties] = useState<HRPenalty[]>([]);
   const [loans, setLoans] = useState<HRLoan[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [workerSheet, setWorkerSheet] = useState<PayrollRow | null>(null);
 
   const loadPayrollData = useCallback(async () => {
     setIsLoading(true);
@@ -3931,8 +4540,132 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     [rows]
   );
 
+  const workerDepartment = (row: PayrollRow) =>
+    row.employee.department_label ||
+    (row.employee.department ? HR_DEPARTMENT_LABELS[row.employee.department] : '—');
+
+  const buildWorkerSheetHtml = (row: PayrollRow) => `
+    <div class="sheet">
+      <h1>ورقة مرتب عامل</h1>
+      <p class="sub">شهر ${month} — إدارة الموارد البشرية</p>
+      <table>
+        <tr><td class="label">اسم الموظف</td><td>${row.employee.name}</td><td class="label">كود الموظف</td><td>${row.employee.employee_code || '-'}</td></tr>
+        <tr><td class="label">الوظيفة</td><td>${row.employee.job_title || '—'}</td><td class="label">القسم</td><td>${workerDepartment(row)}</td></tr>
+        <tr><td class="label">المرتب الشهري</td><td colspan="3">${formatMoney(row.baseSalary)}</td></tr>
+      </table>
+      <table>
+        <thead><tr><th>البند</th><th>التفاصيل</th><th>القيمة</th></tr></thead>
+        <tbody>
+          <tr><td>خصم الحضور</td><td>${row.attendanceDays} يوم / ${row.attendanceHours} ساعة</td><td>${formatMoney(row.attendanceDeduction)}</td></tr>
+          <tr><td>الجزاءات</td><td>${row.penaltyDays} يوم / ${row.penaltyHours} ساعة</td><td>${formatMoney(row.penaltyDeduction)}</td></tr>
+          <tr><td>السُلف</td><td>—</td><td>${formatMoney(row.loanDeduction)}</td></tr>
+          <tr><td colspan="2">إجمالي الخصومات</td><td>${formatMoney(row.totalDeduction)}</td></tr>
+        </tbody>
+      </table>
+      <div class="net">صافي المستحق: ${formatMoney(row.netPay)}</div>
+      <div class="sign"><span>توقيع الموظف: ....................</span><span>توقيع الإدارة: ....................</span></div>
+    </div>
+  `;
+
+  const workerSheetStyles = `
+    body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#0f172a}
+    .sheet{max-width:720px;margin:0 auto}
+    h1{font-size:20px;text-align:center;margin:0 0 4px}
+    p.sub{text-align:center;color:#64748b;font-size:12px;margin:0 0 18px}
+    table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:14px}
+    th,td{border:1px solid #cbd5e1;padding:8px;text-align:center}
+    th{background:#f1f5f9}
+    td.label{background:#f1f5f9;font-weight:bold;width:18%}
+    .net{margin-top:12px;padding:14px;border:2px solid #059669;border-radius:10px;text-align:center;font-size:18px;font-weight:bold;color:#047857}
+    .sign{margin-top:40px;display:flex;justify-content:space-between;font-size:13px}
+  `;
+
+  const printWorkerSheet = (row: PayrollRow) => {
+    const win = window.open('', '_blank', 'width=900,height=800');
+    if (!win) {
+      addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
+      return;
+    }
+    win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
+      <title>ورقة مرتب ${row.employee.name}</title>
+      <style>${workerSheetStyles}</style></head><body>${buildWorkerSheetHtml(row)}</body></html>`);
+    win.document.close();
+    win.focus();
+    win.print();
+  };
+
+  const printAllEnvelopes = () => {
+    if (rows.length === 0) {
+      addFlashMessage('لا يوجد موظفون لطباعة أظرفهم', 'danger');
+      return;
+    }
+    const cards = rows
+      .map(
+        (row) => `
+        <div class="env">
+          <div class="env-head">كارت أظرف المرتبات — شهر ${month}</div>
+          <div class="env-name">${row.employee.name}</div>
+          <div class="env-meta">${row.employee.employee_code || '-'} — ${
+          row.employee.job_title || '—'
+        }</div>
+          <div class="env-meta">${workerDepartment(row)}</div>
+          <table>
+            <tr><td>المرتب</td><td>${formatMoney(row.baseSalary)}</td></tr>
+            <tr><td>الخصومات</td><td>${formatMoney(row.totalDeduction)}</td></tr>
+          </table>
+          <div class="env-net">الصافي: ${formatMoney(row.netPay)}</div>
+        </div>`
+      )
+      .join('');
+    const win = window.open('', '_blank', 'width=1000,height=800');
+    if (!win) {
+      addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
+      return;
+    }
+    win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
+      <title>كروت أظرف المرتبات</title>
+      <style>
+        body{font-family:Tahoma,Arial,sans-serif;padding:16px;color:#0f172a}
+        .env{border:2px dashed #94a3b8;border-radius:12px;padding:14px;margin:0 10px 14px 0;width:320px;height:180px;display:inline-block;vertical-align:top;page-break-inside:avoid}
+        .env-head{font-size:10px;color:#64748b;margin-bottom:4px}
+        .env-name{font-size:17px;font-weight:bold;margin-bottom:2px}
+        .env-meta{font-size:11px;color:#475569}
+        .env table{width:100%;border-collapse:collapse;font-size:11px;margin:6px 0}
+        .env td{border-bottom:1px solid #e2e8f0;padding:2px 0}
+        .env td:last-child{text-align:left;font-family:monospace}
+        .env-net{margin-top:4px;padding:5px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;text-align:center;font-weight:bold;color:#047857;font-size:12px}
+        @media print{.env{page-break-after:always}}
+      </style></head><body>${cards}</body></html>`);
+    win.document.close();
+    win.focus();
+    win.print();
+  };
+
   return (
     <div className="space-y-4">
+      <div className="bg-gradient-to-l from-emerald-600 to-teal-600 rounded-3xl p-5 text-white shadow-sm">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <p className="text-[11px] font-bold text-emerald-50">
+              إجمالي المرتبات المطلوب دفعها حالياً
+            </p>
+            <p className="text-3xl font-black mt-1 font-mono">{formatMoney(totals.netPay)}</p>
+            <p className="text-[11px] font-bold text-emerald-50 mt-1">
+              عدد العمال: {rows.length} — إجمالي المرتبات: {formatMoney(totals.baseSalary)} — إجمالي
+              الخصومات: {formatMoney(totals.totalDeduction)}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={printAllEnvelopes}
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-white text-emerald-700 text-[11px] font-black hover:bg-emerald-50 transition cursor-pointer shrink-0"
+          >
+            <Printer className="w-4 h-4" />
+            طباعة كروت أظرف المرتبات للجميع PDF
+          </button>
+        </div>
+      </div>
+
       <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
@@ -4006,6 +4739,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                     إجمالي الخصم
                   </th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">الصافي</th>
+                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">إجراءات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -4058,6 +4792,16 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                         {formatMoney(row.netPay)}
                       </span>
                     </td>
+                    <td className="px-4 py-3 text-center">
+                      <button
+                        type="button"
+                        onClick={() => setWorkerSheet(row)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white text-[10px] font-black hover:bg-indigo-700 transition cursor-pointer whitespace-nowrap"
+                      >
+                        <FileText className="w-3 h-3" />
+                        ورقة العامل
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -4084,6 +4828,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                   <td className="px-4 py-3 text-center font-mono font-black text-emerald-700">
                     {formatMoney(totals.netPay)}
                   </td>
+                  <td className="px-4 py-3" />
                 </tr>
               </tfoot>
             </table>
@@ -4098,6 +4843,108 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
           وراتب الساعة = راتب اليوم ÷ 8.
         </span>
       </div>
+
+      {workerSheet && (
+        <Modal
+          title="ورقة مرتب عامل"
+          subtitle={`${workerSheet.employee.name} — شهر ${month}`}
+          onClose={() => setWorkerSheet(null)}
+          maxWidthClass="max-w-2xl"
+        >
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: 'الموظف', value: workerSheet.employee.name },
+                { label: 'الكود', value: workerSheet.employee.employee_code || '-' },
+                { label: 'الوظيفة', value: workerSheet.employee.job_title || '—' },
+                { label: 'القسم', value: workerDepartment(workerSheet) },
+                { label: 'المرتب الشهري', value: formatMoney(workerSheet.baseSalary) },
+                { label: 'الشهر', value: month }
+              ].map((item) => (
+                <div
+                  key={item.label}
+                  className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200"
+                >
+                  <p className="text-[10px] font-black text-slate-500">{item.label}</p>
+                  <p className="text-[11px] font-black text-slate-800">{item.value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 overflow-hidden">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-slate-500">
+                  <tr>
+                    <th className="text-right px-3 py-2 font-black">البند</th>
+                    <th className="text-center px-3 py-2 font-black">التفاصيل</th>
+                    <th className="text-center px-3 py-2 font-black">القيمة</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  <tr>
+                    <td className="px-3 py-2 font-bold text-slate-700">خصم الحضور</td>
+                    <td className="px-3 py-2 text-center font-bold text-slate-600">
+                      {workerSheet.attendanceDays} يوم / {workerSheet.attendanceHours} ساعة
+                    </td>
+                    <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
+                      {formatMoney(workerSheet.attendanceDeduction)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="px-3 py-2 font-bold text-slate-700">الجزاءات</td>
+                    <td className="px-3 py-2 text-center font-bold text-slate-600">
+                      {workerSheet.penaltyDays} يوم / {workerSheet.penaltyHours} ساعة
+                    </td>
+                    <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
+                      {formatMoney(workerSheet.penaltyDeduction)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="px-3 py-2 font-bold text-slate-700">السُلف</td>
+                    <td className="px-3 py-2 text-center font-bold text-slate-600">—</td>
+                    <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
+                      {formatMoney(workerSheet.loanDeduction)}
+                    </td>
+                  </tr>
+                  <tr className="bg-slate-50/70">
+                    <td className="px-3 py-2 font-black text-slate-800" colSpan={2}>
+                      إجمالي الخصومات
+                    </td>
+                    <td className="px-3 py-2 text-center font-mono font-black text-rose-700">
+                      {formatMoney(workerSheet.totalDeduction)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="rounded-2xl border-2 border-emerald-500 bg-emerald-50 px-4 py-3 text-center">
+              <p className="text-[11px] font-black text-emerald-700">صافي المستحق</p>
+              <p className="text-2xl font-black font-mono text-emerald-700">
+                {formatMoney(workerSheet.netPay)}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setWorkerSheet(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-[11px] font-black hover:bg-slate-200 transition cursor-pointer"
+              >
+                إغلاق
+              </button>
+              <button
+                type="button"
+                onClick={() => printWorkerSheet(workerSheet)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 text-white text-[11px] font-black hover:bg-indigo-700 transition cursor-pointer"
+              >
+                <Printer className="w-4 h-4" />
+                طباعة ورقة العامل
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };
