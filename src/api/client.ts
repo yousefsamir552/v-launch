@@ -54,6 +54,58 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   return await res.json();
 }
 
+function buildAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const token = localStorage.getItem('factory_erp_auth_token') || '';
+  const currentUserRaw = localStorage.getItem('factory_erp_current_user');
+  let parsedUser: any = null;
+  try {
+    parsedUser = currentUserRaw ? JSON.parse(currentUserRaw) : null;
+  } catch {
+    parsedUser = null;
+  }
+  return {
+    Accept: 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}`, 'X-Auth-Token': token } : {}),
+    ...(parsedUser?.username ? { 'X-User-Username': parsedUser.username } : {}),
+    ...extra
+  };
+}
+
+async function readErrorMessage(res: Response): Promise<string> {
+  const errData = await res.json().catch(() => ({} as any));
+  return (
+    errData?.detail ||
+    errData?.error ||
+    errData?.message ||
+    `خطأ في الاتصال بالسيرفر (${res.status})`
+  );
+}
+
+/** تنزيل ملف (Blob) من السيرفر بنفس ترويسات المصادقة. */
+async function requestBlob(endpoint: string): Promise<Blob> {
+  const res = await fetch(`${BASE_URL}${endpoint}`, { headers: buildAuthHeaders() });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  return await res.blob();
+}
+
+/** رفع ملف بصيغة multipart/form-data (بدون تعيين Content-Type يدوياً). */
+async function requestForm<T>(endpoint: string, form: FormData): Promise<T> {
+  const res = await fetch(`${BASE_URL}${endpoint}`, {
+    method: 'POST',
+    headers: buildAuthHeaders(),
+    body: form
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  if (res.status === 204) {
+    return {} as T;
+  }
+  return (await res.json()) as T;
+}
+
 export const api = {
   // المصادقة والجلسات (Authentication)
   login: (username: string, password: string) =>
@@ -299,5 +351,60 @@ export const api = {
     request<any>(`/internal-messages/${encodeURIComponent(id)}/mark_read/`, { method: 'POST' }),
   getAuditLogs: () => request<any[]>('/audit-logs/'),
   createAuditLog: (data: any) =>
-    request<any>('/audit-logs/', { method: 'POST', body: JSON.stringify(data) })
+    request<any>('/audit-logs/', { method: 'POST', body: JSON.stringify(data) }),
+
+  // الموارد البشرية (HR)
+  getHRJobTitles: () => request<any[]>('/hr-job-titles/'),
+  createHRJobTitle: (data: any) =>
+    request<any>('/hr-job-titles/', { method: 'POST', body: JSON.stringify(data) }),
+  updateHRJobTitle: (id: string, data: any) =>
+    request<any>(`/hr-job-titles/${encodeURIComponent(id)}/`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteHRJobTitle: (id: string) =>
+    request<any>(`/hr-job-titles/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  getHREmployees: () => request<any[]>('/hr-employees/'),
+  createHREmployee: (data: any) =>
+    request<any>('/hr-employees/', { method: 'POST', body: JSON.stringify(data) }),
+  updateHREmployee: (id: string, data: any) =>
+    request<any>(`/hr-employees/${encodeURIComponent(id)}/`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteHREmployee: (id: string) =>
+    request<any>(`/hr-employees/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  getHRAttendanceSettings: () => request<any>('/hr-attendance-settings/'),
+  updateHRAttendanceSettings: (data: any) =>
+    request<any>('/hr-attendance-settings/update_settings/', { method: 'POST', body: JSON.stringify(data) }),
+  getHRAttendanceRecords: () => request<any[]>('/hr-attendance-records/'),
+  createHRAttendanceRecord: (data: any) =>
+    request<any>('/hr-attendance-records/', { method: 'POST', body: JSON.stringify(data) }),
+  updateHRAttendanceRecord: (id: string, data: any) =>
+    request<any>(`/hr-attendance-records/${encodeURIComponent(id)}/`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    }),
+  deleteHRAttendanceRecord: (id: string) =>
+    request<any>(`/hr-attendance-records/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  getHRAttendanceStats: (month?: string) =>
+    request<any>(`/hr-attendance-records/stats/${month ? `?month=${encodeURIComponent(month)}` : ''}`),
+  downloadHRAttendanceTemplate: (month?: string) =>
+    requestBlob(`/hr-attendance-records/template/${month ? `?month=${encodeURIComponent(month)}` : ''}`),
+  uploadHRAttendanceSheet: (file: File, month?: string) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (month) {
+      form.append('month', month);
+    }
+    return requestForm<any>('/hr-attendance-records/upload-sheet/', form);
+  },
+  getHRPenalties: () => request<any[]>('/hr-penalties/'),
+  createHRPenalty: (data: any) =>
+    request<any>('/hr-penalties/', { method: 'POST', body: JSON.stringify(data) }),
+  updateHRPenalty: (id: string, data: any) =>
+    request<any>(`/hr-penalties/${encodeURIComponent(id)}/`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteHRPenalty: (id: string) =>
+    request<any>(`/hr-penalties/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  getHRLoans: () => request<any[]>('/hr-loans/'),
+  createHRLoan: (data: any) =>
+    request<any>('/hr-loans/', { method: 'POST', body: JSON.stringify(data) }),
+  updateHRLoan: (id: string, data: any) =>
+    request<any>(`/hr-loans/${encodeURIComponent(id)}/`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteHRLoan: (id: string) =>
+    request<any>(`/hr-loans/${encodeURIComponent(id)}/`, { method: 'DELETE' })
 };

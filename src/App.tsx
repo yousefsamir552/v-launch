@@ -15,6 +15,7 @@ import { AssemblyPackagingView } from './components/AssemblyPackagingView';
 import { SettingsView } from './components/SettingsView';
 import { AuditLogsView } from './components/AuditLogsView';
 import { ReportsView } from './components/ReportsView';
+import { HRView } from './components/HRView';
 import { LoginModal } from './components/LoginModal';
 
 export const App: React.FC = () => {
@@ -77,6 +78,14 @@ export const App: React.FC = () => {
     if (tab === 'reports') return hasPermission('reports');
     if (tab === 'settings') return canAccessSettings();
     if (tab === 'logs') return canViewAuditLogs();
+    if (
+      tab === 'hr_employees' ||
+      tab === 'hr_attendance' ||
+      tab === 'hr_loans_penalties' ||
+      tab === 'hr_payroll'
+    ) {
+      return true;
+    }
     return true;
   };
 
@@ -191,6 +200,12 @@ export const App: React.FC = () => {
 
         {/* Reports & Analytics Section */}
         {currentTab === 'reports' && <ReportsView />}
+
+        {/* Human Resources (HR) - الموارد البشرية */}
+        {currentTab === 'hr_employees' && <HRView initialSection="staff" />}
+        {currentTab === 'hr_attendance' && <HRView initialSection="attendance" />}
+        {currentTab === 'hr_loans_penalties' && <HRView initialSection="loans_penalties" />}
+        {currentTab === 'hr_payroll' && <HRView initialSection="payroll" />}
 
         {/* Settings & Audit Logs */}
         {currentTab === 'settings' && (

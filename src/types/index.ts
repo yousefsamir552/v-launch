@@ -669,3 +669,226 @@ export interface AccessoryTransaction {
   notes?: string;
   timestamp: string;
 }
+
+// ==========================================================================
+// HR (الموارد البشرية)
+// ==========================================================================
+
+export type HRDepartmentKey =
+  | 'design'
+  | 'cutting'
+  | 'fabric_warehouse'
+  | 'accessories_warehouse'
+  | 'sorting_control'
+  | 'sewing'
+  | 'finishing'
+  | 'ironing'
+  | 'packaging'
+  | 'dest'
+  | 'finished_goods';
+
+export interface HRDepartmentOption {
+  key: HRDepartmentKey;
+  label: string;
+}
+
+export const HR_DEPARTMENT_LABELS: Record<HRDepartmentKey, string> = {
+  design: 'التصميم',
+  cutting: 'القص',
+  fabric_warehouse: 'مخزن القماش',
+  accessories_warehouse: 'مخزن الإكسسوارات',
+  sorting_control: 'الفرز والكنترول',
+  sewing: 'المكن والخياطة',
+  finishing: 'التشطيب',
+  ironing: 'المكواة',
+  packaging: 'التعبئة والتغليف',
+  dest: 'الدَست',
+  finished_goods: 'مخزن الإنتاج التام'
+};
+
+export const HR_DEPARTMENTS: HRDepartmentOption[] = (
+  Object.keys(HR_DEPARTMENT_LABELS) as HRDepartmentKey[]
+).map((key) => ({ key, label: HR_DEPARTMENT_LABELS[key] }));
+
+export type HRWeekDayKey =
+  | 'Saturday'
+  | 'Sunday'
+  | 'Monday'
+  | 'Tuesday'
+  | 'Wednesday'
+  | 'Thursday'
+  | 'Friday';
+
+export interface HRWeekDayOption {
+  key: HRWeekDayKey;
+  label: string;
+}
+
+export const HR_WEEK_DAYS: HRWeekDayOption[] = [
+  { key: 'Saturday', label: 'السبت' },
+  { key: 'Sunday', label: 'الأحد' },
+  { key: 'Monday', label: 'الإثنين' },
+  { key: 'Tuesday', label: 'الثلاثاء' },
+  { key: 'Wednesday', label: 'الأربعاء' },
+  { key: 'Thursday', label: 'الخميس' },
+  { key: 'Friday', label: 'الجمعة' }
+];
+
+/** طريقة تطبيق قواعد التأخير/الخصم على الموظف. */
+export type HRRuleApplicationMode = 'auto' | 'manual_review';
+
+/** نوع المخالفة التي تعالجها القاعدة. */
+export type HRRuleViolationType = 'late_arrival' | 'early_departure' | 'absence';
+
+/** وحدة الخصم المترتب على المخالفة. */
+export type HRRuleDeductionType = 'hours' | 'days';
+
+/** طريقة تطبيق القاعدة: تلقائي أو مراجعة يدوية أولاً في الحضور والانصراف. */
+export type HRRuleApplyMode = 'auto' | 'manual_review';
+
+export interface HRAttendanceRule {
+  id: string;
+  violation_type: HRRuleViolationType;
+  label?: string;
+  from_minutes?: number;
+  to_minutes?: number;
+  until_time?: string;
+  deduction_type: HRRuleDeductionType;
+  deduction_value: number;
+  apply_mode: HRRuleApplyMode;
+}
+
+export interface HRJobTitle {
+  id: string;
+  title: string;
+  department: HRDepartmentKey;
+  department_label?: string;
+  employees_count?: number;
+  created_at?: string;
+}
+
+export interface HREmployee {
+  id: string;
+  employee_code: string;
+  name: string;
+  job_id: string;
+  job_title?: string;
+  department?: HRDepartmentKey;
+  department_label?: string;
+  monthly_salary: number;
+  rule_application_mode: HRRuleApplicationMode;
+  rule_application_mode_label?: string;
+  national_id?: string;
+  birth_date?: string | null;
+  phone?: string;
+  photo?: string;
+  notes?: string;
+  is_active?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface HRAttendanceSettings {
+  id?: string;
+  official_start_time: string;
+  official_end_time: string;
+  weekly_off_day: HRWeekDayKey;
+  weekly_off_day_label?: string;
+  /** عدد أيام الشهر الحسابية ثابت دائماً = 30 يوماً. */
+  month_calculation_days: number;
+  rules_json: HRAttendanceRule[];
+  updated_at?: string;
+}
+
+export type HRAttendanceStatus = 'present' | 'absent' | 'leave' | 'missing_punch';
+
+export type HRReviewStatus = 'auto_applied' | 'pending_review' | 'approved' | 'rejected';
+
+export interface HRAttendanceRecord {
+  id: string;
+  employee_id: string;
+  employee_code?: string;
+  employee_name?: string;
+  department?: HRDepartmentKey;
+  date: string;
+  check_in?: string;
+  check_out?: string;
+  status: HRAttendanceStatus;
+  status_label?: string;
+  is_excused: boolean;
+  excuse_note?: string;
+  calculated_deduction_days: number;
+  calculated_deduction_hours: number;
+  review_status: HRReviewStatus;
+  review_status_label?: string;
+  updated_at?: string;
+}
+
+export type HRPenaltyType = 'days' | 'hours';
+
+/** إحصاءات أعلى شاشة سجل الحضور والانصراف (تُحسب على السيرفر). */
+export interface HRAttendanceStats {
+  month: string;
+  month_start: string;
+  month_end: string;
+  workdays: number;
+  total_employees: number;
+  total_records: number;
+  present: number;
+  absent: number;
+  leave: number;
+  missing_punch: number;
+  excused: number;
+  pending_review: number;
+  late_records: number;
+  compliance_percent: number;
+  average_daily_absence: number;
+  deduction_days: number;
+  deduction_hours: number;
+  worst_department: {
+    department: string;
+    label: string;
+    total: number;
+    absent: number;
+    rate: number;
+  } | null;
+}
+
+/** نتيجة رفع شيت البصمة واحتساب التأخير والغياب. */
+export interface HRAttendanceImportResult {
+  month: string;
+  filename: string;
+  imported: number;
+  updated: number;
+  processed: number;
+  skipped: number;
+  total_rows: number;
+  pending_review: number;
+  error_count: number;
+  errors: { row: number; message: string }[];
+}
+
+
+export interface HRPenalty {
+  id: string;
+  employee_id: string;
+  employee_code?: string;
+  employee_name?: string;
+  date: string;
+  penalty_type: HRPenaltyType;
+  penalty_type_label?: string;
+  value: number;
+  reason?: string;
+  created_at?: string;
+}
+
+export interface HRLoan {
+  id: string;
+  employee_id: string;
+  employee_code?: string;
+  employee_name?: string;
+  date: string;
+  amount: number;
+  notes?: string;
+  created_at?: string;
+}

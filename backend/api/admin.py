@@ -5,7 +5,9 @@ from .models import (
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
-    SewingDispatch, AppNotification, InternalMessage, AuditLog
+    SewingDispatch, AppNotification, InternalMessage, AuditLog,
+    HRJobTitle, HREmployee, HRAttendanceSettings,
+    HRAttendanceRecord, HRPenalty, HRLoan
 )
 
 
@@ -134,3 +136,40 @@ class AppNotificationAdmin(admin.ModelAdmin):
 @admin.register(AuditLog)
 class AuditLogAdmin(admin.ModelAdmin):
     list_display = ('action', 'user_name', 'details', 'ip_address', 'timestamp')
+
+
+@admin.register(HRJobTitle)
+class HRJobTitleAdmin(admin.ModelAdmin):
+    list_display = ('title', 'department', 'client_id', 'created_at')
+    list_filter = ('department',)
+    search_fields = ('title',)
+
+
+@admin.register(HREmployee)
+class HREmployeeAdmin(admin.ModelAdmin):
+    list_display = ('employee_code', 'name', 'job', 'monthly_salary', 'rule_application_mode', 'is_active')
+    list_filter = ('is_active', 'rule_application_mode', 'job__department')
+    search_fields = ('employee_code', 'name', 'national_id', 'phone')
+
+
+@admin.register(HRAttendanceSettings)
+class HRAttendanceSettingsAdmin(admin.ModelAdmin):
+    list_display = ('official_start_time', 'official_end_time', 'weekly_off_day', 'month_calculation_days', 'updated_at')
+
+
+@admin.register(HRAttendanceRecord)
+class HRAttendanceRecordAdmin(admin.ModelAdmin):
+    list_display = ('employee', 'date', 'check_in', 'check_out', 'status', 'review_status')
+    list_filter = ('status', 'review_status')
+
+
+@admin.register(HRPenalty)
+class HRPenaltyAdmin(admin.ModelAdmin):
+    list_display = ('employee', 'date', 'penalty_type', 'value')
+    list_filter = ('penalty_type',)
+
+
+@admin.register(HRLoan)
+class HRLoanAdmin(admin.ModelAdmin):
+    list_display = ('employee', 'date', 'amount')
+    search_fields = ('employee__name', 'employee__employee_code')

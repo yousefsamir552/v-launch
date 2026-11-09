@@ -6,7 +6,9 @@ from .models import (
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
-    PackagingRequirement, FinishingRecord, AssemblyStageRecord
+    PackagingRequirement, FinishingRecord, AssemblyStageRecord,
+    HRJobTitle, HREmployee, HRAttendanceSettings,
+    HRAttendanceRecord, HRPenalty, HRLoan
 )
 
 
@@ -35,6 +37,16 @@ def to_date_str(value) -> str:
     if hasattr(value, 'isoformat'):
         return value.isoformat()
     return str(value)
+
+
+def to_time_str(value, fallback: str = '') -> str:
+    """Return 'HH:MM' for time objects or raw string inputs (never raises)."""
+    if not value:
+        return fallback
+    if hasattr(value, 'strftime'):
+        return value.strftime('%H:%M')
+    text = str(value).strip()
+    return text[:5] if len(text) >= 5 else text
 
 
 class GlobalSettingsSerializer(serializers.ModelSerializer):
@@ -657,4 +669,143 @@ class AuditLogSerializer(serializers.ModelSerializer):
             'details': instance.details,
             'ip_address': instance.ip_address or '127.0.0.1',
             'timestamp': ts,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Human Resources (HR) - الموارد البشرية
+# ---------------------------------------------------------------------------
+
+class HRJobTitleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HRJobTitle
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        return {
+            'id': get_ext_id(instance),
+            'title': instance.title,
+            'department': instance.department,
+            'department_label': instance.department_label,
+            'employees_count': instance.employees.count(),
+            'created_at': instance.created_at.isoformat() if instance.created_at else '',
+        }
+
+
+class HREmployeeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HREmployee
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        job = instance.job
+        return {
+            'id': get_ext_id(instance),
+            'employee_code': instance.employee_code or '',
+            'name': instance.name,
+            'job_id': get_ext_id(job),
+            'job_title': job.title if job else '',
+            'department': instance.department,
+            'department_label': instance.department_label,
+            'monthly_salary': float(instance.monthly_salary or 0),
+            'rule_application_mode': instance.rule_application_mode,
+            'rule_application_mode_label': instance.get_rule_application_mode_display(),
+            'national_id': instance.national_id or '',
+            'birth_date': to_date_str(instance.birth_date) or None,
+            'phone': instance.phone or '',
+            'photo': instance.photo or '',
+            'notes': instance.notes or '',
+            'is_active': bool(instance.is_active),
+            'created_at': instance.created_at.isoformat() if instance.created_at else '',
+            'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
+        }
+
+
+class HRAttendanceSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HRAttendanceSettings
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        return {
+            'id': str(instance.id),
+            'official_start_time': to_time_str(instance.official_start_time, '08:30'),
+            'official_end_time': to_time_str(instance.official_end_time, '17:30'),
+            'weekly_off_day': instance.weekly_off_day,
+            'weekly_off_day_label': instance.weekly_off_day_label,
+            'month_calculation_days': instance.month_calculation_days or 30,
+            'rules_json': instance.rules_json if isinstance(instance.rules_json, list) else [],
+            'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
+        }
+
+
+class HRAttendanceRecordSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HRAttendanceRecord
+        fields = '__all__'
+
+    @staticmethod
+    def _fmt_time(value):
+        return to_time_str(value)
+
+    def to_representation(self, instance):
+        employee = instance.employee
+        return {
+            'id': get_ext_id(instance),
+            'employee_id': get_ext_id(employee),
+            'employee_code': employee.employee_code if employee else '',
+            'employee_name': employee.name if employee else '',
+            'department': employee.department if employee else '',
+            'date': to_date_str(instance.date) or None,
+            'check_in': self._fmt_time(instance.check_in),
+            'check_out': self._fmt_time(instance.check_out),
+            'status': instance.status,
+            'status_label': instance.get_status_display(),
+            'is_excused': bool(instance.is_excused),
+            'excuse_note': instance.excuse_note or '',
+            'calculated_deduction_days': float(instance.calculated_deduction_days or 0),
+            'calculated_deduction_hours': float(instance.calculated_deduction_hours or 0),
+            'review_status': instance.review_status,
+            'review_status_label': instance.get_review_status_display(),
+            'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
+        }
+
+
+class HRPenaltySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HRPenalty
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        employee = instance.employee
+        return {
+            'id': get_ext_id(instance),
+            'employee_id': get_ext_id(employee),
+            'employee_code': employee.employee_code if employee else '',
+            'employee_name': employee.name if employee else '',
+            'date': to_date_str(instance.date) or None,
+            'penalty_type': instance.penalty_type,
+            'penalty_type_label': instance.get_penalty_type_display(),
+            'value': float(instance.value or 0),
+            'reason': instance.reason or '',
+            'created_at': instance.created_at.isoformat() if instance.created_at else '',
+        }
+
+
+class HRLoanSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HRLoan
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        employee = instance.employee
+        return {
+            'id': get_ext_id(instance),
+            'employee_id': get_ext_id(employee),
+            'employee_code': employee.employee_code if employee else '',
+            'employee_name': employee.name if employee else '',
+            'date': to_date_str(instance.date) or None,
+            'amount': float(instance.amount or 0),
+            'notes': instance.notes or '',
+            'created_at': instance.created_at.isoformat() if instance.created_at else '',
         }

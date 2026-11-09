@@ -2,9 +2,9 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db import models, transaction
-from django.http import Http404
+from django.http import Http404, HttpResponse
 from django.utils import timezone
-from django.utils.dateparse import parse_date
+from django.utils.dateparse import parse_date, parse_time
 from datetime import date, timedelta
 import secrets
 
@@ -19,6 +19,10 @@ from .models import (
     PART_TYPE_CHOICES, PART_TYPE_KEYS,
     PackagingRequirement, FinishingRecord, AssemblyStageRecord,
     PACKAGING_STEP_ORDER, ASSEMBLY_STAGE_KEYS,
+    HRJobTitle, HREmployee, HRAttendanceSettings,
+    HRAttendanceRecord, HRPenalty, HRLoan,
+    HR_DEPARTMENT_LABELS, WEEK_DAY_LABELS, HR_ATTENDANCE_STATUS_CHOICES,
+    HR_REVIEW_STATUS_CHOICES, HR_PENALTY_TYPE_CHOICES,
 )
 from .serializers import (
     resolve_by_id, get_ext_id,
@@ -29,7 +33,9 @@ from .serializers import (
     ModelTimelineSerializer, CuttingRecordSerializer, CuttingSpreadLayerSerializer, QCRecordSerializer,
     PrintDispatchSerializer, SewingDispatchSerializer,
     AppNotificationSerializer, InternalMessageSerializer, AuditLogSerializer,
-    PackagingRequirementSerializer, FinishingRecordSerializer, AssemblyStageRecordSerializer
+    PackagingRequirementSerializer, FinishingRecordSerializer, AssemblyStageRecordSerializer,
+    HRJobTitleSerializer, HREmployeeSerializer, HRAttendanceSettingsSerializer,
+    HRAttendanceRecordSerializer, HRPenaltySerializer, HRLoanSerializer
 )
 from .services import (
     ensure_initial_seed,
@@ -50,6 +56,24 @@ from .services import (
     recompute_model_part_totals,
 )
 from .reports import get_production_report
+from .hr_attendance_io import (
+    build_template_csv,
+    compute_attendance,
+    month_bounds,
+    parse_attendance_sheet,
+)
+
+
+def parse_time_value(val):
+    """Convert 'HH:MM' / 'HH:MM:SS' or time objects to datetime.time (None when invalid)."""
+    if not val:
+        return None
+    if hasattr(val, 'strftime'):
+        return val
+    try:
+        return parse_time(str(val).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def resolve_request_user_profile(request):
@@ -2259,3 +2283,677 @@ class ReportsViewSet(viewsets.ViewSet):
             date_to=date_to
         )
         return Response(report_data)
+
+
+# ---------------------------------------------------------------------------
+# Human Resources (HR) - الموارد البشرية
+# ---------------------------------------------------------------------------
+
+class HRJobTitleViewSet(BasePermViewSet):
+    """وظائف المصنع: إضافة/تعديل/حذف، مع منع حذف وظيفة مرتبطة بموظفين."""
+    queryset = HRJobTitle.objects.all()
+    serializer_class = HRJobTitleSerializer
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        title = str(data.get('title') or '').strip()
+        department = str(data.get('department') or '').strip()
+        if not title:
+            return Response({'detail': 'اسم الوظيفة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        if department not in HR_DEPARTMENT_LABELS:
+            return Response({'detail': 'القسم المحدد غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
+        if HRJobTitle.objects.filter(title__iexact=title, department=department).exists():
+            return Response({'detail': 'هذه الوظيفة مسجلة بالفعل في نفس القسم'}, status=status.HTTP_400_BAD_REQUEST)
+        obj = HRJobTitle.objects.create(
+            client_id=(data.get('id') or data.get('client_id') or None),
+            title=title,
+            department=department,
+        )
+        return Response(HRJobTitleSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        data = request.data
+        title = obj.title
+        department = obj.department
+        if data.get('title') is not None:
+            title = str(data.get('title') or '').strip()
+            if not title:
+                return Response({'detail': 'اسم الوظيفة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        if data.get('department') is not None:
+            department = str(data.get('department') or '').strip()
+            if department not in HR_DEPARTMENT_LABELS:
+                return Response({'detail': 'القسم المحدد غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
+        if HRJobTitle.objects.filter(title__iexact=title, department=department).exclude(pk=obj.pk).exists():
+            return Response({'detail': 'هذه الوظيفة مسجلة بالفعل في نفس القسم'}, status=status.HTTP_400_BAD_REQUEST)
+        obj.title = title
+        obj.department = department
+        obj.save()
+        return Response(HRJobTitleSerializer(obj).data)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        if obj.employees.exists():
+            return Response(
+                {'detail': 'لا يمكن حذف هذه الوظيفة لوجود موظفين مرتبطين بها. يرجى نقل الموظفين إلى وظيفة أخرى أولاً.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class HREmployeeViewSet(BasePermViewSet):
+    """ملفات الموظفين مع التحقق من كود البصمة وقواعد تطبيق الخصم."""
+    queryset = HREmployee.objects.select_related('job').all()
+    serializer_class = HREmployeeSerializer
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        name = str(data.get('name') or '').strip()
+        if not name:
+            return Response({'detail': 'اسم الموظف مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        job = resolve_by_id(HRJobTitle, data.get('job_id') or data.get('job'))
+        if not job:
+            return Response({'detail': 'يرجى اختيار وظيفة صحيحة للموظف'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            salary = float(data.get('monthly_salary') or 0)
+        except (TypeError, ValueError):
+            return Response({'detail': 'المرتب الشهري غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
+        if salary <= 0:
+            return Response({'detail': 'المرتب الشهري يجب أن يكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+        employee_code = str(data.get('employee_code') or '').strip()
+        if employee_code and HREmployee.objects.filter(employee_code=employee_code).exists():
+            return Response({'detail': 'كود الموظف / ID البصمة مستخدم بالفعل'}, status=status.HTTP_400_BAD_REQUEST)
+
+        mode = data.get('rule_application_mode') or 'auto'
+        if mode not in ('auto', 'manual_review'):
+            mode = 'auto'
+
+        obj = HREmployee(
+            client_id=(data.get('id') or data.get('client_id') or None),
+            employee_code=employee_code,
+            name=name,
+            job=job,
+            monthly_salary=salary,
+            rule_application_mode=mode,
+            national_id=data.get('national_id') or None,
+            phone=data.get('phone') or None,
+            photo=data.get('photo') or None,
+            notes=data.get('notes') or None,
+            is_active=bool(data.get('is_active', True)),
+        )
+        birth_date = data.get('birth_date')
+        if birth_date:
+            obj.birth_date = parse_date(str(birth_date))
+        obj.save()
+        return Response(HREmployeeSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        data = request.data
+
+        if data.get('name') is not None:
+            name = str(data.get('name') or '').strip()
+            if not name:
+                return Response({'detail': 'اسم الموظف مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.name = name
+        if data.get('job_id') is not None or data.get('job') is not None:
+            job = resolve_by_id(HRJobTitle, data.get('job_id') or data.get('job'))
+            if not job:
+                return Response({'detail': 'يرجى اختيار وظيفة صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.job = job
+        if data.get('monthly_salary') is not None:
+            try:
+                salary = float(data.get('monthly_salary') or 0)
+            except (TypeError, ValueError):
+                return Response({'detail': 'المرتب الشهري غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
+            if salary <= 0:
+                return Response({'detail': 'المرتب الشهري يجب أن يكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.monthly_salary = salary
+        if data.get('rule_application_mode') is not None:
+            mode = data.get('rule_application_mode') or 'auto'
+            obj.rule_application_mode = mode if mode in ('auto', 'manual_review') else 'auto'
+        if data.get('employee_code') is not None:
+            code = str(data.get('employee_code') or '').strip()
+            if code:
+                if HREmployee.objects.exclude(pk=obj.pk).filter(employee_code=code).exists():
+                    return Response({'detail': 'كود الموظف / ID البصمة مستخدم بالفعل'}, status=status.HTTP_400_BAD_REQUEST)
+                obj.employee_code = code
+            # إذا تُرك الحقل فارغاً نحتفظ بالكود الحالي بدلاً من تفريغه
+        if 'national_id' in data:
+            obj.national_id = data.get('national_id') or None
+        if 'phone' in data:
+            obj.phone = data.get('phone') or None
+        if 'photo' in data:
+            obj.photo = data.get('photo') or None
+        if 'notes' in data:
+            obj.notes = data.get('notes') or None
+        if 'is_active' in data:
+            obj.is_active = bool(data.get('is_active'))
+        if 'birth_date' in data:
+            bd = data.get('birth_date')
+            obj.birth_date = parse_date(str(bd)) if bd else None
+        obj.save()
+        return Response(HREmployeeSerializer(obj).data)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class HRAttendanceSettingsViewSet(viewsets.ViewSet):
+    """إعدادات الحضور والانصراف العامة (Singleton)."""
+    def list(self, request):
+        ensure_initial_seed()
+        obj = HRAttendanceSettings.get_solo()
+        return Response(HRAttendanceSettingsSerializer(obj).data)
+
+    def create(self, request):
+        return self._update_settings(request)
+
+    @action(detail=False, methods=['post', 'put', 'patch'])
+    def update_settings(self, request):
+        return self._update_settings(request)
+
+    def _update_settings(self, request):
+        obj = HRAttendanceSettings.get_solo()
+        data = request.data
+
+        start_time = parse_time_value(data.get('official_start_time'))
+        if start_time:
+            obj.official_start_time = start_time
+        end_time = parse_time_value(data.get('official_end_time'))
+        if end_time:
+            obj.official_end_time = end_time
+        if data.get('weekly_off_day'):
+            day = str(data.get('weekly_off_day')).strip()
+            if day in WEEK_DAY_LABELS:
+                obj.weekly_off_day = day
+        if isinstance(data.get('rules_json'), list):
+            obj.rules_json = data.get('rules_json')
+        # الشهر الحسابي ثابت دائماً 30 يوماً
+        obj.month_calculation_days = 30
+        obj.save()
+        return Response(HRAttendanceSettingsSerializer(obj).data)
+
+
+class HRAttendanceRecordViewSet(BasePermViewSet):
+    """سجل الحضور والانصراف اليومي (جاهز لاستقبال بصمات ZKTeco في المرحلة القادمة)."""
+    queryset = HRAttendanceRecord.objects.select_related('employee', 'employee__job').all()
+    serializer_class = HRAttendanceRecordSerializer
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
+        if not employee:
+            return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            ded_days = float(data.get('calculated_deduction_days') or 0)
+            ded_hours = float(data.get('calculated_deduction_hours') or 0)
+        except (TypeError, ValueError):
+            return Response({'detail': 'قيم الخصم غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+
+        status_val = data.get('status') or 'present'
+        if status_val not in dict(HR_ATTENDANCE_STATUS_CHOICES):
+            status_val = 'present'
+
+        review_val = data.get('review_status') or 'auto_applied'
+        if review_val not in dict(HR_REVIEW_STATUS_CHOICES):
+            review_val = 'auto_applied'
+
+        is_excused = bool(data.get('is_excused', False))
+        if is_excused:
+            # السجل المعذور لا يُطبق عليه خصم.
+            ded_days = 0.0
+            ded_hours = 0.0
+
+        rec_date = parse_date(str(data.get('date'))) if data.get('date') else date.today()
+        obj = HRAttendanceRecord.objects.create(
+            client_id=(data.get('id') or data.get('client_id') or None),
+            employee=employee,
+            date=rec_date or date.today(),
+            check_in=parse_time_value(data.get('check_in')),
+            check_out=parse_time_value(data.get('check_out')),
+            status=status_val,
+            is_excused=is_excused,
+            excuse_note=data.get('excuse_note') or None,
+            calculated_deduction_days=ded_days,
+            calculated_deduction_hours=ded_hours,
+            review_status=review_val,
+        )
+        return Response(HRAttendanceRecordSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        data = request.data
+
+        if data.get('employee_id') is not None or data.get('employee') is not None:
+            employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
+            if not employee:
+                return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.employee = employee
+        if data.get('date'):
+            rec_date = parse_date(str(data.get('date')))
+            if rec_date:
+                obj.date = rec_date
+        if 'check_in' in data:
+            obj.check_in = parse_time_value(data.get('check_in'))
+        if 'check_out' in data:
+            obj.check_out = parse_time_value(data.get('check_out'))
+        if data.get('status') is not None:
+            status_val = data.get('status') or 'present'
+            if status_val not in dict(HR_ATTENDANCE_STATUS_CHOICES):
+                status_val = 'present'
+            obj.status = status_val
+        if 'is_excused' in data:
+            obj.is_excused = bool(data.get('is_excused'))
+        if 'excuse_note' in data:
+            obj.excuse_note = data.get('excuse_note') or None
+        if data.get('calculated_deduction_days') is not None:
+            try:
+                obj.calculated_deduction_days = float(data.get('calculated_deduction_days') or 0)
+            except (TypeError, ValueError):
+                return Response({'detail': 'قيم الخصم غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+        if data.get('calculated_deduction_hours') is not None:
+            try:
+                obj.calculated_deduction_hours = float(data.get('calculated_deduction_hours') or 0)
+            except (TypeError, ValueError):
+                return Response({'detail': 'قيم الخصم غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+        if data.get('review_status') is not None:
+            review = data.get('review_status') or 'auto_applied'
+            if review not in dict(HR_REVIEW_STATUS_CHOICES):
+                review = 'auto_applied'
+            obj.review_status = review
+
+        # اشتقاق حالة الحضور تلقائياً عند تعديل البصمات بدون إرسال الحالة.
+        if data.get('status') is None and ('check_in' in data or 'check_out' in data):
+            if obj.check_in and obj.check_out:
+                obj.status = 'present'
+            elif obj.check_in or obj.check_out:
+                obj.status = 'missing_punch'
+            elif obj.status in ('present', 'missing_punch'):
+                obj.status = 'absent'
+
+        explicit_deductions = (
+            data.get('calculated_deduction_days') is not None
+            or data.get('calculated_deduction_hours') is not None
+        )
+
+        if data.get('recalculate'):
+            # إعادة احتساب التأخير/الانصراف المبكر/الغياب من قواعد الحضور الحالية.
+            computed = compute_attendance(
+                HRAttendanceSettings.get_solo(),
+                obj.employee,
+                obj.date,
+                obj.check_in,
+                obj.check_out,
+                obj.status,
+            )
+            if obj.is_excused:
+                obj.calculated_deduction_days = 0
+                obj.calculated_deduction_hours = 0
+                if data.get('review_status') is None:
+                    obj.review_status = 'auto_applied'
+            else:
+                obj.calculated_deduction_days = computed['deduction_days']
+                obj.calculated_deduction_hours = computed['deduction_hours']
+                if data.get('review_status') is None:
+                    obj.review_status = computed['review_status']
+        elif obj.is_excused and not explicit_deductions:
+            # تسجيل العذر يلغي الخصم المحتسب تلقائياً.
+            obj.calculated_deduction_days = 0
+            obj.calculated_deduction_hours = 0
+            if data.get('review_status') is None:
+                obj.review_status = 'auto_applied'
+
+        obj.save()
+        return Response(HRAttendanceRecordSerializer(obj).data)
+
+    # ------------------------------------------------------------------
+    # شيت البصمة: تحميل القالب / رفع الشيت / الإحصاءات
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sheet_month(request):
+        value = request.query_params.get('month')
+        if not value:
+            data = getattr(request, 'data', None) or {}
+            value = data.get('month')
+        return month_bounds(value)
+
+    @action(detail=False, methods=['get'], url_path='template')
+    def download_template(self, request):
+        """تحميل قالب بصمة فارغ (CSV) لكل موظف نشط خلال الشهر المطلوب."""
+        month_start, month_end = self._sheet_month(request)
+        settings_obj = HRAttendanceSettings.get_solo()
+        employees = list(
+            HREmployee.objects.filter(is_active=True).order_by('employee_code', 'name')
+        )
+        if not employees:
+            return Response(
+                {'detail': 'لا يوجد موظفون نشطون لتوليد قالب البصمة'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        content = build_template_csv(settings_obj, employees, month_start, month_end)
+        filename = f'attendance_template_{month_start.strftime("%Y-%m")}.csv'
+        response = HttpResponse(content.encode('utf-8'), content_type='text/csv; charset=utf-8')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
+    @action(detail=False, methods=['post'], url_path='upload-sheet')
+    def upload_sheet(self, request):
+        """رفع شيت بصمة (CSV/XLSX) واحتساب التأخير والغياب تلقائياً."""
+        upload = (
+            request.FILES.get('file')
+            or request.FILES.get('sheet')
+            or request.FILES.get('attachment')
+        )
+        if not upload:
+            return Response(
+                {'detail': 'لم يتم إرفاق ملف الشيت'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            content = upload.read()
+        except Exception:
+            return Response(
+                {'detail': 'تعذر قراءة الملف المرفوع'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            parsed = parse_attendance_sheet(upload.name, content)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        settings_obj = HRAttendanceSettings.get_solo()
+        employees = list(HREmployee.objects.all())
+        by_code = {}
+        by_name = {}
+        for employee in employees:
+            code = str(employee.employee_code or '').strip().casefold()
+            if code:
+                by_code[code] = employee
+            name_key = ' '.join(str(employee.name or '').split()).casefold()
+            if name_key:
+                by_name.setdefault(name_key, employee)
+
+        errors = list(parsed['errors'])
+        created_count = 0
+        updated_count = 0
+        review_count = 0
+
+        for row in parsed['rows']:
+            code_key = str(row['employee_code'] or '').strip().casefold()
+            name_key = ' '.join(str(row['employee_name'] or '').split()).casefold()
+            employee = by_code.get(code_key) if code_key else None
+            if employee is None and name_key:
+                employee = by_name.get(name_key)
+            if employee is None:
+                errors.append({
+                    'row': row['row'],
+                    'message': f"الموظف غير موجود: {row['employee_code'] or row['employee_name']}",
+                })
+                continue
+
+            computed = compute_attendance(
+                settings_obj,
+                employee,
+                row['date'],
+                row['check_in'],
+                row['check_out'],
+                row['status'],
+            )
+
+            record = HRAttendanceRecord.objects.filter(
+                employee=employee, date=row['date'],
+            ).first()
+            if record is None:
+                record = HRAttendanceRecord(employee=employee, date=row['date'])
+                previous = None
+                created_count += 1
+            else:
+                previous = (
+                    record.check_in,
+                    record.check_out,
+                    record.status,
+                    record.review_status,
+                )
+                updated_count += 1
+
+            # القرار اليدوي (قبول/رفض) يُحفظ ما دامت البصمات لم تتغير.
+            unchanged = previous is not None and previous[:3] == (
+                row['check_in'], row['check_out'], computed['status'],
+            )
+            keep_decision = (
+                unchanged
+                and previous[3] in ('approved', 'rejected')
+                and not record.is_excused
+            )
+
+            record.check_in = row['check_in']
+            record.check_out = row['check_out']
+            record.status = computed['status']
+            if record.is_excused:
+                record.calculated_deduction_days = 0
+                record.calculated_deduction_hours = 0
+                record.review_status = 'auto_applied'
+            elif not keep_decision:
+                record.calculated_deduction_days = computed['deduction_days']
+                record.calculated_deduction_hours = computed['deduction_hours']
+                record.review_status = computed['review_status']
+            record.save()
+
+            if record.review_status == 'pending_review':
+                review_count += 1
+
+        return Response({
+            'month': f'{parsed["rows"][0]["date"].strftime("%Y-%m")}' if parsed['rows'] else '',
+            'filename': upload.name,
+            'imported': created_count,
+            'updated': updated_count,
+            'processed': created_count + updated_count,
+            'skipped': parsed['skipped'],
+            'total_rows': parsed['total_rows'],
+            'pending_review': review_count,
+            'error_count': len(errors),
+            'errors': errors[:50],
+        })
+
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """إحصاءات سريعة لبطاقات أعلى شاشة الحضور والانصراف."""
+        month_start, month_end = self._sheet_month(request)
+        settings_obj = HRAttendanceSettings.get_solo()
+        weekly_off = settings_obj.weekly_off_day or ''
+
+        today = date.today()
+        period_end = min(month_end, today)
+        if period_end < month_start:
+            period_end = month_start
+
+        workdays = 0
+        cursor = month_start
+        while cursor <= period_end:
+            if not weekly_off or cursor.strftime('%A') != weekly_off:
+                workdays += 1
+            cursor += timedelta(days=1)
+
+        records = HRAttendanceRecord.objects.filter(date__gte=month_start, date__lte=month_end)
+        total_records = records.count()
+        present = records.filter(status='present').count()
+        absent = records.filter(status='absent').count()
+        leave = records.filter(status='leave').count()
+        missing = records.filter(status='missing_punch').count()
+        pending = records.filter(review_status='pending_review').count()
+        excused = records.filter(is_excused=True).count()
+        late_records = records.filter(status='present', calculated_deduction_hours__gt=0).count()
+
+        totals = records.aggregate(
+            days=models.Sum('calculated_deduction_days'),
+            hours=models.Sum('calculated_deduction_hours'),
+        )
+
+        by_department = {}
+        for entry in records.values('employee__job__department').annotate(
+            total=models.Count('id'),
+            absent=models.Count('id', filter=models.Q(status='absent')),
+        ):
+            key = entry['employee__job__department'] or ''
+            if not key:
+                continue
+            bucket = by_department.setdefault(key, {
+                'department': key,
+                'label': HR_DEPARTMENT_LABELS.get(key, key),
+                'total': 0,
+                'absent': 0,
+            })
+            bucket['total'] += entry['total'] or 0
+            bucket['absent'] += entry['absent'] or 0
+
+        worst_department = None
+        for bucket in by_department.values():
+            bucket['rate'] = (
+                round(bucket['absent'] / bucket['total'] * 100, 1) if bucket['total'] else 0.0
+            )
+            if worst_department is None or bucket['absent'] > worst_department['absent']:
+                worst_department = bucket
+
+        return Response({
+            'month': month_start.strftime('%Y-%m'),
+            'month_start': month_start.isoformat(),
+            'month_end': month_end.isoformat(),
+            'workdays': workdays,
+            'total_employees': HREmployee.objects.filter(is_active=True).count(),
+            'total_records': total_records,
+            'present': present,
+            'absent': absent,
+            'leave': leave,
+            'missing_punch': missing,
+            'excused': excused,
+            'pending_review': pending,
+            'late_records': late_records,
+            'compliance_percent': round(present / total_records * 100, 1) if total_records else 0.0,
+            'average_daily_absence': round(absent / workdays, 2) if workdays else 0.0,
+            'deduction_days': round(totals['days'] or 0, 2),
+            'deduction_hours': round(totals['hours'] or 0, 2),
+            'worst_department': worst_department,
+        })
+
+
+class HRPenaltyViewSet(BasePermViewSet):
+    """جزاءات الموظفين اليدوية (أيام أو ساعات)."""
+    queryset = HRPenalty.objects.select_related('employee').all()
+    serializer_class = HRPenaltySerializer
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
+        if not employee:
+            return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            value = float(data.get('value') or 0)
+        except (TypeError, ValueError):
+            return Response({'detail': 'قيمة الجزاء غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+        if value <= 0:
+            return Response({'detail': 'قيمة الجزاء يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+        penalty_type = data.get('penalty_type') or 'days'
+        if penalty_type not in ('days', 'hours'):
+            penalty_type = 'days'
+        pen_date = parse_date(str(data.get('date'))) if data.get('date') else date.today()
+        obj = HRPenalty.objects.create(
+            client_id=(data.get('id') or data.get('client_id') or None),
+            employee=employee,
+            date=pen_date or date.today(),
+            penalty_type=penalty_type,
+            value=value,
+            reason=data.get('reason') or '',
+        )
+        return Response(HRPenaltySerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        data = request.data
+
+        if data.get('employee_id') is not None or data.get('employee') is not None:
+            employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
+            if not employee:
+                return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.employee = employee
+        if data.get('date'):
+            pen_date = parse_date(str(data.get('date')))
+            if pen_date:
+                obj.date = pen_date
+        if data.get('penalty_type') is not None:
+            penalty_type = data.get('penalty_type') or 'days'
+            if penalty_type not in ('days', 'hours'):
+                penalty_type = 'days'
+            obj.penalty_type = penalty_type
+        if data.get('value') is not None:
+            try:
+                value = float(data.get('value') or 0)
+            except (TypeError, ValueError):
+                return Response({'detail': 'قيمة الجزاء غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+            if value <= 0:
+                return Response({'detail': 'قيمة الجزاء يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.value = value
+        if 'reason' in data:
+            obj.reason = data.get('reason') or ''
+        obj.save()
+        return Response(HRPenaltySerializer(obj).data)
+
+
+class HRLoanViewSet(BasePermViewSet):
+    """سلف الموظفين المالية التي تُخصم من مسير المرتبات."""
+    queryset = HRLoan.objects.select_related('employee').all()
+    serializer_class = HRLoanSerializer
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
+        if not employee:
+            return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            amount = float(data.get('amount') or 0)
+        except (TypeError, ValueError):
+            return Response({'detail': 'مبلغ السلفة غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
+        if amount <= 0:
+            return Response({'detail': 'مبلغ السلفة يجب أن يكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+        loan_date = parse_date(str(data.get('date'))) if data.get('date') else date.today()
+        obj = HRLoan.objects.create(
+            client_id=(data.get('id') or data.get('client_id') or None),
+            employee=employee,
+            date=loan_date or date.today(),
+            amount=amount,
+            notes=data.get('notes') or '',
+        )
+        return Response(HRLoanSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        data = request.data
+
+        if data.get('employee_id') is not None or data.get('employee') is not None:
+            employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
+            if not employee:
+                return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.employee = employee
+        if data.get('date'):
+            loan_date = parse_date(str(data.get('date')))
+            if loan_date:
+                obj.date = loan_date
+        if data.get('amount') is not None:
+            try:
+                amount = float(data.get('amount') or 0)
+            except (TypeError, ValueError):
+                return Response({'detail': 'مبلغ السلفة غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
+            if amount <= 0:
+                return Response({'detail': 'مبلغ السلفة يجب أن يكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.amount = amount
+        if 'notes' in data:
+            obj.notes = data.get('notes') or ''
+        obj.save()
+        return Response(HRLoanSerializer(obj).data)

@@ -45,6 +45,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     addFlashMessage
   } = useApp();
   const [productionOpen, setProductionOpen] = useState(true);
+  const [hrOpen, setHrOpen] = useState(true);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [messagesModalOpen, setMessagesModalOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -125,6 +126,38 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     }
   ].filter((item) => item.isVisible);
 
+  // الموارد البشرية (HR) - عناصر القائمة الفرعية
+  const hrSubItems = [
+    {
+      id: 'hr_employees',
+      label: 'الموظفين والوظائف',
+      icon: Users,
+      color: 'text-purple-600',
+      isVisible: true
+    },
+    {
+      id: 'hr_attendance',
+      label: 'الحضور والانصراف',
+      icon: Clock,
+      color: 'text-purple-600',
+      isVisible: true
+    },
+    {
+      id: 'hr_loans_penalties',
+      label: 'السُلف والجزاءات',
+      icon: Calculator,
+      color: 'text-purple-600',
+      isVisible: true
+    },
+    {
+      id: 'hr_payroll',
+      label: 'مسير المرتبات',
+      icon: BarChart3,
+      color: 'text-purple-600',
+      isVisible: true
+    }
+  ].filter((item) => item.isVisible);
+
   const handleNavClick = (tabId: string) => {
     setCurrentTab(tabId);
     setMobileMenuOpen(false);
@@ -185,6 +218,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
   };
 
   const isAnyProductionActive = productionSubItems.some((item) => isTabActive(item.id));
+  const isAnyHrActive = hrSubItems.some((item) => isTabActive(item.id));
 
   return (
     <>
@@ -450,20 +484,49 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
             </span>
           </button>
 
-          {/* 4. HR Button */}
-          <button
-            type="button"
-            onClick={() => handleComingSoon('شؤون الموظفين')}
-            className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-black text-slate-700 hover:bg-slate-100 transition cursor-pointer"
-          >
-            <div className="flex items-center gap-2.5">
-              <Users className="w-4 h-4 text-purple-600" />
-              <span>شؤون الموظفين</span>
-            </div>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-              قريباً
-            </span>
-          </button>
+          {/* 4. HR Dropdown (الموارد البشرية) */}
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => setHrOpen(!hrOpen)}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-black transition cursor-pointer ${
+                isAnyHrActive
+                  ? 'bg-purple-600 text-white shadow-xs'
+                  : 'text-slate-700 hover:bg-slate-100'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Users className={`w-4 h-4 ${isAnyHrActive ? 'text-white' : 'text-purple-600'}`} />
+                <span>الموارد البشرية (HR)</span>
+              </div>
+              <ChevronDown
+                className={`w-4 h-4 transition-transform duration-200 ${hrOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
+
+            {hrOpen && (
+              <div className="pr-3 pl-1 py-1 space-y-1 border-r-2 border-slate-200 mr-3">
+                {hrSubItems.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = isTabActive(item.id);
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => handleNavClick(item.id)}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer text-start ${
+                        isActive
+                          ? 'bg-purple-600 text-white shadow-xs'
+                          : 'text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : item.color}`} />
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* 5. Bottom Section: Settings Button */}

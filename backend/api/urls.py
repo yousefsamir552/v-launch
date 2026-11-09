@@ -8,7 +8,9 @@ from .views import (
     ModelItemViewSet, ModelRequirementViewSet, ModelAccessoryViewSet,
     CuttingRecordViewSet, QCRecordViewSet, PrintDispatchViewSet,
     SewingDispatchViewSet, NotificationViewSet, InternalMessageViewSet,
-    AuditLogViewSet, ReportsViewSet
+    AuditLogViewSet, ReportsViewSet,
+    HRJobTitleViewSet, HREmployeeViewSet, HRAttendanceSettingsViewSet,
+    HRAttendanceRecordViewSet, HRPenaltyViewSet, HRLoanViewSet
 )
 
 router = DefaultRouter()
@@ -36,6 +38,12 @@ router.register(r'notifications', NotificationViewSet, basename='notifications')
 router.register(r'internal-messages', InternalMessageViewSet, basename='internal-messages')
 router.register(r'audit-logs', AuditLogViewSet)
 router.register(r'reports', ReportsViewSet, basename='reports')
+router.register(r'hr-job-titles', HRJobTitleViewSet, basename='hr-job-titles')
+router.register(r'hr-employees', HREmployeeViewSet, basename='hr-employees')
+router.register(r'hr-attendance-settings', HRAttendanceSettingsViewSet, basename='hr-attendance-settings')
+router.register(r'hr-attendance-records', HRAttendanceRecordViewSet, basename='hr-attendance-records')
+router.register(r'hr-penalties', HRPenaltyViewSet, basename='hr-penalties')
+router.register(r'hr-loans', HRLoanViewSet, basename='hr-loans')
 
 urlpatterns = [
     path('', include(router.urls)),
