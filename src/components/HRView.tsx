@@ -192,7 +192,7 @@ const formatDayLabel = (iso: string) => {
 };
 
 export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
-  const { addFlashMessage } = useApp();
+  const { addFlashMessage, canManageHR } = useApp();
 
   const [section, setSection] = useState<HRSection>(initialSection);
   const [staffTab, setStaffTab] = useState<'employees' | 'jobs'>('employees');
@@ -228,7 +228,9 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
   }, []);
 
   useEffect(() => {
+    if (!canManageHR()) return;
     void loadHRData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadHRData]);
 
   const sectionMeta: Record<
@@ -292,6 +294,27 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff' }) => {
     else if (section === 'attendance') setAttendanceTab(tabId as 'records' | 'rules');
     else if (section === 'loans_penalties') setLoansTab(tabId as 'loans' | 'penalties');
   };
+
+  // Defense-in-depth: never render the HR panels without the dynamic permission.
+  if (!canManageHR()) {
+    return (
+      <div className="p-4" dir="rtl">
+        <div className="max-w-2xl mx-auto bg-white rounded-3xl border border-rose-200 shadow-xs p-8 text-center space-y-3">
+          <div className="w-14 h-14 mx-auto rounded-full bg-rose-50 border border-rose-200 flex items-center justify-center text-2xl">
+            🔒
+          </div>
+          <h2 className="text-base font-black text-slate-900">
+            لا تمتلك صلاحية الوصول لقسم الموارد البشرية
+          </h2>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            يرجى التواصل مع مدير النظام لمنحك صلاحية
+            <strong className="text-slate-800"> «إدارة الموارد البشرية (HR)» </strong>
+            من شاشة الصلاحيات والأدوار.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4" dir="rtl">

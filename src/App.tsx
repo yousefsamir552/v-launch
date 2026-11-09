@@ -26,6 +26,7 @@ export const App: React.FC = () => {
     hasPermission,
     canAccessSettings,
     canViewAuditLogs,
+    canManageHR,
     globalSettings
   } = useApp();
 
@@ -41,6 +42,12 @@ export const App: React.FC = () => {
       document.title = globalSettings.site_name;
     }
   }, [globalSettings?.site_name]);
+
+  const isHrTab = (tab: string): boolean =>
+    tab === 'hr_employees' ||
+    tab === 'hr_attendance' ||
+    tab === 'hr_loans_penalties' ||
+    tab === 'hr_payroll';
 
   const canAccessTab = (tab: string): boolean => {
     if (isSudo) return true;
@@ -84,13 +91,15 @@ export const App: React.FC = () => {
       tab === 'hr_loans_penalties' ||
       tab === 'hr_payroll'
     ) {
-      return true;
+      return canManageHR();
     }
     return true;
   };
 
-  // If user role changes and they lose permission for the current tab, send them to dashboard
+  // If user role changes and they lose permission for the current tab, send them to dashboard.
+  // HR tabs are excluded so the dedicated "no permission" guard can render instead.
   useEffect(() => {
+    if (currentUser && isHrTab(currentTab)) return;
     if (currentUser && !canAccessTab(currentTab)) {
       setCurrentTab('dashboard');
     }
@@ -109,7 +118,12 @@ export const App: React.FC = () => {
 
   const handleNavigate = (tab: string, modelId?: string) => {
     if (!canAccessTab(tab)) {
-      addFlashMessage('عفواً، ليس لديك صلاحية للوصول لهذا القسم', 'warning');
+      addFlashMessage(
+        isHrTab(tab)
+          ? 'عفواً، لا تمتلك الصلاحية للوصول لقسم الموارد البشرية'
+          : 'عفواً، ليس لديك صلاحية للوصول لهذا القسم',
+        'warning'
+      );
       return;
     }
     if (modelId) {
@@ -202,10 +216,38 @@ export const App: React.FC = () => {
         {currentTab === 'reports' && <ReportsView />}
 
         {/* Human Resources (HR) - الموارد البشرية */}
-        {currentTab === 'hr_employees' && <HRView initialSection="staff" />}
-        {currentTab === 'hr_attendance' && <HRView initialSection="attendance" />}
-        {currentTab === 'hr_loans_penalties' && <HRView initialSection="loans_penalties" />}
-        {currentTab === 'hr_payroll' && <HRView initialSection="payroll" />}
+        {isHrTab(currentTab) &&
+          (canManageHR() ? (
+            <>
+              {currentTab === 'hr_employees' && <HRView initialSection="staff" />}
+              {currentTab === 'hr_attendance' && <HRView initialSection="attendance" />}
+              {currentTab === 'hr_loans_penalties' && <HRView initialSection="loans_penalties" />}
+              {currentTab === 'hr_payroll' && <HRView initialSection="payroll" />}
+            </>
+          ) : (
+            <div className="p-4 lg:p-8">
+              <div className="max-w-2xl mx-auto bg-white rounded-3xl border border-rose-200 shadow-xs p-8 text-center space-y-4">
+                <div className="w-16 h-16 mx-auto rounded-full bg-rose-50 border border-rose-200 flex items-center justify-center text-3xl">
+                  🔒
+                </div>
+                <h2 className="text-lg font-black text-slate-900">
+                  لا تمتلك صلاحية الوصول لقسم الموارد البشرية
+                </h2>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  عفواً، هذا القسم مخصص للمستخدمين الذين يمتلكون صلاحية
+                  <strong className="text-slate-800"> «إدارة الموارد البشرية (HR)» </strong>
+                  . يرجى التواصل مع مدير النظام لمنحك الصلاحية من شاشة الصلاحيات والأدوار.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => handleNavigate('dashboard')}
+                  className="px-5 py-2.5 rounded-full bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition cursor-pointer"
+                >
+                  العودة إلى الرئيسية
+                </button>
+              </div>
+            </div>
+          ))}
 
         {/* Settings & Audit Logs */}
         {currentTab === 'settings' && (

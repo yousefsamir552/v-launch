@@ -223,7 +223,7 @@ DEFAULT_ROLES_SEED = [
             'send_whatsapp_requests': True, 'send_internal_messages': True,
             'manage_permissions': True, 'manage_users': True,
             'manage_suppliers': True, 'manage_sizes': True,
-            'view_audit_logs': True,
+            'view_audit_logs': True, 'can_manage_hr': True,
             'view_global_settings': True, 'edit_header_settings': True, 'edit_message_templates': True,
             'can_add_design_notes': True, 'can_add_cutting_notes': True,
             'can_add_qc_before_print_notes': True, 'can_add_qc_after_print_notes': True,

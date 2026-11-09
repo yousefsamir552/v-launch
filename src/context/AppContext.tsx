@@ -136,6 +136,7 @@ interface AppContextType {
   canEditHeaderSettings: () => boolean;
   canEditMessageTemplates: () => boolean;
   canAccessSettings: () => boolean;
+  canManageHR: () => boolean;
 
   // Department Notes Permission Checkers (Task 4)
   canAddDesignNotes: () => boolean;
@@ -894,6 +895,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         view_global_settings: true,
         edit_header_settings: true,
         edit_message_templates: true,
+        can_manage_hr: true,
         can_add_design_notes: true,
         can_add_cutting_notes: true,
         can_add_qc_before_print_notes: true,
@@ -1023,6 +1025,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       canViewGlobalSettings()
     );
   };
+
+  // Human Resources (HR) Permission Checker
+  // Falls back to manage_permissions so already-privileged admins keep access
+  // even before the new flag is toggled on for their role.
+  const canManageHR = (): boolean =>
+    hasSpecificPermission('can_manage_hr') || hasSpecificPermission('manage_permissions');
 
   // Department Notes Permission Checkers (Task 4)
   const canAddDesignNotes = (): boolean => hasSpecificPermission('can_add_design_notes');
@@ -4038,6 +4046,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         canEditHeaderSettings,
         canEditMessageTemplates,
         canAccessSettings,
+        canManageHR,
         canAddDesignNotes,
         canAddCuttingNotes,
         canAddQCBeforePrintNotes,

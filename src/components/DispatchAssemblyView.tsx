@@ -360,8 +360,8 @@ export const DispatchAssemblyView: React.FC = () => {
       {/* Modal: Add Dispatch */}
       {showModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+          <div className="bg-white rounded-3xl max-w-lg w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-slate-100 shrink-0">
               <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-2">
                 <Truck className="w-5 h-5 text-teal-700" />
                 <span>إرسال تشغيلة إلى المطبعة / التطريز</span>
@@ -374,7 +374,9 @@ export const DispatchAssemblyView: React.FC = () => {
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-4 mt-4">
+            <form onSubmit={handleSubmit} className="flex-1 min-h-0 flex flex-col">
+              {/* Scrollable body — keeps the header (close) and footer (submit) pinned */}
+              <div className="px-6 py-4 space-y-4 overflow-y-auto flex-1 min-h-0">
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">الموديل *</label>
                 <select
@@ -560,7 +562,9 @@ export const DispatchAssemblyView: React.FC = () => {
                 )}
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
+              </div>
+
+              <div className="px-6 py-4 border-t border-slate-100 flex justify-end gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}

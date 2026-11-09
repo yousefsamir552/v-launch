@@ -56,6 +56,7 @@ from .services import (
     recompute_model_part_totals,
 )
 from .reports import get_production_report
+from .permissions import CanManageHR
 from .hr_attendance_io import (
     build_template_csv,
     compute_attendance,
@@ -2293,6 +2294,7 @@ class HRJobTitleViewSet(BasePermViewSet):
     """وظائف المصنع: إضافة/تعديل/حذف، مع منع حذف وظيفة مرتبطة بموظفين."""
     queryset = HRJobTitle.objects.all()
     serializer_class = HRJobTitleSerializer
+    permission_classes = [CanManageHR]
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -2346,6 +2348,7 @@ class HREmployeeViewSet(BasePermViewSet):
     """ملفات الموظفين مع التحقق من كود البصمة وقواعد تطبيق الخصم."""
     queryset = HREmployee.objects.select_related('job').all()
     serializer_class = HREmployeeSerializer
+    permission_classes = [CanManageHR]
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -2444,6 +2447,8 @@ class HREmployeeViewSet(BasePermViewSet):
 
 class HRAttendanceSettingsViewSet(viewsets.ViewSet):
     """إعدادات الحضور والانصراف العامة (Singleton)."""
+    permission_classes = [CanManageHR]
+
     def list(self, request):
         ensure_initial_seed()
         obj = HRAttendanceSettings.get_solo()
@@ -2482,6 +2487,7 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
     """سجل الحضور والانصراف اليومي (جاهز لاستقبال بصمات ZKTeco في المرحلة القادمة)."""
     queryset = HRAttendanceRecord.objects.select_related('employee', 'employee__job').all()
     serializer_class = HRAttendanceRecordSerializer
+    permission_classes = [CanManageHR]
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -2848,6 +2854,7 @@ class HRPenaltyViewSet(BasePermViewSet):
     """جزاءات الموظفين اليدوية (أيام أو ساعات)."""
     queryset = HRPenalty.objects.select_related('employee').all()
     serializer_class = HRPenaltySerializer
+    permission_classes = [CanManageHR]
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -2910,6 +2917,7 @@ class HRLoanViewSet(BasePermViewSet):
     """سلف الموظفين المالية التي تُخصم من مسير المرتبات."""
     queryset = HRLoan.objects.select_related('employee').all()
     serializer_class = HRLoanSerializer
+    permission_classes = [CanManageHR]
 
     def create(self, request, *args, **kwargs):
         data = request.data

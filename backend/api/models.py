@@ -171,6 +171,8 @@ class Role(models.Model):
             'manage_suppliers': False,
             'manage_sizes': False,
             'view_audit_logs': False,
+            # Human Resources section permission
+            'can_manage_hr': False,
             # Global site settings permissions (Task 3)
             'view_global_settings': False,
             'edit_header_settings': False,

@@ -57,6 +57,9 @@ export interface RolePermissions {
   manage_sizes?: boolean;
   view_audit_logs?: boolean;
 
+  // Human Resources (HR) section permission
+  can_manage_hr?: boolean;
+
   // Global Site Settings permissions (Task 3)
   view_global_settings?: boolean;
   edit_header_settings?: boolean;
@@ -127,6 +130,7 @@ export interface UserPermissions {
   manage_suppliers?: boolean;
   manage_sizes?: boolean;
   view_audit_logs?: boolean;
+  can_manage_hr?: boolean;
   view_global_settings?: boolean;
   edit_header_settings?: boolean;
   edit_message_templates?: boolean;

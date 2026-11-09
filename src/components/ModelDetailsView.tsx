@@ -19,7 +19,8 @@ import {
   GarmentComposition,
   GARMENT_COMPOSITION_ORDER,
   GARMENT_COMPOSITION_LABELS,
-  DEFAULT_GARMENT_COMPOSITION
+  DEFAULT_GARMENT_COMPOSITION,
+  partsForComposition
 } from '../types';
 
 interface ModelDetailsViewProps {
@@ -107,6 +108,21 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     });
     setAccQuantities(aMap);
   }, [modelId, requirements, accessories]);
+
+  // ---- Garment composition drives which accessory sections are available ----
+  // A shirt-only model must never show a pants accessory section and vice versa.
+  const compositionParts = partsForComposition(model?.garment_composition);
+  const canAddShirt = compositionParts.includes('shirt');
+  const canAddPants = compositionParts.includes('pants');
+
+  useEffect(() => {
+    if (accTargetType === 'shirt' && !canAddShirt && canAddPants) {
+      setAccTargetType('pants');
+    } else if (accTargetType === 'pants' && !canAddPants && canAddShirt) {
+      setAccTargetType('shirt');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accTargetType, canAddShirt, canAddPants]);
 
   if (!model) {
     return (
@@ -466,39 +482,55 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
           <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs space-y-5">
             <h3 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-pink-600" />
-              <span>تخصيص الإكسسوارات (تيشرت / بنطلون):</span>
+              <span>
+                تخصيص الإكسسوارات (
+                {canAddShirt && canAddPants ? 'تيشرت / بنطلون' : canAddShirt ? 'تيشرت' : 'بنطلون'}):
+              </span>
             </h3>
 
             <form onSubmit={handleAddAccessorySubmit} className="space-y-3">
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
-                  قسم الإكسسوار (تيشرت أو بنطلون) *
+                  قسم الإكسسوار حسب قطع الموديل *
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setAccTargetType('shirt')}
-                    className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                      accTargetType === 'shirt'
-                        ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-2xs'
-                        : 'bg-white border-slate-200 text-slate-600'
-                    }`}
-                  >
-                    <Shirt className="w-3.5 h-3.5 text-blue-600" />
-                    <span>إكسسوار تيشرت</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAccTargetType('pants')}
-                    className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                      accTargetType === 'pants'
-                        ? 'bg-amber-50 border-amber-400 text-amber-900 shadow-2xs'
-                        : 'bg-white border-slate-200 text-slate-600'
-                    }`}
-                  >
-                    <span>👖 إكسسوار بنطلون</span>
-                  </button>
+                <div
+                  className={`grid gap-2 ${canAddShirt && canAddPants ? 'grid-cols-2' : 'grid-cols-1'}`}
+                >
+                  {canAddShirt && (
+                    <button
+                      type="button"
+                      onClick={() => setAccTargetType('shirt')}
+                      className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                        accTargetType === 'shirt'
+                          ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      <Shirt className="w-3.5 h-3.5 text-blue-600" />
+                      <span>إكسسوار تيشرت</span>
+                    </button>
+                  )}
+                  {canAddPants && (
+                    <button
+                      type="button"
+                      onClick={() => setAccTargetType('pants')}
+                      className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                        accTargetType === 'pants'
+                          ? 'bg-amber-50 border-amber-400 text-amber-900 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      <span>👖 إكسسوار بنطلون</span>
+                    </button>
+                  )}
                 </div>
+                <span className="text-[10px] text-slate-400 block mt-1">
+                  {canAddShirt && canAddPants
+                    ? 'الموديل يحتوي على تيشرت وبنطلون: يمكنك إضافة إكسسوارات لكل قطعة على حدة.'
+                    : canAddShirt
+                      ? 'الموديل تيشرت فقط: تُضاف الإكسسوارات لقسم التيشرت.'
+                      : 'الموديل بنطلون فقط: تُضاف الإكسسوارات لقسم البنطلون.'}
+                </span>
               </div>
 
               <div>
@@ -792,11 +824,15 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
               <div className="flex items-center justify-between border-b pb-2">
                 <h3 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-pink-600" />
-                  <span>قائمة إكسسوارات التشغيل (مقسمة تيشرت / بنطلون):</span>
+                  <span>
+                    قائمة إكسسوارات التشغيل (
+                    {canAddShirt && canAddPants ? 'مقسمة تيشرت / بنطلون' : canAddShirt ? 'تيشرت' : 'بنطلون'}):
+                  </span>
                 </h3>
               </div>
 
-              {/* Subsection 1: T-Shirt Accessories */}
+              {/* Subsection 1: T-Shirt Accessories (only for models that include a shirt part) */}
+              {canAddShirt && (
               <div className="space-y-2">
                 <div className="flex items-center gap-2 text-xs font-black text-blue-900 bg-blue-50/70 p-2 rounded-xl border border-blue-200">
                   <Shirt className="w-4 h-4 text-blue-600" />
@@ -862,8 +898,10 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                   </table>
                 </div>
               </div>
+              )}
 
-              {/* Subsection 2: Pants Accessories */}
+              {/* Subsection 2: Pants Accessories (only for models that include a pants part) */}
+              {canAddPants && (
               <div className="space-y-2">
                 <div className="flex items-center gap-2 text-xs font-black text-amber-950 bg-amber-50/70 p-2 rounded-xl border border-amber-200">
                   <span>👖 إكسسوارات ومستلزمات البنطلون ({pantsAccessories.length}):</span>
@@ -928,6 +966,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                   </table>
                 </div>
               </div>
+              )}
             </div>
 
             {/* DESIGN & OPERATING NOTES (Gated by canAddDesignNotes permission - Task 4) */}

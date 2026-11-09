@@ -37,6 +37,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     currentUser, 
     hasPermission,
     canAccessSettings,
+    canManageHR,
     globalSettings,
     appNotifications, 
     unreadNotificationsCount, 
@@ -484,7 +485,8 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
             </span>
           </button>
 
-          {/* 4. HR Dropdown (الموارد البشرية) */}
+          {/* 4. HR Dropdown (الموارد البشرية) - gated by can_manage_hr permission */}
+          {canManageHR() && (
           <div className="space-y-1">
             <button
               type="button"
@@ -527,6 +529,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
               </div>
             )}
           </div>
+          )}
         </div>
 
         {/* 5. Bottom Section: Settings Button */}

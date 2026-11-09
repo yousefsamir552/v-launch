@@ -197,6 +197,12 @@ export const ADMIN_AND_SETTINGS_PERMISSIONS_LIST: {
     description: 'الاطلاع على سجل العمليات والتحركات والتدقيق الأمني للنظام'
   },
   {
+    key: 'can_manage_hr',
+    label: 'صلاحية إدارة الموارد البشرية (HR)',
+    description: 'الوصول إلى قسم الموظفين والحضور والانصراف والسلف والجزاءات ومسير المرتبات',
+    badge: 'قسم كامل'
+  },
+  {
     key: 'view_global_settings',
     label: 'عرض صفحة إعدادات الموقع العامة',
     description: 'الدخول إلى تبويب الإعدادات العامة للموقع'
@@ -253,6 +259,7 @@ export const DEFAULT_PERMISSIONS: RolePermissions = {
   manage_suppliers: false,
   manage_sizes: false,
   view_audit_logs: false,
+  can_manage_hr: false,
   view_global_settings: false,
   edit_header_settings: false,
   edit_message_templates: false,
@@ -375,6 +382,7 @@ export const RoleManagementSection: React.FC = () => {
         next.manage_suppliers = true;
         next.manage_sizes = true;
         next.view_audit_logs = true;
+        next.can_manage_hr = true;
         next.view_global_settings = true;
         next.edit_header_settings = true;
         next.edit_message_templates = true;
@@ -398,6 +406,7 @@ export const RoleManagementSection: React.FC = () => {
         next.send_whatsapp_requests = false;
         next.manage_permissions = false;
         next.manage_users = false;
+        next.can_manage_hr = false;
         next.edit_header_settings = false;
         next.edit_message_templates = false;
         next.can_add_design_notes = false;

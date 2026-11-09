@@ -67,3 +67,45 @@ class CanSendWhatsApp(permissions.BasePermission):
         if not profile:
             return True
         return profile.has_perm('can_send_whatsapp')
+
+
+class CanManageHR(permissions.BasePermission):
+    """
+    Enforces access to the Human Resources (HR) section based on the dynamic
+    'can_manage_hr' permission. Sudo users bypass the check (handled by has_perm).
+    The profile is resolved from Bearer token / X-Auth-Token / X-User-Username,
+    mirroring resolve_request_user_profile in views.py.
+    """
+
+    def has_permission(self, request, view):
+        profile = getattr(request, 'user_profile', None)
+        if profile is None:
+            profile = self._resolve_profile(request)
+        if profile is None:
+            # No identifiable user (e.g. internal/CLI calls): stay consistent
+            # with the rest of the permission classes and allow through.
+            return True
+        return profile.has_perm('can_manage_hr')
+
+    @staticmethod
+    def _resolve_profile(request):
+        auth_header = request.headers.get('Authorization', '')
+        token = ''
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:].strip()
+        if not token:
+            token = request.headers.get('X-Auth-Token', '').strip()
+
+        if token:
+            profile = UserProfile.objects.select_related('role').filter(
+                auth_token=token, is_active=True
+            ).first()
+            if profile:
+                return profile
+
+        username = request.headers.get('X-User-Username', '').strip()
+        if username:
+            return UserProfile.objects.select_related('role').filter(
+                username__iexact=username, is_active=True
+            ).first()
+        return None
