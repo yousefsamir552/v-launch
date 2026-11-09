@@ -258,6 +258,20 @@ export interface DesignModel {
   count_before_print?: number;
   count_after_print?: number;
   count_after_sewing?: number;
+
+  // Per-part tracking (تيشرت / بنطلون / جاكيت / قطعة واحدة)
+  garment_parts?: GarmentPart[];
+  parts?: GarmentPart[];
+  cut_summary?: Partial<Record<GarmentPart, number>>;
+  qc_summary?: Partial<Record<GarmentPart, number>>;
+  sewing_available?: Partial<Record<GarmentPart, number>>;
+  completed_sets?: number;
+  cut_shirt_pieces?: number;
+  cut_pants_pieces?: number;
+  cut_jacket_pieces?: number;
+  qc_shirt_pieces?: number;
+  qc_pants_pieces?: number;
+  qc_jacket_pieces?: number;
   print_house_name?: string;
   print_house?: string;
   print_cost?: number;
@@ -352,6 +366,8 @@ export interface CuttingRecord {
   color_code?: string;
   fabric_name?: string;
   part?: 'shirt' | 'pants' | string;
+  part_type?: GarmentPart;
+  partType?: GarmentPart;
   recorded_by?: string;
   layers_count: number;
   layersCount?: number;
@@ -370,7 +386,24 @@ export interface CuttingRecord {
 
 export type QCStageType = 'before_print' | 'after_print' | 'after_sewing';
 
+// Unified garment part keys. 'shirt' is canonical for تيشرت (legacy code already uses it).
+export type GarmentPart = 'shirt' | 'pants' | 'jacket' | 'single';
+
+export const PART_LABELS: Record<GarmentPart, string> = {
+  shirt: 'تيشرت',
+  pants: 'بنطلون',
+  jacket: 'جاكيت',
+  single: 'قطعة واحدة'
+};
+
+export const PART_ORDER: GarmentPart[] = ['shirt', 'pants', 'jacket', 'single'];
+
+export const getPartLabel = (part?: string): string =>
+  PART_LABELS[(part as GarmentPart) || 'shirt'] || 'تيشرت';
+
 export interface QCMatrixCellInput {
+  part_type?: GarmentPart;
+  partType?: GarmentPart;
   color_name: string;
   size: string;
   good_qty: number;
@@ -382,6 +415,8 @@ export interface QCRecord {
   id: string;
   model_id: string;
   stage: QCStageType;
+  part_type?: GarmentPart;
+  partType?: GarmentPart;
   color_name?: string;
   size?: string;
   pieces_cut?: number;
@@ -424,8 +459,8 @@ export interface SewingDispatch {
   dispatched_at: string;
   expected_delivery_date: string;
   status: SewingDispatchStatus;
-  piece_type?: 'shirt' | 'pants';
-  piece_label?: string; // "تيشرت" or "بنطلون"
+  piece_type?: GarmentPart;
+  piece_label?: string; // "تيشرت" / "بنطلون" / "جاكيت"
   received_at?: string;
   notes?: string;
 }

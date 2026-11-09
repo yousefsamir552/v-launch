@@ -17,11 +17,36 @@ import {
   RotateCcw,
   Save
 } from 'lucide-react';
-import { Model, ModelAccessory, SewingDispatch } from '../types';
+import { Model, ModelAccessory, SewingDispatch, GarmentPart, getPartLabel } from '../types';
+
+// Per-part card styling (kept independent so every part has its own colour identity).
+const PART_CARD_STYLES: Record<string, { accentColor: string; badgeColor: string; button: string }> = {
+  shirt: {
+    accentColor: 'border-blue-400 bg-blue-950/40 text-blue-300',
+    badgeColor: 'bg-blue-600 text-white',
+    button: 'bg-blue-500 hover:bg-blue-400 text-white'
+  },
+  pants: {
+    accentColor: 'border-emerald-400 bg-emerald-950/40 text-emerald-300',
+    badgeColor: 'bg-emerald-600 text-white',
+    button: 'bg-emerald-500 hover:bg-emerald-400 text-slate-900'
+  },
+  jacket: {
+    accentColor: 'border-amber-400 bg-amber-950/40 text-amber-300',
+    badgeColor: 'bg-amber-600 text-white',
+    button: 'bg-amber-500 hover:bg-amber-400 text-slate-900'
+  },
+  single: {
+    accentColor: 'border-fuchsia-400 bg-fuchsia-950/40 text-fuchsia-300',
+    badgeColor: 'bg-fuchsia-600 text-white',
+    button: 'bg-fuchsia-500 hover:bg-fuchsia-400 text-white'
+  }
+};
 
 export const SewingView: React.FC = () => {
   const { 
     models, 
+    getModelParts,
     modelAccessories, 
     sewingDispatches, 
     dispatchModelToSewing, 
@@ -35,8 +60,8 @@ export const SewingView: React.FC = () => {
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedModelForPrint, setSelectedModelForPrint] = useState<Model | null>(null);
-  const [printTab, setPrintTab] = useState<'both' | 'shirt' | 'pants'>('both');
-  const [pieceFilter, setPieceFilter] = useState<'all' | 'shirt' | 'pants'>('all');
+  const [printTab, setPrintTab] = useState<'both' | GarmentPart>('both');
+  const [pieceFilter, setPieceFilter] = useState<'all' | GarmentPart>('all');
 
   // Editable bottom instructions for sewing print sheet (pulled from GlobalSettings)
   const [printInstructionsText, setPrintInstructionsText] = useState<string>(
@@ -57,7 +82,7 @@ export const SewingView: React.FC = () => {
   // Modal State for Dispatching to Sewing Workshop
   const [showDispatchModal, setShowDispatchModal] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState('');
-  const [dispatchPieceType, setDispatchPieceType] = useState<'shirt' | 'pants'>('shirt');
+  const [dispatchPieceType, setDispatchPieceType] = useState<GarmentPart>('shirt');
   const [dispatchPieceLabel, setDispatchPieceLabel] = useState<string>('تيشرت');
   const [workshopName, setWorkshopName] = useState('');
   const [piecesCount, setPiecesCount] = useState<number>(0);
@@ -89,26 +114,33 @@ export const SewingView: React.FC = () => {
 
   const activeDispatches = filteredDispatches.filter(d => d.status !== 'تم الاستلام');
 
-  const openDispatchModal = (model: Model, pieceType: 'shirt' | 'pants' = 'shirt') => {
+  const openDispatchModal = (model: Model, pieceType: GarmentPart = 'shirt') => {
     setSelectedModelId(model.id);
     setDispatchPieceType(pieceType);
-    setDispatchPieceLabel(pieceType === 'shirt' ? 'تيشرت' : 'بنطلون');
+    setDispatchPieceLabel(getPartLabel(pieceType));
 
-    const count = (pieceType === 'shirt' ? model.sewing_shirt_pieces : model.sewing_pants_pieces) 
-      || model.count_after_print 
-      || model.total_cut_pieces 
-      || model.actual_cut_count 
-      || 100;
+    // Each part uses ONLY its own available quantity — never a shared/combined number.
+    const prevPieces =
+      pieceType === 'shirt'
+        ? model.sewing_shirt_pieces
+        : pieceType === 'pants'
+        ? model.sewing_pants_pieces
+        : 0;
+    const count = prevPieces || Number(model.sewing_available?.[pieceType] ?? 0);
     setPiecesCount(count);
 
-    const prevWorkshop = pieceType === 'shirt' 
+    const prevWorkshop = pieceType === 'shirt'
       ? (model.sewing_shirt_workshop || model.sewing_workshop || '')
-      : (model.sewing_pants_workshop || model.sewing_workshop || '');
+      : pieceType === 'pants'
+      ? (model.sewing_pants_workshop || model.sewing_workshop || '')
+      : (model.sewing_workshop || '');
     setWorkshopName(prevWorkshop);
 
     const prevDate = pieceType === 'shirt'
       ? model.sewing_shirt_expected_date
-      : model.sewing_pants_expected_date;
+      : pieceType === 'pants'
+      ? model.sewing_pants_expected_date
+      : model.sewing_expected_date;
 
     if (prevDate) {
       setExpectedDeliveryDate(prevDate);
@@ -119,7 +151,7 @@ export const SewingView: React.FC = () => {
     }
 
     const defaultNotes = allowSewingNotes
-      ? (pieceType === 'shirt' ? (model.notes_shirt || '') : (model.notes_pants || ''))
+      ? (pieceType === 'shirt' ? (model.notes_shirt || '') : pieceType === 'pants' ? (model.notes_pants || '') : '')
       : '';
     setDispatchNotes(defaultNotes);
 
@@ -375,47 +407,53 @@ export const SewingView: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 relative z-10">
           {readyModels.length > 0 ? (
             readyModels.flatMap((m) => {
-              const count = m.count_after_print || m.total_cut_pieces || m.actual_cut_count || 0;
-              
-              const shirtDispatched = m.sewing_shirt_status === 'في ورشة المكن';
-              const shirtReceived = m.sewing_shirt_status === 'تم الاستلام';
-              const pantsDispatched = m.sewing_pants_status === 'في ورشة المكن';
-              const pantsReceived = m.sewing_pants_status === 'تم الاستلام';
+              const parts = getModelParts(m.id);
+              return parts.map((part) => {
+                const isShirt = part === 'shirt';
+                const isPants = part === 'pants';
+                const isDispatched = isShirt
+                  ? m.sewing_shirt_status === 'في ورشة المكن'
+                  : isPants && m.sewing_pants_status === 'في ورشة المكن';
+                const isReceived = isShirt
+                  ? m.sewing_shirt_status === 'تم الاستلام'
+                  : isPants && m.sewing_pants_status === 'تم الاستلام';
+                const workshop = isShirt
+                  ? (m.sewing_shirt_workshop || m.sewing_workshop)
+                  : isPants
+                  ? (m.sewing_pants_workshop || m.sewing_workshop)
+                  : m.sewing_workshop;
+                const expectedDate = isShirt
+                  ? (m.sewing_shirt_expected_date || m.sewing_expected_date)
+                  : isPants
+                  ? (m.sewing_pants_expected_date || m.sewing_expected_date)
+                  : m.sewing_expected_date;
+                const prevPieces = isShirt
+                  ? m.sewing_shirt_pieces
+                  : isPants
+                  ? m.sewing_pants_pieces
+                  : 0;
+                // Each card shows ONLY its own part quantity (no shared combined number).
+                const pieces = prevPieces || Number(m.sewing_available?.[part] ?? 0);
+                const style = PART_CARD_STYLES[part] || PART_CARD_STYLES.shirt;
 
-              const items = [
-                // ITEM 1: T-Shirt Card
-                {
-                  id: `${m.id}-shirt`,
+                return {
+                  id: `${m.id}-${part}`,
                   model: m,
-                  pieceType: 'shirt' as const,
-                  pieceLabel: 'تيشرت (T-Shirt)',
-                  accentColor: 'border-blue-400 bg-blue-950/40 text-blue-300',
-                  badgeColor: 'bg-blue-600 text-white',
-                  isDispatched: shirtDispatched,
-                  isReceived: shirtReceived,
-                  workshop: m.sewing_shirt_workshop || m.sewing_workshop,
-                  expectedDate: m.sewing_shirt_expected_date || m.sewing_expected_date,
-                  pieces: m.sewing_shirt_pieces || count,
-                  dispatchRecord: sewingDispatches.find(d => d.model_id === m.id && d.piece_type === 'shirt' && d.status !== 'تم الاستلام')
-                },
-                // ITEM 2: Pants Card
-                {
-                  id: `${m.id}-pants`,
-                  model: m,
-                  pieceType: 'pants' as const,
-                  pieceLabel: 'بنطلون (Pants)',
-                  accentColor: 'border-emerald-400 bg-emerald-950/40 text-emerald-300',
-                  badgeColor: 'bg-emerald-600 text-white',
-                  isDispatched: pantsDispatched,
-                  isReceived: pantsReceived,
-                  workshop: m.sewing_pants_workshop || m.sewing_workshop,
-                  expectedDate: m.sewing_pants_expected_date || m.sewing_expected_date,
-                  pieces: m.sewing_pants_pieces || count,
-                  dispatchRecord: sewingDispatches.find(d => d.model_id === m.id && d.piece_type === 'pants' && d.status !== 'تم الاستلام')
-                }
-              ];
-
-              return items.filter(item => pieceFilter === 'all' || item.pieceType === pieceFilter);
+                  pieceType: part,
+                  pieceLabel: getPartLabel(part),
+                  accentColor: style.accentColor,
+                  badgeColor: style.badgeColor,
+                  button: style.button,
+                  isDispatched,
+                  isReceived,
+                  workshop,
+                  expectedDate,
+                  pieces,
+                  dispatchRecord: sewingDispatches.find(
+                    (d) => d.model_id === m.id && d.piece_type === part && d.status !== 'تم الاستلام'
+                  )
+                };
+              }).filter((item) => pieceFilter === 'all' || item.pieceType === pieceFilter);
             }).map((item) => (
               <div
                 key={item.id}
@@ -481,7 +519,7 @@ export const SewingView: React.FC = () => {
                     ) : (
                       <div className="text-slate-400 text-[11px] flex items-center gap-1">
                         <Clock className="w-3.5 h-3.5 text-amber-400" />
-                        <span>بانتظار تحديد ورشة {item.pieceType === 'shirt' ? 'التيشرت' : 'البنطلون'}</span>
+                        <span>بانتظار تحديد ورشة {getPartLabel(item.pieceType)}</span>
                       </div>
                     )}
                   </div>
@@ -504,20 +542,18 @@ export const SewingView: React.FC = () => {
                         className="flex-1 py-2 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
                       >
                         <CheckCircle className="w-3.5 h-3.5" />
-                        <span>استلام {item.pieceType === 'shirt' ? 'التيشرت' : 'البنطلون'}</span>
+                        <span>استلام {getPartLabel(item.pieceType)}</span>
                       </button>
                     </div>
                   ) : (
                     <button
                       onClick={() => openDispatchModal(item.model, item.pieceType)}
                       className={`w-full py-2 px-3 rounded-xl font-black text-xs transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer ${
-                        item.pieceType === 'shirt' 
-                          ? 'bg-blue-500 hover:bg-blue-400 text-white' 
-                          : 'bg-emerald-500 hover:bg-emerald-400 text-slate-900'
+                        item.button || 'bg-blue-500 hover:bg-blue-400 text-white'
                       }`}
                     >
                       <Scissors className="w-3.5 h-3.5" />
-                      <span>إرسال ورشة {item.pieceType === 'shirt' ? 'التيشرت' : 'البنطلون'}</span>
+                      <span>إرسال ورشة {getPartLabel(item.pieceType)}</span>
                     </button>
                   )}
                 </div>
@@ -681,7 +717,7 @@ export const SewingView: React.FC = () => {
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-2.5">
                 <div className={`w-9 h-9 rounded-2xl flex items-center justify-center text-white font-bold ${
-                  dispatchPieceType === 'shirt' ? 'bg-blue-600' : 'bg-emerald-600'
+                  PART_CARD_STYLES[dispatchPieceType]?.badgeColor || 'bg-blue-600'
                 }`}>
                   <Scissors className="w-5 h-5" />
                 </div>
@@ -707,36 +743,30 @@ export const SewingView: React.FC = () => {
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">القطعة المستهدفة للخياطة *</label>
                 <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDispatchPieceType('shirt');
-                      setDispatchPieceLabel('تيشرت');
-                    }}
-                    className={`py-2 px-3 rounded-xl border text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                      dispatchPieceType === 'shirt'
-                        ? 'border-blue-500 bg-blue-50 text-blue-800 ring-2 ring-blue-500/20'
-                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <Shirt className="w-4 h-4" />
-                    <span>خط التيشرت (T-Shirt)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDispatchPieceType('pants');
-                      setDispatchPieceLabel('بنطلون');
-                    }}
-                    className={`py-2 px-3 rounded-xl border text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                      dispatchPieceType === 'pants'
-                        ? 'border-emerald-500 bg-emerald-50 text-emerald-800 ring-2 ring-emerald-500/20'
-                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <Scissors className="w-4 h-4" />
-                    <span>خط البنطلون (Pants)</span>
-                  </button>
+                  {(() => {
+                    const dm = models.find((m) => m.id === selectedModelId);
+                    const parts: GarmentPart[] = dm
+                      ? getModelParts(dm.id)
+                      : (['shirt', 'pants'] as GarmentPart[]);
+                    return parts.map((part) => (
+                      <button
+                        key={part}
+                        type="button"
+                        onClick={() => {
+                          setDispatchPieceType(part);
+                          setDispatchPieceLabel(getPartLabel(part));
+                        }}
+                        className={`py-2 px-3 rounded-xl border text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                          dispatchPieceType === part
+                            ? 'border-purple-500 bg-purple-50 text-purple-800 ring-2 ring-purple-500/20'
+                            : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        <Shirt className="w-4 h-4" />
+                        <span>خط {getPartLabel(part)}</span>
+                      </button>
+                    ));
+                  })()}
                 </div>
               </div>
 
@@ -1076,7 +1106,7 @@ export const SewingView: React.FC = () => {
                         <div className="bg-blue-50/70 p-3 rounded-2xl border border-blue-100">
                           <span className="text-[11px] text-blue-700 font-bold block">العدد المطلوب للتيشرت</span>
                           <strong className="text-base font-black text-blue-800">
-                            {(shirtDispatchForPrint?.pieces_count || selectedModelForPrint.sewing_shirt_pieces || selectedModelForPrint.count_after_print || selectedModelForPrint.total_cut_pieces || 0).toLocaleString('ar-EG')} قطعة
+                            {(shirtDispatchForPrint?.pieces_count || selectedModelForPrint.sewing_shirt_pieces || Number(selectedModelForPrint.sewing_available?.shirt ?? 0) || 0).toLocaleString('ar-EG')} قطعة
                           </strong>
                         </div>
                         <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200">
@@ -1134,8 +1164,7 @@ export const SewingView: React.FC = () => {
                             const totalTarget =
                               shirtDispatchForPrint?.pieces_count ||
                               selectedModelForPrint.sewing_shirt_pieces ||
-                              selectedModelForPrint.count_after_print ||
-                              selectedModelForPrint.total_cut_pieces ||
+                              Number(selectedModelForPrint.sewing_available?.shirt ?? 0) ||
                               0;
 
                             if (shirtAccs.length > 0) {
@@ -1252,7 +1281,7 @@ export const SewingView: React.FC = () => {
                         <div className="bg-emerald-50/70 p-3 rounded-2xl border border-emerald-100">
                           <span className="text-[11px] text-emerald-700 font-bold block">العدد المطلوب للبنطلون</span>
                           <strong className="text-base font-black text-emerald-800">
-                            {(pantsDispatchForPrint?.pieces_count || selectedModelForPrint.sewing_pants_pieces || selectedModelForPrint.count_after_print || selectedModelForPrint.total_cut_pieces || 0).toLocaleString('ar-EG')} قطعة
+                            {(pantsDispatchForPrint?.pieces_count || selectedModelForPrint.sewing_pants_pieces || Number(selectedModelForPrint.sewing_available?.pants ?? 0) || 0).toLocaleString('ar-EG')} قطعة
                           </strong>
                         </div>
                         <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200">
@@ -1310,8 +1339,7 @@ export const SewingView: React.FC = () => {
                             const totalTarget =
                               pantsDispatchForPrint?.pieces_count ||
                               selectedModelForPrint.sewing_pants_pieces ||
-                              selectedModelForPrint.count_after_print ||
-                              selectedModelForPrint.total_cut_pieces ||
+                              Number(selectedModelForPrint.sewing_available?.pants ?? 0) ||
                               0;
 
                             if (pantsAccs.length > 0) {

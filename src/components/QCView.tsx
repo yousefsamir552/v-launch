@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   CheckCircle,
@@ -14,12 +14,14 @@ import {
   Grid,
   Save
 } from 'lucide-react';
-import { QCStageType, Model, QCMatrixCellInput } from '../types';
+import { QCStageType, Model, QCMatrixCellInput, GarmentPart, getPartLabel } from '../types';
+import { printManualCountSheet } from '../utils/printManualCountSheet';
 
 export const QCView: React.FC = () => {
   const {
     models,
     qcRecords,
+    getModelParts,
     getModelColorList,
     getModelSizeList,
     saveQCMatrix,
@@ -36,6 +38,8 @@ export const QCView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [countingModel, setCountingModel] = useState<Model | null>(null);
+  const [modalPart, setModalPart] = useState<GarmentPart>('shirt');
+  const modalParts: GarmentPart[] = countingModel ? getModelParts(countingModel.id) : [];
 
   // Matrix state: key is `${color}___${size}` -> { good: number, defect: number }
   const [matrixState, setMatrixState] = useState<
@@ -83,11 +87,21 @@ export const QCView: React.FC = () => {
   const makeCellKey = (color: string, size: string) => `${color}___${size}`;
 
   const handleOpenCountModal = (model: Model) => {
+    const parts = getModelParts(model.id);
+    setModalPart(parts[0] || 'shirt');
     setCountingModel(model);
-    const colors = getModelColorList(model.id);
-    const sizes = getModelSizeList(model.id);
+  };
+
+  // Loads the matrix for the currently selected part (each part counted independently).
+  useEffect(() => {
+    if (!countingModel) return;
+    const colors = getModelColorList(countingModel.id, modalPart);
+    const sizes = getModelSizeList(countingModel.id);
     const existingStageRecs = qcRecords.filter(
-      (r) => r.model_id === model.id && r.stage === activeTab
+      (r) =>
+        r.model_id === countingModel.id &&
+        r.stage === activeTab &&
+        (r.part_type || 'shirt') === modalPart
     );
 
     const initialMatrix: Record<string, { good: number; defect: number }> = {};
@@ -110,7 +124,8 @@ export const QCView: React.FC = () => {
 
     setMatrixState(initialMatrix);
     setQcNotes(existingNote);
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [countingModel, modalPart, activeTab, qcRecords]);
 
   const handleCellChange = (
     color: string,
@@ -130,7 +145,7 @@ export const QCView: React.FC = () => {
   };
 
   const buildMatrixEntriesFromState = (model: Model): QCMatrixCellInput[] => {
-    const colors = getModelColorList(model.id);
+    const colors = getModelColorList(model.id, modalPart);
     const sizes = getModelSizeList(model.id);
     const entries: QCMatrixCellInput[] = [];
 
@@ -138,6 +153,7 @@ export const QCView: React.FC = () => {
       sizes.forEach((sz) => {
         const cell = matrixState[makeCellKey(col, sz)] || { good: 0, defect: 0 };
         entries.push({
+          part_type: modalPart,
           color_name: col,
           size: sz,
           good_qty: Number(cell.good) || 0,
@@ -155,6 +171,7 @@ export const QCView: React.FC = () => {
     saveQCMatrix({
       modelId: countingModel.id,
       stage: activeTab,
+      partType: modalPart,
       matrixEntries: entries,
       notes: canWriteNotesForCurrentStage ? qcNotes.trim() : ''
     });
@@ -181,6 +198,7 @@ export const QCView: React.FC = () => {
     recordQCStageCount({
       modelId: countingModel.id,
       stage: activeTab,
+      partType: modalPart,
       piecesCounted: totalGood,
       defectQty: totalDefect,
       matrixEntries: entries,
@@ -202,6 +220,22 @@ export const QCView: React.FC = () => {
     }
   };
 
+  // Prints a blank A4 manual-count sheet (one table per garment part) for floor workers.
+  const handlePrintManualSheet = (model: Model) => {
+    const parts = getModelParts(model.id);
+    printManualCountSheet({
+      siteName: globalSettings?.site_name,
+      modelCode: model.model_code,
+      modelType: model.model_type,
+      stageLabel: getStageTitle(activeTab) || '',
+      sizes: getModelSizeList(model.id),
+      parts: parts.map((part) => ({
+        key: part,
+        colors: getModelColorList(model.id, part)
+      }))
+    });
+  };
+
   const getNextStageLabel = (stage: QCStageType) => {
     switch (stage) {
       case 'before_print':
@@ -214,7 +248,7 @@ export const QCView: React.FC = () => {
   };
 
   // Compute active modal matrix dimensions & totals
-  const modalColors = countingModel ? getModelColorList(countingModel.id) : [];
+  const modalColors = countingModel ? getModelColorList(countingModel.id, modalPart) : [];
   const modalSizes = countingModel ? getModelSizeList(countingModel.id) : [];
 
   const modalTotalGood = Object.values(matrixState).reduce(
@@ -500,6 +534,21 @@ export const QCView: React.FC = () => {
                         </strong>
                       </div>
 
+                      {/* Per-part cut breakdown (parts are never summed together) */}
+                      {getModelParts(model.id).length > 1 && (
+                        <div className="flex flex-wrap gap-1 pt-1">
+                          {getModelParts(model.id).map((part) => (
+                            <span
+                              key={part}
+                              className="px-2 py-0.5 rounded-lg bg-purple-50 text-purple-800 border border-purple-200 text-[10px] font-bold"
+                            >
+                              {getPartLabel(part)}:{' '}
+                              {Number(model.cut_summary?.[part] ?? 0).toLocaleString('ar-EG')}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
                       {stageSavedRecs.length > 0 && (
                         <div className="flex justify-between items-center text-emerald-700 pt-1 border-t border-slate-200/70">
                           <span>مسجل بالجدول حالياً:</span>
@@ -529,13 +578,22 @@ export const QCView: React.FC = () => {
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => handleOpenCountModal(model)}
-                    className="w-full py-2.5 px-4 rounded-full bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs transition shadow-md shadow-purple-600/20 flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Grid className="w-4 h-4" />
-                    <span>فتح جدول الفرز (الألوان × المقاسات)</span>
-                  </button>
+                  <div className="space-y-2">
+                    <button
+                      onClick={() => handleOpenCountModal(model)}
+                      className="w-full py-2.5 px-4 rounded-full bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs transition shadow-md shadow-purple-600/20 flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Grid className="w-4 h-4" />
+                      <span>فتح جدول الفرز (الألوان × المقاسات)</span>
+                    </button>
+                    <button
+                      onClick={() => handlePrintManualSheet(model)}
+                      className="w-full py-2 px-4 rounded-full bg-white hover:bg-purple-50 text-purple-700 border border-purple-300 font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Printer className="w-4 h-4" />
+                      <span>🖐️ طباعة ورقة جرد يدوي (فارغة)</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             );
@@ -568,7 +626,7 @@ export const QCView: React.FC = () => {
                     مصفوفة الفرز والعد للموديل: {countingModel.model_code}
                   </h3>
                   <p className="text-xs text-purple-600 font-bold">
-                    المرحلة: {getStageTitle(activeTab)} — إدخال (السليم والتالف) لكل لون ومقاس على حدة
+                    المرحلة: {getStageTitle(activeTab)} — القطعة: {getPartLabel(modalPart)} — إدخال (السليم والتالف) لكل لون ومقاس على حدة
                   </p>
                 </div>
               </div>
@@ -580,6 +638,31 @@ export const QCView: React.FC = () => {
               </button>
             </div>
 
+            {/* Per-part selector: every garment part is counted independently */}
+            {modalParts.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap pt-3 shrink-0">
+                <span className="text-xs font-bold text-slate-500">القطعة:</span>
+                {modalParts.map((part) => (
+                  <button
+                    key={part}
+                    type="button"
+                    onClick={() => setModalPart(part)}
+                    className={`px-4 py-1.5 rounded-full text-xs font-bold border transition cursor-pointer ${
+                      modalPart === part
+                        ? 'bg-purple-700 text-white border-purple-700 shadow-xs'
+                        : 'bg-white text-slate-600 border-slate-300 hover:border-purple-400'
+                    }`}
+                  >
+                    {getPartLabel(part)}
+                  </button>
+                ))}
+                <span className="text-[11px] font-bold text-purple-600 ms-auto">
+                  العدد المتاح للقطعة:{' '}
+                  {Number(countingModel?.sewing_available?.[modalPart] ?? countingModel?.cut_summary?.[modalPart] ?? 0).toLocaleString('ar-EG')} قطعة
+                </span>
+              </div>
+            )}
+
             <form
               onSubmit={handleApproveAndAdvance}
               className="space-y-4 pt-4 overflow-y-auto flex-grow"
@@ -587,9 +670,13 @@ export const QCView: React.FC = () => {
               {/* Reference Summary Banner */}
               <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-200/80 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                 <div>
-                  <span className="text-slate-500 block">العدد المقصوص الفعلي:</span>
+                  <span className="text-slate-500 block">المقصوص الفعلي ({getPartLabel(modalPart)}):</span>
                   <strong className="text-slate-900 text-sm font-black">
-                    {(countingModel.total_cut_pieces || 0).toLocaleString('ar-EG')} قطعة
+                    {Number(
+                      countingModel.cut_summary?.[modalPart] ??
+                        countingModel.total_cut_pieces ??
+                        0
+                    ).toLocaleString('ar-EG')} قطعة
                   </strong>
                 </div>
                 <div>

@@ -31,7 +31,9 @@ from .services import (
     get_accessory_deficits,
     generate_smart_delivery_notifications,
     dispatch_model_to_sewing_service,
-    receive_model_from_sewing_service
+    receive_model_from_sewing_service,
+    normalize_part_key,
+    recompute_model_part_totals,
 )
 from .reports import get_production_report
 
@@ -894,7 +896,7 @@ class ModelItemViewSet(BasePermViewSet):
             'model_type', 'status', 'size_category_id', 'main_marker_url', 'print_marker_url',
             'target_cut_quantity', 'total_cut_pieces', 'cutter_name', 'spreader_name',
             'count_before_print', 'count_after_print', 'count_after_sewing',
-            'print_house', 'image', 'is_deleted', 'colored_at', 'cut_at'
+            'print_house', 'image', 'is_deleted', 'colored_at', 'cut_at', 'garment_parts'
         ]:
             if field in data:
                 setattr(model, field, data[field])
@@ -908,6 +910,8 @@ class ModelItemViewSet(BasePermViewSet):
             model.total_cut_pieces = int(data['actual_cut_count'] or 0)
         model._skip_timeline_signal = True
         model.save()
+        if 'garment_parts' in data:
+            recompute_model_part_totals(model)
         sync_reserved_quantities()
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
@@ -1156,6 +1160,7 @@ class ModelItemViewSet(BasePermViewSet):
         user = request.data.get('user') or request.data.get('user_name') or 'مراقب الجودة'
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         pieces_cut_ref = model.total_cut_pieces or model.target_cut_quantity or 0
+        default_part_type = normalize_part_key(request.data.get('part_type') or request.data.get('partType') or 'shirt')
 
         matrix_entries = request.data.get('matrix_entries') or request.data.get('matrixEntries')
         saved_records = []
@@ -1171,10 +1176,14 @@ class ModelItemViewSet(BasePermViewSet):
                     g_qty = max(0, int(entry.get('good_qty') if entry.get('good_qty') is not None else (entry.get('goodQty') or entry.get('counted_pieces') or 0)))
                     d_qty = max(0, int(entry.get('defect_qty') if entry.get('defect_qty') is not None else (entry.get('defectQty') or entry.get('defect_pieces') or 0)))
                     cell_notes = (entry.get('notes') or entry.get('defect_notes') or notes or '').strip()
+                    entry_part = normalize_part_key(
+                        entry.get('part_type') or entry.get('partType') or default_part_type
+                    )
 
                     existing_rec = QCRecord.objects.filter(
                         model=model,
                         stage=stage,
+                        part_type=entry_part,
                         color_name=c_name,
                         size=sz
                     ).first()
@@ -1193,6 +1202,7 @@ class ModelItemViewSet(BasePermViewSet):
                             client_id=entry.get('id') or entry.get('client_id'),
                             model=model,
                             stage=stage,
+                            part_type=entry_part,
                             color_name=c_name,
                             size=sz,
                             pieces_cut=pieces_cut_ref,
@@ -1217,6 +1227,7 @@ class ModelItemViewSet(BasePermViewSet):
                     client_id=request.data.get('qc_id'),
                     model=model,
                     stage=stage,
+                    part_type=default_part_type,
                     color_name=c_name,
                     size=sz,
                     pieces_cut=pieces_cut_ref,
@@ -1230,6 +1241,7 @@ class ModelItemViewSet(BasePermViewSet):
 
             matrix_snapshot = [
                 {
+                    'part_type': r.part_type or 'shirt',
                     'color_name': r.color_name,
                     'size': r.size,
                     'good_qty': r.counted_pieces,
@@ -1303,8 +1315,14 @@ class ModelItemViewSet(BasePermViewSet):
 
             model._skip_timeline_signal = True
             model.save()
+            recompute_model_part_totals(model)
 
-        all_model_qc = QCRecord.objects.filter(model=model, stage=stage)
+        # Only return the parts touched by this request so the client never duplicates
+        # records belonging to the other garment parts.
+        affected_parts = {r.part_type for r in saved_records if r.part_type} or {default_part_type}
+        all_model_qc = QCRecord.objects.filter(
+            model=model, stage=stage, part_type__in=affected_parts
+        )
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
             'qcRecord': QCRecordSerializer(saved_records[0]).data if saved_records else None,
@@ -1569,12 +1587,14 @@ class CuttingRecordViewSet(BasePermViewSet):
         shade = (data.get('shade_degree') or data.get('shadeDegree') or '').strip()
         notes = (data.get('notes') or '').strip() if can_cutting_notes else ''
         now_str = data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
+        part_type = normalize_part_key(data.get('part_type') or data.get('partType') or 'shirt')
 
         with transaction.atomic():
             rec = CuttingRecord.objects.create(
                 client_id=data.get('id') or data.get('client_id'),
                 model=model,
                 spread_number=spread_num,
+                part_type=part_type,
                 spreader_name=spreader,
                 cutter_name=cutter,
                 fabric_color=color_name,
@@ -1600,13 +1620,14 @@ class CuttingRecordViewSet(BasePermViewSet):
                     notes=item['notes'],
                 )
 
-            model.total_cut_pieces = int(model.total_cut_pieces or 0) + pieces
             if cutter:
                 model.cutter_name = cutter
             if spreader:
                 model.spreader_name = spreader
             model._skip_timeline_signal = True
             model.save()
+            # Recompute per-part totals from the records (never blindly sum parts together)
+            recompute_model_part_totals(model)
 
             tl_notes = f"فرشة رقم #{spread_num} | الفَرّاش: {spreader or '-'} | المقصدار: {cutter or '-'} | الألوان والراقات: {color_name} | إجمالي الراقات: {layers} | عدد القطع في الراق: {pieces_per_layer} | إجمالي وزن الراق: {weight} كجم | القطع المقصوصة: {pieces}"
             if shade:
@@ -1670,15 +1691,17 @@ class QCRecordViewSet(BasePermViewSet):
         now_str = data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
         color_name = (data.get('color_name') or data.get('colorName') or '').strip()
         size_val = (data.get('size') or '').strip()
+        part_type = normalize_part_key(data.get('part_type') or data.get('partType') or 'shirt')
         pieces_cut_ref = int(data.get('pieces_cut') or model.total_cut_pieces or 0)
 
         with transaction.atomic():
-            # Upsert if same model + stage + color_name + size exists
+            # Upsert if same model + part + stage + color_name + size exists
             existing = None
             if color_name or size_val:
                 existing = QCRecord.objects.filter(
                     model=model,
                     stage=stage,
+                    part_type=part_type,
                     color_name=color_name,
                     size=size_val
                 ).first()
@@ -1697,6 +1720,7 @@ class QCRecordViewSet(BasePermViewSet):
                     client_id=data.get('id') or data.get('client_id'),
                     model=model,
                     stage=stage,
+                    part_type=part_type,
                     color_name=color_name,
                     size=size_val,
                     pieces_cut=pieces_cut_ref,
@@ -1707,19 +1731,10 @@ class QCRecordViewSet(BasePermViewSet):
                     created_at_str=now_str,
                 )
 
-            # Update aggregated stage count on model
-            stage_total = sum(
-                int(r.counted_pieces or 0)
-                for r in QCRecord.objects.filter(model=model, stage=stage)
-            )
-            if stage == 'before_print':
-                model.count_before_print = stage_total
-            elif stage == 'after_print':
-                model.count_after_print = stage_total
-            elif stage == 'after_sewing':
-                model.count_after_sewing = stage_total
+            # Recompute per-part + aggregate stage counts from the records
             model._skip_timeline_signal = True
             model.save()
+            recompute_model_part_totals(model)
 
         return Response(QCRecordSerializer(rec).data, status=status.HTTP_201_CREATED)
 
@@ -1748,6 +1763,8 @@ class QCRecordViewSet(BasePermViewSet):
         now_str = data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
         pieces_cut_ref = int(model.total_cut_pieces or model.target_cut_quantity or 0)
 
+        default_part_type = normalize_part_key(data.get('part_type') or data.get('partType') or 'shirt')
+
         saved_list = []
         with transaction.atomic():
             for entry in entries:
@@ -1755,6 +1772,9 @@ class QCRecordViewSet(BasePermViewSet):
                 sz = (entry.get('size') or '').strip()
                 if not c_name and not sz:
                     continue
+                entry_part = normalize_part_key(
+                    entry.get('part_type') or entry.get('partType') or default_part_type
+                )
                 g_qty = max(0, int(entry.get('good_qty') if entry.get('good_qty') is not None else (entry.get('goodQty') or entry.get('counted_pieces') or 0)))
                 d_qty = max(0, int(entry.get('defect_qty') if entry.get('defect_qty') is not None else (entry.get('defectQty') or entry.get('defect_pieces') or 0)))
                 cell_notes = (entry.get('notes') or entry.get('defect_notes') or raw_notes or '').strip()
@@ -1762,6 +1782,7 @@ class QCRecordViewSet(BasePermViewSet):
                 existing = QCRecord.objects.filter(
                     model=model,
                     stage=stage,
+                    part_type=entry_part,
                     color_name=c_name,
                     size=sz
                 ).first()
@@ -1780,6 +1801,7 @@ class QCRecordViewSet(BasePermViewSet):
                         client_id=entry.get('id') or entry.get('client_id'),
                         model=model,
                         stage=stage,
+                        part_type=entry_part,
                         color_name=c_name,
                         size=sz,
                         pieces_cut=pieces_cut_ref,
@@ -1791,18 +1813,10 @@ class QCRecordViewSet(BasePermViewSet):
                     )
                     saved_list.append(new_rec)
 
-            stage_total = sum(
-                int(r.counted_pieces or 0)
-                for r in QCRecord.objects.filter(model=model, stage=stage)
-            )
-            if stage == 'before_print':
-                model.count_before_print = stage_total
-            elif stage == 'after_print':
-                model.count_after_print = stage_total
-            elif stage == 'after_sewing':
-                model.count_after_sewing = stage_total
+            # Recompute per-part + aggregate stage counts from the records
             model._skip_timeline_signal = True
             model.save()
+            recompute_model_part_totals(model)
 
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,

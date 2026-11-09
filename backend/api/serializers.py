@@ -354,6 +354,8 @@ class CuttingRecordSerializer(serializers.ModelSerializer):
             'model_id': get_ext_id(instance.model),
             'spread_number': int(instance.spread_number or 1),
             'spreadNumber': int(instance.spread_number or 1),
+            'part_type': instance.part_type or 'shirt',
+            'partType': instance.part_type or 'shirt',
             'spreader_name': instance.spreader_name or '',
             'spreaderName': instance.spreader_name or '',
             'cutter_name': instance.cutter_name or '',
@@ -389,6 +391,8 @@ class QCRecordSerializer(serializers.ModelSerializer):
             'id': get_ext_id(instance),
             'model_id': get_ext_id(instance.model),
             'stage': instance.stage,
+            'part_type': instance.part_type or 'shirt',
+            'partType': instance.part_type or 'shirt',
             'color_name': instance.color_name or '',
             'size': instance.size or '',
             'pieces_cut': int(instance.pieces_cut or 0),
@@ -473,6 +477,8 @@ class ModelItemSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def to_representation(self, instance):
+        from .services import model_part_summary
+        parts_info = model_part_summary(instance)
         return {
             'id': get_ext_id(instance),
             'model_code': instance.model_code,
@@ -485,6 +491,18 @@ class ModelItemSerializer(serializers.ModelSerializer):
             'target_cut_quantity': int(instance.target_cut_quantity or 0),
             'actual_cut_count': int(instance.total_cut_pieces or 0),
             'total_cut_pieces': int(instance.total_cut_pieces or 0),
+            'garment_parts': instance.garment_parts or [],
+            'parts': parts_info['parts'],
+            'cut_summary': parts_info['cut_summary'],
+            'qc_summary': parts_info['qc_summary'],
+            'sewing_available': parts_info['sewing_available'],
+            'completed_sets': parts_info['completed_sets'],
+            'cut_shirt_pieces': int(instance.cut_shirt_pieces or 0),
+            'cut_pants_pieces': int(instance.cut_pants_pieces or 0),
+            'cut_jacket_pieces': int(instance.cut_jacket_pieces or 0),
+            'qc_shirt_pieces': int(instance.qc_shirt_pieces or 0),
+            'qc_pants_pieces': int(instance.qc_pants_pieces or 0),
+            'qc_jacket_pieces': int(instance.qc_jacket_pieces or 0),
             'cutter_name': instance.cutter_name or '',
             'count_before_print': instance.count_before_print,
             'count_after_print': instance.count_after_print,

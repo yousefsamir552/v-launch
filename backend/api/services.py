@@ -12,6 +12,179 @@ from .models import (
 from .serializers import resolve_by_id
 
 
+# ---------------------------------------------------------------------------
+# Garment part helpers (تيشرت / بنطلون / جاكيت / قطعة واحدة)
+# 'shirt' is the canonical key for تيشرت (legacy code already uses it).
+# ---------------------------------------------------------------------------
+PART_ORDER = ['shirt', 'pants', 'jacket', 'single']
+PART_LABELS = {
+    'shirt': 'تيشرت',
+    'pants': 'بنطلون',
+    'jacket': 'جاكيت',
+    'single': 'قطعة واحدة',
+}
+PART_ALIASES = {
+    'tshirt': 'shirt', 't-shirt': 'shirt', 'tee': 'shirt', 'shirt': 'shirt',
+    'قميص': 'shirt', 'تيشرت': 'shirt', 'تيشيرت': 'shirt', 'تي شيرت': 'shirt',
+    'pants': 'pants', 'pant': 'pants', 'trouser': 'pants', 'trousers': 'pants',
+    'بنطلون': 'pants', 'بنطال': 'pants',
+    'jacket': 'jacket', 'جاكيت': 'jacket', 'معطف': 'jacket',
+    'single': 'single', 'كامل': 'single', 'قطعة واحدة': 'single', 'قطعه واحده': 'single',
+}
+REAL_PARTS = ('shirt', 'pants', 'jacket')
+QC_STAGE_RANK = {'before_print': 1, 'after_print': 2, 'after_sewing': 3}
+
+
+def normalize_part_key(value):
+    """Normalizes any free-text / alias part label into one of PART_ORDER keys."""
+    if value is None:
+        return 'shirt'
+    raw = str(value).strip().lower()
+    if not raw:
+        return 'shirt'
+    if raw in PART_ORDER:
+        return raw
+    if raw in PART_ALIASES:
+        return PART_ALIASES[raw]
+    for alias, key in PART_ALIASES.items():
+        if alias and alias in raw:
+            return key
+    return 'shirt'
+
+
+def get_model_parts(model):
+    """Returns the ordered list of garment part keys for a model.
+
+    Priority:
+      1. Explicit ModelItem.garment_parts list.
+      2. Inferred from the model requirement labels (part_name).
+      3. Safe legacy default: ['shirt', 'pants'] (preserves old two-piece behaviour).
+    """
+    explicit = getattr(model, 'garment_parts', None) or []
+    normalized = []
+    if isinstance(explicit, (list, tuple)):
+        for item in explicit:
+            key = normalize_part_key(item)
+            if key not in normalized:
+                normalized.append(key)
+    if normalized:
+        return sorted(normalized, key=lambda k: PART_ORDER.index(k) if k in PART_ORDER else 99)
+
+    inferred = []
+    try:
+        for req in model.requirements.all():
+            key = normalize_part_key(getattr(req, 'part_name', ''))
+            if key not in inferred:
+                inferred.append(key)
+    except Exception:
+        inferred = []
+
+    if not inferred:
+        inferred = ['shirt', 'pants']
+    return sorted(inferred, key=lambda k: PART_ORDER.index(k) if k in PART_ORDER else 99)
+
+
+def recompute_model_part_totals(model):
+    """Recomputes per-part cut/QC totals and legacy aggregate fields from the records.
+
+    The cutting and QC records are the single source of truth; every summary is derived
+    so that parts are never silently summed together (the previous bug).
+    """
+    parts = get_model_parts(model)
+    part_keys = set(parts) | set(REAL_PARTS)
+
+    cut_by_part = {key: 0 for key in part_keys}
+    total_cut_all = 0
+    for rec in CuttingRecord.objects.filter(model=model):
+        key = normalize_part_key(getattr(rec, 'part_type', '') or 'shirt')
+        qty = int(rec.pieces_count or 0)
+        cut_by_part[key] = cut_by_part.get(key, 0) + qty
+        total_cut_all += qty
+
+    qc_records = list(QCRecord.objects.filter(model=model))
+    best_stage = {}
+    for rec in qc_records:
+        key = normalize_part_key(getattr(rec, 'part_type', '') or 'shirt')
+        rank = QC_STAGE_RANK.get(rec.stage, 0)
+        if key not in best_stage or rank > best_stage[key]:
+            best_stage[key] = rank
+
+    qc_by_part = {key: 0 for key in part_keys}
+    aggregate_by_stage = {'before_print': 0, 'after_print': 0, 'after_sewing': 0}
+    for rec in qc_records:
+        key = normalize_part_key(getattr(rec, 'part_type', '') or 'shirt')
+        qty = int(rec.counted_pieces or 0)
+        aggregate_by_stage[rec.stage] = aggregate_by_stage.get(rec.stage, 0) + qty
+        if best_stage.get(key) == QC_STAGE_RANK.get(rec.stage, 0):
+            qc_by_part[key] = qc_by_part.get(key, 0) + qty
+
+    model.cut_shirt_pieces = cut_by_part.get('shirt', 0)
+    model.cut_pants_pieces = cut_by_part.get('pants', 0)
+    model.cut_jacket_pieces = cut_by_part.get('jacket', 0)
+    model.qc_shirt_pieces = qc_by_part.get('shirt', 0)
+    model.qc_pants_pieces = qc_by_part.get('pants', 0)
+    model.qc_jacket_pieces = qc_by_part.get('jacket', 0)
+
+    is_legacy = not (getattr(model, 'garment_parts', None) or [])
+    active_cut = [cut_by_part.get(k, 0) for k in parts if k in REAL_PARTS]
+    if is_legacy:
+        # Safe legacy behaviour: keep the old aggregate (sum) so old data is never lost.
+        model.total_cut_pieces = total_cut_all
+    elif 'single' in parts:
+        # Single-piece models have no per-part columns: use their own total.
+        model.total_cut_pieces = cut_by_part.get('single', 0) or total_cut_all
+    elif active_cut:
+        # Completed sets = the smaller of the active parts (never a misleading sum).
+        model.total_cut_pieces = min(active_cut) if len(active_cut) > 1 else active_cut[0]
+    else:
+        model.total_cut_pieces = 0
+
+    # Legacy aggregate good counts (sum across parts) kept for backward-compatible views.
+    model.count_before_print = aggregate_by_stage.get('before_print', 0)
+    model.count_after_print = aggregate_by_stage.get('after_print', 0)
+    model.count_after_sewing = aggregate_by_stage.get('after_sewing', 0)
+
+    model.save(update_fields=[
+        'cut_shirt_pieces', 'cut_pants_pieces', 'cut_jacket_pieces',
+        'qc_shirt_pieces', 'qc_pants_pieces', 'qc_jacket_pieces',
+        'total_cut_pieces', 'count_before_print', 'count_after_print', 'count_after_sewing',
+    ])
+    return model
+
+
+def model_part_summary(model):
+    """Returns the per-part representation exposed to the frontend."""
+    parts = get_model_parts(model)
+    cut_map = {
+        'shirt': int(getattr(model, 'cut_shirt_pieces', 0) or 0),
+        'pants': int(getattr(model, 'cut_pants_pieces', 0) or 0),
+        'jacket': int(getattr(model, 'cut_jacket_pieces', 0) or 0),
+    }
+    qc_map = {
+        'shirt': int(getattr(model, 'qc_shirt_pieces', 0) or 0),
+        'pants': int(getattr(model, 'qc_pants_pieces', 0) or 0),
+        'jacket': int(getattr(model, 'qc_jacket_pieces', 0) or 0),
+    }
+    cut_summary = {k: cut_map.get(k, 0) for k in parts}
+    qc_summary = {k: qc_map.get(k, 0) for k in parts}
+    # Available for sewing: latest good QC count per part, else its actual cut count.
+    sewing_available = {k: (qc_map.get(k, 0) or cut_map.get(k, 0)) for k in parts}
+    aggregate_good = int(getattr(model, 'count_after_print', 0) or 0)
+    if 'single' in parts:
+        # A single-piece model uses the legacy aggregate count.
+        single_qty = aggregate_good or int(model.total_cut_pieces or 0)
+        sewing_available['single'] = single_qty
+        cut_summary['single'] = int(model.total_cut_pieces or 0)
+        qc_summary['single'] = aggregate_good
+    return {
+        'parts': parts,
+        'cut_summary': cut_summary,
+        'qc_summary': qc_summary,
+        'sewing_available': sewing_available,
+        'completed_sets': int(model.total_cut_pieces or 0),
+    }
+
+
 DEFAULT_ROLES_SEED = [
     {
         'client_id': 'role-1',
@@ -273,6 +446,15 @@ def ensure_schema_columns():
                 cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_modelitem')]
                 if 'spreader_name' not in cols:
                     cursor.execute('ALTER TABLE api_modelitem ADD COLUMN spreader_name varchar(150) NULL;')
+                if 'garment_parts' not in cols:
+                    if connection.vendor == 'postgresql':
+                        cursor.execute("ALTER TABLE api_modelitem ADD COLUMN garment_parts jsonb NOT NULL DEFAULT '[]'::jsonb;")
+                    else:
+                        cursor.execute("ALTER TABLE api_modelitem ADD COLUMN garment_parts text NOT NULL DEFAULT '[]';")
+                for part_col in ('cut_shirt_pieces', 'cut_pants_pieces', 'cut_jacket_pieces',
+                                 'qc_shirt_pieces', 'qc_pants_pieces', 'qc_jacket_pieces'):
+                    if part_col not in cols:
+                        cursor.execute(f'ALTER TABLE api_modelitem ADD COLUMN {part_col} integer NOT NULL DEFAULT 0;')
 
             if 'api_cuttingrecord' in table_names:
                 cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_cuttingrecord')]
@@ -282,6 +464,13 @@ def ensure_schema_columns():
                     cursor.execute("ALTER TABLE api_cuttingrecord ADD COLUMN spreader_name varchar(150) NOT NULL DEFAULT '';")
                 if 'pieces_per_layer' not in cols:
                     cursor.execute('ALTER TABLE api_cuttingrecord ADD COLUMN pieces_per_layer integer NOT NULL DEFAULT 0;')
+                if 'part_type' not in cols:
+                    cursor.execute("ALTER TABLE api_cuttingrecord ADD COLUMN part_type varchar(20) NOT NULL DEFAULT 'shirt';")
+
+            if 'api_qcrecord' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_qcrecord')]
+                if 'part_type' not in cols:
+                    cursor.execute("ALTER TABLE api_qcrecord ADD COLUMN part_type varchar(20) NOT NULL DEFAULT 'shirt';")
 
             if 'api_cuttingspreadlayer' not in table_names:
                 if connection.vendor == 'postgresql':
@@ -612,14 +801,14 @@ def dispatch_model_to_sewing_service(
     model = resolve_by_id(ModelItem, model_id)
     if not model:
         raise ValueError("الموديل غير موجود")
-    resolved_label = piece_label or ('تيشرت' if piece_type == 'shirt' else 'بنطلون')
+    resolved_label = piece_label or PART_LABELS.get(piece_type, 'قطعة')
 
     if piece_type == 'shirt':
         model.sewing_shirt_workshop = workshop_name
         model.sewing_shirt_expected_date = expected_delivery_date
         model.sewing_shirt_status = 'في ورشة المكن'
         model.sewing_shirt_pieces = pieces_count
-    else:
+    elif piece_type == 'pants':
         model.sewing_pants_workshop = workshop_name
         model.sewing_pants_expected_date = expected_delivery_date
         model.sewing_pants_status = 'في ورشة المكن'
@@ -695,7 +884,7 @@ def receive_model_from_sewing_service(dispatch_id, user_name='مراقب الج�
     model = dispatch.model
     if dispatch.piece_type == 'shirt':
         model.sewing_shirt_status = 'تم الاستلام'
-    else:
+    elif dispatch.piece_type == 'pants':
         model.sewing_pants_status = 'تم الاستلام'
 
     other_pending = SewingDispatch.objects.filter(model=model).exclude(id=dispatch.id).exclude(status='تم الاستلام').exists()

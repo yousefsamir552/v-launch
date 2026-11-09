@@ -491,6 +491,18 @@ class AccessoryTransaction(models.Model):
         super().save(*args, **kwargs)
 
 
+# Unified garment part keys used across cutting, QC and sewing.
+# NOTE: 'shirt' is the canonical key for تيشرت (legacy code already uses it).
+PART_TYPE_CHOICES = [
+    ('shirt', 'تيشرت'),
+    ('pants', 'بنطلون'),
+    ('jacket', 'جاكيت'),
+    ('single', 'قطعة واحدة / كامل'),
+]
+
+PART_TYPE_KEYS = [key for key, _label in PART_TYPE_CHOICES]
+
+
 class ModelItem(models.Model):
     STATUS_CHOICES = [
         ('مرحلة التصميم', 'مرحلة التصميم'),
@@ -521,6 +533,19 @@ class ModelItem(models.Model):
 
     target_cut_quantity = models.IntegerField(default=0, verbose_name="العدد المستهدف للقص")
     total_cut_pieces = models.IntegerField(default=0, verbose_name="العدد المقصوص فعلياً")
+
+    # --- Per-part tracking (تيشرت / بنطلون / جاكيت / قطعة واحدة) ---
+    # Explicit list of garment parts this model is composed of, e.g. ["shirt", "pants"].
+    # Left empty for legacy rows: services.get_model_parts() infers a safe default.
+    garment_parts = models.JSONField(default=list, blank=True, verbose_name="قطع الموديل")
+    # Total cut pieces per part (aggregated from CuttingRecord.part_type)
+    cut_shirt_pieces = models.IntegerField(default=0, blank=True, verbose_name="المقصوص تيشرت")
+    cut_pants_pieces = models.IntegerField(default=0, blank=True, verbose_name="المقصوص بنطلون")
+    cut_jacket_pieces = models.IntegerField(default=0, blank=True, verbose_name="المقصوص جاكيت")
+    # Latest good counted quantity per part (aggregated from QCRecord.part_type)
+    qc_shirt_pieces = models.IntegerField(default=0, blank=True, verbose_name="السليم تيشرت")
+    qc_pants_pieces = models.IntegerField(default=0, blank=True, verbose_name="السليم بنطلون")
+    qc_jacket_pieces = models.IntegerField(default=0, blank=True, verbose_name="السليم جاكيت")
 
     # Stage Counts
     count_before_print = models.IntegerField(default=0, blank=True, null=True, verbose_name="العد قبل الطباعة")
@@ -642,6 +667,7 @@ class CuttingRecord(models.Model):
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, related_name="cutting_records", verbose_name="الموديل")
     spread_number = models.IntegerField(default=1, verbose_name="رقم الفرشة")
+    part_type = models.CharField(max_length=20, choices=PART_TYPE_CHOICES, default='shirt', verbose_name="نوع القطعة")
     spreader_name = models.CharField(max_length=150, blank=True, default='', verbose_name="اسم الفَرّاش (من قام بالفرش)")
     cutter_name = models.CharField(max_length=150, verbose_name="اسم المقصدار / القاصص")
     fabric_color = models.CharField(max_length=255, blank=True, default='', verbose_name="ملخص ألوان الفرشة")
@@ -706,6 +732,7 @@ class QCRecord(models.Model):
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, related_name="qc_records")
     stage = models.CharField(max_length=30, choices=STAGE_TYPES, default='before_print', verbose_name="مرحلة العد والفرز")
+    part_type = models.CharField(max_length=20, choices=PART_TYPE_CHOICES, default='shirt', verbose_name="نوع القطعة")
     color_name = models.CharField(max_length=150, blank=True, null=True, default='', verbose_name="اللون")
     size = models.CharField(max_length=50, blank=True, null=True, default='', verbose_name="المقاس")
     pieces_cut = models.IntegerField(default=0, verbose_name="القطع المقصوصة")
@@ -763,6 +790,8 @@ class SewingDispatch(models.Model):
     PIECE_CHOICES = [
         ('shirt', 'تيشرت'),
         ('pants', 'بنطلون'),
+        ('jacket', 'جاكيت'),
+        ('single', 'قطعة واحدة / كامل'),
     ]
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, related_name="sewing_dispatches")

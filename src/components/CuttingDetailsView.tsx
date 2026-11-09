@@ -14,7 +14,7 @@ import {
   Palette,
   Calculator
 } from 'lucide-react';
-import { CuttingSpreadLayer } from '../types';
+import { CuttingSpreadLayer, GarmentPart, getPartLabel } from '../types';
 
 interface CuttingDetailsViewProps {
   modelId: string;
@@ -32,6 +32,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     requirements,
     fabricColors,
     cuttingRecords,
+    getModelParts,
+    getModelColorList,
     addCuttingRecord,
     finishCuttingToQC,
     exportCuttingCsv,
@@ -45,20 +47,33 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   const modelReqs = requirements.filter((r) => r.model_id === modelId);
   const modelCuttingRecords = cuttingRecords.filter((r) => r.model_id === modelId);
 
-  // Build available color options for this model
-  const availableColors: string[] = [];
-  modelReqs.forEach((req) => {
-    const col = fabricColors.find((c) => c.id === req.color_id);
-    const label = col?.color_name
-      ? `${col.color_code} - ${col.color_name} (${req.part_name})`
-      : `${col?.color_code || 'لون'} (${req.part_name})`;
-    if (!availableColors.includes(label)) {
-      availableColors.push(label);
-    }
-  });
+  // Garment parts for this model — each part is cut & counted independently.
+  const modelParts = getModelParts(modelId);
+  const [selectedPart, setSelectedPart] = useState<GarmentPart>(
+    () => modelParts[0] || 'shirt'
+  );
+  const partRecords = modelCuttingRecords.filter(
+    (r) => (r.part_type || r.partType || 'shirt') === selectedPart
+  );
+
+  // Build available color options for the selected part (no "(part)" suffix).
+  const availableColors: string[] = getModelColorList(modelId, selectedPart);
   if (availableColors.length === 0 && model) {
     availableColors.push(`اللون الأساسي (${model.model_code})`);
   }
+
+  const handleSelectPart = (part: GarmentPart) => {
+    setSelectedPart(part);
+    const colors = getModelColorList(modelId, part);
+    setSpreadLayers([
+      {
+        color_name: colors[0] || '',
+        layers_count: 50,
+        layer_weight: 0,
+        shade_degree: ''
+      }
+    ]);
+  };
 
   // State for "Add Spread" (إضافة فرشة) panel
   const [isAddingSpread, setIsAddingSpread] = useState<boolean>(true);
@@ -175,7 +190,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
 
     addCuttingRecord({
       modelId,
-      spreadNumber: modelCuttingRecords.length + 1,
+      spreadNumber: partRecords.length + 1,
+      partType: selectedPart,
       spreaderName: spreaderName.trim(),
       cutterName: cutterName.trim(),
       colorLayers: validLayers,
@@ -215,11 +231,12 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     }
   };
 
-  const totalPiecesProduced = modelCuttingRecords.reduce(
+  // Totals are per selected part — parts are never summed into one number.
+  const totalPiecesProduced = partRecords.reduce(
     (sum, r) => sum + (r.pieces_count || 0),
     0
   );
-  const totalLayers = modelCuttingRecords.reduce(
+  const totalLayers = partRecords.reduce(
     (sum, r) => sum + (r.layers_count || 0),
     0
   );
@@ -246,6 +263,31 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             <span>+ إضافة فرشة جديدة (Add Spread)</span>
           </button>
         )}
+      </div>
+
+      {/* Garment part selector — each part is cut & counted independently */}
+      <div className="flex items-center gap-2 flex-wrap bg-white rounded-2xl border border-slate-200/80 px-4 py-3 shadow-xs">
+        <span className="text-xs font-extrabold text-slate-500">القطعة:</span>
+        {modelParts.map((part) => (
+          <button
+            key={part}
+            type="button"
+            onClick={() => handleSelectPart(part)}
+            className={`px-4 py-1.5 rounded-full text-xs font-bold border transition cursor-pointer ${
+              selectedPart === part
+                ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                : 'bg-white text-slate-600 border-slate-300 hover:border-rose-400'
+            }`}
+          >
+            {getPartLabel(part)}
+            <span className="ms-1.5 text-[10px] opacity-90">
+              ({Number(model.cut_summary?.[part] ?? 0).toLocaleString('ar-EG')})
+            </span>
+          </button>
+        ))}
+        <span className="ms-auto text-[11px] font-bold text-rose-700">
+          إجمالي هذه القطعة: {totalPiecesProduced.toLocaleString('ar-EG')} قطعة
+        </span>
       </div>
 
       {/* TOP INFORMATIONAL CARD */}
@@ -338,7 +380,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             </span>
             <span>
               عدد الفرشات:{' '}
-              <strong className="text-rose-800">{modelCuttingRecords.length}</strong>
+              <strong className="text-rose-800">{partRecords.length}</strong>
             </span>
             <span>
               الإنجاز:{' '}
@@ -359,7 +401,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
               <h2 className="text-base font-extrabold text-rose-600 flex items-center gap-2">
                 <Layers className="w-5 h-5" />
                 <span>
-                  📝 تسجيل فرشة قص جديدة (فرشة #{modelCuttingRecords.length + 1})
+                  📝 تسجيل فرشة قص جديدة — {getPartLabel(selectedPart)} (فرشة #{partRecords.length + 1})
                 </span>
               </h2>
               <span className="px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[11px] font-black">
@@ -648,9 +690,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
 
           <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
             <span>
-              إجمالي الفرشات:{' '}
+              إجمالي فرشات {getPartLabel(selectedPart)}:{' '}
               <strong className="text-slate-900">
-                {modelCuttingRecords.length}
+                {partRecords.length}
               </strong>
             </span>
             <span>
@@ -676,11 +718,11 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                   <span className="text-rose-600">{model.model_code}</span>
                 </h2>
                 <span className="text-xs text-slate-500 font-semibold">
-                  إجمالي الفرشات المسجلة: {modelCuttingRecords.length} فرشة
+                  إجمالي فرشات {getPartLabel(selectedPart)} المسجلة: {partRecords.length} فرشة
                 </span>
               </div>
 
-              {modelCuttingRecords.length > 0 && (
+              {partRecords.length > 0 && (
                 <button
                   type="button"
                   onClick={() => exportCuttingCsv(modelId)}
@@ -693,12 +735,12 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             </div>
 
             <div className="space-y-4">
-              {modelCuttingRecords.length > 0 ? (
-                modelCuttingRecords.map((rec, idx) => {
+              {partRecords.length > 0 ? (
+                partRecords.map((rec, idx) => {
                   const spreadNum =
                     rec.spread_number ||
                     rec.spreadNumber ||
-                    modelCuttingRecords.length - idx;
+                    partRecords.length - idx;
                   const layersList = rec.color_layers || rec.colorLayers || [];
                   const spreader =
                     rec.spreader_name || rec.spreaderName || 'غير محدد';

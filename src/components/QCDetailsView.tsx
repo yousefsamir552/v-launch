@@ -10,7 +10,8 @@ import {
   Grid,
   Save
 } from 'lucide-react';
-import { QCStageType, QCMatrixCellInput } from '../types';
+import { QCStageType, QCMatrixCellInput, GarmentPart, getPartLabel } from '../types';
+import { printManualCountSheet } from '../utils/printManualCountSheet';
 
 interface QCDetailsViewProps {
   modelId: string;
@@ -25,6 +26,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
 }) => {
   const {
     models,
+    getModelParts,
     getModelColorList,
     getModelSizeList,
     qcRecords,
@@ -39,6 +41,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
 
   const canEdit = hasPermission('qc', true);
   const model = models.find((m) => m.id === modelId);
+  const modelParts = getModelParts(modelId);
 
   const [selectedStage, setSelectedStage] = useState<QCStageType>(() => {
     if (model?.status === 'العد بعد الطباعة') return 'after_print';
@@ -46,12 +49,16 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
     return 'before_print';
   });
 
+  const [selectedPart, setSelectedPart] = useState<GarmentPart>(
+    () => modelParts[0] || 'shirt'
+  );
+
   const canWriteNotes =
     selectedStage === 'before_print'
       ? canAddQCBeforePrintNotes()
       : canAddQCAfterPrintNotes();
 
-  const colorList = getModelColorList(modelId);
+  const colorList = getModelColorList(modelId, selectedPart);
   const sizeList = getModelSizeList(modelId);
 
   const makeCellKey = (color: string, size: string) => `${color}___${size}`;
@@ -63,7 +70,10 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
 
   useEffect(() => {
     const stageRecs = qcRecords.filter(
-      (r) => r.model_id === modelId && r.stage === selectedStage
+      (r) =>
+        r.model_id === modelId &&
+        r.stage === selectedStage &&
+        (r.part_type || 'shirt') === selectedPart
     );
     const nextMatrix: Record<string, { good: number; defect: number }> = {};
     let existingNote = '';
@@ -83,7 +93,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
 
     setMatrixState(nextMatrix);
     setDefectNotes(existingNote);
-  }, [modelId, selectedStage, qcRecords, colorList.join('|'), sizeList.join('|')]);
+  }, [modelId, selectedStage, selectedPart, qcRecords, colorList.join('|'), sizeList.join('|')]);
 
   if (!model) {
     return (
@@ -122,6 +132,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
       sizeList.forEach((sz) => {
         const cell = matrixState[makeCellKey(col, sz)] || { good: 0, defect: 0 };
         entries.push({
+          part_type: selectedPart,
           color_name: col,
           size: sz,
           good_qty: Number(cell.good) || 0,
@@ -139,6 +150,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
     saveQCMatrix({
       modelId,
       stage: selectedStage,
+      partType: selectedPart,
       matrixEntries: entries,
       notes: canWriteNotes ? defectNotes.trim() : ''
     });
@@ -161,6 +173,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
       recordQCStageCount({
         modelId,
         stage: selectedStage,
+        partType: selectedPart,
         piecesCounted: sumGood,
         defectQty: sumDefect,
         matrixEntries: entries,
@@ -184,7 +197,10 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
     totalCounted > 0 ? ((totalDefect / totalCounted) * 100).toFixed(1) : '0';
 
   const modelQCRecords = qcRecords.filter(
-    (r) => r.model_id === modelId && r.stage === selectedStage
+    (r) =>
+      r.model_id === modelId &&
+      r.stage === selectedStage &&
+      (r.part_type || 'shirt') === selectedPart
   );
 
   return (
@@ -210,6 +226,31 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
               <span>📥 تصدير المصفوفة Excel</span>
             </button>
           )}
+          <button
+            type="button"
+            onClick={() =>
+              printManualCountSheet({
+                siteName: globalSettings?.site_name,
+                modelCode: model.model_code,
+                modelType: model.model_type,
+                stageLabel:
+                  selectedStage === 'before_print'
+                    ? 'العد قبل الطباعة'
+                    : selectedStage === 'after_print'
+                    ? 'العد بعد الطباعة'
+                    : 'العد بعد المكن',
+                sizes: sizeList,
+                parts: modelParts.map((part) => ({
+                  key: part,
+                  colors: getModelColorList(modelId, part)
+                }))
+              })
+            }
+            className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs shadow-xs transition cursor-pointer"
+          >
+            <Printer className="w-4 h-4" />
+            <span>🖐️ ورقة جرد يدوي (فارغة)</span>
+          </button>
           <button
             onClick={() => window.print()}
             className="flex items-center gap-2 px-5 py-2 rounded-full bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition cursor-pointer"
@@ -241,7 +282,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
               <span className="text-purple-700">{model.model_code}</span>
             </h1>
             <p className="text-xs text-slate-600 font-semibold mb-1.5">
-              الألوان والقطع:{' '}
+              ألوان قطعة {getPartLabel(selectedPart)}:{' '}
               <span className="text-slate-900">
                 {colorList.join('، ') || 'غير محدد'}
               </span>
@@ -287,6 +328,32 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
         </div>
       </div>
 
+      {/* Garment part selector — each part is counted independently */}
+      <div className="no-print flex items-center gap-2 flex-wrap bg-white rounded-2xl border border-slate-200/80 px-4 py-3 shadow-xs">
+        <span className="text-xs font-extrabold text-slate-500">القطعة:</span>
+        {modelParts.map((part) => (
+          <button
+            key={part}
+            type="button"
+            onClick={() => setSelectedPart(part)}
+            className={`px-4 py-1.5 rounded-full text-xs font-bold border transition cursor-pointer ${
+              selectedPart === part
+                ? 'bg-purple-700 text-white border-purple-700 shadow-xs'
+                : 'bg-white text-slate-600 border-slate-300 hover:border-purple-400'
+            }`}
+          >
+            {getPartLabel(part)}
+          </button>
+        ))}
+        <span className="ms-auto text-[11px] font-bold text-purple-700">
+          المتاح للخياطة: {Number(
+            model.sewing_available?.[selectedPart] ??
+              model.cut_summary?.[selectedPart] ??
+              0
+          ).toLocaleString('ar-EG')} قطعة
+        </span>
+      </div>
+
       {/* PRINT-ONLY WORKER SHEET */}
       <div className="hidden print:block my-8 p-6 bg-white border border-black rounded-lg">
         <div className="text-center mb-6">
@@ -295,7 +362,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
             والجودة
           </h2>
           <h3 className="text-lg font-bold">
-            📋 جدول مصفوفة الفرز والعد ({selectedStage === 'before_print' ? 'العد قبل الطباعة' : selectedStage === 'after_print' ? 'العد بعد الطباعة' : 'العد بعد المكن'})
+            📋 جدول مصفوفة الفرز والعد ({selectedStage === 'before_print' ? 'العد قبل الطباعة' : selectedStage === 'after_print' ? 'العد بعد الطباعة' : 'العد بعد المكن'}) — القطعة: {getPartLabel(selectedPart)}
           </h3>
           <p className="text-sm mt-1">
             موديل: {model.model_code} | التاريخ:{' '}

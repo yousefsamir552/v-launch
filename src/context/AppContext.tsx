@@ -16,6 +16,9 @@ import {
   QCRecord,
   QCMatrixCellInput,
   QCStageType,
+  GarmentPart,
+  PART_ORDER,
+  getPartLabel,
   PrintDispatch,
   DispatchStatus,
   CustomRole,
@@ -273,12 +276,14 @@ interface AppContextType {
     piecesCount?: number;
     shadeDegree?: string;
     notes?: string;
+    partType?: GarmentPart;
   }) => void;
   finishCuttingToQC: (modelId: string, notes?: string) => void;
   exportCuttingCsv: (modelId: string) => void;
 
   // QC Actions & Multi-stage Matrix counting (Color x Size)
-  getModelColorList: (modelId: string) => string[];
+  getModelParts: (modelId: string) => GarmentPart[];
+  getModelColorList: (modelId: string, part?: GarmentPart) => string[];
   getModelSizeList: (modelId: string) => string[];
   recordQCData: (data: {
     modelId: string;
@@ -288,6 +293,7 @@ interface AppContextType {
     defectQty: number;
     defectNotes?: string;
     stage?: QCStageType;
+    partType?: GarmentPart;
   }) => void;
   addQCRecord: (data: any) => void;
   saveQCMatrix: (data: {
@@ -295,6 +301,7 @@ interface AppContextType {
     stage: QCStageType;
     matrixEntries: QCMatrixCellInput[];
     notes?: string;
+    partType?: GarmentPart;
   }) => void;
   recordQCStageCount: (data: {
     modelId: string;
@@ -304,6 +311,7 @@ interface AppContextType {
     matrixEntries?: QCMatrixCellInput[];
     defectNotes?: string;
     advanceStage?: boolean;
+    partType?: GarmentPart;
   }) => void;
   finishQCApproval: (modelId: string) => void;
   exportQcCsv: (modelId: string) => void;
@@ -327,7 +335,7 @@ interface AppContextType {
     workshopName: string;
     piecesCount: number;
     expectedDeliveryDate: string;
-    pieceType?: 'shirt' | 'pants';
+    pieceType?: GarmentPart;
     pieceLabel?: string;
     notes?: string;
   }) => void;
@@ -2011,18 +2019,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
-  // Helper to resolve colors and sizes for a model (used in Cutting Spreads & QC Matrix)
-  const getModelColorList = useCallback(
-    (modelId: string): string[] => {
+  // Normalizes any free-text / alias part label to a canonical GarmentPart key.
+  const normalizePartKey = useCallback((value?: string | null): GarmentPart => {
+    const raw = (value || '').trim().toLowerCase();
+    if (!raw) return 'shirt';
+    if ((PART_ORDER as string[]).includes(raw)) return raw as GarmentPart;
+    if (raw.includes('بنطل') || raw.includes('pants') || raw.includes('trouser')) return 'pants';
+    if (raw.includes('جاكيت') || raw.includes('jacket')) return 'jacket';
+    if (raw.includes('كامل') || raw.includes('قطعة واحدة') || raw.includes('single')) return 'single';
+    if (
+      raw.includes('تيشرت') || raw.includes('تيشيرت') || raw.includes('قميص') ||
+      raw.includes('shirt') || raw.includes('tshirt')
+    ) return 'shirt';
+    return 'shirt';
+  }, []);
+
+  // Ordered list of garment parts for a model (explicit → requirements → shirt+pants).
+  const getModelParts = useCallback(
+    (modelId: string): GarmentPart[] => {
       const model = models.find((m) => m.id === modelId);
-      const modelReqs = requirements.filter((r) => r.model_id === modelId);
+      const explicit = (model?.garment_parts || []).map((p) => normalizePartKey(p));
+      let parts = Array.from(new Set(explicit));
+      if (parts.length === 0) {
+        const modelReqs = requirements.filter((r) => r.model_id === modelId);
+        const inferred = Array.from(new Set(modelReqs.map((r) => normalizePartKey(r.part_name))));
+        parts = inferred.length > 0 ? inferred : (['shirt', 'pants'] as GarmentPart[]);
+      }
+      return parts.sort((a, b) => PART_ORDER.indexOf(a) - PART_ORDER.indexOf(b));
+    },
+    [models, requirements, normalizePartKey]
+  );
+
+  // Helper to resolve colors and sizes for a model (used in Cutting Spreads & QC Matrix).
+  // When `part` is provided only that part's colors are returned, without the "(part)" suffix.
+  const getModelColorList = useCallback(
+    (modelId: string, part?: GarmentPart): string[] => {
+      const model = models.find((m) => m.id === modelId);
+      const modelReqs = requirements.filter(
+        (r) => r.model_id === modelId && (!part || normalizePartKey(r.part_name) === part)
+      );
       const colors: string[] = [];
 
       modelReqs.forEach((req) => {
         const col = fabricColors.find((c) => c.id === req.color_id);
-        const colorLabel = col?.color_name
-          ? `${col.color_code} - ${col.color_name} (${req.part_name})`
-          : `${col?.color_code || 'لون'} (${req.part_name})`;
+        const baseLabel = col?.color_name
+          ? `${col.color_code} - ${col.color_name}`
+          : `${col?.color_code || 'لون'}`;
+        const colorLabel = part ? baseLabel : `${baseLabel} (${req.part_name})`;
         if (!colors.includes(colorLabel)) {
           colors.push(colorLabel);
         }
@@ -2030,7 +2073,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // Also include any distinct colors recorded in Cutting Spreads if requirements were empty
       if (colors.length === 0) {
-        const modelSpreads = cuttingRecords.filter((r) => r.model_id === modelId);
+        const modelSpreads = cuttingRecords.filter(
+          (r) =>
+            r.model_id === modelId &&
+            (!part || normalizePartKey(r.part_type || r.partType) === part)
+        );
         modelSpreads.forEach((sp) => {
           const spreadLayers = sp.color_layers || sp.colorLayers || [];
           spreadLayers.forEach((lay) => {
@@ -2047,7 +2094,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       return colors;
     },
-    [models, requirements, fabricColors, cuttingRecords]
+    [models, requirements, fabricColors, cuttingRecords, normalizePartKey]
   );
 
   const getModelSizeList = useCallback(
@@ -2080,12 +2127,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     piecesCount?: number;
     shadeDegree?: string;
     notes?: string;
+    partType?: GarmentPart;
   }) => {
     const recId = 'cut-' + Date.now();
     const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
     const cleanNotes = canAddCuttingNotes() ? (data.notes?.trim() || '') : '';
     const existingModelSpreads = cuttingRecords.filter((r) => r.model_id === data.modelId);
     const spreadNumber = data.spreadNumber || existingModelSpreads.length + 1;
+    const partType: GarmentPart = normalizePartKey(data.partType || 'shirt');
 
     const piecesPerLayer = Math.max(1, Number(data.piecesPerLayer) || 1);
     const layerWeight = Math.max(0, Number(data.layerWeight) || 0);
@@ -2132,6 +2181,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       model_id: data.modelId,
       spread_number: spreadNumber,
       spreadNumber: spreadNumber,
+      part_type: partType,
+      partType: partType,
       spreader_name: cleanSpreader,
       spreaderName: cleanSpreader,
       cutter_name: cleanCutter,
@@ -2158,12 +2209,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setModels((prev) =>
       prev.map((m) => {
         if (m.id !== data.modelId) return m;
-        const newTotal = (m.actual_cut_count || 0) + totalPieces;
+        // Per-part totals: this spread only adds pieces to its own part.
+        const prevPartCut =
+          partType === 'pants'
+            ? Number(m.cut_pants_pieces || 0)
+            : partType === 'jacket'
+            ? Number(m.cut_jacket_pieces || 0)
+            : Number(m.cut_shirt_pieces || 0);
+        const newPartCut = prevPartCut + totalPieces;
+        const cutSummary = {
+          ...(m.cut_summary || {}),
+          [partType]: newPartCut
+        } as Partial<Record<GarmentPart, number>>;
+        const partValues = Object.values(cutSummary).filter(
+          (v): v is number => typeof v === 'number'
+        );
+        const modelParts = (
+          m.parts && m.parts.length > 0
+            ? m.parts
+            : m.garment_parts && m.garment_parts.length > 0
+            ? m.garment_parts
+            : getModelParts(m.id)
+        ) as GarmentPart[];
+        // Legacy aggregate: explicit parts use completed sets (min), legacy models keep the sum.
+        const newTotal =
+          m.garment_parts && m.garment_parts.length > 0 && partValues.length > 0
+            ? Math.min(...partValues)
+            : (m.actual_cut_count || 0) + totalPieces;
         const tlEvent: ModelTimelineEvent = {
           id: 'tl-' + Date.now(),
           stage: 'في القص',
-          title: `تسجيل فرشة قص #${spreadNumber} (${totalPieces} قطعة)`,
-          notes: `فرشة رقم #${spreadNumber} | الفَرّاش: ${cleanSpreader || '-'} | المقصدار: ${cleanCutter} | الألوان والراقات: ${colorsSummary} | إجمالي الراقات: ${totalLayersCount} | عدد القطع في الراق: ${piecesPerLayer} | إجمالي وزن الراق: ${layerWeight} كجم | القطع المقصوصة: ${totalPieces}${cleanNotes ? ` | ملاحظات: ${cleanNotes}` : ''}`,
+          title: `تسجيل فرشة قص #${spreadNumber} - ${getPartLabel(partType)} (${totalPieces} قطعة)`,
+          notes: `فرشة رقم #${spreadNumber} | القطعة: ${getPartLabel(partType)} | الفَرّاش: ${cleanSpreader || '-'} | المقصدار: ${cleanCutter} | الألوان والراقات: ${colorsSummary} | إجمالي الراقات: ${totalLayersCount} | عدد القطع في الراق: ${piecesPerLayer} | إجمالي وزن الراق: ${layerWeight} كجم | القطع المقصوصة: ${totalPieces}${cleanNotes ? ` | ملاحظات: ${cleanNotes}` : ''}`,
           user: cleanCutter || cleanSpreader,
           timestamp: createdAt,
           details: {
@@ -2188,6 +2265,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...m,
           actual_cut_count: newTotal,
           total_cut_pieces: newTotal,
+          completed_sets: newTotal,
+          cut_shirt_pieces: partType === 'shirt' ? newPartCut : (m.cut_shirt_pieces || 0),
+          cut_pants_pieces: partType === 'pants' ? newPartCut : (m.cut_pants_pieces || 0),
+          cut_jacket_pieces: partType === 'jacket' ? newPartCut : (m.cut_jacket_pieces || 0),
+          cut_summary: cutSummary,
+          parts: modelParts,
           cutter_name: cleanCutter,
           spreader_name: cleanSpreader,
           timeline: [tlEvent, ...(m.timeline || [])]
@@ -2200,6 +2283,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         id: recId,
         model_id: data.modelId,
         spread_number: spreadNumber,
+        part_type: partType,
         spreader_name: cleanSpreader,
         cutter_name: cleanCutter,
         color_name: colorsSummary,
@@ -2305,8 +2389,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     defectQty: number;
     defectNotes?: string;
     stage?: QCStageType;
+    partType?: GarmentPart;
   }) => {
     const stage = data.stage || 'before_print';
+    const partType: GarmentPart = normalizePartKey(data.partType || 'shirt');
     const allowNotes =
       stage === 'before_print' ? canAddQCBeforePrintNotes() : canAddQCAfterPrintNotes();
     const cleanNotes = allowNotes ? (data.defectNotes?.trim() || '') : '';
@@ -2317,6 +2403,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: qcId,
       model_id: data.modelId,
       stage,
+      part_type: partType,
+      partType: partType,
       color_name: data.colorName,
       size: data.size,
       good_qty: Math.max(0, data.goodQty),
@@ -2334,6 +2422,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         (q) =>
           q.model_id === data.modelId &&
           q.stage === stage &&
+          (q.part_type || 'shirt') === partType &&
           q.color_name === data.colorName &&
           q.size === data.size
       );
@@ -2350,6 +2439,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         id: qcId,
         model_id: data.modelId,
         stage,
+        part_type: partType,
         color_name: data.colorName,
         size: data.size,
         good_qty: Math.max(0, data.goodQty),
@@ -2389,18 +2479,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     stage: QCStageType;
     matrixEntries: QCMatrixCellInput[];
     notes?: string;
+    partType?: GarmentPart;
   }) => {
     const allowNotes =
       data.stage === 'before_print' ? canAddQCBeforePrintNotes() : canAddQCAfterPrintNotes();
     const cleanNotes = allowNotes ? (data.notes?.trim() || '') : '';
     const inspector = currentUser?.real_name || 'مراقب الجودة';
     const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
+    const partType: GarmentPart = normalizePartKey(data.partType || 'shirt');
+    const entries = data.matrixEntries.map((entry) => ({
+      ...entry,
+      part_type: entry.part_type || partType
+    }));
 
     api
       .saveQCMatrix({
         model_id: data.modelId,
         stage: data.stage,
-        matrix_entries: data.matrixEntries,
+        part_type: partType,
+        matrix_entries: entries,
         notes: cleanNotes,
         inspector_name: inspector,
         created_at: createdAt
@@ -2411,13 +2508,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         if (Array.isArray(res.qcRecords)) {
           setQcRecords((prev) => {
+            // Only replace this part's cells; keep the other parts' records intact.
             const otherRecords = prev.filter(
-              (q) => !(q.model_id === data.modelId && q.stage === data.stage)
+              (q) =>
+                !(
+                  q.model_id === data.modelId &&
+                  q.stage === data.stage &&
+                  (q.part_type || 'shirt') === partType
+                )
             );
             return [...res.qcRecords, ...otherRecords];
           });
         }
-        logAction('الفرز', `حفظ جدول مصفوفة الفرز (${data.stage}) للموديل`);
+        logAction('الفرز', `حفظ جدول مصفوفة الفرز (${data.stage} - ${getPartLabel(partType)}) للموديل`);
         addFlashMessage('تم حفظ جدول الفرز (الألوان × المقاسات) بنجاح');
       })
       .catch((err) => {
@@ -2434,9 +2537,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     matrixEntries?: QCMatrixCellInput[];
     defectNotes?: string;
     advanceStage?: boolean;
+    partType?: GarmentPart;
   }) => {
     const model = models.find((m) => m.id === data.modelId);
     if (!model) return;
+    const partType: GarmentPart = normalizePartKey(data.partType || 'shirt');
 
     const allowNotes =
       data.stage === 'before_print' ? canAddQCBeforePrintNotes() : canAddQCAfterPrintNotes();
@@ -2445,7 +2550,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
     const inspector = currentUser?.real_name || 'مراقب الجودة';
 
-    const matrixList = data.matrixEntries || [];
+    const matrixList = (data.matrixEntries || []).map((cell) => ({
+      ...cell,
+      part_type: cell.part_type || partType
+    }));
     const totalGoodFromMatrix =
       matrixList.length > 0
         ? matrixList.reduce((sum, cell) => sum + (Number(cell.good_qty) || 0), 0)
@@ -2460,6 +2568,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         id: `qc-${Date.now()}-${idx}`,
         model_id: data.modelId,
         stage: data.stage,
+        part_type: cell.part_type || partType,
+        partType: cell.part_type || partType,
         color_name: cell.color_name,
         size: cell.size,
         pieces_cut: model.actual_cut_count || model.target_cut_quantity,
@@ -2475,7 +2585,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       setQcRecords((prev) => {
         const others = prev.filter(
-          (q) => !(q.model_id === data.modelId && q.stage === data.stage)
+          (q) =>
+            !(
+              q.model_id === data.modelId &&
+              q.stage === data.stage &&
+              (q.part_type || 'shirt') === partType
+            )
         );
         return [...optimisticRecords, ...others];
       });
@@ -2484,6 +2599,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         id: qcId,
         model_id: data.modelId,
         stage: data.stage,
+        part_type: partType,
+        partType: partType,
         color_name: model.model_type || 'الأساسي',
         pieces_cut: model.actual_cut_count || model.target_cut_quantity,
         good_qty: totalGoodFromMatrix,
@@ -2501,22 +2618,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setModels((prev) =>
       prev.map((m) => {
         if (m.id !== data.modelId) return m;
+        const qcSummary = {
+          ...(m.qc_summary || {}),
+          [partType]: totalGoodFromMatrix
+        } as Partial<Record<GarmentPart, number>>;
+        const patched = {
+          ...m,
+          qc_shirt_pieces: partType === 'shirt' ? totalGoodFromMatrix : (m.qc_shirt_pieces || 0),
+          qc_pants_pieces: partType === 'pants' ? totalGoodFromMatrix : (m.qc_pants_pieces || 0),
+          qc_jacket_pieces: partType === 'jacket' ? totalGoodFromMatrix : (m.qc_jacket_pieces || 0),
+          qc_summary: qcSummary
+        };
         if (data.stage === 'before_print') {
           return {
-            ...m,
+            ...patched,
             count_before_print: totalGoodFromMatrix,
             ...(data.advanceStage ? { status: 'جاهز للطباعة / التجميع' } : {})
           };
         }
         if (data.stage === 'after_print') {
           return {
-            ...m,
+            ...patched,
             count_after_print: totalGoodFromMatrix,
             ...(data.advanceStage ? { status: 'في قسم المكن' } : {})
           };
         }
         return {
-          ...m,
+          ...patched,
           count_after_sewing: totalGoodFromMatrix,
           ...(data.advanceStage ? { status: 'مخزن الإنتاج التام' } : {})
         };
@@ -2527,6 +2655,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .recordQCStageCount(data.modelId, {
         qc_id: qcId,
         stage: data.stage,
+        part_type: partType,
         counted_pieces: totalGoodFromMatrix,
         defect_pieces: totalDefectFromMatrix,
         matrix_entries: matrixList,
@@ -2541,7 +2670,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (Array.isArray(res.qcRecords) && res.qcRecords.length > 0) {
           setQcRecords((prev) => {
             const others = prev.filter(
-              (q) => !(q.model_id === data.modelId && q.stage === data.stage)
+              (q) =>
+                !(
+                  q.model_id === data.modelId &&
+                  q.stage === data.stage &&
+                  (q.part_type || 'shirt') === partType
+                )
             );
             return [...res.qcRecords!, ...others];
           });
@@ -2740,13 +2874,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     workshopName: string;
     piecesCount: number;
     expectedDeliveryDate: string;
-    pieceType?: 'shirt' | 'pants';
+    pieceType?: GarmentPart;
     pieceLabel?: string;
     notes?: string;
   }) => {
     const targetModel = models.find((m) => m.id === data.modelId);
     const resolvedType = data.pieceType || 'shirt';
-    const resolvedLabel = data.pieceLabel || (resolvedType === 'shirt' ? 'تيشرت' : 'بنطلون');
+    const resolvedLabel = data.pieceLabel || getPartLabel(resolvedType);
     const dispId = 'sew-disp-' + Date.now();
     const cleanNotes = canAddSewingNotes() ? (data.notes?.trim() || '') : '';
 
@@ -2778,7 +2912,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           updates.sewing_shirt_expected_date = data.expectedDeliveryDate;
           updates.sewing_shirt_status = 'في ورشة المكن';
           updates.sewing_shirt_pieces = data.piecesCount;
-        } else {
+        } else if (resolvedType === 'pants') {
           updates.sewing_pants_workshop = data.workshopName.trim();
           updates.sewing_pants_expected_date = data.expectedDeliveryDate;
           updates.sewing_pants_status = 'في ورشة المكن';
@@ -2820,7 +2954,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!targetModelId) return;
     const targetModel = models.find((m) => m.id === targetModelId);
     const pieceType = disp?.piece_type || 'shirt';
-    const pieceLabel = disp?.piece_label || (pieceType === 'shirt' ? 'تيشرت' : 'بنطلون');
+    const pieceLabel = disp?.piece_label || getPartLabel(pieceType);
     const cleanNotes = canAddSewingNotes() ? (notes?.trim() || '') : '';
 
     const updatedDispatches = sewingDispatches.map((d) => {
@@ -2845,7 +2979,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const updates: Partial<DesignModel> = {};
         if (pieceType === 'shirt') {
           updates.sewing_shirt_status = 'تم الاستلام';
-        } else {
+        } else if (pieceType === 'pants') {
           updates.sewing_pants_status = 'تم الاستلام';
         }
         if (allPiecesReceived) {
@@ -3390,6 +3524,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addCuttingRecord,
         finishCuttingToQC,
         exportCuttingCsv,
+        getModelParts,
         getModelColorList,
         getModelSizeList,
         recordQCData,
