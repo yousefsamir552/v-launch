@@ -13,7 +13,8 @@ from .models import (
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
-    SewingDispatch, AppNotification, InternalMessage, AuditLog
+    SewingDispatch, AppNotification, InternalMessage, AuditLog,
+    COMPOSITION_TO_PARTS, DEFAULT_GARMENT_COMPOSITION,
 )
 from .serializers import (
     resolve_by_id, get_ext_id,
@@ -841,6 +842,10 @@ class ModelItemViewSet(BasePermViewSet):
         can_design_notes = True if not profile else profile.has_perm('can_add_design_notes')
 
         target_qty = int(data.get('target_cut_quantity') or data.get('targetCutQuantity') or 100)
+        garment_composition = data.get('garment_composition') or data.get('garmentComposition') or DEFAULT_GARMENT_COMPOSITION
+        if garment_composition not in COMPOSITION_TO_PARTS:
+            garment_composition = DEFAULT_GARMENT_COMPOSITION
+        garment_parts = list(COMPOSITION_TO_PARTS[garment_composition])
         design_notes = (data.get('design_notes') or data.get('designNotes') or '') if can_design_notes else ''
         notes_shirt = (data.get('notes_shirt') or data.get('notesShirt') or '') if can_design_notes else ''
         notes_pants = (data.get('notes_pants') or data.get('notesPants') or '') if can_design_notes else ''
@@ -857,6 +862,8 @@ class ModelItemViewSet(BasePermViewSet):
             design_notes=design_notes,
             notes_shirt=notes_shirt,
             notes_pants=notes_pants,
+            garment_composition=garment_composition,
+            garment_parts=garment_parts,
         )
         model._skip_timeline_signal = True
         model.save()
@@ -906,11 +913,16 @@ class ModelItemViewSet(BasePermViewSet):
                 if note_field in data:
                     setattr(model, note_field, data[note_field])
 
+        composition_value = data.get('garment_composition', data.get('garmentComposition'))
+        if composition_value in COMPOSITION_TO_PARTS:
+            model.garment_composition = composition_value
+            model.garment_parts = list(COMPOSITION_TO_PARTS[composition_value])
+
         if 'actual_cut_count' in data:
             model.total_cut_pieces = int(data['actual_cut_count'] or 0)
         model._skip_timeline_signal = True
         model.save()
-        if 'garment_parts' in data:
+        if 'garment_parts' in data or 'garment_composition' in data or 'garmentComposition' in data:
             recompute_model_part_totals(model)
         sync_reserved_quantities()
         return Response(ModelItemSerializer(model, context={'request': request}).data)

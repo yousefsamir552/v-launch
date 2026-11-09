@@ -281,7 +281,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
           >
             {getPartLabel(part)}
             <span className="ms-1.5 text-[10px] opacity-90">
-              ({Number(model.cut_summary?.[part] ?? 0).toLocaleString('ar-EG')})
+              ({Number(model.cut_summary?.[part] ?? 0).toLocaleString('ar-EG')} من {Number(model.target_cut_quantity || 0).toLocaleString('ar-EG')})
             </span>
           </button>
         ))}
@@ -412,6 +412,31 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             {canEdit ? (
               isAddingSpread ? (
                 <form onSubmit={handleSubmitSpread} className="space-y-4">
+                  {/* Step 0: Which garment part this spread belongs to */}
+                  {modelParts.length > 1 && (
+                    <div className="p-3.5 rounded-2xl bg-rose-50/60 border border-rose-200 space-y-2">
+                      <label className="block text-xs font-extrabold text-rose-900">
+                        0️⃣ هذه الفرشة خاصة بـ
+                      </label>
+                      <div className="flex flex-wrap gap-2">
+                        {modelParts.map((part) => (
+                          <button
+                            key={part}
+                            type="button"
+                            onClick={() => handleSelectPart(part)}
+                            className={`px-4 py-1.5 rounded-full text-xs font-bold border transition cursor-pointer ${
+                              selectedPart === part
+                                ? 'bg-rose-600 text-white border-rose-600'
+                                : 'bg-white text-slate-600 border-slate-300 hover:border-rose-400'
+                            }`}
+                          >
+                            {getPartLabel(part)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Step 1: Spreader Name (اسم الشخص الذي قام بالفرش) */}
                   <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/90 space-y-2">
                     <label className="block text-xs font-extrabold text-slate-800">

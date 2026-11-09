@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   ArrowRight,
@@ -94,6 +94,36 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
     setMatrixState(nextMatrix);
     setDefectNotes(existingNote);
   }, [modelId, selectedStage, selectedPart, qcRecords, colorList.join('|'), sizeList.join('|')]);
+
+  // Build a per-part (color × size) snapshot from the saved QC records so the printed
+  // worker sheet includes EVERY model part, not only the currently selected one.
+  const printMatrixByPart = useMemo(() => {
+    const result: Record<
+      string,
+      { colors: string[]; matrix: Record<string, { good: number; defect: number }> }
+    > = {};
+    modelParts.forEach((part) => {
+      const partColors = getModelColorList(modelId, part);
+      const partRecs = qcRecords.filter(
+        (r) =>
+          r.model_id === modelId &&
+          r.stage === selectedStage &&
+          (r.part_type || 'shirt') === part
+      );
+      const matrix: Record<string, { good: number; defect: number }> = {};
+      partColors.forEach((col) => {
+        sizeList.forEach((sz) => {
+          const match = partRecs.find((r) => r.color_name === col && r.size === sz);
+          matrix[makeCellKey(col, sz)] = {
+            good: match ? Number(match.good_qty ?? match.counted_pieces ?? 0) : 0,
+            defect: match ? Number(match.defect_qty ?? match.defect_pieces ?? 0) : 0
+          };
+        });
+      });
+      result[part] = { colors: partColors, matrix };
+    });
+    return result;
+  }, [modelParts.join('|'), modelId, selectedStage, qcRecords, sizeList.join('|'), getModelColorList]);
 
   if (!model) {
     return (
@@ -362,7 +392,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
             والجودة
           </h2>
           <h3 className="text-lg font-bold">
-            📋 جدول مصفوفة الفرز والعد ({selectedStage === 'before_print' ? 'العد قبل الطباعة' : selectedStage === 'after_print' ? 'العد بعد الطباعة' : 'العد بعد المكن'}) — القطعة: {getPartLabel(selectedPart)}
+            📋 جدول مصفوفة الفرز والعد ({selectedStage === 'before_print' ? 'العد قبل الطباعة' : selectedStage === 'after_print' ? 'العد بعد الطباعة' : 'العد بعد المكن'}) — القطع: {modelParts.map((p) => getPartLabel(p)).join(' + ')}
           </h3>
           <p className="text-sm mt-1">
             موديل: {model.model_code} | التاريخ:{' '}
@@ -370,54 +400,69 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
           </p>
         </div>
 
-        <table className="w-full border-collapse border border-black text-center text-sm">
-          <thead>
-            <tr className="bg-gray-100">
-              <th className="border border-black p-3 font-bold">اللون / المقاس</th>
-              {sizeList.map((sz) => (
-                <th key={sz} className="border border-black p-3 font-bold">
-                  {sz} (سليم / تالف)
-                </th>
-              ))}
-              <th className="border border-black p-3 font-bold">المجموع السليم</th>
-              <th className="border border-black p-3 font-bold">الهالك</th>
-            </tr>
-          </thead>
-          <tbody>
-            {colorList.map((col) => {
-              let rGood = 0;
-              let rDef = 0;
-              sizeList.forEach((sz) => {
-                const c = matrixState[makeCellKey(col, sz)];
-                rGood += Number(c?.good) || 0;
-                rDef += Number(c?.defect) || 0;
-              });
-              return (
-                <tr key={col}>
-                  <td className="border border-black p-4 font-bold text-start">
-                    {col}
-                  </td>
-                  {sizeList.map((sz) => {
-                    const c = matrixState[makeCellKey(col, sz)];
+        {modelParts.map((part) => {
+          const partData = printMatrixByPart[part] || {
+            colors: [] as string[],
+            matrix: {} as Record<string, { good: number; defect: number }>
+          };
+          const partColors = partData.colors;
+          const partMatrix = partData.matrix;
+          return (
+            <div key={part} className="mb-8">
+              <h4 className="text-base font-bold text-center mb-2">
+                قطعة: {getPartLabel(part)}
+              </h4>
+              <table className="w-full border-collapse border border-black text-center text-sm">
+                <thead>
+                  <tr className="bg-gray-100">
+                    <th className="border border-black p-3 font-bold">اللون / المقاس</th>
+                    {sizeList.map((sz) => (
+                      <th key={sz} className="border border-black p-3 font-bold">
+                        {sz} (سليم / تالف)
+                      </th>
+                    ))}
+                    <th className="border border-black p-3 font-bold">المجموع السليم</th>
+                    <th className="border border-black p-3 font-bold">الهالك</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {partColors.map((col) => {
+                    let rGood = 0;
+                    let rDef = 0;
+                    sizeList.forEach((sz) => {
+                      const c = partMatrix[makeCellKey(col, sz)];
+                      rGood += Number(c?.good) || 0;
+                      rDef += Number(c?.defect) || 0;
+                    });
                     return (
-                      <td key={sz} className="border border-black p-4 h-12">
-                        {c && (c.good > 0 || c.defect > 0)
-                          ? `${c.good} سليم / ${c.defect} تالف`
-                          : ''}
-                      </td>
+                      <tr key={col}>
+                        <td className="border border-black p-4 font-bold text-start">
+                          {col}
+                        </td>
+                        {sizeList.map((sz) => {
+                          const c = partMatrix[makeCellKey(col, sz)];
+                          return (
+                            <td key={sz} className="border border-black p-4 h-12">
+                              {c && (c.good > 0 || c.defect > 0)
+                                ? `${c.good} سليم / ${c.defect} تالف`
+                                : ''}
+                            </td>
+                          );
+                        })}
+                        <td className="border border-black p-4 font-bold">
+                          {rGood > 0 ? rGood : ''}
+                        </td>
+                        <td className="border border-black p-4 font-bold">
+                          {rDef > 0 ? rDef : ''}
+                        </td>
+                      </tr>
                     );
                   })}
-                  <td className="border border-black p-4 font-bold">
-                    {rGood > 0 ? rGood : ''}
-                  </td>
-                  <td className="border border-black p-4 font-bold">
-                    {rDef > 0 ? rDef : ''}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                </tbody>
+              </table>
+            </div>
+          );
+        })}
 
         <div className="mt-8 flex justify-between text-sm pt-4">
           <div>توقيع مستلم الفرز: .......................................</div>

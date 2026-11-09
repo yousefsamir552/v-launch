@@ -261,6 +261,7 @@ export interface DesignModel {
 
   // Per-part tracking (تيشرت / بنطلون / جاكيت / قطعة واحدة)
   garment_parts?: GarmentPart[];
+  garment_composition?: GarmentComposition;
   parts?: GarmentPart[];
   cut_summary?: Partial<Record<GarmentPart, number>>;
   qc_summary?: Partial<Record<GarmentPart, number>>;
@@ -400,6 +401,37 @@ export const PART_ORDER: GarmentPart[] = ['shirt', 'pants', 'jacket', 'single'];
 
 export const getPartLabel = (part?: string): string =>
   PART_LABELS[(part as GarmentPart) || 'shirt'] || 'تيشرت';
+
+// Model-level garment composition: which parts the model is made of.
+// Drives which parts (تيشرت / بنطلون / جاكيت) appear in Design, Cutting and QC.
+export type GarmentComposition = 'tshirt_only' | 'pants_only' | 'two_pieces' | 'three_pieces';
+
+export const GARMENT_COMPOSITION_LABELS: Record<GarmentComposition, string> = {
+  tshirt_only: 'تيشيرت فقط',
+  pants_only: 'بنطلون فقط',
+  two_pieces: 'قطعتان (تيشيرت + بنطلون)',
+  three_pieces: 'ثلاث قطع (تيشيرت + بنطلون + جاكيت)'
+};
+
+export const GARMENT_COMPOSITION_ORDER: GarmentComposition[] = [
+  'tshirt_only',
+  'pants_only',
+  'two_pieces',
+  'three_pieces'
+];
+
+export const COMPOSITION_TO_PARTS: Record<GarmentComposition, GarmentPart[]> = {
+  tshirt_only: ['shirt'],
+  pants_only: ['pants'],
+  two_pieces: ['shirt', 'pants'],
+  three_pieces: ['shirt', 'pants', 'jacket']
+};
+
+export const DEFAULT_GARMENT_COMPOSITION: GarmentComposition = 'two_pieces';
+
+export const partsForComposition = (composition?: string): GarmentPart[] =>
+  COMPOSITION_TO_PARTS[(composition as GarmentComposition) || DEFAULT_GARMENT_COMPOSITION] ||
+  COMPOSITION_TO_PARTS.two_pieces;
 
 export interface QCMatrixCellInput {
   part_type?: GarmentPart;

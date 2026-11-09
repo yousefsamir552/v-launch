@@ -10,8 +10,16 @@ import {
   Upload,
   Image as ImageIcon,
   FileText,
-  Lock
+  Lock,
+  Layers
 } from 'lucide-react';
+
+import {
+  GarmentComposition,
+  GARMENT_COMPOSITION_ORDER,
+  GARMENT_COMPOSITION_LABELS,
+  DEFAULT_GARMENT_COMPOSITION
+} from '../types';
 
 interface DesignViewProps {
   onOpenModelDetails: (modelId: string) => void;
@@ -35,6 +43,9 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [targetCutQuantity, setTargetCutQuantity] = useState<number>(500);
   const [designNotes, setDesignNotes] = useState('');
+  const [garmentComposition, setGarmentComposition] = useState<GarmentComposition>(
+    DEFAULT_GARMENT_COMPOSITION
+  );
 
   // Filter models (Only display models in design stage)
   const filteredModels = models
@@ -76,7 +87,8 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
       sizeCategoryId: sizeCategoryId || undefined,
       imageUrl: imageUrl || undefined,
       targetCutQuantity: Number(targetCutQuantity) || 500,
-      designNotes: canWriteNotes ? designNotes.trim() : ''
+      designNotes: canWriteNotes ? designNotes.trim() : '',
+      garmentComposition
     });
 
     if (res.success) {
@@ -87,6 +99,7 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
       setImageUrl('');
       setImagePreview(null);
       setDesignNotes('');
+      setGarmentComposition(DEFAULT_GARMENT_COMPOSITION);
       if (res.modelId) {
         onOpenModelDetails(res.modelId);
       }
@@ -343,6 +356,35 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                     placeholder="مثال: 500"
                     className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm font-bold text-slate-900 focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
                   />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1.5 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-blue-600" />
+                  <span>تكوين قطع الموديل *</span>
+                </label>
+                <p className="text-[10px] text-slate-500 mb-2">
+                  يحدد هذا الاختيار القطع التي ستظهر في أقسام التصميم والقص والفرز (تيشيرت / بنطلون / جاكيت).
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {GARMENT_COMPOSITION_ORDER.map((comp) => {
+                    const active = garmentComposition === comp;
+                    return (
+                      <button
+                        key={comp}
+                        type="button"
+                        onClick={() => setGarmentComposition(comp)}
+                        className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition text-right cursor-pointer ${
+                          active
+                            ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                            : 'bg-white text-slate-700 border-slate-300 hover:border-slate-500'
+                        }`}
+                      >
+                        {GARMENT_COMPOSITION_LABELS[comp]}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 

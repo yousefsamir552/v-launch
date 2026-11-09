@@ -17,6 +17,9 @@ import {
   QCMatrixCellInput,
   QCStageType,
   GarmentPart,
+  GarmentComposition,
+  partsForComposition,
+  DEFAULT_GARMENT_COMPOSITION,
   PART_ORDER,
   getPartLabel,
   PrintDispatch,
@@ -214,6 +217,7 @@ interface AppContextType {
     designNotes?: string;
     notesShirt?: string;
     notesPants?: string;
+    garmentComposition?: GarmentComposition;
   }) => { success: boolean; message: string; modelId?: string };
   updateModelPlan: (data: {
     modelId: string;
@@ -233,6 +237,7 @@ interface AppContextType {
       design_notes?: string;
       notes_shirt?: string;
       notes_pants?: string;
+      garment_composition?: GarmentComposition;
     }
   ) => void;
   addModelRequirement: (
@@ -1547,6 +1552,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     designNotes?: string;
     notesShirt?: string;
     notesPants?: string;
+    garmentComposition?: GarmentComposition;
   }) => {
     const cleanCode = data.modelCode.trim().toUpperCase();
     const existing = models.find((m) => !m.is_deleted && m.model_code.toUpperCase() === cleanCode);
@@ -1557,6 +1563,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const newModelId = 'mod-' + Date.now();
     const targetCutQty = data.targetCutQuantity || 100;
+    const garmentComposition: GarmentComposition =
+      data.garmentComposition || DEFAULT_GARMENT_COMPOSITION;
+    const garmentParts = partsForComposition(garmentComposition);
     const allowedDesignNotes = canAddDesignNotes() ? (data.designNotes || '') : '';
     const allowedShirtNotes = canAddDesignNotes() ? (data.notesShirt || '') : '';
     const allowedPantsNotes = canAddDesignNotes() ? (data.notesPants || '') : '';
@@ -1574,6 +1583,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       main_marker_url: '',
       print_marker_url: '',
       target_cut_quantity: targetCutQty,
+      garment_parts: garmentParts,
+      garment_composition: garmentComposition,
       design_notes: allowedDesignNotes,
       notes_shirt: allowedShirtNotes,
       notes_pants: allowedPantsNotes,
@@ -1611,6 +1622,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         size_category_id: data.sizeCategoryId,
         image: newModel.image,
         target_cut_quantity: targetCutQty,
+        garment_composition: garmentComposition,
+        garment_parts: garmentParts,
         design_notes: allowedDesignNotes,
         notes_shirt: allowedShirtNotes,
         notes_pants: allowedPantsNotes,
@@ -1747,11 +1760,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       design_notes?: string;
       notes_shirt?: string;
       notes_pants?: string;
+      garment_composition?: GarmentComposition;
     }
   ) => {
     const allowNotes = canAddDesignNotes();
     const filteredData = {
       ...(data.target_cut_quantity !== undefined ? { target_cut_quantity: data.target_cut_quantity } : {}),
+      ...(data.garment_composition !== undefined ? { garment_composition: data.garment_composition } : {}),
       ...(allowNotes && data.design_notes !== undefined ? { design_notes: data.design_notes } : {}),
       ...(allowNotes && data.notes_shirt !== undefined ? { notes_shirt: data.notes_shirt } : {}),
       ...(allowNotes && data.notes_pants !== undefined ? { notes_pants: data.notes_pants } : {})
@@ -2040,10 +2055,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const model = models.find((m) => m.id === modelId);
       const explicit = (model?.garment_parts || []).map((p) => normalizePartKey(p));
       let parts = Array.from(new Set(explicit));
+      if (parts.length === 0 && model?.garment_composition) {
+        parts = partsForComposition(model.garment_composition);
+      }
       if (parts.length === 0) {
         const modelReqs = requirements.filter((r) => r.model_id === modelId);
         const inferred = Array.from(new Set(modelReqs.map((r) => normalizePartKey(r.part_name))));
-        parts = inferred.length > 0 ? inferred : (['shirt', 'pants'] as GarmentPart[]);
+        parts = inferred.length > 0 ? inferred : partsForComposition(DEFAULT_GARMENT_COMPOSITION);
       }
       return parts.sort((a, b) => PART_ORDER.indexOf(a) - PART_ORDER.indexOf(b));
     },
@@ -2055,9 +2073,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const getModelColorList = useCallback(
     (modelId: string, part?: GarmentPart): string[] => {
       const model = models.find((m) => m.id === modelId);
-      const modelReqs = requirements.filter(
-        (r) => r.model_id === modelId && (!part || normalizePartKey(r.part_name) === part)
-      );
+      const allModelReqs = requirements.filter((r) => r.model_id === modelId);
+      let modelReqs = part
+        ? allModelReqs.filter((r) => normalizePartKey(r.part_name) === part)
+        : allModelReqs;
+      // Legacy rows store free-text part names that mostly infer 'shirt'; fall back to
+      // all model colors so every part tab still shows the fabric colors.
+      if (part && modelReqs.length === 0) {
+        modelReqs = allModelReqs;
+      }
       const colors: string[] = [];
 
       modelReqs.forEach((req) => {

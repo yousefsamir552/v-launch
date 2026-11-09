@@ -14,7 +14,13 @@ import {
   Lock,
   Star
 } from 'lucide-react';
-import { AccessoryItem } from '../types';
+import {
+  AccessoryItem,
+  GarmentComposition,
+  GARMENT_COMPOSITION_ORDER,
+  GARMENT_COMPOSITION_LABELS,
+  DEFAULT_GARMENT_COMPOSITION
+} from '../types';
 
 interface ModelDetailsViewProps {
   modelId: string;
@@ -161,6 +167,14 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   const handleUpdateTargetCut = (newQty: number) => {
     setTargetCutQuantity(newQty);
     updateModelNotesAndTarget(modelId, { target_cut_quantity: newQty });
+  };
+
+  const currentComposition: GarmentComposition =
+    (model.garment_composition as GarmentComposition) || DEFAULT_GARMENT_COMPOSITION;
+
+  const handleChangeComposition = (comp: GarmentComposition) => {
+    if (!canEdit || comp === currentComposition) return;
+    updateModelNotesAndTarget(modelId, { garment_composition: comp });
   };
 
   const handleAddColorSubmit = (e: React.FormEvent) => {
@@ -633,6 +647,39 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
         {/* Right Column: Requirements, Separated Accessories, Markers & Notes */}
         <div className="lg:col-span-7 space-y-6">
           <form onSubmit={handleSavePlan} className="space-y-6">
+            {/* Model Garment Composition (drives parts in Cutting & QC) */}
+            <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs space-y-3">
+              <div>
+                <h3 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-indigo-600" />
+                  <span>تكوين قطع الموديل:</span>
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  يحدد القطع التي تظهر في أقسام القص والفرز (تيشيرت / بنطلون / جاكيت). الموديلات القديمة تُعامل كقطعتين افتراضياً.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {GARMENT_COMPOSITION_ORDER.map((comp) => {
+                  const active = currentComposition === comp;
+                  return (
+                    <button
+                      key={comp}
+                      type="button"
+                      disabled={!canEdit}
+                      onClick={() => handleChangeComposition(comp)}
+                      className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition text-center ${
+                        active
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                          : 'bg-white text-slate-700 border-slate-300 hover:border-indigo-400'
+                      } ${!canEdit ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+                    >
+                      {GARMENT_COMPOSITION_LABELS[comp]}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* Fabric Requirements Table */}
             <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs space-y-3">
               <div className="flex items-center justify-between border-b pb-2 flex-wrap gap-2">

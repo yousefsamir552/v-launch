@@ -7,7 +7,8 @@ from .models import (
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
     CuttingRecord, QCRecord, PrintDispatch,
-    SewingDispatch, AppNotification, InternalMessage, AuditLog
+    SewingDispatch, AppNotification, InternalMessage, AuditLog,
+    COMPOSITION_TO_PARTS, DEFAULT_GARMENT_COMPOSITION,
 )
 from .serializers import resolve_by_id
 
@@ -57,8 +58,9 @@ def get_model_parts(model):
 
     Priority:
       1. Explicit ModelItem.garment_parts list.
-      2. Inferred from the model requirement labels (part_name).
-      3. Safe legacy default: ['shirt', 'pants'] (preserves old two-piece behaviour).
+      2. ModelItem.garment_composition mapping (user-chosen composition).
+      3. Inferred from the model requirement labels (part_name).
+      4. Safe legacy default: ['shirt', 'pants'] (preserves old two-piece behaviour).
     """
     explicit = getattr(model, 'garment_parts', None) or []
     normalized = []
@@ -69,6 +71,17 @@ def get_model_parts(model):
                 normalized.append(key)
     if normalized:
         return sorted(normalized, key=lambda k: PART_ORDER.index(k) if k in PART_ORDER else 99)
+
+    composition = getattr(model, 'garment_composition', None) or DEFAULT_GARMENT_COMPOSITION
+    mapped = COMPOSITION_TO_PARTS.get(composition)
+    if mapped:
+        normalized = []
+        for item in mapped:
+            key = normalize_part_key(item)
+            if key not in normalized:
+                normalized.append(key)
+        if normalized:
+            return sorted(normalized, key=lambda k: PART_ORDER.index(k) if k in PART_ORDER else 99)
 
     inferred = []
     try:
@@ -451,6 +464,8 @@ def ensure_schema_columns():
                         cursor.execute("ALTER TABLE api_modelitem ADD COLUMN garment_parts jsonb NOT NULL DEFAULT '[]'::jsonb;")
                     else:
                         cursor.execute("ALTER TABLE api_modelitem ADD COLUMN garment_parts text NOT NULL DEFAULT '[]';")
+                if 'garment_composition' not in cols:
+                    cursor.execute("ALTER TABLE api_modelitem ADD COLUMN garment_composition varchar(30) NOT NULL DEFAULT 'two_pieces';")
                 for part_col in ('cut_shirt_pieces', 'cut_pants_pieces', 'cut_jacket_pieces',
                                  'qc_shirt_pieces', 'qc_pants_pieces', 'qc_jacket_pieces'):
                     if part_col not in cols:

@@ -492,6 +492,7 @@ class ModelItemSerializer(serializers.ModelSerializer):
             'actual_cut_count': int(instance.total_cut_pieces or 0),
             'total_cut_pieces': int(instance.total_cut_pieces or 0),
             'garment_parts': instance.garment_parts or [],
+            'garment_composition': instance.garment_composition or 'two_pieces',
             'parts': parts_info['parts'],
             'cut_summary': parts_info['cut_summary'],
             'qc_summary': parts_info['qc_summary'],

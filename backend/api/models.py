@@ -502,6 +502,27 @@ PART_TYPE_CHOICES = [
 
 PART_TYPE_KEYS = [key for key, _label in PART_TYPE_CHOICES]
 
+# Garment composition for a model: which parts the model is made of.
+# Drives which parts (تيشرت / بنطلون / جاكيت) appear in Design, Cutting and QC.
+GARMENT_COMPOSITION_CHOICES = [
+    ('tshirt_only', 'تيشيرت فقط'),
+    ('pants_only', 'بنطلون فقط'),
+    ('two_pieces', 'قطعتان (تيشيرت + بنطلون)'),
+    ('three_pieces', 'ثلاث قطع (تيشيرت + بنطلون + جاكيت)'),
+]
+
+GARMENT_COMPOSITION_KEYS = [key for key, _label in GARMENT_COMPOSITION_CHOICES]
+
+DEFAULT_GARMENT_COMPOSITION = 'two_pieces'
+
+# Central mapping: composition key -> ordered list of garment part keys.
+COMPOSITION_TO_PARTS = {
+    'tshirt_only': ['shirt'],
+    'pants_only': ['pants'],
+    'two_pieces': ['shirt', 'pants'],
+    'three_pieces': ['shirt', 'pants', 'jacket'],
+}
+
 
 class ModelItem(models.Model):
     STATUS_CHOICES = [
@@ -538,6 +559,14 @@ class ModelItem(models.Model):
     # Explicit list of garment parts this model is composed of, e.g. ["shirt", "pants"].
     # Left empty for legacy rows: services.get_model_parts() infers a safe default.
     garment_parts = models.JSONField(default=list, blank=True, verbose_name="قطع الموديل")
+    # Model-level garment composition selected by the user; drives which parts appear.
+    garment_composition = models.CharField(
+        max_length=30,
+        choices=GARMENT_COMPOSITION_CHOICES,
+        default=DEFAULT_GARMENT_COMPOSITION,
+        blank=True,
+        verbose_name="تكوين قطع الموديل",
+    )
     # Total cut pieces per part (aggregated from CuttingRecord.part_type)
     cut_shirt_pieces = models.IntegerField(default=0, blank=True, verbose_name="المقصوص تيشرت")
     cut_pants_pieces = models.IntegerField(default=0, blank=True, verbose_name="المقصوص بنطلون")
