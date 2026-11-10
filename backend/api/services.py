@@ -12,6 +12,7 @@ from .models import (
     COMPOSITION_TO_PARTS, DEFAULT_GARMENT_COMPOSITION,
     PackagingRequirement, FinishingRecord, AssemblyStageRecord,
     PACKAGING_STEP_ORDER, PACKAGING_STEP_LABELS, ASSEMBLY_STAGE_LABELS,
+    PART_STAGE_ORDER, PART_STAGE_LABELS, PART_STAGE_TO_STATUS,
 )
 from .serializers import resolve_by_id
 
@@ -199,6 +200,209 @@ def model_part_summary(model):
         'sewing_available': sewing_available,
         'completed_sets': int(model.total_cut_pieces or 0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-part stage tracking (each part moves independently through the pipeline)
+# ---------------------------------------------------------------------------
+# Only the assembly-section stages are mirrored onto the coarse ModelItem.status,
+# so the earlier cutting / QC / printing / sewing pipeline keeps its own logic.
+POST_SEWING_STAGES = ('finishing', 'ironing', 'packaging', 'dest', 'completed')
+
+PACKAGING_READY_STAGES = ('packaging', 'dest', 'completed')
+
+
+def _stage_index(stage):
+    try:
+        return PART_STAGE_ORDER.index(stage)
+    except ValueError:
+        return -1
+
+
+def get_part_stages(model):
+    """Returns a normalized {part: stage} dict for the model's garment parts."""
+    raw = getattr(model, 'part_stages', None) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    parts = get_model_parts(model)
+    stages = {}
+    for part in parts:
+        stage = raw.get(part)
+        stages[part] = stage if stage in PART_STAGE_ORDER else 'cutting'
+    return stages
+
+
+def set_part_stage(model, part, stage, save=True):
+    """Sets the stage of a single garment part (keeps other parts untouched)."""
+    part = normalize_part_key(part)
+    if stage not in PART_STAGE_ORDER:
+        raise ValueError('مرحلة القطعة غير معروفة')
+    stages = get_part_stages(model)
+    stages[part] = stage
+    model.part_stages = stages
+    if save:
+        model._skip_timeline_signal = True
+        model.save(update_fields=['part_stages', 'updated_at'])
+    return stages
+
+
+def set_all_part_stages(model, stage, save=True):
+    """Sets the same stage for every garment part of the model."""
+    if stage not in PART_STAGE_ORDER:
+        raise ValueError('مرحلة القطعة غير معروفة')
+    stages = {part: stage for part in get_model_parts(model)}
+    model.part_stages = stages
+    if save:
+        model._skip_timeline_signal = True
+        model.save(update_fields=['part_stages', 'updated_at'])
+    return stages
+
+
+def sync_model_status_from_part_stages(model, save=True):
+    """Derives the coarse ModelItem.status from the *least advanced* part.
+
+    The model as a whole has not left a stage until every one of its parts has
+    left it, so the minimum stage index is the correct collective stage.
+    """
+    stages = get_part_stages(model)
+    if not stages:
+        return model.status
+    min_stage = min(stages.values(), key=_stage_index)
+    if min_stage not in POST_SEWING_STAGES:
+        return model.status
+    new_status = PART_STAGE_TO_STATUS.get(min_stage)
+    if new_status and model.status != new_status:
+        model.status = new_status
+        if save:
+            model._skip_timeline_signal = True
+            model.save(update_fields=['status', 'updated_at'])
+    return model.status
+
+
+def ensure_part_stages(model):
+    """Seeds / repairs ModelItem.part_stages from records and the legacy status.
+
+    The highest known stage per part wins: records can promote a part, but a
+    stale record can never push an already-advanced part back. An open finishing
+    record pins the part to finishing even when the coarse model status is ahead.
+    """
+    if not model:
+        return {}
+
+    raw = getattr(model, 'part_stages', None) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    parts = get_model_parts(model)
+
+    status_stage = {
+        'العد بعد المكن': 'finishing',
+        'العد بعد المكن (الفحص النهائي)': 'finishing',
+        'في التشطيب': 'finishing',
+        'في المكواة': 'ironing',
+        'في التعبئة والتغليف': 'packaging',
+        'جاهز للدَست': 'dest',
+        'مخزن الإنتاج التام': 'completed',
+        'مكتمل الإنتاج': 'completed',
+    }.get(getattr(model, 'status', ''), 'cutting')
+
+    implied = {part: [] for part in parts}
+
+    def imply(part_key, stage):
+        key = normalize_part_key(part_key)
+        if key in implied:
+            implied[key].append(stage)
+
+    # Finishing records: open → finishing, received → ironing.
+    for rec in FinishingRecord.objects.filter(model=model):
+        imply(rec.part_type, 'ironing' if rec.actual_exit_date else 'finishing')
+
+    # Per-part ironing records: open → ironing, completed → packaging.
+    for rec in AssemblyStageRecord.objects.filter(model=model, stage='ironing').exclude(part_type=''):
+        imply(rec.part_type, 'packaging' if rec.actual_exit_date else 'ironing')
+
+    # Model-level packaging / dest records promote every part.
+    packaging_done = AssemblyStageRecord.objects.filter(
+        model=model, stage='packaging', actual_exit_date__isnull=False
+    ).exists()
+    dest_done = AssemblyStageRecord.objects.filter(
+        model=model, stage='dest', actual_exit_date__isnull=False
+    ).exists()
+
+    stages = {}
+    for part in parts:
+        candidates = []
+        explicit = raw.get(part)
+        if explicit in PART_STAGE_ORDER:
+            candidates.append(explicit)
+        candidates.extend(implied.get(part) or [])
+        if packaging_done:
+            candidates.append('dest')
+        if dest_done:
+            candidates.append('completed')
+        # Highest stage wins → records can promote a part but never push it back.
+        stages[part] = max(candidates, key=_stage_index) if candidates else status_stage
+
+    if (model.part_stages or {}) != stages:
+        model.part_stages = stages
+        model._skip_timeline_signal = True
+        model.save(update_fields=['part_stages', 'updated_at'])
+    return stages
+
+
+
+def packaging_readiness(model):
+    """Readiness summary for the packaging stage.
+
+    Packaging is a single model-level card that can only be completed once every
+    garment part reached the packaging stage (or beyond). Parts still in
+    finishing / ironing block it and are reported in ``waiting_parts``.
+    """
+    ensure_part_stages(model)
+    stages = get_part_stages(model)
+
+    ready_parts = []
+    waiting_parts = []
+    parts_detail = {}
+    for part, stage in stages.items():
+        label = PART_LABELS.get(part, part)
+        detail = {
+            'part': part,
+            'label': label,
+            'stage': stage,
+            'stage_label': PART_STAGE_LABELS.get(stage, stage),
+        }
+        parts_detail[part] = {
+            'stage': stage,
+            'stage_label': PART_STAGE_LABELS.get(stage, stage),
+            'ready_for_packaging': stage in PACKAGING_READY_STAGES,
+        }
+        if stage in PACKAGING_READY_STAGES:
+            ready_parts.append(detail)
+        else:
+            waiting_parts.append(detail)
+
+    return {
+        'all_ready': len(waiting_parts) == 0,
+        'has_arrived': len(ready_parts) > 0,
+        'ready_parts': ready_parts,
+        'waiting_parts': waiting_parts,
+        'parts': parts_detail,
+    }
+
+
+def part_stages_payload(model):
+    """Public read helper: normalized per-part stages with Arabic labels."""
+    ensure_part_stages(model)
+    stages = get_part_stages(model)
+    return {
+        part: {
+            'stage': stage,
+            'stage_label': PART_STAGE_LABELS.get(stage, stage),
+            'ready_for_packaging': stage in PACKAGING_READY_STAGES,
+        }
+        for part, stage in stages.items()
+    }
+
 
 
 DEFAULT_ROLES_SEED = [
@@ -863,16 +1067,18 @@ def _notifications_for_assembly_stage(stage_key, label, records, today, tomorrow
         code = rec.model.model_code
         m_ext_id = rec.model.client_id or str(rec.model_id)
         r_ext_id = rec.client_id or str(rec.id)
+        # For ironing this includes the garment part (e.g. «قسم المكواة - تيشرت»).
+        stage_label = rec.stage_label or label
         prefix = {'overdue': '🚨', 'today': '⏰', 'tomorrow': '📅'}[urgency]
         if urgency == 'overdue':
             msg = (
-                f"تخطى موعد خروج الموديل {code} من {label} بمقدار {abs(days_diff)} يوم، "
+                f"تخطى موعد خروج الموديل {code} من {stage_label} بمقدار {abs(days_diff)} يوم، "
                 f"ولم يتم تسجيل الاستلام بعد!"
             )
         elif urgency == 'today':
-            msg = f"اليوم هو موعد استلام الموديل {code} من {label}."
+            msg = f"اليوم هو موعد استلام الموديل {code} من {stage_label}."
         else:
-            msg = f"غداً موعد استلام الموديل {code} من {label}."
+            msg = f"غداً موعد استلام الموديل {code} من {stage_label}."
         out.append({
             'id': f"notif-asm-{stage_key}-{r_ext_id}-{exp.isoformat()}",
             'title': f"{prefix} {'تأخر استلام' if urgency == 'overdue' else ('موعد استلام اليوم' if urgency == 'today' else 'موعد استلام غداً')} ({code})",
@@ -880,8 +1086,8 @@ def _notifications_for_assembly_stage(stage_key, label, records, today, tomorrow
             'stage': stage_key,
             'model_code': code,
             'model_id': m_ext_id,
-            'source_name': label,
-            'target_name': label,
+            'source_name': stage_label,
+            'target_name': stage_label,
             'expected_date': exp.isoformat(),
             'days_diff': days_diff,
             'message': msg,
@@ -1170,18 +1376,22 @@ def set_packaging_step_service(model, step, step_date=None, notes=None,
 
 
 def start_finishing_service(model, parts=None, entry_date=None, expected_exit_date=None,
-                            notes=None, user_name='مسؤول التشطيب'):
+                            notes=None, vendor_name=None, user_name='مسؤول التشطيب'):
     """
     Starts (or updates) the finishing stage for the given model parts.
-    Creates one FinishingRecord per part and moves the model into «في التشطيب».
+    Each part gets its own FinishingRecord and its own ``part_stages`` entry;
+    the other parts are never touched by another part's progress.
     """
     if not model:
         raise ValueError('الموديل غير موجود')
 
     clean_notes = (notes or '').strip()
+    clean_vendor = (vendor_name or '').strip()
     entry = _parse_date_value(entry_date) or date.today()
     expected = _parse_date_value(expected_exit_date)
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+
+    ensure_part_stages(model)
 
     requested = [normalize_part_key(part) for part in (parts or get_model_parts(model))]
     part_keys = []
@@ -1191,7 +1401,17 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
     if not part_keys:
         part_keys = ['shirt']
 
+    # Never pull a part back: parts that already left finishing keep their stage.
+    current_stages = get_part_stages(model)
+    part_keys = [
+        part for part in part_keys
+        if _stage_index(current_stages.get(part, 'cutting')) <= _stage_index('finishing')
+    ]
+    if not part_keys:
+        raise ValueError('القطع المحددة تجاوزت مرحلة التشطيب بالفعل')
+
     records = []
+    stages = get_part_stages(model)
     for part in part_keys:
         record, created = FinishingRecord.objects.get_or_create(
             model=model,
@@ -1199,6 +1419,7 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
             defaults={
                 'entry_date': entry,
                 'expected_exit_date': expected,
+                'vendor_name': clean_vendor,
                 'notes': clean_notes or None,
             },
         )
@@ -1208,15 +1429,22 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
                 record.expected_exit_date = expected
             if clean_notes:
                 record.notes = clean_notes
+            if clean_vendor:
+                record.vendor_name = clean_vendor
             record.save()
+        # Only the requested parts move into finishing; siblings keep their stage.
+        stages[part] = 'finishing'
         records.append(record)
 
+    model.part_stages = stages
     model.status = 'في التشطيب'
     model._skip_timeline_signal = True
     model.save()
 
     labels = ' / '.join(record.piece_label or record.part_type for record in records)
     tl_notes = f"تم تسجيل دخول [{labels}] إلى قسم التشطيب بتاريخ {entry.isoformat()}"
+    if clean_vendor:
+        tl_notes += f" | الجهة: {clean_vendor}"
     if expected:
         tl_notes += f" - الخروج المتوقع: {expected.isoformat()}"
     if clean_notes:
@@ -1235,6 +1463,7 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
             'parts': part_keys,
             'entry_date': entry.isoformat(),
             'expected_exit_date': expected.isoformat() if expected else '',
+            'vendor_name': clean_vendor,
             'worker_notes': clean_notes,
             'operator_name': user_name,
         },
@@ -1260,13 +1489,12 @@ def receive_finishing_service(record_id, actual_exit_date=None, notes=None,
     record.save()
 
     model = record.model
+    # Move only this part to ironing; the model status follows the least advanced part.
+    ensure_part_stages(model)
+    sync_model_status_from_part_stages(model)
     all_received = not FinishingRecord.objects.filter(
         model=model, actual_exit_date__isnull=True
     ).exists()
-    if all_received:
-        model.status = 'في المكواة'
-    model._skip_timeline_signal = True
-    model.save()
 
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
     label = record.piece_label or ('تيشرت' if record.part_type == 'shirt' else 'بنطلون')
@@ -1312,16 +1540,189 @@ ASSEMBLY_STAGE_NEXT_STATUS = {
 }
 
 
+def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
+                          expected_exit_date=None, notes=None, vendor_name=None,
+                          user_name='مسؤول المكواة'):
+    """Starts (or updates) the ironing stage for one or more garment parts.
+
+    Ironing is tracked per part: each part gets its own AssemblyStageRecord with
+    ``stage='ironing'`` and its own ``part_stages`` entry.
+    """
+    if not model:
+        raise ValueError('الموديل غير موجود')
+
+    clean_notes = (notes or '').strip()
+    clean_vendor = (vendor_name or '').strip()
+    entry = _parse_date_value(entry_date) or date.today()
+    expected = _parse_date_value(expected_exit_date)
+    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+
+    ensure_part_stages(model)
+    stages = get_part_stages(model)
+
+    requested = []
+    for value in (parts or ([part_type] if part_type else [])):
+        key = normalize_part_key(value)
+        if key in ('shirt', 'pants', 'jacket') and key not in requested:
+            requested.append(key)
+    if not requested:
+        requested = [part for part, stage in stages.items() if stage == 'ironing']
+    if not requested:
+        raise ValueError('لا توجد قطعة في مرحلة المكواة لتسجيل دخولها')
+
+    # Never pull a part back: parts already sent to packaging keep their stage.
+    requested = [
+        part for part in requested
+        if _stage_index(stages.get(part, 'cutting')) <= _stage_index('ironing')
+    ]
+    if not requested:
+        raise ValueError('القطع المحددة تجاوزت مرحلة المكواة بالفعل')
+    not_ready = [part for part in requested if stages.get(part) != 'ironing']
+    if not_ready:
+        labels = ' / '.join(PART_LABELS.get(part, part) for part in not_ready)
+        raise ValueError(f"لا يمكن بدء المكواة قبل استلام ({labels}) من التشطيب")
+
+    records = []
+    for part in requested:
+        record, created = AssemblyStageRecord.objects.get_or_create(
+            model=model,
+            stage='ironing',
+            part_type=part,
+            defaults={
+                'entry_date': entry,
+                'expected_exit_date': expected,
+                'vendor_name': clean_vendor,
+                'notes': clean_notes or None,
+            },
+        )
+        if not created:
+            record.entry_date = record.entry_date or entry
+            if expected:
+                record.expected_exit_date = expected
+            if clean_vendor:
+                record.vendor_name = clean_vendor
+            if clean_notes:
+                record.notes = clean_notes
+            record.save()
+        stages[part] = 'ironing'
+        records.append(record)
+
+    model.part_stages = stages
+    model._skip_timeline_signal = True
+    model.save()
+    sync_model_status_from_part_stages(model)
+
+    labels = ' / '.join(record.stage_label for record in records)
+    tl_notes = f"تم تسجيل دخول [{labels}] إلى قسم المكواة بتاريخ {entry.isoformat()}"
+    if clean_vendor:
+        tl_notes += f" | الجهة: {clean_vendor}"
+    if expected:
+        tl_notes += f" - الخروج المتوقع: {expected.isoformat()}"
+    if clean_notes:
+        tl_notes += f" | ملاحظات: {clean_notes}"
+
+    ModelTimeline.objects.create(
+        model=model,
+        stage='قسم المكواة',
+        title=f'دخول المكواة: {labels}',
+        notes=tl_notes,
+        user=user_name,
+        timestamp_str=now_str,
+        details={
+            'phase_type': 'ironing_start',
+            'record_ids': [record.client_id or str(record.id) for record in records],
+            'parts': requested,
+            'entry_date': entry.isoformat(),
+            'expected_exit_date': expected.isoformat() if expected else '',
+            'vendor_name': clean_vendor,
+            'worker_notes': clean_notes,
+            'operator_name': user_name,
+        },
+    )
+    return records
+
+
+def receive_ironing_service(record_id, actual_exit_date=None, notes=None,
+                            user_name='مسؤول المكواة'):
+    """Completes the ironing of one part and moves that part to packaging."""
+    record = resolve_by_id(AssemblyStageRecord, record_id)
+    if not record or record.stage != 'ironing':
+        raise ValueError('سجل المكواة غير موجود')
+
+    actual = _parse_date_value(actual_exit_date) or date.today()
+    clean_notes = (notes or '').strip()
+    record.actual_exit_date = actual
+    if clean_notes:
+        record.notes = f"{record.notes} | استلام: {clean_notes}".strip(' |') if record.notes else clean_notes
+    record.save()
+
+    model = record.model
+    # ensure_part_stages promotes this part to packaging (the record is now
+    # completed); sync then derives status from the least advanced part.
+    ensure_part_stages(model)
+    sync_model_status_from_part_stages(model)
+
+    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+    label = record.stage_label
+    tl_notes = f"تم استلام [{label}] من المكواة بتاريخ {actual.isoformat()}"
+    if clean_notes:
+        tl_notes += f" | ملاحظات: {clean_notes}"
+
+    ModelTimeline.objects.create(
+        model=model,
+        stage='قسم المكواة',
+        title=f'استلام [{label}] من المكواة',
+        notes=tl_notes,
+        user=user_name,
+        timestamp_str=now_str,
+        details={
+            'phase_type': 'ironing_receive',
+            'record_id': record.client_id or str(record.id),
+            'part_type': record.part_type,
+            'entry_date': record.entry_date.isoformat() if record.entry_date else '',
+            'expected_exit_date': record.expected_exit_date.isoformat() if record.expected_exit_date else '',
+            'actual_exit_date': actual.isoformat(),
+            'next_stage': 'packaging',
+            'worker_notes': clean_notes,
+            'operator_name': user_name,
+        },
+    )
+    return record
+
+
 def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_date=None,
-                                 notes=None, user_name='مسؤول الأسمبلي'):
+                                 notes=None, vendor_name=None, part_type=None,
+                                 user_name='مسؤول الأسمبلي'):
     """
     Starts (or updates) one assembly stage (ironing / packaging / dest).
-    The dest stage is gated by the completion of the packaging requirements.
+
+    * ironing   → delegates to start_ironing_service (tracked per garment part).
+    * packaging → model-level, allowed only once every part reached packaging.
+    * dest      → model-level, gated by the packaging requirements.
     """
     if not model:
         raise ValueError('الموديل غير موجود')
     if stage not in ASSEMBLY_STAGE_STATUS:
         raise ValueError('مرحلة الأسمبلي غير معروفة')
+
+    if stage == 'ironing':
+        return start_ironing_service(
+            model,
+            part_type=part_type,
+            entry_date=entry_date,
+            expected_exit_date=expected_exit_date,
+            notes=notes,
+            vendor_name=vendor_name,
+            user_name=user_name,
+        )
+
+    if stage == 'packaging':
+        readiness = packaging_readiness(model)
+        if not readiness['all_ready']:
+            waiting = ' / '.join(item['label'] for item in readiness['waiting_parts'])
+            raise ValueError(
+                f"لا يمكن بدء التعبئة والتغليف قبل وصول كل القطع. في الانتظار: {waiting}"
+            )
 
     if stage == 'dest':
         summary = packaging_requirement_summary(model)
@@ -1332,6 +1733,7 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
             )
 
     clean_notes = (notes or '').strip()
+    clean_vendor = (vendor_name or '').strip()
     entry = _parse_date_value(entry_date) or date.today()
     expected = _parse_date_value(expected_exit_date)
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
@@ -1339,9 +1741,11 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
     record, created = AssemblyStageRecord.objects.get_or_create(
         model=model,
         stage=stage,
+        part_type='',
         defaults={
             'entry_date': entry,
             'expected_exit_date': expected,
+            'vendor_name': clean_vendor,
             'notes': clean_notes or None,
         },
     )
@@ -1349,16 +1753,19 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
         record.entry_date = record.entry_date or entry
         if expected:
             record.expected_exit_date = expected
+        if clean_vendor:
+            record.vendor_name = clean_vendor
         if clean_notes:
             record.notes = clean_notes
         record.save()
 
-    model.status = ASSEMBLY_STAGE_STATUS[stage]
-    model._skip_timeline_signal = True
-    model.save()
+    ensure_part_stages(model)
+    sync_model_status_from_part_stages(model)
 
     label = ASSEMBLY_STAGE_LABELS.get(stage, stage)
     tl_notes = f"تم تسجيل دخول الموديل إلى {label} بتاريخ {entry.isoformat()}"
+    if clean_vendor:
+        tl_notes += f" | الجهة: {clean_vendor}"
     if expected:
         tl_notes += f" - الخروج المتوقع: {expected.isoformat()}"
     if clean_notes:
@@ -1378,6 +1785,7 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
             'stage_label': label,
             'entry_date': entry.isoformat(),
             'expected_exit_date': expected.isoformat() if expected else '',
+            'vendor_name': clean_vendor,
             'worker_notes': clean_notes,
             'operator_name': user_name,
         },
@@ -1403,14 +1811,18 @@ def receive_assembly_stage_service(record_id, actual_exit_date=None, notes=None,
     record.save()
 
     model = record.model
-    next_status = ASSEMBLY_STAGE_NEXT_STATUS.get(record.stage)
-    if next_status:
-        model.status = next_status
-        model._skip_timeline_signal = True
-        model.save()
+    # Advance the per-part stages: ironing → that part to packaging,
+    # packaging → all parts to dest, dest → all parts completed.
+    if record.stage == 'packaging':
+        set_all_part_stages(model, 'dest')
+    elif record.stage == 'dest':
+        set_all_part_stages(model, 'completed')
+    else:
+        ensure_part_stages(model)
+    next_status = sync_model_status_from_part_stages(model)
 
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-    label = ASSEMBLY_STAGE_LABELS.get(record.stage, record.stage)
+    label = record.stage_label
     tl_notes = f"تم استلام الموديل من {label} بتاريخ {actual.isoformat()}"
     if next_status:
         tl_notes += f" - الحالة الجديدة: {next_status}"

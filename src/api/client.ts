@@ -288,6 +288,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data)
     }),
+  startIroning: (modelId: string, data: any) =>
+    request<any>(`/models/${encodeURIComponent(modelId)}/start_ironing/`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  receiveIroning: (modelId: string, data: any) =>
+    request<any>(`/models/${encodeURIComponent(modelId)}/receive_ironing/`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  getPartStages: (modelId: string) =>
+    request<any>(`/models/${encodeURIComponent(modelId)}/part_stages/`),
   startAssemblyStage: (modelId: string, data: any) =>
     request<any>(`/models/${encodeURIComponent(modelId)}/start_assembly_stage/`, {
       method: 'POST',

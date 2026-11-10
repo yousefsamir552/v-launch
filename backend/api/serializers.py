@@ -7,6 +7,7 @@ from .models import (
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
     PackagingRequirement, FinishingRecord, AssemblyStageRecord,
+    PART_STAGE_LABELS, PART_TYPE_CHOICES,
     HRJobTitle, HREmployee, HRAttendanceSettings,
     HRAttendanceRecord, HRPenalty, HRLoan,
     RANK_SUDO, RANK_LEVEL_THREE, DEFAULT_RANK_LEVEL,
@@ -528,8 +529,9 @@ class ModelItemSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def to_representation(self, instance):
-        from .services import model_part_summary
+        from .services import model_part_summary, get_part_stages
         parts_info = model_part_summary(instance)
+        part_stages = get_part_stages(instance)
         return {
             'id': get_ext_id(instance),
             'model_code': instance.model_code,
@@ -549,6 +551,14 @@ class ModelItemSerializer(serializers.ModelSerializer):
             'qc_summary': parts_info['qc_summary'],
             'sewing_available': parts_info['sewing_available'],
             'completed_sets': parts_info['completed_sets'],
+            'part_stages': part_stages,
+            'part_stages_detail': {
+                part: {
+                    'stage': stage,
+                    'stage_label': PART_STAGE_LABELS.get(stage, stage),
+                }
+                for part, stage in part_stages.items()
+            },
             'cut_shirt_pieces': int(instance.cut_shirt_pieces or 0),
             'cut_pants_pieces': int(instance.cut_pants_pieces or 0),
             'cut_jacket_pieces': int(instance.cut_jacket_pieces or 0),
@@ -626,6 +636,7 @@ class FinishingRecordSerializer(serializers.ModelSerializer):
             'model_code': instance.model.model_code,
             'part_type': instance.part_type or 'shirt',
             'piece_label': instance.piece_label or instance.get_part_type_display(),
+            'vendor_name': instance.vendor_name or '',
             'entry_date': to_date_str(instance.entry_date) or None,
             'expected_exit_date': to_date_str(instance.expected_exit_date) or None,
             'actual_exit_date': to_date_str(instance.actual_exit_date) or None,
@@ -649,6 +660,9 @@ class AssemblyStageRecordSerializer(serializers.ModelSerializer):
             'model_code': instance.model.model_code,
             'stage': instance.stage,
             'stage_label': instance.stage_label,
+            'part_type': instance.part_type or '',
+            'part_label': dict(PART_TYPE_CHOICES).get(instance.part_type, '') if instance.part_type else '',
+            'vendor_name': instance.vendor_name or '',
             'entry_date': to_date_str(instance.entry_date) or None,
             'expected_exit_date': to_date_str(instance.expected_exit_date) or None,
             'actual_exit_date': to_date_str(instance.actual_exit_date) or None,

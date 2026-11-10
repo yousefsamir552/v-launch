@@ -665,6 +665,59 @@ COMPOSITION_TO_PARTS = {
     'three_pieces': ['shirt', 'pants', 'jacket'],
 }
 
+# ---------------------------------------------------------------------------
+# Per-part production stages.
+# Every garment part (تيشرت / بنطلون / جاكيت) moves independently through these
+# stages. ModelItem.part_stages is the single source of truth for that:
+#   {'shirt': 'ironing', 'pants': 'finishing'}
+# The legacy ModelItem.status field remains as a coarse label derived from the
+# *least advanced* part, so old screens keep working without blocking anything.
+# ---------------------------------------------------------------------------
+PART_STAGE_ORDER = [
+    'cutting',
+    'qc_before_print',
+    'printing',
+    'qc_after_print',
+    'sewing',
+    'qc_after_sewing',
+    'finishing',
+    'ironing',
+    'packaging',
+    'dest',
+    'completed',
+]
+
+PART_STAGE_CHOICES = [
+    ('cutting', 'القص'),
+    ('qc_before_print', 'العد قبل الطباعة'),
+    ('printing', 'المطابع'),
+    ('qc_after_print', 'العد بعد الطباعة'),
+    ('sewing', 'المكن'),
+    ('qc_after_sewing', 'العد بعد المكن'),
+    ('finishing', 'التشطيب'),
+    ('ironing', 'المكواة'),
+    ('packaging', 'التعبئة والتغليف'),
+    ('dest', 'الدَست'),
+    ('completed', 'مخزن الإنتاج التام'),
+]
+
+PART_STAGE_LABELS = dict(PART_STAGE_CHOICES)
+
+# Coarse ModelItem.status per stage (used to keep legacy screens/filters alive).
+PART_STAGE_TO_STATUS = {
+    'cutting': 'في القص',
+    'qc_before_print': 'العد قبل الطباعة',
+    'printing': 'مرسل للمطبعة',
+    'qc_after_print': 'العد بعد الطباعة',
+    'sewing': 'في قسم المكن',
+    'qc_after_sewing': 'العد بعد المكن',
+    'finishing': 'في التشطيب',
+    'ironing': 'في المكواة',
+    'packaging': 'في التعبئة والتغليف',
+    'dest': 'جاهز للدَست',
+    'completed': 'مخزن الإنتاج التام',
+}
+
 
 class ModelItem(models.Model):
     STATUS_CHOICES = [
@@ -712,6 +765,13 @@ class ModelItem(models.Model):
         default=DEFAULT_GARMENT_COMPOSITION,
         blank=True,
         verbose_name="تكوين قطع الموديل",
+    )
+    # Independent stage per garment part, e.g. {"shirt": "ironing", "pants": "finishing"}.
+    # This is the single source of truth for the assembly / packaging section.
+    part_stages = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name="مراحل القطع المستقلة",
     )
     # Total cut pieces per part (aggregated from CuttingRecord.part_type)
     cut_shirt_pieces = models.IntegerField(default=0, blank=True, verbose_name="المقصوص تيشرت")
@@ -1169,6 +1229,7 @@ class FinishingRecord(models.Model):
     )
     part_type = models.CharField(max_length=20, choices=PART_TYPE_CHOICES, default='shirt', verbose_name="نوع القطعة")
     piece_label = models.CharField(max_length=50, blank=True, null=True, verbose_name="مسمى القطعة")
+    vendor_name = models.CharField(max_length=150, blank=True, default='', verbose_name="الجهة / ورشة التشطيب")
     entry_date = models.DateField(blank=True, null=True, verbose_name="تاريخ دخول التشطيب")
     expected_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج المتوقع")
     actual_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الاستلام الفعلي")
@@ -1213,6 +1274,10 @@ class AssemblyStageRecord(models.Model):
         ModelItem, on_delete=models.CASCADE, related_name='assembly_stage_records', verbose_name="الموديل"
     )
     stage = models.CharField(max_length=20, choices=ASSEMBLY_STAGE_CHOICES, verbose_name="المرحلة")
+    # For the ironing stage the record is per garment part (shirt / pants / jacket).
+    # Packaging and dest stay model-level, so part_type is left as ''.
+    part_type = models.CharField(max_length=20, blank=True, default='', verbose_name="نوع القطعة (للمكواة)")
+    vendor_name = models.CharField(max_length=150, blank=True, default='', verbose_name="الجهة / الورشة")
     entry_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الدخول")
     expected_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج المتوقع")
     actual_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج الفعلي")
@@ -1222,11 +1287,14 @@ class AssemblyStageRecord(models.Model):
 
     class Meta:
         ordering = ['-created_at', '-id']
-        unique_together = ('model', 'stage')
+        unique_together = ('model', 'stage', 'part_type')
 
     @property
     def stage_label(self) -> str:
-        return ASSEMBLY_STAGE_LABELS.get(self.stage, self.stage)
+        label = ASSEMBLY_STAGE_LABELS.get(self.stage, self.stage)
+        if self.stage == 'ironing' and self.part_type:
+            return f"{label} - {dict(PART_TYPE_CHOICES).get(self.part_type, self.part_type)}"
+        return label
 
     @property
     def is_completed(self) -> bool:

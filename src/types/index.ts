@@ -333,6 +333,8 @@ export interface DesignModel {
   garment_parts?: GarmentPart[];
   garment_composition?: GarmentComposition;
   parts?: GarmentPart[];
+  part_stages?: Partial<Record<GarmentPart, PartStage>>;
+  part_stages_detail?: Record<string, PartStageInfo>;
   cut_summary?: Partial<Record<GarmentPart, number>>;
   qc_summary?: Partial<Record<GarmentPart, number>>;
   sewing_available?: Partial<Record<GarmentPart, number>>;
@@ -629,6 +631,7 @@ export interface FinishingRecord {
   model_code?: string;
   part_type: GarmentPart;
   piece_label?: string;
+  vendor_name?: string;
   entry_date?: string | null;
   expected_exit_date?: string | null;
   actual_exit_date?: string | null;
@@ -649,12 +652,85 @@ export const ASSEMBLY_STAGE_LABELS: Record<AssemblyStageKey, string> = {
   dest: 'قسم الدَست'
 };
 
+// ---------------------------------------------------------------------------
+// Independent per-part production stages.
+// Each garment part (تيشرت / بنطلون / جاكيت) moves through these on its own;
+// the model status is only a coarse label derived from the least advanced part.
+// ---------------------------------------------------------------------------
+export type PartStage =
+  | 'cutting'
+  | 'qc_before_print'
+  | 'printing'
+  | 'qc_after_print'
+  | 'sewing'
+  | 'qc_after_sewing'
+  | 'finishing'
+  | 'ironing'
+  | 'packaging'
+  | 'dest'
+  | 'completed';
+
+export const PART_STAGE_ORDER: PartStage[] = [
+  'cutting',
+  'qc_before_print',
+  'printing',
+  'qc_after_print',
+  'sewing',
+  'qc_after_sewing',
+  'finishing',
+  'ironing',
+  'packaging',
+  'dest',
+  'completed'
+];
+
+export const PART_STAGE_LABELS: Record<PartStage, string> = {
+  cutting: 'القص',
+  qc_before_print: 'العد قبل الطباعة',
+  printing: 'المطابع',
+  qc_after_print: 'العد بعد الطباعة',
+  sewing: 'المكن',
+  qc_after_sewing: 'العد بعد المكن',
+  finishing: 'التشطيب',
+  ironing: 'المكواة',
+  packaging: 'التعبئة والتغليف',
+  dest: 'الدَست',
+  completed: 'مخزن الإنتاج التام'
+};
+
+/** Stages at which a part counts as "arrived at packaging" for the lock rule. */
+export const PACKAGING_READY_STAGES: PartStage[] = ['packaging', 'dest', 'completed'];
+
+export interface PartStageInfo {
+  stage: PartStage;
+  stage_label?: string;
+  ready_for_packaging?: boolean;
+}
+
+export interface PartStageItem {
+  part: GarmentPart;
+  label: string;
+  stage: PartStage;
+  stage_label?: string;
+}
+
+export interface PackagingReadiness {
+  all_ready: boolean;
+  has_arrived?: boolean;
+  ready_parts: PartStageItem[];
+  waiting_parts: PartStageItem[];
+  parts?: Record<string, PartStageInfo>;
+}
+
 export interface AssemblyStageRecord {
   id: string;
   model_id: string;
   model_code?: string;
   stage: AssemblyStageKey;
   stage_label?: string;
+  part_type?: GarmentPart | '';
+  part_label?: string;
+  vendor_name?: string;
   entry_date?: string | null;
   expected_exit_date?: string | null;
   actual_exit_date?: string | null;

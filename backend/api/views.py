@@ -59,6 +59,10 @@ from .services import (
     receive_finishing_service,
     start_assembly_stage_service,
     receive_assembly_stage_service,
+    start_ironing_service,
+    receive_ironing_service,
+    packaging_readiness,
+    part_stages_payload,
     normalize_part_key,
     recompute_model_part_totals,
 )
@@ -1800,18 +1804,21 @@ class ModelItemViewSet(BasePermViewSet):
                 entry_date=data.get('entry_date') or data.get('entryDate'),
                 expected_exit_date=data.get('expected_exit_date') or data.get('expectedExitDate'),
                 notes=data.get('notes') or '',
+                vendor_name=data.get('vendor_name') or data.get('vendorName') or '',
                 user_name=data.get('user_name') or data.get('user') or 'مسؤول التشطيب',
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        model.refresh_from_db()
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
             'finishingRecords': FinishingRecordSerializer(records, many=True).data,
+            'partStages': part_stages_payload(model),
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
     def receive_finishing(self, request, pk=None):
-        """Receives one part from finishing; promotes the model when all parts are in."""
+        """Receives one part from finishing; only that part moves to ironing."""
         model = self.get_object()
         data = request.data or {}
         record_id = data.get('record_id') or data.get('recordId')
@@ -1833,7 +1840,70 @@ class ModelItemViewSet(BasePermViewSet):
             'finishingRecords': FinishingRecordSerializer(
                 FinishingRecord.objects.filter(model=model).order_by('part_type'), many=True
             ).data,
+            'partStages': part_stages_payload(model),
+            'packagingReadiness': packaging_readiness(model),
         })
+
+    @action(detail=True, methods=['post'])
+    def start_ironing(self, request, pk=None):
+        """Starts (or updates) the ironing stage for one or more garment parts."""
+        model = self.get_object()
+        data = request.data or {}
+        parts = data.get('parts')
+        if isinstance(parts, str):
+            parts = [parts]
+        if not isinstance(parts, list):
+            parts = None
+        try:
+            records = start_ironing_service(
+                model,
+                part_type=data.get('part_type') or data.get('partType'),
+                parts=parts,
+                entry_date=data.get('entry_date') or data.get('entryDate'),
+                expected_exit_date=data.get('expected_exit_date') or data.get('expectedExitDate'),
+                notes=data.get('notes') or '',
+                vendor_name=data.get('vendor_name') or data.get('vendorName') or '',
+                user_name=data.get('user_name') or data.get('user') or 'مسؤول المكواة',
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        model.refresh_from_db()
+        return Response({
+            'model': ModelItemSerializer(model, context={'request': request}).data,
+            'assemblyStageRecords': AssemblyStageRecordSerializer(records, many=True).data,
+            'partStages': part_stages_payload(model),
+            'packagingReadiness': packaging_readiness(model),
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def receive_ironing(self, request, pk=None):
+        """Receives one part from ironing; that part then moves to packaging."""
+        model = self.get_object()
+        data = request.data or {}
+        record_id = data.get('record_id') or data.get('recordId')
+        if not record_id:
+            return Response({'detail': 'معرف سجل المكواة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            record = receive_ironing_service(
+                record_id,
+                actual_exit_date=data.get('actual_exit_date') or data.get('actualExitDate'),
+                notes=data.get('notes') or '',
+                user_name=data.get('user_name') or data.get('user') or 'مسؤول المكواة',
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        model.refresh_from_db()
+        return Response({
+            'model': ModelItemSerializer(model, context={'request': request}).data,
+            'assemblyStageRecord': AssemblyStageRecordSerializer(record).data,
+            'assemblyStageRecords': AssemblyStageRecordSerializer(
+                AssemblyStageRecord.objects.filter(model=model).order_by('stage', 'part_type'), many=True
+            ).data,
+            'partStages': part_stages_payload(model),
+            'packagingReadiness': packaging_readiness(model),
+        })
+
+
 
     @action(detail=True, methods=['post'])
     def start_assembly_stage(self, request, pk=None):
@@ -1853,14 +1923,19 @@ class ModelItemViewSet(BasePermViewSet):
                 entry_date=data.get('entry_date') or data.get('entryDate'),
                 expected_exit_date=data.get('expected_exit_date') or data.get('expectedExitDate'),
                 notes=data.get('notes') or '',
+                vendor_name=data.get('vendor_name') or data.get('vendorName') or '',
+                part_type=data.get('part_type') or data.get('partType'),
                 user_name=data.get('user_name') or data.get('user') or 'مسؤول الأسمبلي',
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        model.refresh_from_db()
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
             'assemblyStageRecord': AssemblyStageRecordSerializer(record).data,
+            'partStages': part_stages_payload(model),
             'readiness': packaging_requirement_summary(model),
+            'packagingReadiness': packaging_readiness(model),
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
@@ -1885,8 +1960,22 @@ class ModelItemViewSet(BasePermViewSet):
             'model': ModelItemSerializer(model, context={'request': request}).data,
             'assemblyStageRecord': AssemblyStageRecordSerializer(record).data,
             'assemblyStageRecords': AssemblyStageRecordSerializer(
-                AssemblyStageRecord.objects.filter(model=model).order_by('stage'), many=True
+                AssemblyStageRecord.objects.filter(model=model).order_by('stage', 'part_type'), many=True
             ).data,
+            'partStages': part_stages_payload(model),
+            'packagingReadiness': packaging_readiness(model),
+        })
+
+    @action(detail=True, methods=['get'])
+    def part_stages(self, request, pk=None):
+        """Returns the independent stage of every garment part of the model."""
+        model = self.get_object()
+        return Response({
+            'model_id': get_ext_id(model),
+            'model_code': model.model_code,
+            'model_status': model.status,
+            'partStages': part_stages_payload(model),
+            'packagingReadiness': packaging_readiness(model),
         })
 
 

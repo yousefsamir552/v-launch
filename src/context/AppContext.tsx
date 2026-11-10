@@ -46,7 +46,10 @@ import {
   PackagingStepKey,
   FinishingRecord,
   AssemblyStageRecord,
-  AssemblyStageKey
+  AssemblyStageKey,
+  PartStage,
+  PART_STAGE_LABELS,
+  PART_STAGE_ORDER
 } from '../types';
 
 interface FlashMessage {
@@ -383,6 +386,7 @@ interface AppContextType {
     parts?: GarmentPart[];
     entryDate?: string;
     expectedExitDate?: string;
+    vendorName?: string;
     notes?: string;
   }) => void;
   receiveFinishing: (recordId: string, actualExitDate?: string, notes?: string) => void;
@@ -391,9 +395,25 @@ interface AppContextType {
     stage: AssemblyStageKey;
     entryDate?: string;
     expectedExitDate?: string;
+    vendorName?: string;
+    partType?: GarmentPart;
     notes?: string;
   }) => void;
   receiveAssemblyStage: (recordId: string, actualExitDate?: string, notes?: string) => void;
+  startIroning: (data: {
+    modelId: string;
+    partType?: GarmentPart;
+    parts?: GarmentPart[];
+    entryDate?: string;
+    expectedExitDate?: string;
+    vendorName?: string;
+    notes?: string;
+  }) => void;
+  receiveIroning: (recordId: string, actualExitDate?: string, notes?: string) => void;
+  /** Independent stage of each garment part (falls back to the model status). */
+  getPartStages: (modelId: string) => Partial<Record<GarmentPart, PartStage>>;
+  /** True when every part of the model reached the packaging stage. */
+  isPackagingReady: (modelId: string) => boolean;
 
   // Settings Actions
   addSizeDef: (name: string, values: string) => void;
@@ -3293,6 +3313,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [packagingRequirements]
   );
 
+  /** Independent stage per garment part, falling back to the model status. */
+  const getPartStages = useCallback(
+    (modelId: string): Partial<Record<GarmentPart, PartStage>> => {
+      const model = models.find((m) => m.id === modelId);
+      if (!model) return {};
+      const raw = model.part_stages || {};
+      const statusFallback: Record<string, PartStage> = {
+        'في التشطيب': 'finishing',
+        'في المكواة': 'ironing',
+        'في التعبئة والتغليف': 'packaging',
+        'جاهز للدَست': 'dest',
+        'مخزن الإنتاج التام': 'completed',
+        'مكتمل الإنتاج': 'completed'
+      };
+      const fallback = statusFallback[model.status as string] || 'cutting';
+      const stages: Partial<Record<GarmentPart, PartStage>> = {};
+      getModelParts(modelId).forEach((part) => {
+        const stage = raw[part];
+        stages[part] =
+          stage && PART_STAGE_ORDER.includes(stage) ? (stage as PartStage) : fallback;
+      });
+      return stages;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [models]
+  );
+
+  /** Packaging is locked until every part of the model reaches packaging. */
+  const isPackagingReady = useCallback(
+    (modelId: string): boolean => {
+      const stages = Object.values(getPartStages(modelId));
+      if (!stages.length) return false;
+      return stages.every(
+        (stage) => stage === 'packaging' || stage === 'dest' || stage === 'completed'
+      );
+    },
+    [getPartStages]
+  );
+
   const setPackagingStep = (
     modelId: string,
     step: PackagingStepKey,
@@ -3358,14 +3417,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     parts?: GarmentPart[];
     entryDate?: string;
     expectedExitDate?: string;
+    vendorName?: string;
     notes?: string;
   }) => {
     const targetModel = models.find((m) => m.id === data.modelId);
     const parts = data.parts && data.parts.length ? data.parts : getModelParts(data.modelId);
     const cleanNotes = data.notes?.trim() || '';
+    const cleanVendor = data.vendorName?.trim() || '';
 
     setModels((prev) =>
-      prev.map((m) => (m.id === data.modelId ? { ...m, status: 'في التشطيب' } : m))
+      prev.map((m) => {
+        if (m.id !== data.modelId) return m;
+        const stages = { ...(m.part_stages || {}) };
+        parts.forEach((part) => {
+          stages[part] = 'finishing';
+        });
+        return { ...m, status: 'في التشطيب' as DesignModel['status'], part_stages: stages };
+      })
     );
     const optimistic: FinishingRecord[] = parts.map((part, index) => ({
       id: `finish-${Date.now()}-${index}`,
@@ -3373,6 +3441,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       model_code: targetModel?.model_code,
       part_type: part,
       piece_label: getPartLabel(part),
+      vendor_name: cleanVendor,
       entry_date: data.entryDate || new Date().toISOString().slice(0, 10),
       expected_exit_date: data.expectedExitDate || null,
       actual_exit_date: null,
@@ -3390,6 +3459,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         parts,
         entry_date: data.entryDate,
         expected_exit_date: data.expectedExitDate,
+        vendor_name: cleanVendor,
         notes: cleanNotes,
         user_name: currentUser?.real_name || 'مسؤول التشطيب'
       })
@@ -3438,14 +3508,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     setFinishingRecords(updated);
 
-    const stillPending = updated.some(
-      (rec) => rec.model_id === record.model_id && !rec.is_received
-    );
-    if (!stillPending) {
-      setModels((prev) =>
-        prev.map((m) => (m.id === record.model_id ? { ...m, status: 'في المكواة' } : m))
+    // Only the model-level status advances when *every* part was received.
+    const partList = getModelParts(record.model_id);
+    const allPartsReceived =
+      partList.length > 0 &&
+      partList.every((part) =>
+        updated.some(
+          (rec) =>
+            rec.model_id === record.model_id && rec.part_type === part && rec.is_received
+        )
       );
-    }
+    // Only this part moves to ironing; the others keep their own stage.
+    setModels((prev) =>
+      prev.map((m) => {
+        if (m.id !== record.model_id) return m;
+        const stages = {
+          ...(m.part_stages || {}),
+          [record.part_type]: 'ironing' as PartStage
+        };
+        return {
+          ...m,
+          part_stages: stages,
+          status: allPartsReceived ? ('في المكواة' as DesignModel['status']) : m.status
+        };
+      })
+    );
 
     api
       .receiveFinishing(record.model_id, {
@@ -3477,6 +3564,161 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
+  /** Starts (or updates) ironing for one or more parts (per-part tracking). */
+  const startIroning = (data: {
+    modelId: string;
+    partType?: GarmentPart;
+    parts?: GarmentPart[];
+    entryDate?: string;
+    expectedExitDate?: string;
+    vendorName?: string;
+    notes?: string;
+  }) => {
+    const targetModel = models.find((m) => m.id === data.modelId);
+    const cleanNotes = data.notes?.trim() || '';
+    const cleanVendor = data.vendorName?.trim() || '';
+    const resolvedEntry = data.entryDate || new Date().toISOString().slice(0, 10);
+    const parts: GarmentPart[] =
+      data.parts && data.parts.length
+        ? data.parts
+        : data.partType
+        ? [data.partType]
+        : (Object.entries(getPartStages(data.modelId))
+            .filter(([, stage]) => stage === 'ironing')
+            .map(([part]) => part as GarmentPart));
+
+    if (!parts.length) {
+      addFlashMessage('لا توجد قطعة في مرحلة المكواة لتسجيل دخولها', 'warning');
+      return;
+    }
+
+    setAssemblyStageRecords((prev) => {
+      const others = prev.filter(
+        (rec) =>
+          !(
+            rec.model_id === data.modelId &&
+            rec.stage === 'ironing' &&
+            parts.includes((rec.part_type || '') as GarmentPart)
+          )
+      );
+      const optimistic: AssemblyStageRecord[] = parts.map((part, index) => ({
+        id: `asm-ironing-${Date.now()}-${index}`,
+        model_id: data.modelId,
+        model_code: targetModel?.model_code,
+        stage: 'ironing',
+        part_type: part,
+        part_label: getPartLabel(part),
+        vendor_name: cleanVendor,
+        entry_date: resolvedEntry,
+        expected_exit_date: data.expectedExitDate || null,
+        actual_exit_date: null,
+        status: 'جارية الآن',
+        is_completed: false,
+        notes: cleanNotes
+      }));
+      return [...optimistic, ...others];
+    });
+
+    api
+      .startIroning(data.modelId, {
+        parts,
+        entry_date: resolvedEntry,
+        expected_exit_date: data.expectedExitDate,
+        vendor_name: cleanVendor,
+        notes: cleanNotes,
+        user_name: currentUser?.real_name || 'مسؤول المكواة'
+      })
+      .then((res) => {
+        const saved: AssemblyStageRecord[] = Array.isArray(res?.assemblyStageRecords)
+          ? res.assemblyStageRecords
+          : [];
+        if (saved.length) {
+          const savedParts = saved.map((rec) => (rec.part_type || '') as string);
+          setAssemblyStageRecords((prev) => [
+            ...saved,
+            ...prev.filter(
+              (rec) =>
+                !(
+                  rec.model_id === data.modelId &&
+                  rec.stage === 'ironing' &&
+                  savedParts.includes((rec.part_type || '') as string)
+                )
+            )
+          ]);
+        }
+        refreshState();
+        logAction(
+          'قسم المكواة',
+          `دخول قطع (${parts.map((part) => getPartLabel(part)).join(' / ')}) للموديل ${targetModel?.model_code} إلى المكواة`
+        );
+        addFlashMessage('تم تسجيل دخول المكواة بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل تسجيل دخول المكواة في الباك إند', 'danger');
+      });
+  };
+
+  /** Receives one part from ironing; only that part moves to packaging. */
+  const receiveIroning = (recordId: string, actualExitDate?: string, notes?: string) => {
+    const record = assemblyStageRecords.find((rec) => rec.id === recordId);
+    if (!record) return;
+    const targetModel = models.find((m) => m.id === record.model_id);
+    const resolvedDate = actualExitDate || new Date().toISOString().slice(0, 10);
+    const cleanNotes = notes?.trim() || '';
+
+    setAssemblyStageRecords((prev) =>
+      prev.map((rec) =>
+        rec.id === recordId
+          ? {
+              ...rec,
+              actual_exit_date: resolvedDate,
+              status: 'مكتملة' as const,
+              is_completed: true,
+              notes: cleanNotes
+                ? `${rec.notes || ''} | استلام: ${cleanNotes}`.replace(/^\s*\|\s*/, '')
+                : rec.notes
+            }
+          : rec
+      )
+    );
+    setModels((prev) =>
+      prev.map((m) => {
+        if (m.id !== record.model_id) return m;
+        const stages = { ...(m.part_stages || {}) };
+        if (record.part_type) {
+          stages[record.part_type] = 'packaging';
+        }
+        return { ...m, part_stages: stages };
+      })
+    );
+
+    api
+      .receiveIroning(record.model_id, {
+        record_id: recordId,
+        actual_exit_date: resolvedDate,
+        notes: cleanNotes,
+        user_name: currentUser?.real_name || 'مسؤول المكواة'
+      })
+      .then((res) => {
+        const saved: AssemblyStageRecord | undefined = res?.assemblyStageRecord;
+        if (saved) {
+          setAssemblyStageRecords((prev) => prev.map((rec) => (rec.id === saved.id ? saved : rec)));
+        }
+        refreshState();
+        logAction(
+          'قسم المكواة',
+          `استلام قطعة ${record.part_label || getPartLabel(record.part_type)} من المكواة للموديل ${targetModel?.model_code}`
+        );
+        addFlashMessage('تم تسجيل استلام القطعة من المكواة بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل استلام المكواة في الباك إند', 'danger');
+      });
+  };
+
+
   const ASSEMBLY_STAGE_STATUS_MAP: Record<AssemblyStageKey, DesignModel['status']> = {
     ironing: 'في المكواة',
     packaging: 'في التعبئة والتغليف',
@@ -3494,10 +3736,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     stage: AssemblyStageKey;
     entryDate?: string;
     expectedExitDate?: string;
+    vendorName?: string;
+    partType?: GarmentPart;
     notes?: string;
   }) => {
+    // Ironing is per part, so it has its own dedicated flow.
+    if (data.stage === 'ironing') {
+      startIroning(data);
+      return;
+    }
+
     const targetModel = models.find((m) => m.id === data.modelId);
     const cleanNotes = data.notes?.trim() || '';
+    const cleanVendor = data.vendorName?.trim() || '';
     const resolvedEntry = data.entryDate || new Date().toISOString().slice(0, 10);
 
     setModels((prev) =>
@@ -3515,6 +3766,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           model_id: data.modelId,
           model_code: targetModel?.model_code,
           stage: data.stage,
+          part_type: '',
+          vendor_name: cleanVendor,
           entry_date: resolvedEntry,
           expected_exit_date: data.expectedExitDate || null,
           actual_exit_date: null,
@@ -3531,6 +3784,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         stage: data.stage,
         entry_date: resolvedEntry,
         expected_exit_date: data.expectedExitDate,
+        vendor_name: cleanVendor,
         notes: cleanNotes,
         user_name: currentUser?.real_name || 'مسؤول الأسمبلي'
       })
@@ -3584,11 +3838,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       )
     );
     setModels((prev) =>
-      prev.map((m) =>
-        m.id === record.model_id
-          ? { ...m, status: ASSEMBLY_STAGE_NEXT_STATUS_MAP[record.stage] }
-          : m
-      )
+      prev.map((m) => {
+        if (m.id !== record.model_id) return m;
+        const stages = { ...(m.part_stages || {}) };
+        if (record.stage === 'ironing' && record.part_type) {
+          // Only this part completed ironing and moves to packaging.
+          stages[record.part_type] = 'packaging';
+        } else if (record.stage === 'packaging' || record.stage === 'dest') {
+          const nextStage: PartStage = record.stage === 'packaging' ? 'dest' : 'completed';
+          (Object.keys(stages) as GarmentPart[]).forEach((part) => {
+            stages[part] = nextStage;
+          });
+        }
+        return {
+          ...m,
+          part_stages: stages,
+          status:
+            record.stage === 'ironing'
+              ? m.status
+              : ASSEMBLY_STAGE_NEXT_STATUS_MAP[record.stage]
+        };
+      })
     );
 
     api
@@ -4282,6 +4552,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         receiveFinishing,
         startAssemblyStage,
         receiveAssemblyStage,
+        startIroning,
+        receiveIroning,
+        getPartStages,
+        isPackagingReady,
         addSizeDef,
         updateSizeDef,
         deleteSizeDef,

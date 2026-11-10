@@ -19,8 +19,9 @@ import {
   PackagingStepKey,
   PACKAGING_STEP_ORDER,
   PACKAGING_STEP_LABELS,
-  AssemblyStageKey,
-  ASSEMBLY_STAGE_LABELS
+  PartStage,
+  PART_STAGE_ORDER,
+  PART_STAGE_LABELS
 } from '../types';
 
 type TabKey = 'requirements' | 'finishing' | 'ironing' | 'packaging' | 'dest';
@@ -47,12 +48,6 @@ const CURRENT_ASSEMBLY_STAGE: Record<string, { label: string; tone: string }> = 
 };
 
 /** الحالة التي يجب أن يكون عليها الموديل قبل بدء المرحلة (تسلسل إلزامي). */
-const STAGE_REQUIRED_STATUS: Record<AssemblyStageKey, DesignModel['status']> = {
-  ironing: 'في المكواة',
-  packaging: 'في التعبئة والتغليف',
-  dest: 'جاهز للدَست'
-};
-
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 const formatDate = (value?: string | null) => (value ? String(value).slice(0, 10) : '—');
@@ -89,12 +84,6 @@ const TABS: { key: TabKey; label: string; icon: React.ReactNode; accent: string 
     accent: 'bg-indigo-100 text-indigo-800 border-indigo-300'
   }
 ];
-
-const STAGE_TAB_TO_KEY: Record<'ironing' | 'packaging' | 'dest', AssemblyStageKey> = {
-  ironing: 'ironing',
-  packaging: 'packaging',
-  dest: 'dest'
-};
 
 const modelParts = (model: DesignModel): GarmentPart[] => {
   if (model.garment_parts && model.garment_parts.length) {
@@ -301,21 +290,127 @@ const RequirementsCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({
 
 
 
-const FinishingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, canEdit }) => {
-  const { finishingRecords, startFinishing, receiveFinishing } = useApp();
-  const records = finishingRecords.filter((record) => record.model_id === model.id);
-  const parts = modelParts(model);
-  const [selectedParts, setSelectedParts] = useState<GarmentPart[]>(parts);
-  const [expectedExit, setExpectedExit] = useState(todayStr());
+/* ------------------------------------------------------------------ */
+/* Finishing (per part)                                               */
+/* ------------------------------------------------------------------ */
+
+const PartFinishingRow: React.FC<{
+  model: DesignModel;
+  part: GarmentPart;
+  canEdit: boolean;
+}> = ({ model, part, canEdit }) => {
+  const { finishingRecords, startFinishing, receiveFinishing, getPartStages } = useApp();
+  const record = finishingRecords.find(
+    (item) => item.model_id === model.id && item.part_type === part
+  );
+  const stage = getPartStages(model.id)[part] || 'cutting';
+  const stageIndex = PART_STAGE_ORDER.indexOf(stage);
+  const finishingIndex = PART_STAGE_ORDER.indexOf('finishing');
+  const ironingIndex = PART_STAGE_ORDER.indexOf('ironing');
+
+  const [expectedExit, setExpectedExit] = useState(
+    record?.expected_exit_date?.slice(0, 10) || todayStr()
+  );
+  const [vendor, setVendor] = useState(record?.vendor_name || '');
   const [notes, setNotes] = useState('');
 
-  const allReceived = records.length > 0 && records.every((record) => record.is_received);
-  const pendingCount = records.filter((record) => !record.is_received).length;
+  const inFinishing = stageIndex === finishingIndex;
+  const completed = Boolean(record?.is_received) || stageIndex >= ironingIndex;
+  const canStart = !completed && stageIndex <= finishingIndex;
 
-  const togglePart = (part: GarmentPart) =>
-    setSelectedParts((prev) =>
-      prev.includes(part) ? prev.filter((item) => item !== part) : [...prev, part]
-    );
+  const tone = completed
+    ? 'bg-emerald-50/60 border-emerald-200'
+    : inFinishing
+    ? 'bg-purple-50/50 border-purple-200'
+    : 'bg-slate-50 border-slate-200';
+
+  return (
+    <div className={`p-2.5 rounded-2xl border ${tone}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-black text-slate-800">{getPartLabel(part)}</span>
+        <span
+          className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+            completed
+              ? 'bg-emerald-600 text-white border-emerald-600'
+              : inFinishing
+              ? 'bg-white text-purple-800 border-purple-300'
+              : 'bg-white text-slate-600 border-slate-300'
+          }`}
+        >
+          {completed ? 'تم الاستلام' : PART_STAGE_LABELS[stage]}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-1 mt-1.5 text-[10px] font-mono text-slate-600">
+        <span>دخول: {formatDate(record?.entry_date)}</span>
+        <span>متوقع: {formatDate(record?.expected_exit_date)}</span>
+        <span>فعلي: {formatDate(record?.actual_exit_date)}</span>
+      </div>
+      {record?.vendor_name ? (
+        <p className="mt-1 text-[10px] font-bold text-slate-500">الجهة: {record.vendor_name}</p>
+      ) : null}
+
+      {!completed && canEdit && (
+        <div className="mt-2 space-y-1.5">
+          {!record && (
+            <>
+              <div className="flex items-center gap-1.5">
+                <label className="text-[10px] font-bold text-slate-500">الخروج المتوقع</label>
+                <input
+                  type="date"
+                  value={expectedExit}
+                  onChange={(event) => setExpectedExit(event.target.value)}
+                  className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
+                />
+              </div>
+              <input
+                type="text"
+                value={vendor}
+                onChange={(event) => setVendor(event.target.value)}
+                placeholder="الجهة / ورشة التشطيب (اختياري)"
+                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold"
+              />
+            </>
+          )}
+          {!record ? (
+            <button
+              type="button"
+              disabled={!canStart}
+              onClick={() =>
+                startFinishing({
+                  modelId: model.id,
+                  parts: [part],
+                  expectedExitDate: expectedExit,
+                  vendorName: vendor,
+                  notes
+                })
+              }
+              className="w-full py-1.5 rounded-xl bg-purple-600 text-white text-[10px] font-black hover:bg-purple-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              تسجيل دخول {getPartLabel(part)} للتشطيب
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => receiveFinishing(record.id, todayStr(), notes)}
+              className="w-full py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
+            >
+              تسجيل استلام {getPartLabel(part)}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const FinishingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, canEdit }) => {
+  const { finishingRecords } = useApp();
+  const parts = modelParts(model);
+  const records = finishingRecords.filter((record) => record.model_id === model.id);
+  const allReceived = parts.every((part) =>
+    records.some((record) => record.part_type === part && record.is_received)
+  );
 
   return (
     <div
@@ -325,155 +420,367 @@ const FinishingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
     >
       <ModelHeader model={model} />
 
-      {records.length > 0 ? (
-        <div className="space-y-2">
-          {records.map((record) => (
-            <div
-              key={record.id}
-              className={`p-2.5 rounded-2xl border ${
-                record.is_received
-                  ? 'bg-emerald-50/60 border-emerald-200'
-                  : 'bg-purple-50/50 border-purple-200'
-              }`}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-black text-slate-800">
-                  {record.piece_label || getPartLabel(record.part_type)}
-                </span>
-                <span
-                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                    record.is_received
-                      ? 'bg-emerald-600 text-white border-emerald-600'
-                      : 'bg-white text-purple-800 border-purple-300'
-                  }`}
-                >
-                  {record.is_received ? 'تم الاستلام' : 'في التشطيب'}
-                </span>
-              </div>
-              <div className="grid grid-cols-3 gap-1 mt-1.5 text-[10px] font-mono text-slate-600">
-                <span>دخول: {formatDate(record.entry_date)}</span>
-                <span>متوقع: {formatDate(record.expected_exit_date)}</span>
-                <span>فعلي: {formatDate(record.actual_exit_date)}</span>
-              </div>
-              {!record.is_received && canEdit && (
-                <button
-                  type="button"
-                  onClick={() => receiveFinishing(record.id, todayStr(), notes)}
-                  className="mt-2 w-full py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
-                >
-                  تسجيل استلام {record.piece_label || getPartLabel(record.part_type)}
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="text-[11px] font-bold text-slate-500 bg-slate-50 border border-dashed border-slate-200 rounded-xl px-2.5 py-2">
-          لم يتم تسجيل دخول أي قطعة للتشطيب بعد.
+      <div className="space-y-2">
+        {parts.map((part) => (
+          <PartFinishingRow key={part} model={model} part={part} canEdit={canEdit} />
+        ))}
+      </div>
+
+      <p
+        className={`text-[11px] font-bold rounded-xl px-2.5 py-1.5 border ${
+          allReceived
+            ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+            : 'text-purple-800 bg-purple-50 border-purple-200'
+        }`}
+      >
+        {allReceived
+          ? '✅ تم استلام كل القطع من التشطيب — يمكن بدء المكواة لكل قطعة على حدة.'
+          : '⏳ كل قطعة تُستلم على حدة؛ ولا تُفتح المكواة إلا بعد استلام القطعة من التشطيب.'}
+      </p>
+    </div>
+  );
+};
+
+
+/* ------------------------------------------------------------------ */
+/* Ironing (per part)                                                 */
+/* ------------------------------------------------------------------ */
+
+const PartIroningRow: React.FC<{
+  model: DesignModel;
+  part: GarmentPart;
+  canEdit: boolean;
+}> = ({ model, part, canEdit }) => {
+  const { assemblyStageRecords, startIroning, receiveIroning, getPartStages } = useApp();
+  const record = assemblyStageRecords.find(
+    (item) => item.model_id === model.id && item.stage === 'ironing' && item.part_type === part
+  );
+  const stage = getPartStages(model.id)[part] || 'cutting';
+  const stageIndex = PART_STAGE_ORDER.indexOf(stage);
+  const ironingIndex = PART_STAGE_ORDER.indexOf('ironing');
+
+  const [expectedExit, setExpectedExit] = useState(
+    record?.expected_exit_date?.slice(0, 10) || todayStr()
+  );
+  const [vendor, setVendor] = useState(record?.vendor_name || '');
+  const [notes, setNotes] = useState('');
+
+  const readyForIroning = stageIndex === ironingIndex;
+  const completed = Boolean(record?.is_completed) || stageIndex > ironingIndex;
+  const waitingFinishing = stageIndex < ironingIndex;
+
+  const tone = completed
+    ? 'bg-emerald-50/60 border-emerald-200'
+    : readyForIroning
+    ? 'bg-rose-50/50 border-rose-200'
+    : 'bg-slate-50 border-slate-200';
+
+  return (
+    <div className={`p-2.5 rounded-2xl border ${tone}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-black text-slate-800">{getPartLabel(part)}</span>
+        <span
+          className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+            completed
+              ? 'bg-emerald-600 text-white border-emerald-600'
+              : readyForIroning
+              ? 'bg-white text-rose-800 border-rose-300'
+              : 'bg-white text-slate-600 border-slate-300'
+          }`}
+        >
+          {completed ? 'تمت المكواة' : PART_STAGE_LABELS[stage]}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-1 mt-1.5 text-[10px] font-mono text-slate-600">
+        <span>دخول: {formatDate(record?.entry_date)}</span>
+        <span>متوقع: {formatDate(record?.expected_exit_date)}</span>
+        <span>فعلي: {formatDate(record?.actual_exit_date)}</span>
+      </div>
+      {record?.vendor_name ? (
+        <p className="mt-1 text-[10px] font-bold text-slate-500">الجهة: {record.vendor_name}</p>
+      ) : null}
+
+      {waitingFinishing && (
+        <p className="mt-2 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-2 py-1.5">
+          ⏳ بانتظار استلام هذه القطعة من التشطيب أولاً.
         </p>
       )}
 
-      {canEdit && !allReceived && (
-        <div className="pt-2 border-t border-slate-100 space-y-2">
-          <p className="text-[10px] font-black text-slate-600">بدء / تسجيل دخول التشطيب:</p>
-          <div className="flex flex-wrap gap-1.5">
-            {parts.map((part) => (
+      {readyForIroning && !completed && canEdit && (
+        <div className="mt-2 space-y-1.5">
+          {!record ? (
+            <>
+              <div className="flex items-center gap-1.5">
+                <label className="text-[10px] font-bold text-slate-500">الخروج المتوقع</label>
+                <input
+                  type="date"
+                  value={expectedExit}
+                  onChange={(event) => setExpectedExit(event.target.value)}
+                  className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
+                />
+              </div>
+              <input
+                type="text"
+                value={vendor}
+                onChange={(event) => setVendor(event.target.value)}
+                placeholder="الجهة / ورشة المكواة (اختياري)"
+                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold"
+              />
               <button
-                key={part}
                 type="button"
-                onClick={() => togglePart(part)}
-                className={`px-2.5 py-1 rounded-full text-[10px] font-bold border transition ${
-                  selectedParts.includes(part)
-                    ? 'bg-purple-600 text-white border-purple-600'
-                    : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
-                }`}
+                onClick={() =>
+                  startIroning({
+                    modelId: model.id,
+                    partType: part,
+                    expectedExitDate: expectedExit,
+                    vendorName: vendor,
+                    notes
+                  })
+                }
+                className="w-full py-1.5 rounded-xl bg-rose-600 text-white text-[10px] font-black hover:bg-rose-700 transition"
               >
-                {getPartLabel(part)}
+                تسجيل دخول {getPartLabel(part)} للمكواة
               </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-1.5">
-            <label className="text-[10px] font-bold text-slate-500">الخروج المتوقع</label>
-            <input
-              type="date"
-              value={expectedExit}
-              onChange={(event) => setExpectedExit(event.target.value)}
-              className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
-            />
-          </div>
-          <input
-            type="text"
-            value={notes}
-            onChange={(event) => setNotes(event.target.value)}
-            placeholder="ملاحظات التشطيب (اختياري)"
-            className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold"
-          />
-          <button
-            type="button"
-            disabled={selectedParts.length === 0}
-            onClick={() =>
-              startFinishing({
-                modelId: model.id,
-                parts: selectedParts,
-                expectedExitDate: expectedExit,
-                notes
-              })
-            }
-            className="w-full py-2 rounded-xl bg-purple-600 text-white text-[11px] font-black hover:bg-purple-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            تسجيل دخول التشطيب ({selectedParts.map((part) => getPartLabel(part)).join(' / ')})
-          </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => receiveIroning(record.id, todayStr(), notes)}
+              className="w-full py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
+            >
+              تسجيل استلام {getPartLabel(part)} من المكواة
+            </button>
+          )}
         </div>
       )}
 
-      {records.length > 0 && (
-        <p
-          className={`text-[11px] font-bold rounded-xl px-2.5 py-1.5 border ${
-            allReceived
-              ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
-              : 'text-purple-800 bg-purple-50 border-purple-200'
-          }`}
-        >
-          {allReceived
-            ? '✅ تم استلام كل القطع من التشطيب — الموديل في قسم المكواة.'
-            : `⏳ متبقي ${pendingCount} قطعة داخل التشطيب.`}
+      {completed && (
+        <p className="mt-2 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-2 py-1.5">
+          ✅ وصلت القطعة إلى التعبئة والتغليف.
         </p>
       )}
     </div>
   );
 };
 
-
-
-const StageCard: React.FC<{
-  model: DesignModel;
-  stage: AssemblyStageKey;
-  canEdit: boolean;
-}> = ({ model, stage, canEdit }) => {
-  const { assemblyStageRecords, startAssemblyStage, receiveAssemblyStage, getPackagingRequirement } =
-    useApp();
-  const record = assemblyStageRecords.find(
-    (item) => item.model_id === model.id && item.stage === stage
+const IroningCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, canEdit }) => {
+  const { getPartStages } = useApp();
+  const parts = modelParts(model);
+  const stages = getPartStages(model.id);
+  const ironingIndex = PART_STAGE_ORDER.indexOf('ironing');
+  const allDone = parts.every(
+    (part) => PART_STAGE_ORDER.indexOf(stages[part] || 'cutting') > ironingIndex
   );
-  const requirement = getPackagingRequirement(model.id);
-  const [expectedExit, setExpectedExit] = useState(todayStr());
-  const [notes, setNotes] = useState('');
-
-  const isDest = stage === 'dest';
-  const requirementComplete = Boolean(requirement?.is_complete);
-  // لا تُبدأ المرحلة إلا بعد استلام المرحلة السابقة لها (تسلسل إلزامي).
-  const outOfSequence = !record && model.status !== STAGE_REQUIRED_STATUS[stage];
-  const blocked = (isDest && !requirementComplete) || outOfSequence;
-  const stageLabel = ASSEMBLY_STAGE_LABELS[stage];
 
   return (
     <div
       className={`bg-white rounded-3xl border p-4 shadow-xs flex flex-col gap-3 ${
-        record?.is_completed
-          ? 'border-emerald-300'
-          : blocked
-          ? 'border-rose-200'
-          : 'border-slate-200'
+        allDone ? 'border-emerald-300' : 'border-slate-200'
+      }`}
+    >
+      <ModelHeader model={model} />
+
+      <div className="space-y-2">
+        {parts.map((part) => (
+          <PartIroningRow key={part} model={model} part={part} canEdit={canEdit} />
+        ))}
+      </div>
+
+      <p
+        className={`text-[11px] font-bold rounded-xl px-2.5 py-1.5 border ${
+          allDone
+            ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+            : 'text-rose-800 bg-rose-50 border-rose-200'
+        }`}
+      >
+        {allDone
+          ? '✅ كل القطع انتهت من المكواة ووصلت إلى التعبئة والتغليف.'
+          : '🧺 كل قطعة تُستلم من المكواة على حدة؛ التعبئة لا تُفتح إلا بعد اكتمال كل القطع.'}
+      </p>
+    </div>
+  );
+};
+/* ------------------------------------------------------------------ */
+/* Packaging (single card, locked until every part arrives)           */
+/* ------------------------------------------------------------------ */
+
+const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, canEdit }) => {
+  const {
+    assemblyStageRecords,
+    startAssemblyStage,
+    receiveAssemblyStage,
+    getPartStages
+  } = useApp();
+  const parts = modelParts(model);
+  const stages = getPartStages(model.id);
+  const packagingIndex = PART_STAGE_ORDER.indexOf('packaging');
+
+  const waitingParts = parts.filter(
+    (part) => PART_STAGE_ORDER.indexOf(stages[part] || 'cutting') < packagingIndex
+  );
+  const arrivedParts = parts.filter((part) => !waitingParts.includes(part));
+  const allReady = waitingParts.length === 0;
+
+  const record = assemblyStageRecords.find(
+    (item) => item.model_id === model.id && item.stage === 'packaging'
+  );
+  const completed = Boolean(record?.is_completed);
+
+  const [expectedExit, setExpectedExit] = useState(todayStr());
+  const [vendor, setVendor] = useState(record?.vendor_name || '');
+  const [notes, setNotes] = useState('');
+
+  return (
+    <div
+      className={`bg-white rounded-3xl border p-4 shadow-xs flex flex-col gap-3 ${
+        completed ? 'border-emerald-300' : allReady ? 'border-slate-200' : 'border-rose-200'
+      }`}
+    >
+      <ModelHeader model={model} />
+
+      <div className="flex flex-wrap gap-1.5">
+        {parts.map((part) => {
+          const arrived = PART_STAGE_ORDER.indexOf(stages[part] || 'cutting') >= packagingIndex;
+          return (
+            <span
+              key={part}
+              className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                arrived
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                  : 'bg-amber-50 text-amber-800 border-amber-300'
+              }`}
+            >
+              {arrived ? '✓' : '⏳'} {getPartLabel(part)} — {PART_STAGE_LABELS[stages[part] || 'cutting']}
+            </span>
+          );
+        })}
+      </div>
+
+      {!allReady && (
+        <div className="text-[11px] font-bold text-rose-800 bg-rose-50 border border-rose-200 rounded-xl px-2.5 py-2 leading-relaxed flex items-start gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <span>
+            {`🔒 التعبئة والتغليف مقفولة حتى تصل كل القطع (${arrivedParts.length} من ${parts.length}). `}
+            {`في الانتظار: ${waitingParts.map((part) => getPartLabel(part)).join(' / ')}`}
+          </span>
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono">
+        <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
+          <span className="block text-[9px] font-bold text-slate-500">دخول</span>
+          <strong className="text-slate-800">{formatDate(record?.entry_date)}</strong>
+        </div>
+        <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
+          <span className="block text-[9px] font-bold text-slate-500">خروج متوقع</span>
+          <strong className="text-slate-800">{formatDate(record?.expected_exit_date)}</strong>
+        </div>
+        <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
+          <span className="block text-[9px] font-bold text-slate-500">خروج فعلي</span>
+          <strong className="text-slate-800">{formatDate(record?.actual_exit_date)}</strong>
+        </div>
+      </div>
+
+      {record?.vendor_name ? (
+        <p className="text-[10px] font-bold text-slate-500">الجهة: {record.vendor_name}</p>
+      ) : null}
+
+      {canEdit && !completed && (
+        <div className="space-y-2 pt-2 border-t border-slate-100">
+          {!record && (
+            <>
+              <div className="flex items-center gap-1.5">
+                <label className="text-[10px] font-bold text-slate-500">الخروج المتوقع</label>
+                <input
+                  type="date"
+                  value={expectedExit}
+                  onChange={(event) => setExpectedExit(event.target.value)}
+                  className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
+                />
+              </div>
+              <input
+                type="text"
+                value={vendor}
+                onChange={(event) => setVendor(event.target.value)}
+                placeholder="الجهة / ورشة التغليف (اختياري)"
+                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold"
+              />
+              <button
+                type="button"
+                disabled={!allReady}
+                onClick={() =>
+                  startAssemblyStage({
+                    modelId: model.id,
+                    stage: 'packaging',
+                    expectedExitDate: expectedExit,
+                    vendorName: vendor,
+                    notes
+                  })
+                }
+                className="w-full py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                بدء التعبئة والتغليف
+              </button>
+            </>
+          )}
+          {record && (
+            <button
+              type="button"
+              onClick={() => receiveAssemblyStage(record.id, todayStr(), notes)}
+              className="w-full py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
+            >
+              تسجيل استلام التعبئة
+            </button>
+          )}
+        </div>
+      )}
+
+      {completed && (
+        <p className="text-[10px] font-bold text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-center">
+          ✅ التعبئة والتغليف مكتملة — الموديل انتقل إلى قسم الدَست.
+        </p>
+      )}
+    </div>
+  );
+};
+/* ------------------------------------------------------------------ */
+/* Dest (model-level, gated by packaging requirements + all parts)    */
+/* ------------------------------------------------------------------ */
+
+const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, canEdit }) => {
+  const {
+    assemblyStageRecords,
+    startAssemblyStage,
+    receiveAssemblyStage,
+    getPackagingRequirement,
+    getPartStages
+  } = useApp();
+  const record = assemblyStageRecords.find(
+    (item) => item.model_id === model.id && item.stage === 'dest'
+  );
+  const requirement = getPackagingRequirement(model.id);
+  const stages = getPartStages(model.id);
+  const parts = modelParts(model);
+  const destIndex = PART_STAGE_ORDER.indexOf('dest');
+  const waitingDest = parts.filter(
+    (part) => PART_STAGE_ORDER.indexOf(stages[part] || 'cutting') < destIndex
+  );
+
+  const [expectedExit, setExpectedExit] = useState(todayStr());
+  const [vendor, setVendor] = useState(record?.vendor_name || '');
+  const [notes, setNotes] = useState('');
+
+  const requirementComplete = Boolean(requirement?.is_complete);
+  const allArrived = waitingDest.length === 0;
+  // التسلسل الإلزامي: لا يبدأ الدَست إلا بعد اكتمال التعبئة لكل القطع والمتطلبات.
+  const outOfSequence = !record && !allArrived;
+  const blocked = !requirementComplete || outOfSequence;
+
+  return (
+    <div
+      className={`bg-white rounded-3xl border p-4 shadow-xs flex flex-col gap-3 ${
+        record?.is_completed ? 'border-emerald-300' : blocked ? 'border-rose-200' : 'border-slate-200'
       }`}
     >
       <ModelHeader model={model} />
@@ -493,25 +800,8 @@ const StageCard: React.FC<{
         </div>
       </div>
 
-      {record ? (
-        <div className="flex items-center justify-between gap-2">
-          <span
-            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
-              record.is_completed
-                ? 'bg-emerald-600 text-white border-emerald-600'
-                : record.is_overdue
-                ? 'bg-rose-100 text-rose-800 border-rose-300'
-                : 'bg-indigo-50 text-indigo-800 border-indigo-200'
-            }`}
-          >
-            {record.is_completed ? 'مكتملة' : record.is_overdue ? 'متأخرة' : 'جارية الآن'}
-          </span>
-          {record.notes ? (
-            <span className="text-[10px] text-slate-500 font-semibold truncate max-w-[60%]">
-              {record.notes}
-            </span>
-          ) : null}
-        </div>
+      {record?.vendor_name ? (
+        <p className="text-[10px] font-bold text-slate-500">الجهة: {record.vendor_name}</p>
       ) : null}
 
       {blocked && (
@@ -520,8 +810,8 @@ const StageCard: React.FC<{
           <span>
             {outOfSequence ? (
               <>
-                لا يمكن بدء مرحلة {stageLabel} قبل استلام المرحلة السابقة لها.
-                {` الحالة الحالية للموديل: ${model.status}.`}
+                لا يمكن بدء الدَست قبل وصول كل القطع إلى التعبئة والتغليف.
+                {` في الانتظار: ${waitingDest.map((part) => getPartLabel(part)).join(' / ')}`}
               </>
             ) : (
               <>
@@ -539,37 +829,42 @@ const StageCard: React.FC<{
         <div className="space-y-2 pt-2 border-t border-slate-100">
           {!record || !record.is_completed ? (
             <>
-              <div className="flex items-center gap-1.5">
-                <label className="text-[10px] font-bold text-slate-500">الخروج المتوقع</label>
-                <input
-                  type="date"
-                  value={expectedExit}
-                  onChange={(event) => setExpectedExit(event.target.value)}
-                  className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
-                />
-              </div>
-              <input
-                type="text"
-                value={notes}
-                onChange={(event) => setNotes(event.target.value)}
-                placeholder="ملاحظات المرحلة (اختياري)"
-                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold"
-              />
+              {!record && (
+                <>
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-[10px] font-bold text-slate-500">الخروج المتوقع</label>
+                    <input
+                      type="date"
+                      value={expectedExit}
+                      onChange={(event) => setExpectedExit(event.target.value)}
+                      className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
+                    />
+                  </div>
+                  <input
+                    type="text"
+                    value={vendor}
+                    onChange={(event) => setVendor(event.target.value)}
+                    placeholder="الجهة / ورشة الدَست (اختياري)"
+                    className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold"
+                  />
+                </>
+              )}
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  disabled={blocked}
+                  disabled={Boolean(blocked)}
                   onClick={() =>
                     startAssemblyStage({
                       modelId: model.id,
-                      stage,
+                      stage: 'dest',
                       expectedExitDate: expectedExit,
+                      vendorName: vendor,
                       notes
                     })
                   }
                   className="flex-1 py-2 rounded-xl bg-slate-900 text-white text-[10px] font-black hover:bg-slate-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  {record ? 'تحديث موعد الخروج' : `بدء ${stageLabel}`}
+                  {record ? 'تحديث موعد الخروج' : 'بدء قسم الدَست'}
                 </button>
                 {record && (
                   <button
@@ -605,6 +900,7 @@ export const AssemblyPackagingView: React.FC = () => {
     packagingRequirements,
     finishingRecords,
     assemblyStageRecords,
+    getPartStages,
     hasPermission
   } = useApp();
 
@@ -642,22 +938,23 @@ export const AssemblyPackagingView: React.FC = () => {
     );
   }, [eligibleModels, searchTerm]);
 
-  const isFinishingDone = (modelId: string) => {
-    const records = finishingRecords.filter((record) => record.model_id === modelId);
-    return records.length > 0 && records.every((record) => record.is_received);
-  };
-
-  const isStageDone = (modelId: string, stage: AssemblyStageKey) => {
-    const record = assemblyStageRecords.find(
-      (item) => item.model_id === modelId && item.stage === stage
+  /** كل القطع وصلت إلى المرحلة المطلوبة أو تجاوزتها. */
+  const allPartsAtOrBeyond = (model: DesignModel, stage: PartStage) => {
+    const parts = modelParts(model);
+    if (!parts.length) return false;
+    const stages = getPartStages(model.id);
+    const threshold = PART_STAGE_ORDER.indexOf(stage);
+    return parts.every(
+      (part) => PART_STAGE_ORDER.indexOf(stages[part] || 'cutting') >= threshold
     );
-    return Boolean(record?.is_completed);
   };
 
   const isDoneForTab = (model: DesignModel, tab: TabKey) => {
     if (tab === 'requirements') return Boolean(requirementCompleteMap[model.id]);
-    if (tab === 'finishing') return isFinishingDone(model.id);
-    return isStageDone(model.id, STAGE_TAB_TO_KEY[tab as 'ironing' | 'packaging' | 'dest']);
+    if (tab === 'finishing') return allPartsAtOrBeyond(model, 'ironing');
+    if (tab === 'ironing') return allPartsAtOrBeyond(model, 'packaging');
+    if (tab === 'packaging') return allPartsAtOrBeyond(model, 'dest');
+    return allPartsAtOrBeyond(model, 'completed');
   };
 
   const pendingCountForTab = (tab: TabKey) =>
@@ -676,14 +973,9 @@ export const AssemblyPackagingView: React.FC = () => {
     activeTab,
     requirementCompleteMap,
     finishingRecords,
-    assemblyStageRecords
+    assemblyStageRecords,
+    models
   ]);
-
-  const activeStage =
-    activeTab === 'finishing' || activeTab === 'requirements'
-      ? null
-      : STAGE_TAB_TO_KEY[activeTab];
-
 
   return (
     <div className="max-w-7xl mx-auto space-y-5">
@@ -698,6 +990,9 @@ export const AssemblyPackagingView: React.FC = () => {
               <h2 className="text-xl font-black">قسم الأسمبلي والأمبالاج</h2>
               <p className="text-[12px] text-white/80 font-semibold mt-1 leading-relaxed">
                 متطلبات الأمبالاج (الصور والكروت) ← التشطيب ← المكواة ← التعبئة والتغليف ← الدَست
+                <span className="block text-[11px] text-white/70 mt-0.5">
+                  كل قطعة (تيشرت / بنطلون / جاكيت) تتبع مراحلها بشكل مستقل، والتعبئة مقفولة حتى وصول كل القطع.
+                </span>
               </p>
             </div>
           </div>
@@ -776,14 +1071,13 @@ export const AssemblyPackagingView: React.FC = () => {
             if (activeTab === 'finishing') {
               return <FinishingCard key={model.id} model={model} canEdit={canEdit} />;
             }
-            return (
-              <StageCard
-                key={model.id}
-                model={model}
-                stage={activeStage as AssemblyStageKey}
-                canEdit={canEdit}
-              />
-            );
+            if (activeTab === 'ironing') {
+              return <IroningCard key={model.id} model={model} canEdit={canEdit} />;
+            }
+            if (activeTab === 'packaging') {
+              return <PackagingCard key={model.id} model={model} canEdit={canEdit} />;
+            }
+            return <DestCard key={model.id} model={model} canEdit={canEdit} />;
           })}
         </div>
       )}
