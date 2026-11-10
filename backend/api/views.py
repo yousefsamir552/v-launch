@@ -1,6 +1,9 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.http import Http404, HttpResponse
 from django.utils import timezone
@@ -60,7 +63,12 @@ from .services import (
     recompute_model_part_totals,
 )
 from .reports import get_production_report
-from .permissions import CanManageHR
+from .permissions import (
+    CanManageHR,
+    HasDynamicSectionPermission,
+    IsAuthenticatedProfile,
+)
+from .throttles import LoginRateThrottle, SyncRateThrottle
 from .hr_attendance_io import (
     build_template_csv,
     compute_attendance,
@@ -83,23 +91,34 @@ def parse_time_value(val):
 
 def resolve_request_user_profile(request):
     """
-    Resolves the authenticated UserProfile from Bearer token, X-Auth-Token, or X-User-Username.
+    Resolves the authenticated UserProfile from a Bearer token or X-Auth-Token.
+    X-User-Username is intentionally ignored: it is client-controlled and trusting
+    it allowed full identity impersonation (including the sudo account).
     """
+    profile = getattr(request, 'user_profile', None)
+    if profile is not None:
+        return profile
     auth_header = request.headers.get('Authorization', '')
     token = ''
     if auth_header.startswith('Bearer '):
         token = auth_header[7:].strip()
     if not token:
         token = request.headers.get('X-Auth-Token', '').strip()
+    if not token:
+        return None
+    return UserProfile.objects.select_related('role').filter(
+        auth_token=token, is_active=True
+    ).first()
 
-    if token:
-        profile = UserProfile.objects.select_related('role').filter(auth_token=token, is_active=True).first()
-        if profile:
-            return profile
 
-    username = request.headers.get('X-User-Username', '').strip()
-    if username:
-        return UserProfile.objects.select_related('role').filter(username__iexact=username, is_active=True).first()
+def validate_new_password(password):
+    """Returns an Arabic error message when the password is too weak, else None."""
+    if not password or len(password) < 6:
+        return 'كلمة المرور مطلوبة ويجب ألا تقل عن 6 أحرف'
+    try:
+        validate_password(password)
+    except ValidationError as exc:
+        return ' '.join(exc.messages)
     return None
 
 
@@ -115,10 +134,11 @@ def is_sudo_profile(profile) -> bool:
 
 
 def get_viewer_rank(request) -> int:
-    """رتبة المستخدم الحالي (0 = sudo، أو استدعاء داخلي بلا هوية)."""
+    """رتبة المستخدم الحالي (0 = sudo فقط لحساب الطوارئ)."""
     profile = get_viewer_profile(request)
     if profile is None:
-        return RANK_SUDO
+        # No authenticated identity: give the LOWEST privilege, never sudo.
+        return RANK_LEVEL_THREE
     if is_sudo_profile(profile):
         return RANK_SUDO
     return coerce_rank_level(profile.rank_level)
@@ -165,10 +185,14 @@ def hidden_employee_error(request, employee):
 class BasePermViewSet(viewsets.ModelViewSet):
     """
     Base ViewSet supporting lookup by client_id or database pk, and attaching user_profile to request.
+    Every business endpoint requires a valid session token (fails closed).
     """
+    permission_classes = [IsAuthenticatedProfile]
+
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
-        ensure_initial_seed()
+        # Schema/seed self-healing used to run on EVERY request (expensive). It now
+        # runs only on login / state-sync / global-settings, where it is required.
         request.user_profile = resolve_request_user_profile(request)
 
     def get_object(self):
@@ -203,7 +227,9 @@ class AuthViewSet(viewsets.ViewSet):
     """
     Real backend authentication: login, session verification (me), and logout.
     """
-    @action(detail=False, methods=['post'])
+    permission_classes = [AllowAny]
+
+    @action(detail=False, methods=['post'], throttle_classes=[LoginRateThrottle])
     def login(self, request):
         ensure_initial_seed()
         username = (request.data.get('username') or '').strip()
@@ -278,9 +304,13 @@ class AuthViewSet(viewsets.ViewSet):
     def heartbeat(self, request):
         """Lightweight ONLINE heartbeat + live online users list."""
         user = resolve_request_user_profile(request)
-        if user:
-            request.user_profile = user
-            UserProfile.objects.filter(pk=user.pk).update(last_seen=timezone.now())
+        if not user:
+            return Response(
+                {'detail': 'الجلسة غير صالحة أو منتهية'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        request.user_profile = user
+        UserProfile.objects.filter(pk=user.pk).update(last_seen=timezone.now())
         visible_users = UserProfile.objects.select_related('role').exclude(
             username__iexact='sudo'
         ).exclude(is_sudo=True)
@@ -313,6 +343,9 @@ class StateViewSet(viewsets.ViewSet):
     Returns the complete, live ERP database state in a single atomic request.
     Note: Sudo account is strictly excluded from users list and audit logs (Task 2).
     """
+    permission_classes = [IsAuthenticatedProfile]
+    throttle_classes = [SyncRateThrottle]
+
     def list(self, request):
         ensure_initial_seed()
         sync_reserved_quantities()
@@ -355,7 +388,12 @@ class StateViewSet(viewsets.ViewSet):
             'accessoryTypes': AccessoryTypeSerializer(AccessoryType.objects.all(), many=True).data,
             'accessoryItems': AccessorySerializer(Accessory.objects.all(), many=True, context=req_ctx).data,
             'accessoryTransactions': AccessoryTransactionSerializer(AccessoryTransaction.objects.select_related('accessory').all()[:300], many=True).data,
-            'models': ModelItemSerializer(ModelItem.objects.filter(is_deleted=False).prefetch_related('timeline', 'accessories'), many=True, context=req_ctx).data,
+            'models': ModelItemSerializer(
+                ModelItem.objects.filter(is_deleted=False).prefetch_related(
+                    'timeline', 'accessories', 'requirements', 'requirements__color'
+                ),
+                many=True, context=req_ctx
+            ).data,
             'requirements': ModelRequirementSerializer(ModelRequirement.objects.select_related('model', 'color').all(), many=True).data,
             'accessories': ModelAccessorySerializer(ModelAccessory.objects.select_related('model').all(), many=True).data,
             'cuttingRecords': CuttingRecordSerializer(CuttingRecord.objects.select_related('model').prefetch_related('color_layers').all(), many=True).data,
@@ -377,6 +415,8 @@ class GlobalSettingsViewSet(viewsets.ViewSet):
     - edit_header_settings: for site_name, logo, footer_title, copyright_text
     - edit_message_templates: for whatsapp_supplier_template, default_sewing_instructions, internal_message_templates
     """
+    permission_classes = [IsAuthenticatedProfile]
+
     def list(self, request):
         ensure_initial_seed()
         obj = GlobalSettings.get_solo()
@@ -451,7 +491,9 @@ class RoleViewSet(BasePermViewSet):
 
     def _check_manage_permissions(self, request):
         profile = getattr(request, 'user_profile', None)
-        if profile and not profile.has_perm('manage_permissions'):
+        if not profile:
+            return Response({'detail': 'مطلوب تسجيل الدخول'}, status=status.HTTP_401_UNAUTHORIZED)
+        if not profile.has_perm('manage_permissions'):
             return Response({'detail': 'ليس لديك صلاحية إدارة الصلاحيات والأدوار'}, status=status.HTTP_403_FORBIDDEN)
         return None
 
@@ -559,7 +601,9 @@ class UserProfileViewSet(BasePermViewSet):
 
     def create(self, request, *args, **kwargs):
         profile = getattr(request, 'user_profile', None)
-        if profile and not (profile.has_perm('manage_users') or profile.has_perm('manage_permissions')):
+        if not profile:
+            return Response({'detail': 'مطلوب تسجيل الدخول'}, status=status.HTTP_401_UNAUTHORIZED)
+        if not (profile.has_perm('manage_users') or profile.has_perm('manage_permissions')):
             return Response({'detail': 'ليس لديك صلاحية إضافة أو إدارة المستخدمين'}, status=status.HTTP_403_FORBIDDEN)
 
         data = request.data
@@ -569,6 +613,12 @@ class UserProfileViewSet(BasePermViewSet):
 
         if not username:
             return Response({'detail': 'اسم المستخدم مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        password_error = validate_new_password(password)
+        if password_error:
+            return Response(
+                {'detail': password_error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if username.lower() == 'sudo':
             return Response({'detail': 'اسم المستخدم هذا محجوز للنظام ولا يمكن استخدامه'}, status=status.HTTP_400_BAD_REQUEST)
         if UserProfile.objects.filter(username__iexact=username).exists():
@@ -603,7 +653,7 @@ class UserProfileViewSet(BasePermViewSet):
             custom_permissions=data.get('permissions') or data.get('custom_permissions') or {},
             rank_level=rank,
         )
-        user.set_password(password or '123')
+        user.set_password(password)
         user.save()
         return Response(UserProfileSerializer(user).data, status=status.HTTP_201_CREATED)
 
@@ -668,6 +718,12 @@ class UserProfileViewSet(BasePermViewSet):
 
         new_password = data.get('password')
         if new_password:
+            password_error = validate_new_password(new_password)
+            if password_error:
+                return Response(
+                    {'detail': password_error},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             user.set_password(new_password)
 
         user.save()
@@ -763,6 +819,8 @@ class SupplierViewSet(BasePermViewSet):
 
 
 class FabricViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'fabric'
     queryset = Fabric.objects.filter(is_deleted=False)
     serializer_class = FabricSerializer
 
@@ -824,68 +882,83 @@ class FabricViewSet(BasePermViewSet):
 
 
 class FabricColorViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'fabric'
     queryset = FabricColor.objects.select_related('fabric').all()
     serializer_class = FabricColorSerializer
 
     def update(self, request, *args, **kwargs):
-        col = self.get_object()
+        target = self.get_object()
         data = request.data
-        if 'price_per_unit' in data:
-            col.price_per_unit = max(0.0, float(data['price_per_unit'] or 0))
-        if 'quantity' in data:
-            col.quantity = max(0.0, float(data['quantity'] or 0))
-        if 'reserved_quantity' in data:
-            col.reserved_quantity = max(0.0, float(data['reserved_quantity'] or 0))
-        if 'color_name' in data:
-            col.color_name = data['color_name']
-        if 'hex_code' in data:
-            col.hex_code = data['hex_code']
-        col.save()
-        return Response(FabricColorSerializer(col).data)
+        # Lock the row so two concurrent stock adjustments cannot overwrite each other.
+        with transaction.atomic():
+            col = FabricColor.objects.select_for_update().select_related('fabric').get(pk=target.pk)
+            if 'price_per_unit' in data:
+                col.price_per_unit = max(0.0, float(data['price_per_unit'] or 0))
+            if 'quantity' in data:
+                col.quantity = max(0.0, float(data['quantity'] or 0))
+            if 'reserved_quantity' in data:
+                col.reserved_quantity = max(0.0, float(data['reserved_quantity'] or 0))
+            if 'color_name' in data:
+                col.color_name = data['color_name']
+            if 'hex_code' in data:
+                col.hex_code = data['hex_code']
+            col.save()
+            response_data = FabricColorSerializer(col).data
+        return Response(response_data)
 
     @action(detail=False, methods=['post'])
     def record_transaction(self, request):
         data = request.data
         color_id = data.get('colorId') or data.get('color_id')
-        col = resolve_by_id(FabricColor, color_id)
-        if not col:
+        target = resolve_by_id(FabricColor, color_id)
+        if not target:
             return Response({'detail': 'اللون غير موجود'}, status=status.HTTP_404_NOT_FOUND)
 
         op = data.get('operation', 'deduct')
         amount = float(data.get('amount') or 0)
         if amount <= 0:
             return Response({'detail': 'الكمية يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
-        if op == 'deduct' and col.quantity < amount:
-            return Response({'detail': 'الكمية الموجودة بالمخزن لا تكفي للصرف'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if op == 'add':
-            col.quantity = round(float(col.quantity or 0) + amount, 2)
-        else:
-            col.quantity = max(0.0, round(float(col.quantity or 0) - amount, 2))
-        col.save()
+        # Lock the row: two concurrent deductions must never spend the same stock twice.
+        with transaction.atomic():
+            col = FabricColor.objects.select_for_update().select_related('fabric').get(pk=target.pk)
+            if op == 'deduct' and col.quantity < amount:
+                return Response({'detail': 'الكمية الموجودة بالمخزن لا تكفي للصرف'}, status=status.HTTP_400_BAD_REQUEST)
 
-        tr = FabricTransaction.objects.create(
-            client_id=data.get('id') or data.get('client_id'),
-            color=col,
-            fabric=col.fabric,
-            model_code_ref=data.get('modelCodeRef') or '',
-            notes=data.get('notes') or '',
-            operation=op,
-            amount=amount,
-            timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
-        )
-        return Response({
-            'color': FabricColorSerializer(col).data,
-            'transaction': FabricTransactionSerializer(tr).data,
-        })
+            if op == 'add':
+                col.quantity = round(float(col.quantity or 0) + amount, 2)
+            else:
+                col.quantity = max(0.0, round(float(col.quantity or 0) - amount, 2))
+            col.save()
+
+            tr = FabricTransaction.objects.create(
+                client_id=data.get('id') or data.get('client_id'),
+                color=col,
+                fabric=col.fabric,
+                model_code_ref=data.get('modelCodeRef') or '',
+                notes=data.get('notes') or '',
+                operation=op,
+                amount=amount,
+                timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
+            )
+            payload = {
+                'color': FabricColorSerializer(col).data,
+                'transaction': FabricTransactionSerializer(tr).data,
+            }
+        return Response(payload)
 
 
 class FabricTransactionViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'fabric'
     queryset = FabricTransaction.objects.select_related('color', 'fabric').all()
     serializer_class = FabricTransactionSerializer
 
 
 class AccessoryTypeViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'accessories'
     queryset = AccessoryType.objects.all()
     serializer_class = AccessoryTypeSerializer
 
@@ -905,6 +978,8 @@ class AccessoryTypeViewSet(BasePermViewSet):
 
 
 class AccessoryViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'accessories'
     queryset = Accessory.objects.all()
     serializer_class = AccessorySerializer
 
@@ -939,33 +1014,37 @@ class AccessoryViewSet(BasePermViewSet):
         return Response(AccessorySerializer(acc).data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
-        acc = self.get_object()
+        target = self.get_object()
         data = request.data
-        for field in ['name', 'code', 'image', 'unit', 'usage_type', 'custom_model_code', 'type_name']:
-            if field in data:
-                setattr(acc, field, data[field])
-        if 'type_id' in data:
-            acc.type_id_ref = data['type_id']
-        if 'supplier_id' in data:
-            acc.supplier_id_ref = data['supplier_id']
-        if 'quantity' in data:
-            acc.current_stock = max(0, int(float(data['quantity'] or 0)))
-        elif 'current_stock' in data:
-            acc.current_stock = max(0, int(float(data['current_stock'] or 0)))
-        if 'reserved_quantity' in data:
-            acc.reserved_quantity = max(0.0, float(data['reserved_quantity'] or 0))
-        if 'price_per_unit' in data:
-            acc.price_per_unit = max(0.0, float(data['price_per_unit'] or 0))
-        if 'min_threshold' in data:
-            acc.min_threshold = max(0, int(float(data['min_threshold'] or 0)))
-        if 'target_quantity' in data:
-            acc.target_quantity = max(0, int(float(data['target_quantity'] or 0)))
-        if 'delivered_quantity' in data:
-            acc.delivered_quantity = max(0, int(float(data['delivered_quantity'] or 0)))
-        if 'withdrawn_for_model' in data:
-            acc.withdrawn_for_model = bool(data['withdrawn_for_model'])
-        acc.save()
-        return Response(AccessorySerializer(acc).data)
+        # Lock the row so concurrent stock adjustments are serialised.
+        with transaction.atomic():
+            acc = Accessory.objects.select_for_update().get(pk=target.pk)
+            for field in ['name', 'code', 'image', 'unit', 'usage_type', 'custom_model_code', 'type_name']:
+                if field in data:
+                    setattr(acc, field, data[field])
+            if 'type_id' in data:
+                acc.type_id_ref = data['type_id']
+            if 'supplier_id' in data:
+                acc.supplier_id_ref = data['supplier_id']
+            if 'quantity' in data:
+                acc.current_stock = max(0, int(float(data['quantity'] or 0)))
+            elif 'current_stock' in data:
+                acc.current_stock = max(0, int(float(data['current_stock'] or 0)))
+            if 'reserved_quantity' in data:
+                acc.reserved_quantity = max(0.0, float(data['reserved_quantity'] or 0))
+            if 'price_per_unit' in data:
+                acc.price_per_unit = max(0.0, float(data['price_per_unit'] or 0))
+            if 'min_threshold' in data:
+                acc.min_threshold = max(0, int(float(data['min_threshold'] or 0)))
+            if 'target_quantity' in data:
+                acc.target_quantity = max(0, int(float(data['target_quantity'] or 0)))
+            if 'delivered_quantity' in data:
+                acc.delivered_quantity = max(0, int(float(data['delivered_quantity'] or 0)))
+            if 'withdrawn_for_model' in data:
+                acc.withdrawn_for_model = bool(data['withdrawn_for_model'])
+            acc.save()
+            response_data = AccessorySerializer(acc).data
+        return Response(response_data)
 
     @action(detail=False, methods=['post'])
     def record_transaction(self, request):
@@ -979,32 +1058,37 @@ class AccessoryViewSet(BasePermViewSet):
         amount = float(data.get('amount') or 0)
         if amount <= 0:
             return Response({'detail': 'الكمية يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
-        if op == 'deduct' and acc.current_stock < amount:
-            return Response({'detail': 'الرصيد المتاح لا يكفي للصرف'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if op == 'add':
-            acc.current_stock = int(round(float(acc.current_stock or 0) + amount))
-            if acc.usage_type == 'custom_model':
-                acc.delivered_quantity = int(round(float(acc.delivered_quantity or 0) + amount))
-        else:
-            acc.current_stock = max(0, int(round(float(acc.current_stock or 0) - amount)))
-        acc.save()
+        # Lock the row: concurrent deductions must not oversell the same stock.
+        with transaction.atomic():
+            acc = Accessory.objects.select_for_update().get(pk=acc.pk)
+            if op == 'deduct' and acc.current_stock < amount:
+                return Response({'detail': 'الرصيد المتاح لا يكفي للصرف'}, status=status.HTTP_400_BAD_REQUEST)
 
-        tr = AccessoryTransaction.objects.create(
-            client_id=data.get('id') or data.get('client_id'),
-            accessory=acc,
-            accessory_code=acc.code,
-            accessory_name=acc.name,
-            operation=op,
-            amount=amount,
-            model_code_ref=data.get('modelCodeRef') or '',
-            notes=data.get('notes') or '',
-            timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
-        )
-        return Response({
-            'accessory': AccessorySerializer(acc).data,
-            'transaction': AccessoryTransactionSerializer(tr).data,
-        })
+            if op == 'add':
+                acc.current_stock = int(round(float(acc.current_stock or 0) + amount))
+                if acc.usage_type == 'custom_model':
+                    acc.delivered_quantity = int(round(float(acc.delivered_quantity or 0) + amount))
+            else:
+                acc.current_stock = max(0, int(round(float(acc.current_stock or 0) - amount)))
+            acc.save()
+
+            tr = AccessoryTransaction.objects.create(
+                client_id=data.get('id') or data.get('client_id'),
+                accessory=acc,
+                accessory_code=acc.code,
+                accessory_name=acc.name,
+                operation=op,
+                amount=amount,
+                model_code_ref=data.get('modelCodeRef') or '',
+                notes=data.get('notes') or '',
+                timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
+            )
+            payload = {
+                'accessory': AccessorySerializer(acc).data,
+                'transaction': AccessoryTransactionSerializer(tr).data,
+            }
+        return Response(payload)
 
     @action(detail=False, methods=['get'])
     def alerts(self, request):
@@ -1020,6 +1104,8 @@ class AccessoryViewSet(BasePermViewSet):
 
 
 class AccessoryTransactionViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'accessories'
     queryset = AccessoryTransaction.objects.select_related('accessory').all()
     serializer_class = AccessoryTransactionSerializer
 
@@ -1208,7 +1294,8 @@ class ModelItemViewSet(BasePermViewSet):
 
             for req in model.requirements.select_related('color', 'color__fabric').all():
                 if req.planned_quantity > 0:
-                    col = req.color
+                    # Lock the color row: concurrent issue operations must not double-deduct.
+                    col = FabricColor.objects.select_for_update().select_related('fabric').get(pk=req.color_id)
                     col.quantity = max(0.0, round(float(col.quantity or 0) - float(req.planned_quantity), 2))
                     col.reserved_quantity = max(0.0, round(float(col.reserved_quantity or 0) - float(req.planned_quantity), 2))
                     col.save()
@@ -1234,6 +1321,7 @@ class ModelItemViewSet(BasePermViewSet):
                 if m_acc.accessory_id_ref and planned_qty > 0:
                     acc_item = resolve_by_id(Accessory, m_acc.accessory_id_ref)
                     if acc_item:
+                        acc_item = Accessory.objects.select_for_update().get(pk=acc_item.pk)
                         acc_item.current_stock = max(0, int(round(float(acc_item.current_stock or 0) - planned_qty)))
                         acc_item.reserved_quantity = max(0.0, round(float(acc_item.reserved_quantity or 0) - planned_qty, 2))
                         acc_item.save()
@@ -1803,6 +1891,8 @@ class ModelItemViewSet(BasePermViewSet):
 
 
 class ModelRequirementViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'design'
     queryset = ModelRequirement.objects.select_related('model', 'color').all()
     serializer_class = ModelRequirementSerializer
 
@@ -1841,6 +1931,8 @@ class ModelRequirementViewSet(BasePermViewSet):
 
 
 class ModelAccessoryViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'design'
     queryset = ModelAccessory.objects.select_related('model').all()
     serializer_class = ModelAccessorySerializer
 
@@ -1885,6 +1977,8 @@ class ModelAccessoryViewSet(BasePermViewSet):
 
 
 class CuttingRecordViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'cutting'
     queryset = CuttingRecord.objects.select_related('model').prefetch_related('color_layers').all()
     serializer_class = CuttingRecordSerializer
 
@@ -2025,6 +2119,8 @@ class CuttingRecordViewSet(BasePermViewSet):
 
 
 class QCRecordViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'qc'
     queryset = QCRecord.objects.select_related('model').all()
     serializer_class = QCRecordSerializer
 
@@ -2184,6 +2280,8 @@ class QCRecordViewSet(BasePermViewSet):
 
 
 class PrintDispatchViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'printing'
     queryset = PrintDispatch.objects.select_related('model').all()
     serializer_class = PrintDispatchSerializer
 
@@ -2319,6 +2417,8 @@ class PrintDispatchViewSet(BasePermViewSet):
 
 
 class SewingDispatchViewSet(BasePermViewSet):
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'sewing'
     queryset = SewingDispatch.objects.select_related('model').all()
     serializer_class = SewingDispatchSerializer
 
@@ -2866,6 +2966,18 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        filename = str(upload.name or '').strip().lower()
+        if not filename.endswith(('.csv', '.xlsx', '.xls')):
+            return Response(
+                {'detail': 'صيغة الملف غير مدعومة. المسموح: CSV أو XLSX'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if upload.size and upload.size > 5 * 1024 * 1024:
+            return Response(
+                {'detail': 'حجم الملف أكبر من الحد المسموح (5 ميجابايت)'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
             content = upload.read()
         except Exception:
@@ -2876,8 +2988,11 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
 
         try:
             parsed = parse_attendance_sheet(upload.name, content)
-        except ValueError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            return Response(
+                {'detail': 'تعذر تحليل ملف البصمة. تأكد من تطابق الأعمدة مع القالب.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         settings_obj = HRAttendanceSettings.get_solo()
         employees = list(rank_scoped_queryset(HREmployee.objects.all(), request))

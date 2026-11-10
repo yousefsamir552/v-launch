@@ -487,7 +487,7 @@ class Fabric(models.Model):
     unit = models.CharField(max_length=30, default='كيلو', verbose_name="الوحدة")
     supplier_id_ref = models.CharField(max_length=100, blank=True, null=True, verbose_name="معرف المورد")
     image = models.TextField(blank=True, null=True, verbose_name="صورة الخامة")
-    is_deleted = models.BooleanField(default=False)
+    is_deleted = models.BooleanField(default=False, db_index=True)
 
     # Legacy fields kept for compatibility
     color = models.CharField(max_length=100, blank=True, default='', verbose_name="اللون")
@@ -693,7 +693,7 @@ class ModelItem(models.Model):
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     model_code = models.CharField(max_length=100, unique=True, verbose_name="كود الموديل")
     model_type = models.CharField(max_length=100, blank=True, null=True, verbose_name="نوع الموديل")
-    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='مرحلة التصميم', verbose_name="الحالة")
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='مرحلة التصميم', db_index=True, verbose_name="الحالة")
     size_category_id = models.CharField(max_length=100, blank=True, null=True, verbose_name="فئة المقاسات")
     main_marker_url = models.CharField(max_length=255, blank=True, default='', verbose_name="الماركر الأساسي")
     print_marker_url = models.CharField(max_length=255, blank=True, default='', verbose_name="ماركر الطباعة")
@@ -760,7 +760,7 @@ class ModelItem(models.Model):
     cut_at = models.CharField(max_length=100, blank=True, null=True, verbose_name="تاريخ القص")
 
     image = models.TextField(blank=True, null=True, verbose_name="صورة الموديل (رابط أو Base64)")
-    is_deleted = models.BooleanField(default=False)
+    is_deleted = models.BooleanField(default=False, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1491,7 +1491,7 @@ class HRAttendanceRecord(models.Model):
         HREmployee, on_delete=models.CASCADE, related_name='attendance_records',
         verbose_name="الموظف",
     )
-    date = models.DateField(default=date.today, verbose_name="التاريخ")
+    date = models.DateField(default=date.today, db_index=True, verbose_name="التاريخ")
     check_in = models.TimeField(blank=True, null=True, verbose_name="بصمة الحضور")
     check_out = models.TimeField(blank=True, null=True, verbose_name="بصمة الانصراف")
     status = models.CharField(
@@ -1528,7 +1528,7 @@ class HRPenalty(models.Model):
         HREmployee, on_delete=models.CASCADE, related_name='penalties',
         verbose_name="الموظف",
     )
-    date = models.DateField(default=date.today, verbose_name="التاريخ")
+    date = models.DateField(default=date.today, db_index=True, verbose_name="التاريخ")
     penalty_type = models.CharField(
         max_length=10, choices=HR_PENALTY_TYPE_CHOICES, default='days',
         verbose_name="نوع الجزاء",
@@ -1557,7 +1557,7 @@ class HRLoan(models.Model):
         HREmployee, on_delete=models.CASCADE, related_name='loans',
         verbose_name="الموظف",
     )
-    date = models.DateField(default=date.today, verbose_name="التاريخ")
+    date = models.DateField(default=date.today, db_index=True, verbose_name="التاريخ")
     amount = models.FloatField(default=0.0, verbose_name="مبلغ السلفة")
     notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
     created_at = models.DateTimeField(auto_now_add=True)

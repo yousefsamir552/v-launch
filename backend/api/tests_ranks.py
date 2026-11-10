@@ -11,6 +11,7 @@ from .views import UserProfileViewSet, RoleViewSet, HREmployeeViewSet
 
 def make_user(username, rank, role=None):
     user = UserProfile(username=username, real_name=username, rank_level=rank, role=role)
+    user.auth_token = f'token-{username}'
     user.set_password('x')
     user.save()
     return user
@@ -138,7 +139,7 @@ class RankVisibilityTests(TestCase):
     def test_state_endpoint_is_rank_scoped(self):
         from .views import StateViewSet
 
-        request = self.factory.get('/', HTTP_X_USER_USERNAME='rank2')
+        request = self.factory.get('/', HTTP_AUTHORIZATION='Bearer token-rank2')
         response = StateViewSet().list(request)
         self.assertEqual(response.status_code, 200)
 
@@ -156,7 +157,7 @@ class RankVisibilityTests(TestCase):
     def test_state_endpoint_hides_rank_label_from_rank_three(self):
         from .views import StateViewSet
 
-        request = self.factory.get('/', HTTP_X_USER_USERNAME='rank3')
+        request = self.factory.get('/', HTTP_AUTHORIZATION='Bearer token-rank3')
         response = StateViewSet().list(request)
         rank3_payload = next(u for u in response.data['users'] if u['username'] == 'rank3b')
         self.assertNotIn('rank_label', rank3_payload)
@@ -164,7 +165,8 @@ class RankVisibilityTests(TestCase):
     def test_state_endpoint_rank_zero_reserved_for_sudo(self):
         from .views import StateViewSet
 
-        request = self.factory.get('/', HTTP_X_USER_USERNAME='sudo')
+        make_user('sudo', RANK_SUDO)
+        request = self.factory.get('/', HTTP_AUTHORIZATION='Bearer token-sudo')
         response = StateViewSet().list(request)
         # sudo sees every rank, but never its own emergency account in the list.
         usernames = {user['username'] for user in response.data['users']}

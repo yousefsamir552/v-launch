@@ -449,11 +449,20 @@ def sync_reserved_quantities():
             acc.save(update_fields=['reserved_quantity'])
 
 
+_SCHEMA_ENSURED = False
+
+
 def ensure_schema_columns():
     """
     Self-healing schema check: ensures newly added columns and tables for Cutting Spreads
     exist in the database even if a migration file was not uploaded or not yet applied on Render.
+
+    Runs at most once per worker process (see ``_SCHEMA_ENSURED``) instead of on every
+    request, which was a significant per-request overhead.
     """
+    global _SCHEMA_ENSURED
+    if _SCHEMA_ENSURED:
+        return
     from django.db import connection
     try:
         with connection.cursor() as cursor:
@@ -534,6 +543,8 @@ def ensure_schema_columns():
                             "UPDATE api_userprofile SET rank_level = 0 "
                             "WHERE is_sudo = true OR LOWER(username) = 'sudo';"
                         )
+        # Only mark as done after a fully successful pass so transient failures retry.
+        _SCHEMA_ENSURED = True
     except Exception:
         pass
 

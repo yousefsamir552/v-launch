@@ -21,19 +21,11 @@ export const BASE_URL = getBaseUrl();
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('factory_erp_auth_token') || '';
-  const currentUserRaw = localStorage.getItem('factory_erp_current_user');
-  let parsedUser: any = null;
-  try {
-    parsedUser = currentUserRaw ? JSON.parse(currentUserRaw) : null;
-  } catch {
-    parsedUser = null;
-  }
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
     ...(token ? { Authorization: `Bearer ${token}`, 'X-Auth-Token': token } : {}),
-    ...(parsedUser?.username ? { 'X-User-Username': parsedUser.username } : {}),
     ...((options.headers as Record<string, string>) || {})
   };
 
@@ -56,17 +48,9 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
 function buildAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
   const token = localStorage.getItem('factory_erp_auth_token') || '';
-  const currentUserRaw = localStorage.getItem('factory_erp_current_user');
-  let parsedUser: any = null;
-  try {
-    parsedUser = currentUserRaw ? JSON.parse(currentUserRaw) : null;
-  } catch {
-    parsedUser = null;
-  }
   return {
     Accept: 'application/json',
     ...(token ? { Authorization: `Bearer ${token}`, 'X-Auth-Token': token } : {}),
-    ...(parsedUser?.username ? { 'X-User-Username': parsedUser.username } : {}),
     ...extra
   };
 }

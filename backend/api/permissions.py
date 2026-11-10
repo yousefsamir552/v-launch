@@ -1,6 +1,43 @@
 from rest_framework import permissions
 from .models import UserProfile, HR_PERM_KEYS
 
+
+def resolve_profile_from_request(request):
+    """
+    Resolve the authenticated UserProfile from a Bearer token or X-Auth-Token.
+
+    X-User-Username is intentionally NOT trusted here: it is client-controlled and
+    using it as an identity source allowed full impersonation (including sudo).
+    """
+    profile = getattr(request, 'user_profile', None)
+    if profile is not None:
+        return profile
+
+    token = ''
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        token = auth_header[7:].strip()
+    if not token:
+        token = request.headers.get('X-Auth-Token', '').strip()
+    if not token:
+        return None
+
+    return UserProfile.objects.select_related('role').filter(
+        auth_token=token, is_active=True
+    ).first()
+
+
+class IsAuthenticatedProfile(permissions.BasePermission):
+    """Requires a valid session token (Bearer / X-Auth-Token). Fails closed."""
+    message = 'مطلوب تسجيل الدخول للوصول إلى هذه البيانات.'
+
+    def has_permission(self, request, view):
+        profile = resolve_profile_from_request(request)
+        if profile is None:
+            return False
+        request.user_profile = profile
+        return True
+
 # ---------------------------------------------------------------------------
 # Per-tab HR permissions.
 # A viewset declares ``required_hr_section = '<key>'`` to demand one specific
@@ -24,30 +61,34 @@ class HasDynamicSectionPermission(permissions.BasePermission):
     Sudo bypasses all checks.
     """
     section_perm_map = {
-        'fabric': 'can_fabric_warehouse',
-        'accessories': 'can_accessories_warehouse',
-        'production_wh': 'can_production_warehouse',
-        'design': 'can_design',
-        'cutting': 'can_cutting',
-        'printing': 'can_printing',
-        'qc': 'can_qc',
-        'sewing': 'can_sewing',
-        'assembly_packaging': 'can_assembly_packaging',
-        'tracking': 'can_models_tracking',
+        'fabric': 'fabric_warehouse_view',
+        'accessories': 'accessories_warehouse_view',
+        'production_wh': 'production_warehouse_view',
+        'design': 'design_view',
+        'cutting': 'cutting_view',
+        'printing': 'printing_view',
+        'qc': 'qc_view',
+        'sewing': 'sewing_view',
+        'assembly_packaging': 'assembly_packaging_view',
+        'tracking': 'models_tracking_view',
     }
 
     def has_permission(self, request, view):
-        username = request.headers.get('X-User-Username') or getattr(request.user, 'username', 'sudo')
-        try:
-            profile = UserProfile.objects.select_related('role').get(username=username)
-        except UserProfile.DoesNotExist:
-            return True
+        profile = resolve_profile_from_request(request)
+        if profile is None:
+            return False
+        request.user_profile = profile
 
-        if profile.is_sudo:
+        if profile.is_sudo or profile.username.lower() == 'sudo':
             return True
 
         required_section = getattr(view, 'required_section', None)
         if not required_section:
+            return True
+
+        # Reads stay open to any authenticated user (cross-section screens rely on
+        # warehouse lookups); every write requires the matching section permission.
+        if request.method in permissions.SAFE_METHODS:
             return True
 
         perm_field = self.section_perm_map.get(required_section, required_section)
@@ -56,33 +97,37 @@ class HasDynamicSectionPermission(permissions.BasePermission):
 
 class CanViewFabricPrices(permissions.BasePermission):
     def has_permission(self, request, view):
-        profile = getattr(request, 'user_profile', None)
+        profile = resolve_profile_from_request(request)
         if not profile:
-            return True
+            return False
+        request.user_profile = profile
         return profile.has_perm('can_view_fabric_prices')
 
 
 class CanViewAccessoryPrices(permissions.BasePermission):
     def has_permission(self, request, view):
-        profile = getattr(request, 'user_profile', None)
+        profile = resolve_profile_from_request(request)
         if not profile:
-            return True
+            return False
+        request.user_profile = profile
         return profile.has_perm('can_view_accessory_prices')
 
 
 class CanViewPrintingCosts(permissions.BasePermission):
     def has_permission(self, request, view):
-        profile = getattr(request, 'user_profile', None)
+        profile = resolve_profile_from_request(request)
         if not profile:
-            return True
+            return False
+        request.user_profile = profile
         return profile.has_perm('can_view_printing_costs')
 
 
 class CanSendWhatsApp(permissions.BasePermission):
     def has_permission(self, request, view):
-        profile = getattr(request, 'user_profile', None)
+        profile = resolve_profile_from_request(request)
         if not profile:
-            return True
+            return False
+        request.user_profile = profile
         return profile.has_perm('can_send_whatsapp')
 
 
@@ -97,8 +142,7 @@ class CanManageHR(permissions.BasePermission):
       grant every HR tab.
 
     Sudo users bypass the check (handled by has_perm). The profile is resolved
-    from Bearer token / X-Auth-Token / X-User-Username, mirroring
-    resolve_request_user_profile in views.py.
+    from a Bearer token / X-Auth-Token only (never from X-User-Username).
     """
 
     def has_permission(self, request, view):
@@ -106,9 +150,8 @@ class CanManageHR(permissions.BasePermission):
         if profile is None:
             profile = self._resolve_profile(request)
         if profile is None:
-            # No identifiable user (e.g. internal/CLI calls): stay consistent
-            # with the rest of the permission classes and allow through.
-            return True
+            # Fail closed: never grant HR access to an unauthenticated caller.
+            return False
 
         if profile.is_sudo or profile.username.lower() == 'sudo':
             return True
@@ -134,23 +177,5 @@ class CanManageHR(permissions.BasePermission):
 
     @staticmethod
     def _resolve_profile(request):
-        auth_header = request.headers.get('Authorization', '')
-        token = ''
-        if auth_header.startswith('Bearer '):
-            token = auth_header[7:].strip()
-        if not token:
-            token = request.headers.get('X-Auth-Token', '').strip()
-
-        if token:
-            profile = UserProfile.objects.select_related('role').filter(
-                auth_token=token, is_active=True
-            ).first()
-            if profile:
-                return profile
-
-        username = request.headers.get('X-User-Username', '').strip()
-        if username:
-            return UserProfile.objects.select_related('role').filter(
-                username__iexact=username, is_active=True
-            ).first()
-        return None
+        # Token-only resolution (X-User-Username is never trusted).
+        return resolve_profile_from_request(request)
