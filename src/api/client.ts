@@ -409,6 +409,10 @@ export const api = {
     }
     return requestForm<any>('/hr-attendance-records/upload-sheet/', form);
   },
+  reapplyHRAttendanceRules: (month?: string) =>
+    request<any>(`/hr-attendance-records/reapply-rules/${month ? `?month=${encodeURIComponent(month)}` : ''}`, {
+      method: 'POST'
+    }),
   getHRPenalties: () => request<any[]>('/hr-penalties/'),
   createHRPenalty: (data: any) =>
     request<any>('/hr-penalties/', { method: 'POST', body: JSON.stringify(data) }),

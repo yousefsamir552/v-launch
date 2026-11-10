@@ -186,8 +186,12 @@ def normalize_status(value) -> str:
 
 
 def month_bounds(value, today=None):
-    """إرجاع أول وآخر يوم في الشهر المطلوب بصيغة YYYY-MM."""
+    """إرجاع أول وآخر يوم في الشهر المطلوب بصيغة YYYY-MM أو ككائن تاريخ."""
     today = today or date.today()
+    if isinstance(value, datetime):
+        value = value.date()
+    if isinstance(value, date):
+        value = f'{value.year}-{value.month}'
     match = re.match(r'^(\d{4})-(\d{1,2})$', str(value or '').strip())
     if match:
         year, month = int(match.group(1)), int(match.group(2))
@@ -537,6 +541,9 @@ def compute_attendance(settings, employee, work_date, check_in, check_out, statu
 
     if status == 'absent':
         manual_review = _apply_rule(rules, 'absence', 0, totals) or manual_review
+    elif status == 'leave':
+        # الإجازة غير المبررة تُعامل كغياب؛ تسجيل العذر (is_excused) يلغي الخصم لاحقاً.
+        manual_review = _apply_rule(rules, 'absence', 0, totals) or manual_review
     elif status == 'present':
         if late_minutes > 0:
             manual_review = _apply_rule(rules, 'late_arrival', late_minutes, totals) or manual_review
@@ -564,3 +571,246 @@ def compute_attendance(settings, employee, work_date, check_in, check_out, statu
         'deduction_hours': deduction_hours,
         'review_status': review_status,
     }
+
+
+# ---------------------------------------------------------------------------
+# العمل الإضافي وخصم يوم الإجازة الأسبوعية (الأحد)
+# ---------------------------------------------------------------------------
+
+def _clock_minutes(value):
+    """تحويل قيمة وقت ('17:00' أو time) إلى دقائق، وإرجاع None إذا تعذّر التحويل."""
+    if value is None or value == '':
+        return None
+    if isinstance(value, time):
+        return value.hour * 60 + value.minute + value.second / 60.0
+    text = str(value).strip()
+    if not text:
+        return None
+    parts = text.split(':')
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1]) if len(parts) > 1 else 0
+    except (TypeError, ValueError):
+        return None
+    return hours * 60 + minutes
+
+
+def compute_overtime(settings, check_out):
+    """
+    احتساب العمل الإضافي من بصمة الانصراف وفق قواعد الإضافي.
+
+    القاعدة تنطبق إذا كانت بصمة الانصراف ضمن الشريحة أو بعد بدايتها
+    (check_out >= from_time)، وعند تطابق أكثر من شريحة تُختار الأكثر تحديداً
+    (الأكبر في from_time).
+
+    Returns dict(overtime_days, overtime_hours, overtime_label).
+    """
+    empty = {'overtime_days': 0.0, 'overtime_hours': 0.0, 'overtime_label': ''}
+    if not check_out:
+        return empty
+
+    rules = getattr(settings, 'overtime_rules', None) or []
+    check_out_minutes = _clock_minutes(check_out)
+    if check_out_minutes is None:
+        return empty
+
+    best = None
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        from_minutes = _clock_minutes(rule.get('from_time'))
+        if from_minutes is None:
+            continue
+        if check_out_minutes < from_minutes:
+            continue
+        if best is None or from_minutes > best[0]:
+            best = (from_minutes, rule)
+
+    if not best:
+        return empty
+
+    rule = best[1]
+    try:
+        value = float(rule.get('reward_value') or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value <= 0:
+        return empty
+
+    if rule.get('reward_type') == 'hours':
+        return {
+            'overtime_days': 0.0,
+            'overtime_hours': round(value, 2),
+            'overtime_label': f'{value:g} ساعة',
+        }
+    return {
+        'overtime_days': round(value, 2),
+        'overtime_hours': 0.0,
+        'overtime_label': f'{value:g} يوم',
+    }
+
+
+def sunday_deduction_for_week(records_by_date, week_dates):
+    """
+    احتساب خصم يوم الأحد (الإجازة الأسبوعية) وفق عدد أيام الغياب بدون عذر
+    خلال أيام العمل الستة (الاثنين..السبت) في نفس الأسبوع:
+
+      2 أيام  -> ثلث يوم (1/3)
+      3 أيام  -> نصف يوم (1/2)
+      4 أيام  -> ثلثين يوم (2/3)
+      5 أيام+ -> يوم كامل (1)
+
+    Returns dict(sunday_deduction_days, sunday_deduction_note).
+    """
+    empty = {'sunday_deduction_days': 0.0, 'sunday_deduction_note': ''}
+    absent_dates = []
+    for day in week_dates:
+        record = records_by_date.get(day)
+        attended = bool(record and (getattr(record, 'is_excused', False) or record.check_in))
+        if not attended:
+            absent_dates.append(day)
+
+    count = len(absent_dates)
+    if count >= 5:
+        ratio, label = 1.0, 'يوم الإجازة كاملاً'
+    elif count == 4:
+        ratio, label = 2.0 / 3.0, 'ثلثي يوم الإجازة'
+    elif count == 3:
+        ratio, label = 0.5, 'نصف يوم الإجازة'
+    elif count == 2:
+        ratio, label = 1.0 / 3.0, 'ثلث يوم الإجازة'
+    else:
+        return empty
+
+    dates_text = '، '.join(day.isoformat() for day in absent_dates)
+    note = f'خصم {label} بسبب غياب بدون عذر في أيام: {dates_text}'
+    return {
+        'sunday_deduction_days': round(ratio, 2),
+        'sunday_deduction_note': note,
+    }
+
+
+def _week_dates_for_sunday(sunday_date):
+    """أيام العمل الستة (الاثنين..السبت) التي تسبق يوم الأحد."""
+    return [sunday_date - timedelta(days=offset) for offset in range(6, 0, -1)]
+
+
+def reapply_employee_month(settings, employee, month_start, month_end, preserve_decisions=False):
+    """
+    إعادة تطبيق قواعد الحضور والإضافي وخصم الأحد على كل سجلات موظف في شهر.
+
+    تُستخدم عند رفع الشيت وتعديل سجل والضغط على "إعادة تطبيق القواعد".
+    عند preserve_decisions=True تُحفظ قرارات المراجعة اليدوية (approved/rejected)
+    كما هي مع تحديث الإضافي وخصم الأحد فقط.
+    ترجع عدد السجلات التي تغيّرت.
+    """
+    from .models import HRAttendanceRecord
+
+    # نقرأ أسبوعاً قبل بداية الشهر حتى يُحسب خصم أول أحد في الشهر بشكل صحيح،
+    # لكن نُعيد حساب/إنشاء سجلات الشهر المطلوب فقط.
+    lookup_start = month_start - timedelta(days=6)
+    all_records = list(
+        HRAttendanceRecord.objects.filter(
+            employee=employee,
+            date__gte=lookup_start,
+            date__lte=month_end,
+        )
+    )
+    records = [record for record in all_records if month_start <= record.date <= month_end]
+    if not records:
+        return 0
+
+    records_by_date = {record.date: record for record in all_records}
+    changed = 0
+
+    for record in records:
+        computed = compute_attendance(
+            settings,
+            employee,
+            record.date,
+            record.check_in,
+            record.check_out,
+            record.status,
+        )
+        overtime = compute_overtime(settings, record.check_out)
+
+        if record.is_excused:
+            deduction_days = 0.0
+            deduction_hours = 0.0
+            review_status = 'auto_applied'
+        elif preserve_decisions and record.review_status in ('approved', 'rejected'):
+            deduction_days = record.calculated_deduction_days
+            deduction_hours = record.calculated_deduction_hours
+            review_status = record.review_status
+        else:
+            deduction_days = computed['deduction_days']
+            deduction_hours = computed['deduction_hours']
+            review_status = computed['review_status']
+
+        # يوم الأحد إجازة مدفوعة: لا تُطبّق عليه قواعد الغياب، ويُحسب خصمه بشكل منفصل.
+        is_sunday = record.date.weekday() == 6
+        if is_sunday:
+            deduction_days = 0.0
+            deduction_hours = 0.0
+            review_status = 'auto_applied'
+
+        sunday_days = 0.0
+        sunday_note = ''
+        if is_sunday:
+            result = sunday_deduction_for_week(
+                records_by_date, _week_dates_for_sunday(record.date)
+            )
+            sunday_days = result['sunday_deduction_days']
+            sunday_note = result['sunday_deduction_note']
+
+        new_values = {
+            'status': 'leave' if is_sunday else computed['status'],
+            'calculated_deduction_days': deduction_days,
+            'calculated_deduction_hours': deduction_hours,
+            'overtime_days': overtime['overtime_days'],
+            'overtime_hours': overtime['overtime_hours'],
+            'sunday_deduction_days': sunday_days,
+            'sunday_deduction_note': sunday_note,
+            'review_status': review_status,
+        }
+
+        dirty = False
+        for field, value in new_values.items():
+            current = getattr(record, field)
+            if isinstance(current, float) or isinstance(value, float):
+                if round(float(current or 0), 2) != round(float(value or 0), 2):
+                    setattr(record, field, value)
+                    dirty = True
+            elif current != value:
+                setattr(record, field, value)
+                dirty = True
+        if dirty:
+            record.save()
+            changed += 1
+
+    # إنشاء سجل ليوم الأحد (إجازة مدفوعة) لكل أسبوع به بيانات عمل،
+    # حتى يظهر خصم الأحد صراحةً أمام تاريخه في السجل.
+    today = date.today()
+    limit = min(month_end, today)
+    cursor = month_start
+    while cursor <= limit:
+        if cursor.weekday() == 6 and cursor not in records_by_date:
+            week_dates = _week_dates_for_sunday(cursor)
+            if any(day in records_by_date for day in week_dates):
+                result = sunday_deduction_for_week(records_by_date, week_dates)
+                HRAttendanceRecord.objects.create(
+                    employee=employee,
+                    date=cursor,
+                    status='leave',
+                    calculated_deduction_days=0,
+                    calculated_deduction_hours=0,
+                    overtime_days=0,
+                    overtime_hours=0,
+                    sunday_deduction_days=result['sunday_deduction_days'],
+                    sunday_deduction_note=result['sunday_deduction_note'],
+                    review_status='auto_applied',
+                )
+                changed += 1
+        cursor += timedelta(days=1)
+
+    return changed

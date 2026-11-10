@@ -157,7 +157,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     },
     {
       id: 'hr_payroll',
-      label: 'مسير المرتبات',
+      label: 'المرتبات',
       icon: Wallet,
       color: 'text-purple-600',
       isVisible: canAccessHRSection('payroll')

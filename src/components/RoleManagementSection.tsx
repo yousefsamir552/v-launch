@@ -265,7 +265,7 @@ export const HR_PERMISSIONS_LIST: {
   {
     key: 'payroll',
     permKey: 'hr_payroll',
-    label: 'مسير المرتبات',
+    label: 'المرتبات',
     description: 'احتساب وصرف المرتبات بعد الخصومات'
   }
 ];

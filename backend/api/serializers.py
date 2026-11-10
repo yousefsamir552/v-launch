@@ -852,6 +852,7 @@ class HRAttendanceSettingsSerializer(serializers.ModelSerializer):
             'weekly_off_day_label': instance.weekly_off_day_label,
             'month_calculation_days': instance.month_calculation_days or 30,
             'rules_json': instance.rules_json if isinstance(instance.rules_json, list) else [],
+            'overtime_rules': instance.overtime_rules if isinstance(instance.overtime_rules, list) else [],
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
         }
 
@@ -882,6 +883,10 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
             'excuse_note': instance.excuse_note or '',
             'calculated_deduction_days': float(instance.calculated_deduction_days or 0),
             'calculated_deduction_hours': float(instance.calculated_deduction_hours or 0),
+            'overtime_days': float(instance.overtime_days or 0),
+            'overtime_hours': float(instance.overtime_hours or 0),
+            'sunday_deduction_days': float(instance.sunday_deduction_days or 0),
+            'sunday_deduction_note': instance.sunday_deduction_note or '',
             'review_status': instance.review_status,
             'review_status_label': instance.get_review_status_display(),
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',

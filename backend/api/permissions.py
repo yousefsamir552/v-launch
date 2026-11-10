@@ -166,7 +166,7 @@ class CanManageHR(permissions.BasePermission):
             if profile.has_perm(perm_key):
                 return True
             # قراءة البيانات المساندة (وظائف/موظفين/إعدادات) متاحة لأي تبويب HR
-            # حتى تعمل شاشات السلف/الجزاءات/مسير المرتبات بشكل صحيح.
+            # حتى تعمل شاشات السلف/الجزاءات/المرتبات بشكل صحيح.
             if request.method in permissions.SAFE_METHODS and any(
                 profile.has_perm(key) for key in HR_PERM_KEYS
             ):

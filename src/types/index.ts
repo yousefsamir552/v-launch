@@ -1080,6 +1080,19 @@ export interface HRAttendanceRule {
   apply_mode: HRRuleApplyMode;
 }
 
+/** نوع مكافأة العمل الإضافي: أيام أو ساعات. */
+export type HROvertimeRewardType = 'hours' | 'days';
+
+/** قاعدة/شريحة عمل إضافي مربوطة بوقت الانصراف. */
+export interface HROvertimeRule {
+  id: string;
+  label?: string;
+  from_time: string;
+  to_time: string;
+  reward_type: HROvertimeRewardType;
+  reward_value: number;
+}
+
 export interface HRJobTitle {
   id: string;
   title: string;
@@ -1122,6 +1135,7 @@ export interface HRAttendanceSettings {
   /** عدد أيام الشهر الحسابية ثابت دائماً = 30 يوماً. */
   month_calculation_days: number;
   rules_json: HRAttendanceRule[];
+  overtime_rules: HROvertimeRule[];
   updated_at?: string;
 }
 
@@ -1144,6 +1158,10 @@ export interface HRAttendanceRecord {
   excuse_note?: string;
   calculated_deduction_days: number;
   calculated_deduction_hours: number;
+  overtime_days?: number;
+  overtime_hours?: number;
+  sunday_deduction_days?: number;
+  sunday_deduction_note?: string;
   review_status: HRReviewStatus;
   review_status_label?: string;
   updated_at?: string;

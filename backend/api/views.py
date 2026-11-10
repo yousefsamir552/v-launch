@@ -86,8 +86,10 @@ from .throttles import LoginRateThrottle, SyncRateThrottle
 from .hr_attendance_io import (
     build_template_csv,
     compute_attendance,
+    compute_overtime,
     month_bounds,
     parse_attendance_sheet,
+    reapply_employee_month,
 )
 
 
@@ -3086,6 +3088,8 @@ class HRAttendanceSettingsViewSet(viewsets.ViewSet):
                 obj.weekly_off_day = day
         if isinstance(data.get('rules_json'), list):
             obj.rules_json = data.get('rules_json')
+        if isinstance(data.get('overtime_rules'), list):
+            obj.overtime_rules = data.get('overtime_rules')
         # الشهر الحسابي ثابت دائماً 30 يوماً
         obj.month_calculation_days = 30
         obj.save()
@@ -3135,12 +3139,33 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             ded_hours = 0.0
 
         rec_date = parse_date(str(data.get('date'))) if data.get('date') else date.today()
+        check_in_val = parse_time_value(data.get('check_in'))
+        check_out_val = parse_time_value(data.get('check_out'))
+        if data.get('recalculate') and not is_excused:
+            # تطبيق قواعد الحضور تلقائياً عند إدخال/تعديل سجل يدوياً.
+            computed = compute_attendance(
+                HRAttendanceSettings.get_solo(),
+                employee,
+                rec_date or date.today(),
+                check_in_val,
+                check_out_val,
+                status_val,
+            )
+            ded_days = computed['deduction_days']
+            ded_hours = computed['deduction_hours']
+            if data.get('review_status') is None:
+                review_val = computed['review_status']
+        # يوم الأحد إجازة مدفوعة: لا تُطبّق عليه قواعد الغياب في الإدخال اليدوي.
+        if (rec_date or date.today()).weekday() == 6:
+            ded_days = 0.0
+            ded_hours = 0.0
+            review_val = 'auto_applied'
         obj = HRAttendanceRecord.objects.create(
             client_id=(data.get('id') or data.get('client_id') or None),
             employee=employee,
             date=rec_date or date.today(),
-            check_in=parse_time_value(data.get('check_in')),
-            check_out=parse_time_value(data.get('check_out')),
+            check_in=check_in_val,
+            check_out=check_out_val,
             status=status_val,
             is_excused=is_excused,
             excuse_note=data.get('excuse_note') or None,
@@ -3148,6 +3173,10 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             calculated_deduction_hours=ded_hours,
             review_status=review_val,
         )
+        overtime = compute_overtime(HRAttendanceSettings.get_solo(), obj.check_out)
+        obj.overtime_days = overtime['overtime_days']
+        obj.overtime_hours = overtime['overtime_hours']
+        obj.save(update_fields=['overtime_days', 'overtime_hours'])
         return Response(HRAttendanceRecordSerializer(obj).data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
@@ -3211,14 +3240,18 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
 
         if data.get('recalculate'):
             # إعادة احتساب التأخير/الانصراف المبكر/الغياب من قواعد الحضور الحالية.
+            settings_obj = HRAttendanceSettings.get_solo()
             computed = compute_attendance(
-                HRAttendanceSettings.get_solo(),
+                settings_obj,
                 obj.employee,
                 obj.date,
                 obj.check_in,
                 obj.check_out,
                 obj.status,
             )
+            overtime = compute_overtime(settings_obj, obj.check_out)
+            obj.overtime_days = overtime['overtime_days']
+            obj.overtime_hours = overtime['overtime_hours']
             if obj.is_excused:
                 obj.calculated_deduction_days = 0
                 obj.calculated_deduction_hours = 0
@@ -3237,6 +3270,14 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
                 obj.review_status = 'auto_applied'
 
         obj.save()
+        if data.get('recalculate'):
+            # إعادة حساب خصم يوم الأحد بعد تحديث السجل (يعتمد على سجلات الأسبوع).
+            month_start, month_end = month_bounds(obj.date)
+            reapply_employee_month(
+                HRAttendanceSettings.get_solo(), obj.employee, month_start, month_end,
+                preserve_decisions=True,
+            )
+            obj.refresh_from_db()
         return Response(HRAttendanceRecordSerializer(obj).data)
 
     # ------------------------------------------------------------------
@@ -3330,6 +3371,7 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         created_count = 0
         updated_count = 0
         review_count = 0
+        affected_employees = {}
 
         for row in parsed['rows']:
             code_key = str(row['employee_code'] or '').strip().casefold()
@@ -3394,6 +3436,15 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
 
             if record.review_status == 'pending_review':
                 review_count += 1
+            affected_employees[employee.pk] = employee
+
+        # إعادة احتساب الإضافي وخصم يوم الأحد لكل موظف تأثر بالرفع.
+        if affected_employees and parsed['rows']:
+            month_start, month_end = month_bounds(parsed['rows'][0]['date'])
+            for employee in affected_employees.values():
+                reapply_employee_month(
+                    settings_obj, employee, month_start, month_end, preserve_decisions=True
+                )
 
         return Response({
             'month': f'{parsed["rows"][0]["date"].strftime("%Y-%m")}' if parsed['rows'] else '',
@@ -3495,6 +3546,27 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             'worst_department': worst_department,
         })
 
+    @action(detail=False, methods=['post'], url_path='reapply-rules')
+    def reapply_rules(self, request):
+        """إعادة تطبيق قواعد الحضور والإضافي وخصم الأحد على سجلات شهر كامل."""
+        month_start, month_end = self._sheet_month(request)
+        settings_obj = HRAttendanceSettings.get_solo()
+        employees = list(rank_scoped_queryset(HREmployee.objects.all(), request))
+
+        changed = 0
+        for employee in employees:
+            changed += reapply_employee_month(
+                settings_obj, employee, month_start, month_end
+            )
+
+        return Response({
+            'month': month_start.strftime('%Y-%m'),
+            'month_start': month_start.isoformat(),
+            'month_end': month_end.isoformat(),
+            'employees': len(employees),
+            'updated': changed,
+        })
+
 
 class HRPenaltyViewSet(BasePermViewSet):
     """جزاءات الموظفين اليدوية (أيام أو ساعات)."""
@@ -3574,7 +3646,7 @@ class HRPenaltyViewSet(BasePermViewSet):
 
 
 class HRLoanViewSet(BasePermViewSet):
-    """سلف الموظفين المالية التي تُخصم من مسير المرتبات."""
+    """سلف الموظفين المالية التي تُخصم من المرتبات."""
     queryset = HRLoan.objects.select_related('employee').all()
     serializer_class = HRLoanSerializer
     permission_classes = [CanManageHR]

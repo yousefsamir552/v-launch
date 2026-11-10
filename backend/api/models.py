@@ -1650,6 +1650,7 @@ class HRAttendanceSettings(models.Model):
     )
     month_calculation_days = models.IntegerField(default=30, verbose_name="عدد أيام الشهر الحسابية")
     rules_json = models.JSONField(default=list, blank=True, verbose_name="قواعد التأخير والانصراف والغياب")
+    overtime_rules = models.JSONField(default=list, blank=True, verbose_name="قواعد ومواعيد العمل الإضافي")
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -1671,7 +1672,7 @@ class HRAttendanceSettings(models.Model):
                         'from_minutes': 0,
                         'to_minutes': 10,
                         'until_time': '',
-                        'deduction_type': 'hours',
+                        'deduction_type': 'days',
                         'deduction_value': 0.25,
                         'apply_mode': 'auto',
                     },
@@ -1682,8 +1683,8 @@ class HRAttendanceSettings(models.Model):
                         'from_minutes': 0,
                         'to_minutes': 30,
                         'until_time': '',
-                        'deduction_type': 'hours',
-                        'deduction_value': 0.5,
+                        'deduction_type': 'days',
+                        'deduction_value': 0.25,
                         'apply_mode': 'manual_review',
                     },
                     {
@@ -1732,6 +1733,10 @@ class HRAttendanceRecord(models.Model):
     excuse_note = models.TextField(blank=True, null=True, verbose_name="ملاحظة العذر")
     calculated_deduction_days = models.FloatField(default=0.0, verbose_name="الخصم المحتسب (أيام)")
     calculated_deduction_hours = models.FloatField(default=0.0, verbose_name="الخصم المحتسب (ساعات)")
+    overtime_days = models.FloatField(default=0.0, verbose_name="العمل الإضافي (أيام)")
+    overtime_hours = models.FloatField(default=0.0, verbose_name="العمل الإضافي (ساعات)")
+    sunday_deduction_days = models.FloatField(default=0.0, verbose_name="خصم يوم الإجازة (أيام)")
+    sunday_deduction_note = models.TextField(blank=True, default='', verbose_name="سبب خصم يوم الإجازة")
     review_status = models.CharField(
         max_length=20, choices=HR_REVIEW_STATUS_CHOICES, default='auto_applied',
         verbose_name="حالة المراجعة",
@@ -1781,7 +1786,7 @@ class HRPenalty(models.Model):
 
 
 class HRLoan(models.Model):
-    """سلفة مالية على الموظف تُخصم من مسير المرتبات."""
+    """سلفة مالية على الموظف تُخصم من المرتبات."""
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     employee = models.ForeignKey(
         HREmployee, on_delete=models.CASCADE, related_name='loans',

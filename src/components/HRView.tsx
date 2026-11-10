@@ -54,7 +54,9 @@ import {
   HRRuleApplicationMode,
   HRRuleViolationType,
   HRRuleDeductionType,
-  HRRuleApplyMode
+  HRRuleApplyMode,
+  HROvertimeRule,
+  HROvertimeRewardType
 } from '../types';
 
 type HRSection = 'staff' | 'attendance' | 'loans_penalties' | 'payroll';
@@ -193,6 +195,94 @@ const formatDayLabel = (iso: string) => {
   if (Number.isNaN(parsed.getTime())) return iso;
   return `${WEEK_DAY_AR[parsed.getDay()]} ${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
 };
+/** تحويل تاريخ محلي إلى صيغة YYYY-MM-DD بدون انزياح التوقيت. */
+const isoDate = (value: Date) =>
+  `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(
+    value.getDate()
+  ).padStart(2, '0')}`;
+
+/** أيام العمل الستة (الاثنين..السبت) التي تسبق يوم الأحد. */
+const weekDatesBeforeSunday = (sundayIso: string): string[] => {
+  const base = new Date(`${sundayIso}T00:00:00`);
+  if (Number.isNaN(base.getTime())) return [];
+  const dates: string[] = [];
+  for (let offset = 6; offset >= 1; offset -= 1) {
+    const cursor = new Date(base);
+    cursor.setDate(base.getDate() - offset);
+    dates.push(isoDate(cursor));
+  }
+  return dates;
+};
+
+/** نسبة خصم يوم الأحد según عدد أيام الغياب بدون عذر في الأسبوع. */
+const sundayRatioForAbsences = (count: number): number => {
+  if (count >= 5) return 1;
+  if (count === 4) return 2 / 3;
+  if (count === 3) return 1 / 2;
+  if (count === 2) return 1 / 3;
+  return 0;
+};
+
+/** وصف عربي لنسبة خصم الأحد. */
+const sundayRatioLabel = (days: number): string => {
+  if (days >= 1) return 'يوم كامل';
+  if (days >= 2 / 3) return 'ثلثي يوم';
+  if (days >= 1 / 2) return 'نصف يوم';
+  if (days >= 1 / 3) return 'ثلث يوم';
+  return '';
+};
+
+/** حساب خصم يوم أحد واحد من سجلات أيام العمل في الأسبوع. */
+const sundayDeductionForDate = (
+  recordsByDate: Map<string, HRAttendanceRecord>,
+  sundayIso: string
+): number => {
+  const weekDates = weekDatesBeforeSunday(sundayIso);
+  if (weekDates.length === 0) return 0;
+  // لا نحسب خصماً لأسبوع لا توجد فيه أي بيانات لهذا الموظف.
+  if (!weekDates.some((day) => recordsByDate.has(day))) return 0;
+  const absentCount = weekDates.filter((day) => {
+    const record = recordsByDate.get(day);
+    return !record || (!record.is_excused && !record.check_in);
+  }).length;
+  return sundayRatioForAbsences(absentCount);
+};
+
+/** إجمالي خصم أيام الأحد لموظف داخل شهر معيّن. */
+const sumSundayDeductionsForEmployeeMonth = (
+  records: HRAttendanceRecord[],
+  employeeId: string,
+  monthKey: string,
+  upToIso?: string
+): number => {
+  if (!monthKey) return 0;
+  const [yearStr, monthStr] = monthKey.split('-');
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  if (!year || !month) return 0;
+
+  const recordsByDate = new Map<string, HRAttendanceRecord>();
+  records
+    .filter((record) => record.employee_id === employeeId)
+    .forEach((record) => recordsByDate.set(record.date, record));
+
+  const lastDay = new Date(year, month, 0).getDate();
+  let total = 0;
+  for (let day = 1; day <= lastDay; day += 1) {
+    const cursor = new Date(year, month - 1, day);
+    if (cursor.getDay() !== 0) continue;
+    const sundayIso = isoDate(cursor);
+    if (upToIso && sundayIso > upToIso) continue;
+    total += sundayDeductionForDate(recordsByDate, sundayIso);
+  }
+  return total;
+};
+
+/** أجر اليوم = المرتب ÷ 30، وأجر الساعة = أجر اليوم ÷ 8. */
+const dailyRateFor = (salary: number) => (Number(salary) || 0) / 30;
+const hourlyRateFor = (salary: number) => dailyRateFor(salary) / 8;
+
+
 
 export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initialSubTab }) => {
   const { addFlashMessage, canManageHR, canAccessHRSection, visibleRankLevels } = useApp();
@@ -285,7 +375,7 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
       icon: Scale
     },
     payroll: {
-      title: 'مسير المرتبات',
+      title: 'المرتبات',
       subtitle: 'احتساب المرتبات الشهرية بعد الخصومات',
       icon: Wallet
     }
@@ -1273,7 +1363,7 @@ const EmployeesPanel: React.FC<{
                 className="w-4 h-4 accent-purple-600"
               />
               <span className="text-[11px] font-black text-slate-700">
-                الموظف نشط (يظهر في الحضور ومسير المرتبات)
+                الموظف نشط (يظهر في الحضور والمرتبات)
               </span>
             </label>
 
@@ -1367,8 +1457,10 @@ const AttendanceRulesPanel: React.FC<{
   const [endTime, setEndTime] = useState('17:30');
   const [weeklyOff, setWeeklyOff] = useState<HRWeekDayKey>('Sunday');
   const [rules, setRules] = useState<HRAttendanceRule[]>([]);
+  const [overtimeRules, setOvertimeRules] = useState<HROvertimeRule[]>([]);
   const [formError, setFormError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [isReapplying, setIsReapplying] = useState(false);
 
   useEffect(() => {
     if (!settings) return;
@@ -1376,6 +1468,7 @@ const AttendanceRulesPanel: React.FC<{
     setEndTime(settings.official_end_time || '17:30');
     setWeeklyOff(settings.weekly_off_day || 'Sunday');
     setRules(Array.isArray(settings.rules_json) ? settings.rules_json : []);
+    setOvertimeRules(Array.isArray(settings.overtime_rules) ? settings.overtime_rules : []);
   }, [settings]);
 
   const updateRule = (index: number, patch: Partial<HRAttendanceRule>) => {
@@ -1392,7 +1485,7 @@ const AttendanceRulesPanel: React.FC<{
         from_minutes: 0,
         to_minutes: 15,
         until_time: '',
-        deduction_type: 'hours',
+        deduction_type: 'days',
         deduction_value: 0.25,
         apply_mode: 'manual_review'
       }
@@ -1401,6 +1494,52 @@ const AttendanceRulesPanel: React.FC<{
 
   const removeRule = (index: number) => {
     setRules((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const addOvertimeRule = () => {
+    setOvertimeRules((prev) => [
+      ...prev,
+      {
+        id: `hr-ot-${Date.now()}`,
+        label: 'ميعاد إضافي جديد',
+        from_time: '17:30',
+        to_time: '20:00',
+        reward_type: 'hours',
+        reward_value: 1
+      }
+    ]);
+  };
+
+  const updateOvertimeRule = (index: number, patch: Partial<HROvertimeRule>) => {
+    setOvertimeRules((prev) =>
+      prev.map((rule, i) => (i === index ? { ...rule, ...patch } : rule))
+    );
+  };
+
+  const removeOvertimeRule = (index: number) => {
+    setOvertimeRules((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleReapply = async () => {
+    if (!settings) {
+      setFormError('يرجى حفظ إعدادات الحضور أولاً');
+      return;
+    }
+    setIsReapplying(true);
+    setFormError('');
+    try {
+      const result = await api.reapplyHRAttendanceRules();
+      addFlashMessage(
+        `تم إعادة تطبيق القواعد على ${Number(result?.updated ?? 0)} سجل في شهر ${result?.month || ''}`,
+        'success'
+      );
+      logAction('الموارد البشرية', 'إعادة تطبيق قواعد الحضور على سجلات الشهر');
+      await onRefresh();
+    } catch (err: any) {
+      setFormError(err?.message || 'فشل إعادة تطبيق قواعد الحضور');
+    } finally {
+      setIsReapplying(false);
+    }
   };
 
   const handleSave = async () => {
@@ -1414,6 +1553,18 @@ const AttendanceRulesPanel: React.FC<{
     }
     if (rules.some((rule) => !Number(rule.deduction_value) || Number(rule.deduction_value) <= 0)) {
       setFormError('قيمة الخصم في كل قاعدة يجب أن تكون أكبر من صفر');
+      return;
+    }
+    if (
+      overtimeRules.some(
+        (rule) =>
+          !Number(rule.reward_value) ||
+          Number(rule.reward_value) <= 0 ||
+          !rule.from_time ||
+          !rule.to_time
+      )
+    ) {
+      setFormError('كل قاعدة إضافي يجب أن تحدد من/إلى الساعة وقيمة أكبر من صفر');
       return;
     }
 
@@ -1430,6 +1581,10 @@ const AttendanceRulesPanel: React.FC<{
           from_minutes: Number(rule.from_minutes) || 0,
           to_minutes: Number(rule.to_minutes) || 0,
           deduction_value: Number(rule.deduction_value) || 0
+        })),
+        overtime_rules: overtimeRules.map((rule) => ({
+          ...rule,
+          reward_value: Number(rule.reward_value) || 0
         }))
       });
       addFlashMessage('تم حفظ قواعد الحضور والانصراف بنجاح');
@@ -1665,21 +1820,142 @@ const AttendanceRulesPanel: React.FC<{
           </div>
         )}
 
+        {/* قسم مواعيد وقواعد العمل الإضافي */}
+        <div className="border-t border-slate-100">
+          <div className="p-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 bg-blue-50/40">
+            <div>
+              <h3 className="text-sm font-black text-slate-900 flex items-center gap-1.5">
+                <Timer className="w-4 h-4 text-blue-600" />
+                مواعيد وقواعد العمل الإضافي
+              </h3>
+              <p className="text-[11px] font-bold text-slate-500 mt-1">
+                تُطبق شريحة الإضافي تلقائياً عندما تكون بصمة الانصراف ضمن الميعاد أو بعده.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={addOvertimeRule}
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 text-white text-[11px] font-black hover:bg-blue-700 transition cursor-pointer shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              إضافة ميعاد إضافي
+            </button>
+          </div>
+
+          {overtimeRules.length === 0 ? (
+            <div className="p-6 text-center text-[11px] font-bold text-slate-400">
+              لا توجد قواعد إضافي مسجلة — أضف ميعاداً لتُحسب مكافأة الإضافي تلقائياً.
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {overtimeRules.map((rule, index) => (
+                <div key={`${rule.id}-${index}`} className="p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-black text-slate-800 flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-lg bg-blue-50 text-blue-600 text-[10px] font-black flex items-center justify-center">
+                        {index + 1}
+                      </span>
+                      العمل الإضافي
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeOvertimeRule(index)}
+                      title="حذف القاعدة"
+                      className="p-1.5 rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div>
+                      <label className={labelClass}>وصف القاعدة</label>
+                      <input
+                        value={rule.label || ''}
+                        onChange={(event) => updateOvertimeRule(index, { label: event.target.value })}
+                        placeholder="مثال: إضافي مسائي"
+                        className={inputClass}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>من الساعة</label>
+                      <input
+                        type="time"
+                        value={rule.from_time}
+                        onChange={(event) => updateOvertimeRule(index, { from_time: event.target.value })}
+                        className={`${inputClass} font-mono`}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>إلى الساعة</label>
+                      <input
+                        type="time"
+                        value={rule.to_time}
+                        onChange={(event) => updateOvertimeRule(index, { to_time: event.target.value })}
+                        className={`${inputClass} font-mono`}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>المكافأة</label>
+                      <div className="flex gap-2">
+                        <select
+                          value={rule.reward_type}
+                          onChange={(event) =>
+                            updateOvertimeRule(index, {
+                              reward_type: event.target.value as HROvertimeRewardType
+                            })
+                          }
+                          className={inputClass}
+                        >
+                          <option value="hours">ساعات</option>
+                          <option value="days">أيام</option>
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.25"
+                          value={rule.reward_value}
+                          onChange={(event) =>
+                            updateOvertimeRule(index, { reward_value: Number(event.target.value) })
+                          }
+                          className={`${inputClass} font-mono`}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+
         <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/60 space-y-3">
           <ErrorNote message={formError} />
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <p className="text-[11px] font-bold text-slate-500">
-              يتم احتساب الخصومات من هذه القواعد داخل سجل الحضور ثم تُخصم في مسير المرتبات.
+              يتم احتساب الخصومات من هذه القواعد داخل سجل الحضور ثم تُخصم في المرتبات.
             </p>
-            <button
-              type="button"
-              onClick={() => void handleSave()}
-              disabled={isSaving}
-              className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 text-white text-[11px] font-black hover:bg-emerald-700 transition cursor-pointer disabled:opacity-60"
-            >
-              <Save className="w-4 h-4" />
-              {isSaving ? 'جاري الحفظ...' : 'حفظ القواعد'}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleReapply()}
+                disabled={isReapplying || isLoading}
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-white border border-purple-200 text-purple-700 text-[11px] font-black hover:bg-purple-50 transition cursor-pointer disabled:opacity-60"
+              >
+                <RefreshCw className={`w-4 h-4 ${isReapplying ? 'animate-spin' : ''}`} />
+                {isReapplying ? 'جاري إعادة التطبيق...' : 'إعادة تطبيق القواعد على سجلات الشهر'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSave()}
+                disabled={isSaving}
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 text-white text-[11px] font-black hover:bg-emerald-700 transition cursor-pointer disabled:opacity-60"
+              >
+                <Save className="w-4 h-4" />
+                {isSaving ? 'جاري الحفظ...' : 'حفظ القواعد'}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -2013,7 +2289,8 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
       excuse_note: form.excuse_note.trim(),
       calculated_deduction_days: Number(form.calculated_deduction_days) || 0,
       calculated_deduction_hours: Number(form.calculated_deduction_hours) || 0,
-      review_status: form.review_status
+      review_status: form.review_status,
+      recalculate: true
     };
 
     try {
@@ -2147,6 +2424,8 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
           <td>${record.check_out || '—'}</td>
           <td>${ATTENDANCE_STATUS_LABELS[record.status] || record.status}</td>
           <td>${Number(record.calculated_deduction_days) || 0} يوم / ${Number(record.calculated_deduction_hours) || 0} ساعة</td>
+          <td>${Number(record.overtime_days) || 0} يوم / ${Number(record.overtime_hours) || 0} ساعة</td>
+          <td>${(Number(record.sunday_deduction_days) || 0) > 0 ? `${Number(record.sunday_deduction_days)} يوم` : '—'}</td>
         </tr>`;
       })
       .join('');
@@ -2172,7 +2451,7 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
       <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 46)}</div>
       <h1>${globalSettings.site_name || 'مصنع الملابس الجاهزة'} — ${title}</h1>
       <p class="meta">عدد السجلات: ${list.length} — حضور: ${summary.present} — غياب: ${summary.absents} — بانتظار المراجعة: ${summary.pending}</p>
-      <table><thead><tr><th>التاريخ</th><th>الموظف</th><th>الكود</th><th>الحضور</th><th>الانصراف</th><th>الحالة</th><th>الخصم</th></tr></thead>
+      <table><thead><tr><th>التاريخ</th><th>الموظف</th><th>الكود</th><th>الحضور</th><th>الانصراف</th><th>الحالة</th><th>الخصم</th><th>الإضافي</th><th>خصم الأحد</th></tr></thead>
       <tbody>${rowsHtml}</tbody></table>
       </body></html>`);
     win.document.close();
@@ -2666,6 +2945,23 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
                       <p className="font-bold text-[10px] text-slate-500 font-mono">
                         {Number(record.calculated_deduction_hours) || 0} ساعة
                       </p>
+                      {(Number(record.overtime_days) || 0) > 0 ||
+                      (Number(record.overtime_hours) || 0) > 0 ? (
+                        <p className="font-bold text-[10px] text-emerald-600 font-mono mt-0.5">
+                          إضافي: {Number(record.overtime_days) || 0} يوم /{' '}
+                          {Number(record.overtime_hours) || 0} ساعة
+                        </p>
+                      ) : null}
+                      {(Number(record.sunday_deduction_days) || 0) > 0 && (
+                        <p className="font-black text-[10px] text-rose-600 font-mono mt-0.5">
+                          خصم الأحد: {Number(record.sunday_deduction_days) || 0} يوم
+                        </p>
+                      )}
+                      {record.sunday_deduction_note && (
+                        <p className="text-[9px] font-bold text-slate-400 max-w-[170px] whitespace-normal mt-0.5">
+                          {record.sunday_deduction_note}
+                        </p>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-center whitespace-nowrap">
                       <span
@@ -3139,6 +3435,11 @@ interface LoanDueRow {
   employee: HREmployee;
   salary: number;
   workdays: number;
+  attendanceDeductionDays: number;
+  attendanceDeductionHours: number;
+  sundayDeductionDays: number;
+  penaltyDays: number;
+  penaltyHours: number;
   previousLoans: number;
   currentDue: number;
 }
@@ -3161,6 +3462,8 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
   const [attendanceRecords, setAttendanceRecords] = useState<HRAttendanceRecord[]>([]);
   const [penalties, setPenalties] = useState<HRPenalty[]>([]);
   const [dueSearch, setDueSearch] = useState('');
+  const [overLimit, setOverLimit] = useState<{ amount: number; limit: number } | null>(null);
+  const [pendingLoanPayload, setPendingLoanPayload] = useState<any | null>(null);
 
   const loadLoans = useCallback(async () => {
     setIsLoading(true);
@@ -3198,23 +3501,18 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     [filteredLoans]
   );
 
-  // فترة الاستحقاق: من أول الشهر حتى أمس، مع اعتبار الأحد أجازة مدفوعة (30 يوماً حسابية)
+  // فترة الاستحقاق: من أول الشهر حتى أمس (30 يوماً حسابية كحد أقصى)
   const duePeriod = useMemo(() => {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
     const dates: string[] = [];
     for (let cursor = new Date(monthStart); cursor <= yesterday; cursor.setDate(cursor.getDate() + 1)) {
-      if (cursor.getDay() !== 0) {
-        dates.push(
-          `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(
-            cursor.getDate()
-          ).padStart(2, '0')}`
-        );
-      }
+      dates.push(isoDate(cursor));
     }
     return {
       monthKey: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
+      yesterdayIso: isoDate(yesterday),
       yesterdayLabel: `${String(yesterday.getDate()).padStart(2, '0')}/${String(
         yesterday.getMonth() + 1
       ).padStart(2, '0')}/${yesterday.getFullYear()}`,
@@ -3223,18 +3521,33 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     };
   }, []);
 
-  // احتساب المستحق لكل موظف حتى أمس: المرتب ÷ 30 × أيام العمل − الغياب − الجزاءات − السُلف السابقة
+  // المستحق حتى أمس = (المرتب ÷ 30) × عدد الأيام − التأخيرات − خصم الأحد − الجزاءات − السُلف
   const loanDueRows = useMemo<LoanDueRow[]>(() => {
     const rangeSet = new Set(duePeriod.dates);
     return employees.map((employee) => {
       const salary = Number(employee.monthly_salary) || 0;
-      const dayRate = salary / 30;
-      const employeeRecords = attendanceRecords.filter(
-        (record) => record.employee_id === employee.id && rangeSet.has(record.date)
+      const dayRate = dailyRateFor(salary);
+      const hourRate = hourlyRateFor(salary);
+      const employeeRecords = attendanceRecords.filter((record) => {
+        if (record.employee_id !== employee.id || !rangeSet.has(record.date)) return false;
+        // يوم الأحد يُحسب منفصلاً ضمن خصم الأحد.
+        const recordDay = new Date(`${record.date}T00:00:00`);
+        return recordDay.getDay() !== 0;
+      });
+      const attendanceDeductionDays = employeeRecords.reduce(
+        (sum, record) => sum + (Number(record.calculated_deduction_days) || 0),
+        0
       );
-      const absentDays = employeeRecords.filter(
-        (record) => record.status === 'absent' && !record.is_excused
-      ).length;
+      const attendanceDeductionHours = employeeRecords.reduce(
+        (sum, record) => sum + (Number(record.calculated_deduction_hours) || 0),
+        0
+      );
+      const sundayDeductionDays = sumSundayDeductionsForEmployeeMonth(
+        attendanceRecords,
+        employee.id,
+        duePeriod.monthKey,
+        duePeriod.yesterdayIso
+      );
       const employeePenalties = penalties.filter(
         (penalty) => penalty.employee_id === employee.id && rangeSet.has(penalty.date)
       );
@@ -3248,12 +3561,19 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         .filter((loan) => loan.employee_id === employee.id && rangeSet.has(loan.date))
         .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
       const earned = dayRate * duePeriod.workdays;
-      const deduction = dayRate * absentDays + dayRate * penaltyDays + (dayRate / 8) * penaltyHours;
-      const currentDue = Math.max(0, earned - deduction - previousLoans);
+      const deductionMoney =
+        dayRate * (attendanceDeductionDays + sundayDeductionDays + penaltyDays) +
+        hourRate * (attendanceDeductionHours + penaltyHours);
+      const currentDue = Math.max(0, earned - deductionMoney - previousLoans);
       return {
         employee,
         salary,
         workdays: duePeriod.workdays,
+        attendanceDeductionDays,
+        attendanceDeductionHours,
+        sundayDeductionDays,
+        penaltyDays,
+        penaltyHours,
         previousLoans,
         currentDue
       };
@@ -3295,43 +3615,54 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     [loanDueRows]
   );
 
-  const selectedEmployeeDue = useMemo(
-    () => loanDueRows.find((row) => row.employee.id === form.employee_id)?.currentDue || 0,
-    [loanDueRows, form.employee_id]
-  );
+  const selectedEmployeeDue = useMemo(() => {
+    const row = loanDueRows.find((item) => item.employee.id === form.employee_id);
+    const base = row?.currentDue || 0;
+    // عند تعديل سلفة قائمة نضيف قيمتها القديمة لأنها محسوبة ضمن السُلف السابقة.
+    const editingAmount = editing ? Number(editing.amount) || 0 : 0;
+    return base + editingAmount;
+  }, [loanDueRows, form.employee_id, editing]);
 
   const printEmptyLoanForm = () => {
-    const win = window.open('', '_blank', 'width=900,height=750');
+    const win = window.open('', '_blank', 'width=1100,height=820');
     if (!win) {
       addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
       return;
     }
+    const formBlock = `
+      <div class="form-block">
+        <h2>نموذج طلب سلفة</h2>
+        <p class="sub">${globalSettings.site_name || 'مصنع الملابس الجاهزة'} — إدارة الموارد البشرية</p>
+        <table>
+          <tr><td class="label">اسم الموظف</td><td></td></tr>
+          <tr><td class="label">كود الموظف</td><td></td></tr>
+          <tr><td class="label">القسم</td><td></td></tr>
+          <tr><td class="label">الوظيفة</td><td></td></tr>
+          <tr><td class="label">قيمة السلفة</td><td></td></tr>
+          <tr><td class="label">تاريخ الطلب</td><td></td></tr>
+          <tr><td class="label">سبب السلفة</td><td></td></tr>
+          <tr><td class="label">طريقة السداد</td><td></td></tr>
+        </table>
+        <div class="sign"><span>توقيع الموظف: ................</span><span>اعتماد الإدارة: ................</span></div>
+      </div>`;
     win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
       <title>ورقة سلفة</title>
       <style>
-        body{font-family:Tahoma,Arial,sans-serif;padding:28px;color:#0f172a}
-        .brand{text-align:center;margin-bottom:8px}
-        h1{font-size:20px;text-align:center;margin:0 0 4px}
-        p.sub{text-align:center;color:#64748b;font-size:12px;margin:0 0 24px}
-        table{width:100%;border-collapse:collapse;font-size:13px}
-        td{border:1px solid #94a3b8;padding:14px 10px;height:38px}
-        td.label{background:#f1f5f9;font-weight:bold;width:32%}
-        .sign{margin-top:56px;display:flex;justify-content:space-between;font-size:13px}
+        @page{size:A4 landscape;margin:8mm}
+        *{box-sizing:border-box}
+        body{font-family:Tahoma,Arial,sans-serif;padding:6mm;color:#0f172a;margin:0}
+        .brand{text-align:center;margin-bottom:4mm}
+        .forms{display:grid;grid-template-columns:repeat(3,1fr);gap:5mm}
+        .form-block{border:1px dashed #94a3b8;border-radius:6px;padding:4mm}
+        h2{font-size:14px;text-align:center;margin:0 0 2mm}
+        p.sub{text-align:center;color:#64748b;font-size:9px;margin:0 0 4mm}
+        table{width:100%;border-collapse:collapse;font-size:10px}
+        td{border:1px solid #94a3b8;padding:5px 6px;height:26px}
+        td.label{background:#f1f5f9;font-weight:bold;width:38%}
+        .sign{margin-top:8mm;display:flex;justify-content:space-between;font-size:9px;gap:6px}
       </style></head><body>
-      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 48)}</div>
-      <h1>نموذج طلب سلفة</h1>
-      <p class="sub">${globalSettings.site_name || 'مصنع الملابس الجاهزة'} — إدارة الموارد البشرية</p>
-      <table>
-        <tr><td class="label">اسم الموظف</td><td></td></tr>
-        <tr><td class="label">كود الموظف</td><td></td></tr>
-        <tr><td class="label">القسم</td><td></td></tr>
-        <tr><td class="label">الوظيفة</td><td></td></tr>
-        <tr><td class="label">قيمة السلفة</td><td></td></tr>
-        <tr><td class="label">تاريخ الطلب</td><td></td></tr>
-        <tr><td class="label">سبب السلفة</td><td></td></tr>
-        <tr><td class="label">طريقة السداد</td><td></td></tr>
-      </table>
-      <div class="sign"><span>توقيع الموظف: ....................</span><span>اعتماد الإدارة: ....................</span></div>
+      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 40)}</div>
+      <div class="forms">${formBlock}${formBlock}${formBlock}</div>
       </body></html>`);
     win.document.close();
     win.focus();
@@ -3348,21 +3679,27 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         (group) => `<h2>${group.label} <span>(${group.rows.length} موظف)</span></h2>
         <table>
           <thead><tr>
-            <th>الكود</th><th>الموظف</th><th>المرتب</th><th>أيام العمل حتى أمس</th>
+            <th>الكود</th><th>الموظف</th><th>المرتب</th><th>أيام العمل</th>
+            <th>خصم التأخير</th><th>خصم الأحد</th><th>الجزاءات</th>
             <th>السُلف السابقة</th><th>المستحق الحالي</th>
           </tr></thead>
           <tbody>
             ${group.rows
-              .map(
-                (row) => `<tr>
+              .map((row) => {
+                const attendanceDays = row.attendanceDeductionDays + row.attendanceDeductionHours / 8;
+                const penaltyDays = row.penaltyDays + row.penaltyHours / 8;
+                return `<tr>
                   <td>${row.employee.employee_code || '-'}</td>
                   <td>${row.employee.name}</td>
                   <td>${formatMoney(row.salary)}</td>
                   <td>${row.workdays}</td>
+                  <td>${attendanceDays.toFixed(2)} يوم</td>
+                  <td>${row.sundayDeductionDays.toFixed(2)} يوم</td>
+                  <td>${penaltyDays.toFixed(2)} يوم</td>
                   <td>${formatMoney(row.previousLoans)}</td>
                   <td>${formatMoney(row.currentDue)}</td>
-                </tr>`
-              )
+                </tr>`;
+              })
               .join('')}
           </tbody>
         </table>`
@@ -3450,8 +3787,6 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       return;
     }
 
-    setIsSaving(true);
-    setFormError('');
     const payload: any = {
       employee_id: form.employee_id,
       date: form.date,
@@ -3459,15 +3794,28 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       notes: form.notes.trim()
     };
 
+    // تنبيه عند تجاوز الحد الأقصى (المستحق الحالي) مع السماح بالمتابعة بعد التأكيد.
+    if (amount > selectedEmployeeDue + 0.0001) {
+      setPendingLoanPayload(payload);
+      setOverLimit({ amount, limit: selectedEmployeeDue });
+      return;
+    }
+
+    await saveLoan(payload);
+  };
+
+  const saveLoan = async (payload: any) => {
+    setIsSaving(true);
+    setFormError('');
     try {
       if (editing) {
         await api.updateHRLoan(editing.id, payload);
         addFlashMessage('تم تعديل السلفة بنجاح');
-        logAction('الموارد البشرية', `تعديل سلفة بقيمة ${amount} بتاريخ ${form.date}`);
+        logAction('الموارد البشرية', `تعديل سلفة بقيمة ${payload.amount} بتاريخ ${payload.date}`);
       } else {
         await api.createHRLoan(payload);
         addFlashMessage('تم إضافة السلفة بنجاح');
-        logAction('الموارد البشرية', `إضافة سلفة بقيمة ${amount} بتاريخ ${form.date}`);
+        logAction('الموارد البشرية', `إضافة سلفة بقيمة ${payload.amount} بتاريخ ${payload.date}`);
       }
       closeForm();
       await loadLoans();
@@ -3476,6 +3824,14 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const confirmOverLimit = async () => {
+    if (!pendingLoanPayload) return;
+    const payload = pendingLoanPayload;
+    setOverLimit(null);
+    setPendingLoanPayload(null);
+    await saveLoan(payload);
   };
 
   const handleDelete = async () => {
@@ -3683,7 +4039,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
           <Wallet className="w-8 h-8 mx-auto text-slate-300 mb-2" />
           <p className="text-xs font-black text-slate-700">لا توجد سُلف مسجلة لهذا الشهر</p>
           <p className="text-[11px] font-bold text-slate-500 mt-1">
-            أضف سلفة جديدة ليتم خصمها تلقائياً من مرتب الموظف في مسير المرتبات.
+            أضف سلفة جديدة ليتم خصمها تلقائياً من مرتب الموظف في المرتبات.
           </p>
         </div>
       ) : (
@@ -3754,7 +4110,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       {isFormOpen && (
         <Modal
           title={editing ? 'تعديل سلفة' : 'صرف سلفة جديدة'}
-          subtitle="تُخصم السلفة بالكامل من مرتب نفس الشهر في مسير المرتبات"
+          subtitle="تُخصم السلفة بالكامل من مرتب نفس الشهر في المرتبات"
           onClose={closeForm}
           maxWidthClass="max-w-xl"
         >
@@ -3798,7 +4154,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                 className={`${inputClass} font-mono`}
               />
               <p className="text-[10px] font-bold text-slate-500 mt-1">
-                المستحق الحالي للموظف حتى أمس: {formatMoney(selectedEmployeeDue)}
+                المستحق الحالي للموظف حتى أمس: {formatMoney(selectedEmployeeDue)} — وهو الحد الأقصى للسلفة.
               </p>
             </div>
 
@@ -3835,6 +4191,53 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
           </form>
         </Modal>
       )}
+
+      {overLimit && (
+        <Modal
+          title="قيمة السلفة تتجاوز الحد الأقصى"
+          subtitle="يمكنك المتابعة بعد التأكيد"
+          onClose={() => {
+            setOverLimit(null);
+            setPendingLoanPayload(null);
+          }}
+          maxWidthClass="max-w-md"
+        >
+          <div className="space-y-3">
+            <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] font-bold">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>
+                قيمة السلفة المطلوبة{' '}
+                <strong className="font-mono">{formatMoney(overLimit.amount)}</strong> تتجاوز
+                المستحق الحالي{' '}
+                <strong className="font-mono">{formatMoney(overLimit.limit)}</strong> للموظف حتى
+                أمس. هل تريد المتابعة على مسؤوليتك؟
+              </span>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setOverLimit(null);
+                  setPendingLoanPayload(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-[11px] font-black hover:bg-slate-200 transition cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmOverLimit()}
+                disabled={isSaving}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-600 text-white text-[11px] font-black hover:bg-amber-700 transition cursor-pointer disabled:opacity-60"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                {isSaving ? 'جاري الحفظ...' : 'متابعة وحفظ'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
 
       {deleteTarget && (
         <Modal
@@ -4537,9 +4940,14 @@ const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) =>
 interface PayrollRow {
   employee: HREmployee;
   baseSalary: number;
+  overtimeDays: number;
+  overtimeHours: number;
+  overtimePay: number;
   attendanceDays: number;
   attendanceHours: number;
   attendanceDeduction: number;
+  sundayDeductionDays: number;
+  sundayDeduction: number;
   penaltyDays: number;
   penaltyHours: number;
   penaltyDeduction: number;
@@ -4570,7 +4978,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       setPenalties(Array.isArray(penaltiesRes) ? penaltiesRes : []);
       setLoans(Array.isArray(loansRes) ? loansRes : []);
     } catch (err: any) {
-      addFlashMessage(err?.message || 'فشل تحميل بيانات مسير المرتبات', 'danger');
+      addFlashMessage(err?.message || 'فشل تحميل بيانات المرتبات', 'danger');
     } finally {
       setIsLoading(false);
     }
@@ -4583,21 +4991,42 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
 
   const rows = useMemo<PayrollRow[]>(() => {
     const inMonth = (date?: string) => !!date && date.startsWith(month);
+    const today = new Date();
+    const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+    const upToIso =
+      month === currentMonthKey
+        ? isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1))
+        : undefined;
 
     return employees.map((employee) => {
       const baseSalary = Number(employee.monthly_salary) || 0;
-      const dayRate = baseSalary / 30;
-      const hourRate = dayRate / 8;
+      const dayRate = dailyRateFor(baseSalary);
+      const hourRate = hourlyRateFor(baseSalary);
 
       let attendanceDays = 0;
       let attendanceHours = 0;
+      let overtimeDays = 0;
+      let overtimeHours = 0;
       records.forEach((record) => {
         if (record.employee_id !== employee.id) return;
         if (!inMonth(record.date)) return;
         if (record.review_status === 'rejected') return;
+        // يوم الأحد إجازة مدفوعة ويُحسب خصمه بشكل منفصل.
+        const recordDay = new Date(`${record.date}T00:00:00`);
+        if (recordDay.getDay() === 0) return;
         attendanceDays += Number(record.calculated_deduction_days) || 0;
         attendanceHours += Number(record.calculated_deduction_hours) || 0;
+        overtimeDays += Number(record.overtime_days) || 0;
+        overtimeHours += Number(record.overtime_hours) || 0;
       });
+
+      // خصم يوم الأحد يُحسب من سجلات أيام العمل الستة (بدون الاعتماد على وجود سجل أحد).
+      const sundayDeductionDays = sumSundayDeductionsForEmployeeMonth(
+        records,
+        employee.id,
+        month,
+        upToIso
+      );
 
       let penaltyDays = 0;
       let penaltyHours = 0;
@@ -4613,21 +5042,29 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
 
       const attendanceDeduction = attendanceDays * dayRate + attendanceHours * hourRate;
+      const sundayDeduction = sundayDeductionDays * dayRate;
       const penaltyDeduction = penaltyDays * dayRate + penaltyHours * hourRate;
-      const totalDeduction = attendanceDeduction + penaltyDeduction + loanDeduction;
+      const overtimePay = overtimeDays * dayRate + overtimeHours * hourRate;
+      const totalDeduction =
+        attendanceDeduction + sundayDeduction + penaltyDeduction + loanDeduction;
 
       return {
         employee,
         baseSalary,
+        overtimeDays,
+        overtimeHours,
+        overtimePay,
         attendanceDays,
         attendanceHours,
         attendanceDeduction,
+        sundayDeductionDays,
+        sundayDeduction,
         penaltyDays,
         penaltyHours,
         penaltyDeduction,
         loanDeduction,
         totalDeduction,
-        netPay: baseSalary - totalDeduction
+        netPay: baseSalary + overtimePay - totalDeduction
       };
     });
   }, [employees, records, penalties, loans, month]);
@@ -4637,7 +5074,9 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       rows.reduce(
         (acc, row) => ({
           baseSalary: acc.baseSalary + row.baseSalary,
+          overtimePay: acc.overtimePay + row.overtimePay,
           attendanceDeduction: acc.attendanceDeduction + row.attendanceDeduction,
+          sundayDeduction: acc.sundayDeduction + row.sundayDeduction,
           penaltyDeduction: acc.penaltyDeduction + row.penaltyDeduction,
           loanDeduction: acc.loanDeduction + row.loanDeduction,
           totalDeduction: acc.totalDeduction + row.totalDeduction,
@@ -4645,7 +5084,9 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         }),
         {
           baseSalary: 0,
+          overtimePay: 0,
           attendanceDeduction: 0,
+          sundayDeduction: 0,
           penaltyDeduction: 0,
           loanDeduction: 0,
           totalDeduction: 0,
@@ -4659,42 +5100,155 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     row.employee.department_label ||
     (row.employee.department ? HR_DEPARTMENT_LABELS[row.employee.department] : '—');
 
-  const buildWorkerSheetHtml = (row: PayrollRow) => `
-    <div class="sheet">
-      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 48)}</div>
-      <h1>${globalSettings.site_name || 'مصنع الملابس الجاهزة'} — ورقة مرتب عامل</h1>
-      <p class="sub">شهر ${month} — إدارة الموارد البشرية</p>
-      <table>
-        <tr><td class="label">اسم الموظف</td><td>${row.employee.name}</td><td class="label">كود الموظف</td><td>${row.employee.employee_code || '-'}</td></tr>
+  const buildWorkerSheetHtml = (row: PayrollRow) => {
+    const recordsByDate = new Map<string, HRAttendanceRecord>();
+    records
+      .filter(
+        (record) =>
+          record.employee_id === row.employee.id && (record.date || '').startsWith(month)
+      )
+      .forEach((record) => recordsByDate.set(record.date, record));
+
+    const [yearStr, monthStr] = month.split('-');
+    const year = Number(yearStr);
+    const monthNumber = Number(monthStr);
+    const daysInMonth = year && monthNumber ? new Date(year, monthNumber, 0).getDate() : 30;
+    const dayRate = dailyRateFor(row.baseSalary);
+    const hourRate = hourlyRateFor(row.baseSalary);
+    const statusLabels: Record<string, string> = {
+      present: 'حاضر',
+      absent: 'غائب',
+      leave: 'إجازة',
+      missing_punch: 'بصمة ناقصة'
+    };
+
+    const dayRows: string[] = [];
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const cursor = new Date(year, monthNumber - 1, day);
+      const iso = isoDate(cursor);
+      const isSunday = cursor.getDay() === 0;
+      const record = recordsByDate.get(iso);
+      const dayLabel = WEEK_DAY_AR[cursor.getDay()];
+      const dateLabel = `${String(day).padStart(2, '0')}/${String(monthNumber).padStart(2, '0')}`;
+
+      if (isSunday) {
+        const weekDates = weekDatesBeforeSunday(iso);
+        const hasWeekData = weekDates.some((dateStr) => recordsByDate.has(dateStr));
+        const absentCount = weekDates.filter((dateStr) => {
+          const rec = recordsByDate.get(dateStr);
+          return !rec || (!rec.is_excused && !rec.check_in);
+        }).length;
+        const ratio = hasWeekData ? sundayRatioForAbsences(absentCount) : 0;
+        const deduction = ratio * dayRate;
+        const reason =
+          ratio > 0
+            ? `خصم ${sundayRatioLabel(ratio)} بسبب غياب ${absentCount} أيام بدون عذر`
+            : 'إجازة أسبوعية مدفوعة';
+        dayRows.push(`<tr class="${ratio > 0 ? 'row-bad' : 'row-off'}">
+          <td class="mono">${dateLabel}</td><td>${dayLabel}</td><td>—</td><td>—</td>
+          <td>إجازة أسبوعية</td>
+          <td class="mono">${deduction ? formatMoney(-deduction) : '—'}</td>
+          <td class="mono">—</td><td class="reason">${reason}</td></tr>`);
+        continue;
+      }
+
+      if (!record) {
+        dayRows.push(`<tr class="row-off">
+          <td class="mono">${dateLabel}</td><td>${dayLabel}</td><td>—</td><td>—</td>
+          <td>لا يوجد سجل</td><td class="mono">—</td><td class="mono">—</td>
+          <td class="reason">لم يُسجّل حضور لهذا اليوم</td></tr>`);
+        continue;
+      }
+
+      const deduction =
+        (Number(record.calculated_deduction_days) || 0) * dayRate +
+        (Number(record.calculated_deduction_hours) || 0) * hourRate;
+      const overtime =
+        (Number(record.overtime_days) || 0) * dayRate +
+        (Number(record.overtime_hours) || 0) * hourRate;
+      let reason = 'حضور كامل';
+      if (record.is_excused) reason = `بعذر: ${record.excuse_note || 'بدون خصم'}`;
+      else if (record.status === 'absent') reason = 'غياب بدون عذر';
+      else if (record.status === 'missing_punch') reason = 'بصمة ناقصة تحتاج مراجعة';
+      else if (record.status === 'leave') reason = 'إجازة';
+      else if (deduction > 0) reason = 'تأخير / انصراف مبكر';
+      let rowClass = 'row-ok';
+      if (record.status === 'absent') rowClass = 'row-bad';
+      else if (record.status === 'missing_punch') rowClass = 'row-info';
+      else if (record.status === 'leave') rowClass = 'row-off';
+      else if (deduction > 0) rowClass = 'row-warn';
+
+      dayRows.push(`<tr class="${rowClass}">
+        <td class="mono">${dateLabel}</td><td>${dayLabel}</td>
+        <td class="mono">${record.check_in || '—'}</td>
+        <td class="mono">${record.check_out || '—'}</td>
+        <td>${statusLabels[record.status] || record.status}</td>
+        <td class="mono">${deduction ? formatMoney(-deduction) : '—'}</td>
+        <td class="mono">${overtime ? formatMoney(overtime) : '—'}</td>
+        <td class="reason">${reason}</td></tr>`);
+    }
+    const dayRowsHtml = dayRows.join('');
+
+    return `<div class="sheet">
+      <div class="head">
+        <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 40)}</div>
+        <div class="title">
+          <h1>${globalSettings.site_name || 'مصنع الملابس الجاهزة'}</h1>
+          <p>ورقة مرتب عامل — شهر ${month}</p>
+        </div>
+      </div>
+      <table class="info">
+        <tr><td class="label">اسم الموظف</td><td>${row.employee.name}</td><td class="label">كود الموظف</td><td class="mono">${row.employee.employee_code || '-'}</td></tr>
         <tr><td class="label">الوظيفة</td><td>${row.employee.job_title || '—'}</td><td class="label">القسم</td><td>${workerDepartment(row)}</td></tr>
-        <tr><td class="label">المرتب الشهري</td><td colspan="3">${formatMoney(row.baseSalary)}</td></tr>
       </table>
-      <table>
-        <thead><tr><th>البند</th><th>التفاصيل</th><th>القيمة</th></tr></thead>
-        <tbody>
-          <tr><td>خصم الحضور</td><td>${row.attendanceDays} يوم / ${row.attendanceHours} ساعة</td><td>${formatMoney(row.attendanceDeduction)}</td></tr>
-          <tr><td>الجزاءات</td><td>${row.penaltyDays} يوم / ${row.penaltyHours} ساعة</td><td>${formatMoney(row.penaltyDeduction)}</td></tr>
-          <tr><td>السُلف</td><td>—</td><td>${formatMoney(row.loanDeduction)}</td></tr>
-          <tr><td colspan="2">إجمالي الخصومات</td><td>${formatMoney(row.totalDeduction)}</td></tr>
-        </tbody>
+      <table class="days">
+        <thead><tr>
+          <th>التاريخ</th><th>اليوم</th><th>الحضور</th><th>الانصراف</th>
+          <th>الحالة</th><th>الخصم</th><th>الإضافي</th><th>الملاحظات</th>
+        </tr></thead>
+        <tbody>${dayRowsHtml}</tbody>
       </table>
-      <div class="net">صافي المستحق: ${formatMoney(row.netPay)}</div>
+      <table class="totals">
+        <tr><td>إجمالي الإضافي</td><td class="mono">${formatMoney(row.overtimePay)}</td></tr>
+        <tr><td>خصم الحضور والتأخير</td><td class="mono">${formatMoney(row.attendanceDeduction)}</td></tr>
+        <tr><td>خصم يوم الأحد</td><td class="mono">${formatMoney(row.sundayDeduction)}</td></tr>
+        <tr><td>الجزاءات</td><td class="mono">${formatMoney(row.penaltyDeduction)}</td></tr>
+        <tr><td>السُلف</td><td class="mono">${formatMoney(row.loanDeduction)}</td></tr>
+        <tr class="net-row"><td>صافي المستحق</td><td class="mono">${formatMoney(row.netPay)}</td></tr>
+      </table>
       <div class="sign"><span>توقيع الموظف: ....................</span><span>توقيع الإدارة: ....................</span></div>
-    </div>
-  `;
+    </div>`;
+  };
+
 
   const workerSheetStyles = `
-    body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#0f172a}
-    .sheet{max-width:720px;margin:0 auto}
-    .brand{text-align:center;margin-bottom:6px}
-    h1{font-size:20px;text-align:center;margin:0 0 4px}
-    p.sub{text-align:center;color:#64748b;font-size:12px;margin:0 0 18px}
-    table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:14px}
-    th,td{border:1px solid #cbd5e1;padding:8px;text-align:center}
-    th{background:#f1f5f9}
-    td.label{background:#f1f5f9;font-weight:bold;width:18%}
-    .net{margin-top:12px;padding:14px;border:2px solid #059669;border-radius:10px;text-align:center;font-size:18px;font-weight:bold;color:#047857}
-    .sign{margin-top:40px;display:flex;justify-content:space-between;font-size:13px}
+    @page{size:A4 portrait;margin:10mm}
+    *{box-sizing:border-box}
+    body{font-family:Tahoma,Arial,sans-serif;padding:4mm;color:#0f172a;margin:0}
+    .sheet{width:100%;margin:0 auto;page-break-after:always}
+    .sheet:last-child{page-break-after:auto}
+    .head{display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:2px solid #334155;padding-bottom:4mm;margin-bottom:3mm}
+    .brand{text-align:right}
+    .title{text-align:left}
+    h1{font-size:15px;margin:0 0 1mm}
+    .title p{font-size:11px;color:#475569;margin:0;font-weight:bold}
+    table{width:100%;border-collapse:collapse;font-size:9px;margin-bottom:3mm}
+    th,td{border:1px solid #cbd5e1;padding:4px 5px;text-align:center}
+    th{background:#e2e8f0;font-weight:bold;font-size:9px}
+    td.label{background:#f1f5f9;font-weight:bold;width:17%}
+    td.reason{text-align:right;font-size:8.5px;color:#334155}
+    .mono{font-family:'Courier New',monospace;font-size:8.5px}
+    .days tbody td{padding:3px 4px}
+    .row-ok{background:#ecfdf5}
+    .row-warn{background:#fffbeb}
+    .row-bad{background:#fef2f2}
+    .row-info{background:#eff6ff}
+    .row-off{background:#f8fafc;color:#64748b}
+    .totals{width:60%;margin-left:auto}
+    .totals td{font-size:10px;padding:5px 8px}
+    .totals td:first-child{background:#f1f5f9;font-weight:bold;text-align:right;width:60%}
+    .totals .net-row td{background:#ecfdf5;color:#047857;font-weight:bold;font-size:12px;border-top:2px solid #059669}
+    .sign{margin-top:10mm;display:flex;justify-content:space-between;font-size:10px}
   `;
 
   const printWorkerSheet = (row: PayrollRow) => {
@@ -4728,6 +5282,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
           <div class="env-meta">${workerDepartment(row)}</div>
           <table>
             <tr><td>المرتب</td><td>${formatMoney(row.baseSalary)}</td></tr>
+            <tr><td>الإضافي</td><td>${formatMoney(row.overtimePay)}</td></tr>
             <tr><td>الخصومات</td><td>${formatMoney(row.totalDeduction)}</td></tr>
           </table>
           <div class="env-net">الصافي: ${formatMoney(row.netPay)}</div>
@@ -4822,6 +5377,10 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
             <Banknote className="w-3.5 h-3.5" />
             إجمالي المرتبات: {formatMoney(totals.baseSalary)}
           </span>
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] font-black text-emerald-700">
+            <Timer className="w-3.5 h-3.5" />
+            إجمالي الإضافي: {formatMoney(totals.overtimePay)}
+          </span>
           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 border border-rose-200 text-[11px] font-black text-rose-700">
             <AlertTriangle className="w-3.5 h-3.5" />
             إجمالي الخصومات: {formatMoney(totals.totalDeduction)}
@@ -4839,7 +5398,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
             <Users className="w-8 h-8 mx-auto text-slate-300 mb-2" />
             <p className="text-xs font-black text-slate-700">لا يوجد موظفون لحساب المرتبات</p>
             <p className="text-[11px] font-bold text-slate-500 mt-1">
-              أضف الموظفين أولاً من قسم الموظفين لتتمكن من إنشاء مسير المرتبات.
+              أضف الموظفين أولاً من قسم الموظفين لتتمكن من إنشاء المرتبات.
             </p>
           </div>
         ) : (
@@ -4848,16 +5407,14 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
               <thead className="bg-slate-50 text-slate-500">
                 <tr>
                   <th className="text-right px-4 py-2.5 font-black whitespace-nowrap">الموظف</th>
-                  <th className="text-right px-4 py-2.5 font-black whitespace-nowrap">الوظيفة</th>
+                  <th className="text-right px-4 py-2.5 font-black whitespace-nowrap">الوظيفة / القسم</th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">
                     المرتب الشهري
                   </th>
-                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">خصم حضور</th>
+                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">الإضافي</th>
+                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">خصم الحضور</th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">جزاءات</th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">سُلف</th>
-                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">
-                    إجمالي الخصم
-                  </th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">الصافي</th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">إجراءات</th>
                 </tr>
@@ -4883,10 +5440,19 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                     <td className="px-4 py-3 text-center font-mono font-black text-slate-800 whitespace-nowrap">
                       {formatMoney(row.baseSalary)}
                     </td>
+                    <td className="px-4 py-3 text-center font-mono font-bold text-emerald-600 whitespace-nowrap">
+                      <p>{formatMoney(row.overtimePay)}</p>
+                      <p className="text-[10px] text-slate-400">
+                        {row.overtimeDays} يوم / {row.overtimeHours} ساعة
+                      </p>
+                    </td>
                     <td className="px-4 py-3 text-center font-mono font-bold text-rose-600 whitespace-nowrap">
-                      <p>{formatMoney(row.attendanceDeduction)}</p>
+                      <p>{formatMoney(row.attendanceDeduction + row.sundayDeduction)}</p>
                       <p className="text-[10px] text-slate-400">
                         {row.attendanceDays} يوم / {row.attendanceHours} ساعة
+                        {row.sundayDeductionDays > 0
+                          ? ` + أحد ${row.sundayDeductionDays.toFixed(2)} يوم`
+                          : ''}
                       </p>
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-bold text-rose-600 whitespace-nowrap">
@@ -4897,9 +5463,6 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-bold text-rose-600 whitespace-nowrap">
                       {formatMoney(row.loanDeduction)}
-                    </td>
-                    <td className="px-4 py-3 text-center font-mono font-black text-rose-700 whitespace-nowrap">
-                      {formatMoney(row.totalDeduction)}
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-black whitespace-nowrap">
                       <span
@@ -4933,17 +5496,17 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                   <td className="px-4 py-3 text-center font-mono font-black text-slate-900">
                     {formatMoney(totals.baseSalary)}
                   </td>
+                  <td className="px-4 py-3 text-center font-mono font-black text-emerald-700">
+                    {formatMoney(totals.overtimePay)}
+                  </td>
                   <td className="px-4 py-3 text-center font-mono font-black text-rose-700">
-                    {formatMoney(totals.attendanceDeduction)}
+                    {formatMoney(totals.attendanceDeduction + totals.sundayDeduction)}
                   </td>
                   <td className="px-4 py-3 text-center font-mono font-black text-rose-700">
                     {formatMoney(totals.penaltyDeduction)}
                   </td>
                   <td className="px-4 py-3 text-center font-mono font-black text-rose-700">
                     {formatMoney(totals.loanDeduction)}
-                  </td>
-                  <td className="px-4 py-3 text-center font-mono font-black text-rose-700">
-                    {formatMoney(totals.totalDeduction)}
                   </td>
                   <td className="px-4 py-3 text-center font-mono font-black text-emerald-700">
                     {formatMoney(totals.netPay)}
@@ -5002,12 +5565,30 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   <tr>
-                    <td className="px-3 py-2 font-bold text-slate-700">خصم الحضور</td>
+                    <td className="px-3 py-2 font-bold text-slate-700">العمل الإضافي</td>
+                    <td className="px-3 py-2 text-center font-bold text-slate-600">
+                      {workerSheet.overtimeDays} يوم / {workerSheet.overtimeHours} ساعة
+                    </td>
+                    <td className="px-3 py-2 text-center font-mono font-black text-emerald-600">
+                      {formatMoney(workerSheet.overtimePay)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="px-3 py-2 font-bold text-slate-700">خصم الحضور والتأخير</td>
                     <td className="px-3 py-2 text-center font-bold text-slate-600">
                       {workerSheet.attendanceDays} يوم / {workerSheet.attendanceHours} ساعة
                     </td>
                     <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
                       {formatMoney(workerSheet.attendanceDeduction)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="px-3 py-2 font-bold text-slate-700">خصم يوم الأحد</td>
+                    <td className="px-3 py-2 text-center font-bold text-slate-600">
+                      {workerSheet.sundayDeductionDays.toFixed(2)} يوم
+                    </td>
+                    <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
+                      {formatMoney(workerSheet.sundayDeduction)}
                     </td>
                   </tr>
                   <tr>
