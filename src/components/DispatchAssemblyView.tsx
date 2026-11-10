@@ -9,7 +9,11 @@ import {
   X,
   Lock
 } from 'lucide-react';
-import { DispatchStatus, GarmentPart, PART_EMOJI, getPartLabel } from '../types';
+import { DispatchStatus, GarmentPart, PART_EMOJI, getPartLabel, PrintDispatch } from '../types';
+import { PrintShopOrderModal } from './PrintShopOrderModal';
+
+/** نوع تشغيل افتراضي يُرسل للباك إند بعد إخفاء حقل "نوع التشغيل" من الواجهة. */
+const DEFAULT_PRINT_TYPE = 'سلك سكرين مائي';
 
 export const DispatchAssemblyView: React.FC = () => {
   const {
@@ -23,7 +27,6 @@ export const DispatchAssemblyView: React.FC = () => {
     skipPrintToSewing,
     hasPermission,
     canViewPrintingCosts,
-    canEditPrintingCosts,
     canAddPrintingNotes,
     canAddQCBeforePrintNotes
   } = useApp();
@@ -59,7 +62,6 @@ export const DispatchAssemblyView: React.FC = () => {
   const [modelId, setModelId] = useState(readyModels[0]?.id || '');
   const [shopName, setShopName] = useState('');
   const [piecesCount, setPiecesCount] = useState<number>(100);
-  const [printType, setPrintType] = useState('سلك سكرين مائي');
   const [pieceType, setPieceType] = useState<GarmentPart>('shirt');
   const [printLocation, setPrintLocation] = useState('صدر');
   const [printDetails, setPrintDetails] = useState('');
@@ -80,8 +82,8 @@ export const DispatchAssemblyView: React.FC = () => {
     d.setDate(d.getDate() + 2);
     return d.toISOString().slice(0, 10);
   });
-  const [costPerPiece, setCostPerPiece] = useState<number>(4.5);
   const [notes, setNotes] = useState('');
+  const [printTarget, setPrintTarget] = useState<PrintDispatch | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -91,13 +93,13 @@ export const DispatchAssemblyView: React.FC = () => {
       modelId,
       shopName: shopName.trim(),
       piecesCount: Number(piecesCount) || 0,
-      printType: printType.trim(),
+      printType: DEFAULT_PRINT_TYPE,
       pieceType: effectivePieceType,
       pieceLabel: getPartLabel(effectivePieceType),
       printLocation: printLocation.trim(),
       printDetails: printDetails.trim(),
       expectedDeliveryDate,
-      costPerPiece: canEditPrintingCosts() ? Number(costPerPiece) : undefined,
+      costPerPiece: 0,
       notes: allowPrintNotes ? notes.trim() : ''
     });
 
@@ -381,20 +383,29 @@ export const DispatchAssemblyView: React.FC = () => {
                         </span>
                       </td>
                       <td className="px-6 py-4 text-center">
-                        {disp.status !== 'تم الاستلام بالمصنع' && canEdit ? (
+                        <div className="flex flex-wrap items-center justify-center gap-1.5">
+                          {disp.status !== 'تم الاستلام بالمصنع' && canEdit ? (
+                            <button
+                              onClick={() => updateDispatchStatus(disp.id, 'تم الاستلام بالمصنع')}
+                              className="px-3.5 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
+                              title="استلام من المطبعة وتحويل تلقائي للعد بعد الطباعة"
+                            >
+                              استلام بالمصنع 📥
+                            </button>
+                          ) : (
+                            <span className="text-emerald-700 font-bold text-xs flex items-center justify-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>مستلم بالفرز</span>
+                            </span>
+                          )}
                           <button
-                            onClick={() => updateDispatchStatus(disp.id, 'تم الاستلام بالمصنع')}
-                            className="px-3.5 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
-                            title="استلام من المطبعة وتحويل تلقائي للعد بعد الطباعة"
+                            onClick={() => setPrintTarget(disp)}
+                            className="px-3.5 py-1.5 rounded-full bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs transition shadow-xs cursor-pointer whitespace-nowrap"
+                            title="طباعة أو حفظ أوردر المطبعة PDF"
                           >
-                            استلام بالمصنع 📥
+                            🖨️ طباعة / PDF للمطبعة
                           </button>
-                        ) : (
-                          <span className="text-emerald-700 font-bold text-xs flex items-center justify-center gap-1">
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            <span>مستلم بالفرز</span>
-                          </span>
-                        )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -523,56 +534,19 @@ export const DispatchAssemblyView: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">
-                    عدد القطع المسلمة *
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    required
-                    value={piecesCount}
-                    onChange={(e) => setPiecesCount(parseInt(e.target.value) || 0)}
-                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs text-center font-bold focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">نوع التشغيل</label>
-                  <select
-                    value={printType}
-                    onChange={(e) => setPrintType(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
-                  >
-                    <option value="سلك سكرين مائي">سلك سكرين مائي</option>
-                    <option value="بلاستيزول حراري">بلاستيزول حراري</option>
-                    <option value="تطريز كمبيوتر بارز">تطريز كمبيوتر بارز</option>
-                    <option value="ديجيتال DTF">ديجيتال DTF</option>
-                    <option value="فينيل كبس">فينيل كبس</option>
-                  </select>
-                </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  عدد القطع المسلمة *
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  value={piecesCount}
+                  onChange={(e) => setPiecesCount(parseInt(e.target.value) || 0)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs text-center font-bold focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                />
               </div>
-
-              {/* Printing Cost Input (Restricted by Permission) */}
-              {canEditPrintingCosts() && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">
-                    تكلفة تشغيل القطعة بالمطبعة (ج.م)
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={costPerPiece}
-                    onChange={(e) => setCostPerPiece(parseFloat(e.target.value) || 0)}
-                    className="w-full px-4 py-2 rounded-xl border border-slate-300 text-xs font-bold text-slate-900"
-                  />
-                  <span className="text-[10px] text-slate-400 block mt-0.5">
-                    إجمالي التكلفة المتوقعة: {(costPerPiece * piecesCount).toLocaleString('ar-EG')} ج.م
-                  </span>
-                </div>
-              )}
 
               {/* Expected Delivery Date */}
               <div>
@@ -637,6 +611,11 @@ export const DispatchAssemblyView: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Modal: Print / Save PDF of the print-shop order */}
+      {printTarget && (
+        <PrintShopOrderModal dispatch={printTarget} onClose={() => setPrintTarget(null)} />
       )}
     </div>
   );

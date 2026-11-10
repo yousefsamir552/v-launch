@@ -247,19 +247,6 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
           </div>
         </div>
       )}
-
-      {/* التوقيعات */}
-      <div className="flex flex-col sm:flex-row justify-between gap-3 sm:gap-6 mt-5 text-[12px] font-bold">
-        <div className="flex-1 border-t border-dashed border-slate-500 pt-1.5 text-center">
-          اسم المسؤول: ........................
-        </div>
-        <div className="flex-1 border-t border-dashed border-slate-500 pt-1.5 text-center">
-          توقيع الورشة: ........................
-        </div>
-        <div className="flex-1 border-t border-dashed border-slate-500 pt-1.5 text-center">
-          التاريخ: ........................
-        </div>
-      </div>
     </div>
   );
 };

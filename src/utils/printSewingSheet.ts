@@ -4,7 +4,7 @@
  *  - هيدر مركزي + صندوق بيانات الموديل (صورة، كود، نوع، فئة المقاسات، المقاسات المعتمدة، العدد، الورشة، التواريخ).
  *  - ملاحظات التصميم + ملاحظات الخياطة الخاصة بالقطعة (تيشرت / بنطلون).
  *  - جدول إكسسوارات القطعة (الاستهلاك للقطعة + الإجمالي المطلوب).
- *  - التعليمات والملاحظات الثابتة في القاع + خطوط التوقيعات.
+ *  - التعليمات والملاحظات الثابتة في القاع (التاريخ مذكور أعلى الورقة، بدون خانات توقيع سفلية).
  *
  * تتبع نفس نمط `printCuttingOrder` في المشروع (نافذة مستقلة + document.write + window.print).
  */
@@ -187,12 +187,6 @@ const renderSheet = (options: SewingSheetOptions): string => {
     ${renderAccessories(options.accessories || [], piecesCount)}
 
     ${instructionsBlock}
-
-    <div class="sign-row">
-      <div>اسم المسؤول: ........................</div>
-      <div>توقيع الورشة: ........................</div>
-      <div>التاريخ: ........................</div>
-    </div>
   </div>`;
 };
 
@@ -264,9 +258,6 @@ export const printSewingSheets = (sheets: SewingSheetOptions[]): void => {
       .instr { border: 1.5px solid #222; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px; page-break-inside: avoid; }
       .instr .t { font-weight: 900; margin-bottom: 4px; }
       .instr .body { white-space: pre-wrap; }
-
-      .sign-row { display: flex; justify-content: space-between; gap: 24px; margin-top: 26px; font-size: 13px; }
-      .sign-row div { flex: 1; border-top: 1px dashed #333; padding-top: 6px; text-align: center; font-weight: bold; }
 
       @media print {
         .sheet { padding: 0; }
