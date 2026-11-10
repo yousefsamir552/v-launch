@@ -10,9 +10,12 @@
  */
 
 import type { ImageCropRegion, ModelAccessory } from '../types';
+import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml } from './printShared';
 
 export interface SewingSheetOptions {
   siteName?: string;
+  /** شعار المصنع من الإعدادات (رابط / Base64 / رمز) — يُعرض في رأس الورقة. */
+  logo?: string;
   modelCode: string;
   modelType?: string;
   sizeCategoryName?: string;
@@ -32,13 +35,6 @@ export interface SewingSheetOptions {
   pieceNotes?: string;
   fixedInstructions?: string;
 }
-
-const escapeHtml = (value: unknown): string =>
-  String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 
 const fmtInt = (value: number): string =>
   Math.round(Number.isFinite(value) ? value : 0).toLocaleString('ar-EG');
@@ -63,7 +59,7 @@ const renderImage = (options: SewingSheetOptions): string => {
     )}" onerror="this.style.display='none'" />`;
   }
 
-  const MAX_THUMB = 112;
+  const MAX_THUMB = 200;
   const scale = Math.min(MAX_THUMB / crop.w, MAX_THUMB / crop.h);
   const boxW = Math.max(1, Math.round(crop.w * scale));
   const boxH = Math.max(1, Math.round(crop.h * scale));
@@ -148,6 +144,7 @@ const renderSheet = (options: SewingSheetOptions): string => {
 
   return `<div class="sheet">
     <header>
+      <div class="brand">${renderLogoHtml(options.logo, options.siteName, 54)}</div>
       <h1>${escapeHtml(options.siteName || 'مصنع الملابس الجاهزة')} — أمر تشغيل ورشة المكن</h1>
       <h2>قسم الخياطة والمكن — ورقة ${escapeHtml(pieceLabel)}</h2>
     </header>
@@ -227,10 +224,11 @@ export const printSewingSheets = (sheets: SewingSheetOptions[]): void => {
       header { text-align: center; border-bottom: 3px double #111; padding-bottom: 8px; margin-bottom: 12px; }
       header h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: .5px; }
       header h2 { font-size: 14px; margin: 0; color: #333; font-weight: bold; }
+      ${PRINT_LOGO_CSS}
 
       .info { display: flex; gap: 14px; align-items: stretch; border: 1.5px solid #222; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
-      .info .thumb { width: 112px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; border: 1px solid #bbb; border-radius: 8px; overflow: hidden; background: #f7f7f7; }
-      .info .thumb > img { width: 100%; height: 112px; object-fit: contain; }
+      .info .thumb { width: 200px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; border: 1px solid #bbb; border-radius: 8px; overflow: hidden; background: #f7f7f7; }
+      .info .thumb > img { width: 100%; height: 200px; object-fit: contain; }
       .info .thumb .cropbox { position: relative; overflow: hidden; }
       .info .thumb .cropbox img { position: absolute; }
       .info .thumb .noimg { font-size: 11px; }

@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
+import { isImageLogo } from '../utils/printShared';
 import {
   BarChart3,
   Printer,
@@ -445,7 +446,8 @@ export const ReportsView: React.FC = () => {
     getModelSizeList,
     sizeDefs,
     logAction,
-    addFlashMessage
+    addFlashMessage,
+    globalSettings
   } = useApp();
 
   /* ----------------------------- tab state ---------------------------- */
@@ -1525,7 +1527,32 @@ export const ReportsView: React.FC = () => {
       `}</style>
 
       {/* ------------------------- رأس الصفحة ------------------------- */}
-      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
+      <div className="hidden print:block text-center border-b-[3px] border-double border-slate-900 pb-3">
+        <div className="flex items-center justify-center mb-1">
+          {isImageLogo(globalSettings?.logo) ? (
+            <img
+              src={globalSettings?.logo}
+              alt={globalSettings?.site_name || 'شعار المصنع'}
+              className="h-12 w-auto max-w-[170px] object-contain"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = 'none';
+              }}
+            />
+          ) : (
+            <span className="text-3xl leading-none">{globalSettings?.logo || '🏭'}</span>
+          )}
+        </div>
+        <h1 className="text-xl font-black text-slate-900">
+          {globalSettings?.site_name || 'مصنع الملابس الجاهزة'}
+        </h1>
+        <h2 className="text-base font-bold text-slate-800 mt-1">{currentReportTitle}</h2>
+        <p className="text-xs text-slate-600 mt-1 font-bold">
+          {currentReportSubtitle} — تاريخ التقرير:{' '}
+          {new Date().toLocaleDateString('ar-EG')}
+        </p>
+      </div>
+
+      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden print:hidden">
         <div className="bg-gradient-to-l from-slate-900 via-slate-800 to-slate-900 p-6 text-white relative overflow-hidden">
           <div className="absolute -left-10 -top-10 w-40 h-40 rounded-full bg-amber-500/10 blur-2xl"></div>
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 relative z-10">

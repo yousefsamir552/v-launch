@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { QCStageType, Model, QCMatrixCellInput, GarmentPart, PART_EMOJI, getPartLabel } from '../types';
 import { printManualCountSheet } from '../utils/printManualCountSheet';
+import { isImageLogo } from '../utils/printShared';
 
 type QCPartCard = { model: Model; part: GarmentPart };
 
@@ -236,6 +237,8 @@ export const QCView: React.FC = () => {
     const parts = onlyPart ? [onlyPart] : getModelParts(model.id);
     printManualCountSheet({
       siteName: globalSettings?.site_name,
+      logo: globalSettings?.logo,
+      imageUrl: model.image,
       modelCode: model.model_code,
       modelType: model.model_type,
       stageLabel: getStageTitle(activeTab) || '',
@@ -1005,6 +1008,22 @@ export const QCView: React.FC = () => {
               id="qc-printable-report"
             >
               <div className="text-center mb-6 border-b border-slate-300 pb-4">
+                <div className="flex items-center justify-center mb-1">
+                  {isImageLogo(globalSettings?.logo) ? (
+                    <img
+                      src={globalSettings?.logo}
+                      alt={globalSettings?.site_name || 'شعار المصنع'}
+                      className="h-12 w-auto max-w-[170px] object-contain"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <span className="text-3xl leading-none">
+                      {globalSettings?.logo || '🏭'}
+                    </span>
+                  )}
+                </div>
                 <h1 className="text-xl font-black text-slate-900">
                   {globalSettings?.site_name ||
                     'مصنع الملابس الجاهزة - نظام إدارة الإنتاج'}

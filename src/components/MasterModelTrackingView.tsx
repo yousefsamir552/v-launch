@@ -37,6 +37,7 @@ import {
   PACKAGING_STEP_ORDER,
   PACKAGING_STEP_LABELS
 } from '../types';
+import { isImageLogo } from '../utils/printShared';
 
 /* ------------------------------------------------------------------ */
 /* Canonical production stages (derived from real records, no dupes)  */
@@ -1917,9 +1918,25 @@ export const MasterModelTrackingView: React.FC = () => {
 
             {/* Printable Content */}
             <div className="overflow-y-auto flex-grow p-4 print:p-0">
-              <div className="text-center mb-6 border-b border-slate-300 pb-4">
-                <h1 className="text-xl font-black text-slate-900">{globalSettings.site_name}</h1>
-                <h2 className="text-base font-bold text-blue-800 mt-1">
+              <div className="text-center mb-6 border-b-[3px] border-double border-slate-800 pb-3">
+                <div className="flex items-center justify-center mb-1">
+                  {isImageLogo(globalSettings?.logo) ? (
+                    <img
+                      src={globalSettings?.logo}
+                      alt={globalSettings?.site_name || 'شعار المصنع'}
+                      className="h-12 w-auto max-w-[170px] object-contain"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <span className="text-3xl leading-none">{globalSettings?.logo || '🏭'}</span>
+                  )}
+                </div>
+                <h1 className="text-xl font-black text-slate-900">
+                  {globalSettings.site_name || 'مصنع الملابس الجاهزة'}
+                </h1>
+                <h2 className="text-base font-bold text-slate-800 mt-1">
                   كشف جرد وتتبع حركة الموديلات الشامل
                 </h2>
                 <div className="text-xs text-slate-500 mt-1 flex justify-center gap-6">

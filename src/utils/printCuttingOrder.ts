@@ -6,8 +6,12 @@
  * تتبع نفس نمط `printManualCountSheet` في المشروع (نافذة مستقلة + document.write + window.print).
  */
 
+import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml } from './printShared';
+
 export interface CuttingOrderOptions {
   siteName?: string;
+  /** شعار المصنع من الإعدادات (رابط / Base64 / رمز) — يُعرض في رأس الورقة. */
+  logo?: string;
   modelCode: string;
   modelType?: string;
   targetQuantity?: number;
@@ -21,13 +25,6 @@ export interface CuttingOrderOptions {
   /** عدد الصفوف الفارغة في جدول الرقات (الافتراضي 14). */
   blankRows?: number;
 }
-
-const escapeHtml = (value: unknown): string =>
-  String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 
 const fmtInt = (value: number): string =>
   Math.round(Number.isFinite(value) ? value : 0).toLocaleString('ar-EG');
@@ -81,9 +78,10 @@ export const printCuttingOrder = (options: CuttingOrderOptions): void => {
       header { text-align: center; border-bottom: 3px double #111; padding-bottom: 8px; margin-bottom: 12px; }
       header h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: .5px; }
       header h2 { font-size: 14px; margin: 0; color: #333; font-weight: bold; }
+      ${PRINT_LOGO_CSS}
 
       .info { display: flex; gap: 14px; align-items: stretch; border: 1.5px solid #222; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
-      .info .thumb { width: 112px; height: 112px; flex: 0 0 auto; border: 1px solid #bbb; border-radius: 8px; overflow: hidden; background: #f7f7f7; }
+      .info .thumb { width: 200px; height: 200px; flex: 0 0 auto; border: 1px solid #bbb; border-radius: 8px; overflow: hidden; background: #f7f7f7; }
       .info .thumb img { width: 100%; height: 100%; object-fit: contain; }
       .info .fields { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; font-size: 13px; align-content: start; }
       .info .fields .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; border-bottom: 1px dotted #bbb; padding: 5px 2px; }
@@ -122,6 +120,7 @@ export const printCuttingOrder = (options: CuttingOrderOptions): void => {
   <body>
     <div class="sheet">
       <header>
+        <div class="brand">${renderLogoHtml(options.logo, options.siteName, 54)}</div>
         <h1>${escapeHtml(options.siteName || 'مصنع الملابس الجاهزة')} — أوردر قص</h1>
         <h2>قسم القص — ورقة تسجيل الرقات (الورشة)</h2>
       </header>

@@ -44,7 +44,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     finishCuttingToQC,
     exportCuttingCsv,
     hasPermission,
-    canAddCuttingNotes
+    canAddCuttingNotes,
+    globalSettings
   } = useApp();
 
   const canEdit = hasPermission('cutting', true);
@@ -263,6 +264,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
 
   const handlePrintCuttingOrder = () => {
     printCuttingOrder({
+      siteName: globalSettings?.site_name,
+      logo: globalSettings?.logo,
       modelCode: model.model_code,
       modelType: model.model_type,
       targetQuantity: model.target_cut_quantity,

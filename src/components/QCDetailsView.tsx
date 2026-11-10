@@ -19,6 +19,7 @@ import {
   getPartLabel
 } from '../types';
 import { printManualCountSheet } from '../utils/printManualCountSheet';
+import { isImageLogo } from '../utils/printShared';
 
 interface QCDetailsViewProps {
   modelId: string;
@@ -270,6 +271,13 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
       (r.part_type || 'shirt') === selectedPart
   );
 
+  const printStageLabel =
+    selectedStage === 'before_print'
+      ? 'العد قبل الطباعة'
+      : selectedStage === 'after_print'
+      ? 'العد بعد الطباعة'
+      : 'العد بعد المكن';
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* Top action buttons (hidden on print) */}
@@ -298,6 +306,8 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
             onClick={() =>
               printManualCountSheet({
                 siteName: globalSettings?.site_name,
+                logo: globalSettings?.logo,
+                imageUrl: model.image,
                 modelCode: model.model_code,
                 modelType: model.model_type,
                 stageLabel:
@@ -436,18 +446,61 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
 
       {/* PRINT-ONLY WORKER SHEET */}
       <div className="hidden print:block my-8 p-6 bg-white border border-black rounded-lg">
-        <div className="text-center mb-6">
+        <div className="text-center mb-4 border-b-[3px] border-double border-black pb-3">
+          <div className="flex items-center justify-center mb-1">
+            {isImageLogo(globalSettings?.logo) ? (
+              <img
+                src={globalSettings?.logo}
+                alt={globalSettings?.site_name || 'شعار المصنع'}
+                className="h-14 w-auto max-w-[190px] object-contain"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = 'none';
+                }}
+              />
+            ) : (
+              <span className="text-4xl leading-none">{globalSettings?.logo || '🏭'}</span>
+            )}
+          </div>
           <h2 className="text-xl font-bold mb-1">
-            🏭 {globalSettings?.site_name || 'مصنع الملابس الجاهزة'} - قسم الفرز
+            {globalSettings?.site_name || 'مصنع الملابس الجاهزة'} - قسم الفرز
             والجودة
           </h2>
           <h3 className="text-lg font-bold">
-            📋 جدول مصفوفة الفرز والعد ({selectedStage === 'before_print' ? 'العد قبل الطباعة' : selectedStage === 'after_print' ? 'العد بعد الطباعة' : 'العد بعد المكن'}) — القطع: {modelParts.map((p) => getPartLabel(p)).join(' + ')}
+            📋 جدول مصفوفة الفرز والعد ({printStageLabel})
           </h3>
-          <p className="text-sm mt-1">
-            موديل: {model.model_code} | التاريخ:{' '}
-            {new Date().toLocaleDateString('ar-EG')}
-          </p>
+        </div>
+
+        {/* بيانات الموديل + صورة كبيرة */}
+        <div className="flex items-stretch gap-4 border-[1.5px] border-black rounded-lg p-3 mb-5">
+          <div className="w-44 h-44 shrink-0 border border-slate-400 rounded-lg overflow-hidden bg-slate-50 flex items-center justify-center">
+            {model.image ? (
+              <img
+                src={model.image}
+                alt={model.model_code}
+                className="w-full h-full object-contain"
+              />
+            ) : (
+              <span className="text-xs font-bold text-slate-400">لا توجد صورة</span>
+            )}
+          </div>
+          <div className="flex-1 grid grid-cols-2 gap-x-6 gap-y-1 content-start text-sm">
+            <div>
+              كود الموديل: <strong>{model.model_code}</strong>
+            </div>
+            <div>
+              نوع الموديل: <strong>{model.model_type || '—'}</strong>
+            </div>
+            <div>
+              مرحلة العد: <strong>{printStageLabel}</strong>
+            </div>
+            <div>
+              التاريخ: <strong>{new Date().toLocaleDateString('ar-EG')}</strong>
+            </div>
+            <div className="col-span-2">
+              القطع:{' '}
+              <strong>{modelParts.map((p) => getPartLabel(p)).join(' + ')}</strong>
+            </div>
+          </div>
         </div>
 
         {modelParts.map((part) => {

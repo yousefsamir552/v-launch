@@ -31,6 +31,7 @@ import {
   Printer
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { renderLogoHtml } from '../utils/printShared';
 import { api } from '../api/client';
 import {
   HRJobTitle,
@@ -1742,7 +1743,7 @@ const AttendanceStatCard: React.FC<{
 };
 
 const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
-  const { addFlashMessage, logAction } = useApp();
+  const { addFlashMessage, logAction, globalSettings } = useApp();
 
   const [records, setRecords] = useState<HRAttendanceRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -2161,13 +2162,15 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
       <title>${title}</title>
       <style>
         body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#0f172a}
-        h1{font-size:18px;margin:0 0 4px}
-        p.meta{font-size:12px;color:#64748b;margin:0 0 16px}
+        .brand{text-align:center;margin-bottom:6px}
+        h1{font-size:18px;margin:0 0 4px;text-align:center}
+        p.meta{font-size:12px;color:#64748b;margin:0 0 16px;text-align:center}
         table{width:100%;border-collapse:collapse;font-size:12px}
         th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:center}
         th{background:#f1f5f9}
       </style></head><body>
-      <h1>${title}</h1>
+      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 46)}</div>
+      <h1>${globalSettings.site_name || 'مصنع الملابس الجاهزة'} — ${title}</h1>
       <p class="meta">عدد السجلات: ${list.length} — حضور: ${summary.present} — غياب: ${summary.absents} — بانتظار المراجعة: ${summary.pending}</p>
       <table><thead><tr><th>التاريخ</th><th>الموظف</th><th>الكود</th><th>الحضور</th><th>الانصراف</th><th>الحالة</th><th>الخصم</th></tr></thead>
       <tbody>${rowsHtml}</tbody></table>
@@ -3141,7 +3144,7 @@ interface LoanDueRow {
 }
 
 const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
-  const { addFlashMessage, logAction } = useApp();
+  const { addFlashMessage, logAction, globalSettings } = useApp();
 
   const [loans, setLoans] = useState<HRLoan[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -3307,6 +3310,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       <title>ورقة سلفة</title>
       <style>
         body{font-family:Tahoma,Arial,sans-serif;padding:28px;color:#0f172a}
+        .brand{text-align:center;margin-bottom:8px}
         h1{font-size:20px;text-align:center;margin:0 0 4px}
         p.sub{text-align:center;color:#64748b;font-size:12px;margin:0 0 24px}
         table{width:100%;border-collapse:collapse;font-size:13px}
@@ -3314,8 +3318,9 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         td.label{background:#f1f5f9;font-weight:bold;width:32%}
         .sign{margin-top:56px;display:flex;justify-content:space-between;font-size:13px}
       </style></head><body>
+      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 48)}</div>
       <h1>نموذج طلب سلفة</h1>
-      <p class="sub">إدارة الموارد البشرية</p>
+      <p class="sub">${globalSettings.site_name || 'مصنع الملابس الجاهزة'} — إدارة الموارد البشرية</p>
       <table>
         <tr><td class="label">اسم الموظف</td><td></td></tr>
         <tr><td class="label">كود الموظف</td><td></td></tr>
@@ -3372,15 +3377,17 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       <title>تقرير السُلف والمستحقات</title>
       <style>
         body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#0f172a}
-        h1{font-size:19px;margin:0 0 4px}
-        p.sub{font-size:12px;color:#64748b;margin:0 0 18px}
+        .brand{text-align:center;margin-bottom:6px}
+        h1{font-size:19px;margin:0 0 4px;text-align:center}
+        p.sub{font-size:12px;color:#64748b;margin:0 0 18px;text-align:center}
         h2{font-size:14px;margin:18px 0 6px}
         h2 span{font-size:11px;color:#64748b;font-weight:normal}
         table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
         th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:center}
         th{background:#f1f5f9}
       </style></head><body>
-      <h1>تقرير السُلف والمستحقات</h1>
+      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 48)}</div>
+      <h1>${globalSettings.site_name || 'مصنع الملابس الجاهزة'} — تقرير السُلف والمستحقات</h1>
       <p class="sub">شهر ${duePeriod.monthKey} — من أول الشهر حتى ${duePeriod.yesterdayLabel} (أيام العمل: ${duePeriod.workdays})</p>
       ${body}
       <p class="sub">إجمالي المرتبات: ${formatMoney(dueTotals.salary)} — إجمالي السُلف السابقة: ${formatMoney(
@@ -4542,7 +4549,7 @@ interface PayrollRow {
 }
 
 const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
-  const { addFlashMessage } = useApp();
+  const { addFlashMessage, globalSettings } = useApp();
 
   const [month, setMonth] = useState(currentMonth());
   const [records, setRecords] = useState<HRAttendanceRecord[]>([]);
@@ -4654,7 +4661,8 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
 
   const buildWorkerSheetHtml = (row: PayrollRow) => `
     <div class="sheet">
-      <h1>ورقة مرتب عامل</h1>
+      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 48)}</div>
+      <h1>${globalSettings.site_name || 'مصنع الملابس الجاهزة'} — ورقة مرتب عامل</h1>
       <p class="sub">شهر ${month} — إدارة الموارد البشرية</p>
       <table>
         <tr><td class="label">اسم الموظف</td><td>${row.employee.name}</td><td class="label">كود الموظف</td><td>${row.employee.employee_code || '-'}</td></tr>
@@ -4678,6 +4686,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
   const workerSheetStyles = `
     body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#0f172a}
     .sheet{max-width:720px;margin:0 auto}
+    .brand{text-align:center;margin-bottom:6px}
     h1{font-size:20px;text-align:center;margin:0 0 4px}
     p.sub{text-align:center;color:#64748b;font-size:12px;margin:0 0 18px}
     table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:14px}
@@ -4742,8 +4751,11 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         .env td{border-bottom:1px solid #e2e8f0;padding:2px 0}
         .env td:last-child{text-align:left;font-family:monospace}
         .env-net{margin-top:4px;padding:5px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;text-align:center;font-weight:bold;color:#047857;font-size:12px}
+        .brand{text-align:center;margin-bottom:10px}
         @media print{.env{page-break-after:always}}
-      </style></head><body>${cards}</body></html>`);
+      </style></head><body>
+      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 44)}</div>
+      ${cards}</body></html>`);
     win.document.close();
     win.focus();
     win.print();

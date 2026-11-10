@@ -27,6 +27,7 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { Fabric, FabricColor, Supplier } from '../types';
+import { isImageLogo } from '../utils/printShared';
 import { AccessoriesWarehouseView } from './AccessoriesWarehouseView';
 import { ProductionWarehouseView } from './ProductionWarehouseView';
 
@@ -49,7 +50,8 @@ export const WarehouseView: React.FC = () => {
     canEditFabricPrices,
     canSendWhatsApp,
     formatSupplierWhatsappMessage,
-    addFlashMessage
+    addFlashMessage,
+    globalSettings
   } = useApp();
 
   const [showPrintInventoryModal, setShowPrintInventoryModal] = useState(false);
@@ -1779,69 +1781,83 @@ export const WarehouseView: React.FC = () => {
                 </div>
 
                 {/* Printable Content Body */}
-                <div className="flex-grow overflow-y-auto p-8 space-y-6 print:p-0">
-                  <div className="border-b-2 border-slate-900 pb-4 flex items-center justify-between">
-                    <div>
-                      <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-                        🏭 نظام إدارة المصنع - تقرير جرد مخزن الأقمشة
-                      </h1>
-                      <p className="text-xs text-slate-500 mt-1">
-                        تاريخ ووقت استخراج التقرير: {new Date().toLocaleString('ar-EG', { hour12: false })}
-                      </p>
+                <div
+                  className="flex-grow overflow-y-auto p-8 space-y-6 print:p-0"
+                  style={{ fontFamily: 'Tahoma, Arial, sans-serif' }}
+                >
+                  <div className="text-center border-b-[3px] border-double border-slate-900 pb-3">
+                    <div className="flex items-center justify-center mb-1">
+                      {isImageLogo(globalSettings?.logo) ? (
+                        <img
+                          src={globalSettings?.logo}
+                          alt={globalSettings?.site_name || 'شعار المصنع'}
+                          className="h-14 w-auto max-w-[190px] object-contain"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      ) : (
+                        <span className="text-4xl leading-none">
+                          {globalSettings?.logo || '🏭'}
+                        </span>
+                      )}
                     </div>
-                    <div className="text-end">
-                      <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-100 text-slate-800 border">
-                        إجمالي الخامات: {fabrics.length} | إجمالي الألوان: {fabricColors.length}
-                      </span>
-                    </div>
+                    <h1 className="text-xl font-black text-slate-900 tracking-tight">
+                      {globalSettings?.site_name || 'مصنع الملابس الجاهزة'} — تقرير جرد
+                      مخزن الأقمشة والخامات
+                    </h1>
+                    <p className="text-xs text-slate-600 mt-1 font-bold">
+                      تاريخ ووقت استخراج التقرير:{' '}
+                      {new Date().toLocaleString('ar-EG', { hour12: false })}
+                    </p>
                   </div>
 
                   {/* Summary Bar */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-                    <div className="p-3 bg-slate-50 rounded-xl border">
-                      <span className="text-[11px] text-slate-500 block">عدد أصناف الأقمشة</span>
+                    <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
+                      <span className="text-[11px] text-slate-600 block font-bold">عدد أصناف الأقمشة</span>
                       <strong className="text-lg text-slate-900 font-black">{fabrics.length}</strong>
                     </div>
-                    <div className="p-3 bg-blue-50 rounded-xl border border-blue-200">
-                      <span className="text-[11px] text-blue-700 block">إجمالي ألوان القماش</span>
-                      <strong className="text-lg text-blue-900 font-black">{fabricColors.length}</strong>
+                    <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
+                      <span className="text-[11px] text-slate-600 block font-bold">إجمالي ألوان القماش</span>
+                      <strong className="text-lg text-slate-900 font-black">{fabricColors.length}</strong>
                     </div>
-                    <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200">
-                      <span className="text-[11px] text-emerald-700 block">إجمالي الرصيد الفعلي (كجم/توب)</span>
-                      <strong className="text-lg text-emerald-900 font-black">
+                    <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
+                      <span className="text-[11px] text-slate-600 block font-bold">إجمالي الرصيد الفعلي (كجم/توب)</span>
+                      <strong className="text-lg text-slate-900 font-black">
                         {fabricColors.reduce((sum, c) => sum + c.quantity, 0).toFixed(1)}
                       </strong>
                     </div>
-                    <div className="p-3 bg-amber-50 rounded-xl border border-amber-200">
-                      <span className="text-[11px] text-amber-700 block">إجمالي الرصيد المحجوز</span>
-                      <strong className="text-lg text-amber-900 font-black">
+                    <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
+                      <span className="text-[11px] text-slate-600 block font-bold">إجمالي الرصيد المحجوز</span>
+                      <strong className="text-lg text-slate-900 font-black">
                         {fabricColors.reduce((sum, c) => sum + c.reserved_quantity, 0).toFixed(1)}
                       </strong>
                     </div>
                   </div>
 
                   {/* Comprehensive Inventory Table */}
-                  <div className="overflow-x-auto border border-slate-200 rounded-2xl">
-                    <table className="w-full text-xs text-start">
-                      <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-start border-collapse">
+                      <thead className="bg-slate-100 text-slate-900 font-bold">
                         <tr>
-                          <th className="px-4 py-3">عينة اللون / الصورة</th>
-                          <th className="px-4 py-3">الخامة الأساسية</th>
-                          <th className="px-4 py-3">كود اللون</th>
-                          <th className="px-4 py-3">اسم اللون</th>
-                          <th className="px-4 py-3 text-center">الرصيد الفعلي</th>
-                          <th className="px-4 py-3 text-center">المحجوز</th>
-                          <th className="px-4 py-3 text-center">المتاح للتصميم</th>
-                          <th className="px-4 py-3 text-center">الوحدة</th>
+                          <th className="border border-slate-800 px-3 py-2">عينة اللون / الصورة</th>
+                          <th className="border border-slate-800 px-3 py-2">الخامة الأساسية</th>
+                          <th className="border border-slate-800 px-3 py-2">كود اللون</th>
+                          <th className="border border-slate-800 px-3 py-2">اسم اللون</th>
+                          <th className="border border-slate-800 px-3 py-2 text-center">الرصيد الفعلي</th>
+                          <th className="border border-slate-800 px-3 py-2 text-center">المحجوز</th>
+                          <th className="border border-slate-800 px-3 py-2 text-center">المتاح للتصميم</th>
+                          <th className="border border-slate-800 px-3 py-2 text-center">الوحدة</th>
                           {canViewFabricPrices() && (
                             <>
-                              <th className="px-4 py-3 text-center">سعر الوحدة</th>
-                              <th className="px-4 py-3 text-center">إجمالي القيمة التقديرية</th>
+                              <th className="border border-slate-800 px-3 py-2 text-center">سعر الوحدة</th>
+                              <th className="border border-slate-800 px-3 py-2 text-center">إجمالي القيمة التقديرية</th>
                             </>
                           )}
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100 font-medium">
+                      <tbody className="font-semibold">
                         {fabricColors.map((color) => {
                           const fab = fabrics.find((f) => f.id === color.fabric_id);
                           const avail = Number((color.quantity - color.reserved_quantity).toFixed(2));
@@ -1849,28 +1865,28 @@ export const WarehouseView: React.FC = () => {
 
                           return (
                             <tr key={color.id} className="hover:bg-slate-50 transition">
-                              <td className="px-4 py-2.5">
+                              <td className="border border-slate-800 px-3 py-2">
                                 <div className="flex items-center gap-2">
                                   <div
-                                    className="w-7 h-7 rounded-lg border border-slate-300 shadow-2xs shrink-0"
-                                    style={{ backgroundColor: color.hex_code || '#3b82f6' }}
+                                    className="w-6 h-6 rounded border border-slate-400 shrink-0"
+                                    style={{ backgroundColor: color.hex_code || '#94a3b8' }}
                                     title={color.color_name}
                                   />
                                 </div>
                               </td>
-                              <td className="px-4 py-2.5 font-bold text-slate-900">{fab?.name || 'خامة'}</td>
-                              <td className="px-4 py-2.5 font-mono font-bold text-blue-700">{color.color_code}</td>
-                              <td className="px-4 py-2.5 text-slate-600">{color.color_name || '-'}</td>
-                              <td className="px-4 py-2.5 text-center font-bold text-slate-900">{color.quantity}</td>
-                              <td className="px-4 py-2.5 text-center text-amber-700 font-bold">{color.reserved_quantity}</td>
-                              <td className="px-4 py-2.5 text-center font-extrabold text-emerald-700">{avail}</td>
-                              <td className="px-4 py-2.5 text-center text-slate-500">{fab?.unit || 'كيلو'}</td>
+                              <td className="border border-slate-800 px-3 py-2 font-bold text-slate-900">{fab?.name || 'خامة'}</td>
+                              <td className="border border-slate-800 px-3 py-2 font-mono font-bold text-slate-900">{color.color_code}</td>
+                              <td className="border border-slate-800 px-3 py-2 text-slate-700">{color.color_name || '-'}</td>
+                              <td className="border border-slate-800 px-3 py-2 text-center font-bold text-slate-900">{color.quantity}</td>
+                              <td className="border border-slate-800 px-3 py-2 text-center font-bold text-slate-900">{color.reserved_quantity}</td>
+                              <td className="border border-slate-800 px-3 py-2 text-center font-black text-slate-900">{avail}</td>
+                              <td className="border border-slate-800 px-3 py-2 text-center text-slate-700">{fab?.unit || 'كيلو'}</td>
                               {canViewFabricPrices() && (
                                 <>
-                                  <td className="px-4 py-2.5 text-center font-mono font-bold text-slate-800">
+                                  <td className="border border-slate-800 px-3 py-2 text-center font-mono font-bold text-slate-900">
                                     {color.price_per_unit || 0} ج.م
                                   </td>
-                                  <td className="px-4 py-2.5 text-center font-mono font-black text-slate-900">
+                                  <td className="border border-slate-800 px-3 py-2 text-center font-mono font-black text-slate-900">
                                     {totalVal.toLocaleString('ar-EG')} ج.م
                                   </td>
                                 </>
@@ -1882,7 +1898,7 @@ export const WarehouseView: React.FC = () => {
                     </table>
                   </div>
 
-                  <div className="pt-6 border-t border-slate-200 text-xs text-slate-500 flex justify-between">
+                  <div className="pt-6 border-t-2 border-slate-900 text-xs text-slate-700 flex justify-between font-bold">
                     <span>مسؤول الجرد: ______________________</span>
                     <span>اعتماد مدير المصنع: ______________________</span>
                   </div>

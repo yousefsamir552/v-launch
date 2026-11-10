@@ -1,6 +1,7 @@
 import React from 'react';
 import { Crop as CropIcon, RotateCcw } from 'lucide-react';
 import type { ImageCropRegion, ModelAccessory } from '../types';
+import { isImageLogo } from '../utils/printShared';
 import { CroppedImage } from './ImageCropperModal';
 
 /** البيانات الكاملة اللازمة لورقة المكن الواحدة (تيشرت أو بنطلون). */
@@ -22,6 +23,7 @@ export interface SewingSheetData {
   pieceNotes: string;
   fixedInstructions: string;
   siteName: string;
+  logo: string;
 }
 
 interface SewingSheetPreviewProps {
@@ -63,6 +65,20 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
     >
       {/* هيدر الورقة */}
       <div className="text-center border-b-[3px] border-double border-slate-800 pb-2 mb-3">
+        <div className="flex items-center justify-center mb-1">
+          {isImageLogo(data.logo) ? (
+            <img
+              src={data.logo}
+              alt={data.siteName}
+              className="h-12 w-auto max-w-[170px] object-contain"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = 'none';
+              }}
+            />
+          ) : (
+            <span className="text-3xl leading-none">{data.logo || '🏭'}</span>
+          )}
+        </div>
         <h4 className="text-lg font-black leading-snug">
           {data.siteName} — أمر تشغيل ورشة المكن
         </h4>
@@ -73,7 +89,7 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
 
       {/* بيانات الموديل */}
       <div className="flex flex-col sm:flex-row gap-3 items-stretch border-[1.5px] border-slate-800 rounded-lg p-3 mb-3">
-        <div className="shrink-0 w-full sm:w-[124px] flex flex-col items-center gap-1.5">
+        <div className="shrink-0 w-full sm:w-[190px] flex flex-col items-center gap-1.5">
           <div className="w-full flex items-center justify-center overflow-hidden rounded-md border border-slate-300 bg-slate-50 p-1">
             {data.crop ? (
               <CroppedImage
@@ -88,7 +104,7 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
                 src={data.imageUrl}
                 alt={data.modelCode}
                 className="w-full object-contain"
-                style={{ maxHeight: 140 }}
+                style={{ maxHeight: 200 }}
               />
             )}
           </div>

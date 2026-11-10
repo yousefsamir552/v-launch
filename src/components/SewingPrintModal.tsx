@@ -115,7 +115,8 @@ export const SewingPrintModal: React.FC<SewingPrintModalProps> = ({
       designNotes: model.design_notes || '',
       pieceNotes: dispatch?.notes || fallbackNotes || '',
       fixedInstructions: instructions,
-      siteName: globalSettings.site_name || 'مصنع الملابس الجاهزة'
+      siteName: globalSettings.site_name || 'مصنع الملابس الجاهزة',
+      logo: globalSettings.logo || ''
     };
   };
 
@@ -129,6 +130,7 @@ export const SewingPrintModal: React.FC<SewingPrintModalProps> = ({
       const sheet = buildSheet(piece);
       return {
         siteName: sheet.siteName,
+        logo: sheet.logo,
         modelCode: sheet.modelCode,
         modelType: sheet.modelType,
         sizeCategoryName: sheet.sizeCategoryName,

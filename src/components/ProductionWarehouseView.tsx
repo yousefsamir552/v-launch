@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { Boxes, Printer, X, CheckCircle2, Factory, Package } from 'lucide-react';
+import { isImageLogo } from '../utils/printShared';
 
 export const ProductionWarehouseView: React.FC = () => {
-  const { models } = useApp();
+  const { models, globalSettings } = useApp();
   const [showPrintModal, setShowPrintModal] = useState(false);
 
   // Finished production models — فقط الموديلات التي وصلت فعلاً لمخزن الإنتاج التام
@@ -151,62 +152,73 @@ export const ProductionWarehouseView: React.FC = () => {
               </div>
             </div>
 
-            <div className="p-8 overflow-y-auto space-y-6 print:p-0">
-              <div className="border-b-2 border-indigo-600 pb-3 flex items-center justify-between">
-                <div>
-                  <h1 className="text-2xl font-black text-slate-900">
-                    🏭 كشف جرد مخزن الإنتاج التام الجاهز للشحن
-                  </h1>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    تاريخ الاستخراج: {new Date().toLocaleString('ar-EG', { hour12: false })}
-                  </p>
+            <div
+              className="p-8 overflow-y-auto space-y-6 print:p-0"
+              style={{ fontFamily: 'Tahoma, Arial, sans-serif' }}
+            >
+              <div className="text-center border-b-[3px] border-double border-slate-900 pb-3">
+                <div className="flex items-center justify-center mb-1">
+                  {isImageLogo(globalSettings?.logo) ? (
+                    <img
+                      src={globalSettings?.logo}
+                      alt={globalSettings?.site_name || 'شعار المصنع'}
+                      className="h-14 w-auto max-w-[190px] object-contain"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <span className="text-4xl leading-none">{globalSettings?.logo || '🏭'}</span>
+                  )}
                 </div>
-                <div className="text-end">
-                  <span className="font-black text-sm text-slate-800">
-                    إجمالي القطع الجاهزة: {totalFinishedPieces} قطعة
-                  </span>
-                </div>
+                <h1 className="text-xl font-black text-slate-900">
+                  {globalSettings?.site_name || 'مصنع الملابس الجاهزة'} — كشف جرد مخزن
+                  الإنتاج التام الجاهز للشحن
+                </h1>
+                <p className="text-xs text-slate-600 mt-0.5 font-bold">
+                  تاريخ الاستخراج: {new Date().toLocaleString('ar-EG', { hour12: false })} —
+                  إجمالي القطع الجاهزة: {totalFinishedPieces} قطعة
+                </p>
               </div>
 
-              <table className="w-full text-xs text-start border border-slate-200">
-                <thead className="bg-slate-100 text-slate-700 font-black border-b border-slate-200">
+              <table className="w-full text-xs text-start border-collapse">
+                <thead className="bg-slate-100 text-slate-900 font-black">
                   <tr>
-                    <th className="p-3">صورة الموديل</th>
-                    <th className="p-3">كود الموديل</th>
-                    <th className="p-3">النوع</th>
-                    <th className="p-3 text-center">الكمية المستهدفة</th>
-                    <th className="p-3 text-center font-black">الكمية التامة الفعلية</th>
-                    <th className="p-3 text-center">الحالة</th>
+                    <th className="border border-slate-800 p-2.5">صورة الموديل</th>
+                    <th className="border border-slate-800 p-2.5">كود الموديل</th>
+                    <th className="border border-slate-800 p-2.5">النوع</th>
+                    <th className="border border-slate-800 p-2.5 text-center">الكمية المستهدفة</th>
+                    <th className="border border-slate-800 p-2.5 text-center">الكمية التامة الفعلية</th>
+                    <th className="border border-slate-800 p-2.5 text-center">الحالة</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 font-semibold">
+                <tbody className="font-semibold">
                   {finishedModels.map((m) => {
                     const actual = m.count_after_sewing || m.count_after_print || m.actual_cut_count || m.target_cut_quantity;
                     return (
                       <tr key={m.id}>
-                        <td className="p-3">
+                        <td className="border border-slate-800 p-2.5">
                           <img
                             src={m.image}
                             alt={m.model_code}
-                            className="w-10 h-10 rounded-lg object-contain bg-slate-50 border p-0.5"
+                            className="w-10 h-10 rounded object-contain bg-slate-50 border border-slate-300 p-0.5"
                             onError={(e) => {
-                              (e.target as HTMLImageElement).src =
-                                'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
+                              (e.target as HTMLImageElement).style.display = 'none';
                             }}
                           />
                         </td>
-                        <td className="p-3 font-bold text-slate-900">{m.model_code}</td>
-                        <td className="p-3 text-slate-600">{m.model_type}</td>
-                        <td className="p-3 text-center">{m.target_cut_quantity}</td>
-                        <td className="p-3 text-center font-black text-emerald-700">{actual} قطعة</td>
-                        <td className="p-3 text-center text-slate-600">{m.status}</td>
+                        <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{m.model_code}</td>
+                        <td className="border border-slate-800 p-2.5 text-slate-700">{m.model_type}</td>
+                        <td className="border border-slate-800 p-2.5 text-center">{m.target_cut_quantity}</td>
+                        <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900">{actual} قطعة</td>
+                        <td className="border border-slate-800 p-2.5 text-center text-slate-700">{m.status}</td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
 
-              <div className="pt-6 border-t border-slate-200 text-xs text-slate-500 flex justify-between">
+              <div className="pt-6 border-t-2 border-slate-900 text-xs text-slate-700 flex justify-between font-bold">
                 <span>مسؤول مخزن الإنتاج: ______________________</span>
                 <span>اعتماد مدير المصنع: ______________________</span>
               </div>

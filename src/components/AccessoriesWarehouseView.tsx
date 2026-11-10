@@ -20,6 +20,7 @@ import {
   Pencil
 } from 'lucide-react';
 import { AccessoryItem, AccessoryUnit, AccessoryUsageType, Supplier } from '../types';
+import { isImageLogo } from '../utils/printShared';
 
 export const AccessoriesWarehouseView: React.FC = () => {
   const {
@@ -35,7 +36,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
     recordAccessoryTransaction,
     exportAccessoryInventoryCsv,
     markAccessoryWithdrawn,
-    formatSupplierWhatsappMessage
+    formatSupplierWhatsappMessage,
+    globalSettings
   } = useApp();
 
   const canEdit = hasPermission('warehouse', true) || hasPermission('accessories_warehouse', true);
@@ -1355,71 +1357,83 @@ export const AccessoriesWarehouseView: React.FC = () => {
               </div>
             </div>
 
-            <div className="p-8 overflow-y-auto space-y-6 print:p-0">
-              <div className="border-b-2 border-slate-900 pb-3 flex items-center justify-between">
-                <div>
-                  <h1 className="text-2xl font-black text-slate-900">
-                    🏭 نظام إدارة المصنع - كشف جرد مخزن الإكسسوارات
-                  </h1>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    تاريخ الاستخراج: {new Date().toLocaleString('ar-EG', { hour12: false })}
-                  </p>
+            <div
+              className="p-8 overflow-y-auto space-y-6 print:p-0"
+              style={{ fontFamily: 'Tahoma, Arial, sans-serif' }}
+            >
+              <div className="text-center border-b-[3px] border-double border-slate-900 pb-3">
+                <div className="flex items-center justify-center mb-1">
+                  {isImageLogo(globalSettings?.logo) ? (
+                    <img
+                      src={globalSettings?.logo}
+                      alt={globalSettings?.site_name || 'شعار المصنع'}
+                      className="h-14 w-auto max-w-[190px] object-contain"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <span className="text-4xl leading-none">{globalSettings?.logo || '🏭'}</span>
+                  )}
                 </div>
-                <div className="text-end text-xs font-bold">
-                  إجمالي الأصناف: {accessoryItems.length} | إجمالي الوحدات: {totalQuantitySum}
-                </div>
+                <h1 className="text-xl font-black text-slate-900">
+                  {globalSettings?.site_name || 'مصنع الملابس الجاهزة'} — كشف جرد مخزن
+                  الإكسسوارات
+                </h1>
+                <p className="text-xs text-slate-600 mt-0.5 font-bold">
+                  تاريخ الاستخراج: {new Date().toLocaleString('ar-EG', { hour12: false })}
+                </p>
               </div>
 
-              <table className="w-full text-xs text-start border border-slate-200">
-                <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+              <table className="w-full text-xs text-start border-collapse">
+                <thead className="bg-slate-100 text-slate-900 font-bold">
                   <tr>
-                    <th className="p-2.5">الصورة</th>
-                    <th className="p-2.5">الكود</th>
-                    <th className="p-2.5">النوع</th>
-                    <th className="p-2.5">اسم الصنف</th>
-                    <th className="p-2.5">نوع الاستخدام</th>
-                    <th className="p-2.5 text-center">الرصيد الفعلي</th>
-                    <th className="p-2.5 text-center">المحجوز</th>
-                    <th className="p-2.5 text-center">المتاح</th>
-                    <th className="p-2.5 text-center">حد التنبيه / المطلوب</th>
-                    <th className="p-2.5 text-center">الوحدة</th>
+                    <th className="border border-slate-800 p-2.5">الصورة</th>
+                    <th className="border border-slate-800 p-2.5">الكود</th>
+                    <th className="border border-slate-800 p-2.5">النوع</th>
+                    <th className="border border-slate-800 p-2.5">اسم الصنف</th>
+                    <th className="border border-slate-800 p-2.5">نوع الاستخدام</th>
+                    <th className="border border-slate-800 p-2.5 text-center">الرصيد الفعلي</th>
+                    <th className="border border-slate-800 p-2.5 text-center">المحجوز</th>
+                    <th className="border border-slate-800 p-2.5 text-center">المتاح</th>
+                    <th className="border border-slate-800 p-2.5 text-center">حد التنبيه / المطلوب</th>
+                    <th className="border border-slate-800 p-2.5 text-center">الوحدة</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody>
                   {accessoryItems.map((item) => (
                     <tr key={item.id} className="hover:bg-slate-50">
-                      <td className="p-2.5">
+                      <td className="border border-slate-800 p-2.5">
                         <img
                           src={item.image}
                           alt={item.name}
-                          className="w-8 h-8 rounded-lg object-contain bg-slate-50 border p-0.5"
+                          className="w-8 h-8 rounded object-contain bg-slate-50 border border-slate-300 p-0.5"
                           onError={(e) => {
-                            (e.target as HTMLImageElement).src =
-                              'https://images.unsplash.com/photo-1544441893-675973e31985?w=100&auto=format&fit=crop&q=60';
+                            (e.target as HTMLImageElement).style.display = 'none';
                           }}
                         />
                       </td>
-                      <td className="p-2.5 font-mono font-bold text-blue-700">{item.code}</td>
-                      <td className="p-2.5 font-semibold text-slate-600">{item.type_name}</td>
-                      <td className="p-2.5 font-bold text-slate-900">{item.name}</td>
-                      <td className="p-2.5 text-slate-500 text-[11px]">
+                      <td className="border border-slate-800 p-2.5 font-mono font-bold text-slate-900">{item.code}</td>
+                      <td className="border border-slate-800 p-2.5 font-semibold text-slate-700">{item.type_name}</td>
+                      <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{item.name}</td>
+                      <td className="border border-slate-800 p-2.5 text-slate-700 text-[11px]">
                         {item.usage_type === 'custom_model' ? `خاص بموديل ${item.custom_model_code}` : 'رصيد مستمر'}
                       </td>
-                      <td className="p-2.5 text-center font-black text-slate-900">{item.quantity}</td>
-                      <td className="p-2.5 text-center text-amber-700 font-bold">{item.reserved_quantity}</td>
-                      <td className="p-2.5 text-center font-bold text-emerald-700">
+                      <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900">{item.quantity}</td>
+                      <td className="border border-slate-800 p-2.5 text-center font-bold text-slate-900">{item.reserved_quantity}</td>
+                      <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900">
                         {item.quantity - item.reserved_quantity}
                       </td>
-                      <td className="p-2.5 text-center font-bold text-slate-700">
+                      <td className="border border-slate-800 p-2.5 text-center font-bold text-slate-900">
                         {item.usage_type === 'custom_model' ? item.target_quantity ?? item.min_threshold : item.min_threshold}
                       </td>
-                      <td className="p-2.5 text-center text-slate-500">{item.unit}</td>
+                      <td className="border border-slate-800 p-2.5 text-center text-slate-700">{item.unit}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
 
-              <div className="pt-6 border-t border-slate-200 text-xs text-slate-500 flex justify-between">
+              <div className="pt-6 border-t-2 border-slate-900 text-xs text-slate-700 flex justify-between font-bold">
                 <span>أمين مخزن الإكسسوارات: ______________________</span>
                 <span>اعتماد مدير المصنع: ______________________</span>
               </div>
@@ -1498,73 +1512,80 @@ export const AccessoriesWarehouseView: React.FC = () => {
               </button>
             </div>
 
-            <div className="p-8 overflow-y-auto space-y-6 print:p-0">
-              <div className="border-b-2 border-amber-500 pb-3 flex items-center justify-between">
-                <div>
-                  <h1 className="text-2xl font-black text-slate-900">
-                    🏭 كشف طلبيات ونواقص الإكسسوارات العاجلة (شراء وتوريد)
-                  </h1>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    تاريخ أمر الشراء: {new Date().toLocaleString('ar-EG', { hour12: false })} • تصنيف: {modalAlertTab === 'stock' ? 'إكسسوارات مستمرة (Stock)' : modalAlertTab === 'custom_model' ? 'إكسسوارات موديلات خاصة' : 'كافة النواقص المستمرة والمخصصة'}
-                  </p>
+            <div
+              className="p-8 overflow-y-auto space-y-6 print:p-0"
+              style={{ fontFamily: 'Tahoma, Arial, sans-serif' }}
+            >
+              <div className="text-center border-b-[3px] border-double border-slate-900 pb-3">
+                <div className="flex items-center justify-center mb-1">
+                  {isImageLogo(globalSettings?.logo) ? (
+                    <img
+                      src={globalSettings?.logo}
+                      alt={globalSettings?.site_name || 'شعار المصنع'}
+                      className="h-14 w-auto max-w-[190px] object-contain"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <span className="text-4xl leading-none">{globalSettings?.logo || '🏭'}</span>
+                  )}
                 </div>
-                <div className="text-end">
-                  <span className="px-3 py-1 bg-amber-100 text-amber-950 rounded-full font-black text-xs border border-amber-300">
-                    إجمالي الأصناف: {(modalAlertTab === 'stock' ? stockDeficits : modalAlertTab === 'custom_model' ? modelDeficits : lowStockItems).length} صنف
-                  </span>
-                </div>
+                <h1 className="text-xl font-black text-slate-900">
+                  {globalSettings?.site_name || 'مصنع الملابس الجاهزة'} — كشف طلبيات
+                  ونواقص الإكسسوارات العاجلة (شراء وتوريد)
+                </h1>
+                <p className="text-xs text-slate-600 mt-0.5 font-bold">
+                  تاريخ أمر الشراء: {new Date().toLocaleString('ar-EG', { hour12: false })} • تصنيف: {modalAlertTab === 'stock' ? 'إكسسوارات مستمرة (Stock)' : modalAlertTab === 'custom_model' ? 'إكسسوارات موديلات خاصة' : 'كافة النواقص المستمرة والمخصصة'}
+                </p>
               </div>
 
               {/* TABLE 1: Stock Deficits */}
               {(modalAlertTab === 'all' || modalAlertTab === 'stock') && (
                 <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-                    <h3 className="font-black text-sm text-slate-900">
-                      أولاً: نواقص الإكسسوارات المستمرة (رصيد المخزن العام - Stock)
-                    </h3>
-                    <span className="text-xs text-slate-500 font-semibold">({stockDeficits.length} صنف دون حد التنبيه)</span>
-                  </div>
+                  <h3 className="font-black text-sm text-slate-900 bg-slate-100 border border-slate-800 rounded px-2 py-1">
+                    أولاً: نواقص الإكسسوارات المستمرة (رصيد المخزن العام - Stock)
+                    <span className="text-xs text-slate-600 font-bold"> ({stockDeficits.length} صنف دون حد التنبيه)</span>
+                  </h3>
 
                   {stockDeficits.length > 0 ? (
-                    <table className="w-full text-xs text-start border border-slate-200">
-                      <thead className="bg-amber-100/70 text-amber-950 font-black border-b border-amber-200">
+                    <table className="w-full text-xs text-start border-collapse">
+                      <thead className="bg-slate-100 text-slate-900 font-black">
                         <tr>
-                          <th className="p-2.5">م</th>
-                          <th className="p-2.5">الصورة</th>
-                          <th className="p-2.5">الكود</th>
-                          <th className="p-2.5">اسم الإكسسوار</th>
-                          <th className="p-2.5">التصنيف</th>
-                          <th className="p-2.5 text-center">الرصيد المتاح</th>
-                          <th className="p-2.5 text-center">حد التنبيه المخصص</th>
-                          <th className="p-2.5 text-center font-black text-rose-800">العجز المطلوب شراؤه</th>
-                          <th className="p-2.5">المورد المقترح ورقم الهاتف</th>
+                          <th className="border border-slate-800 p-2.5">م</th>
+                          <th className="border border-slate-800 p-2.5">الصورة</th>
+                          <th className="border border-slate-800 p-2.5">الكود</th>
+                          <th className="border border-slate-800 p-2.5">اسم الإكسسوار</th>
+                          <th className="border border-slate-800 p-2.5">التصنيف</th>
+                          <th className="border border-slate-800 p-2.5 text-center">الرصيد المتاح</th>
+                          <th className="border border-slate-800 p-2.5 text-center">حد التنبيه المخصص</th>
+                          <th className="border border-slate-800 p-2.5 text-center">العجز المطلوب شراؤه</th>
+                          <th className="border border-slate-800 p-2.5">المورد المقترح ورقم الهاتف</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100 font-semibold">
+                      <tbody className="font-semibold">
                         {stockDeficits.map(({ item, supplier, available, threshold, deficit }, idx) => (
-                          <tr key={item.id} className="hover:bg-amber-50/40">
-                            <td className="p-2.5 text-slate-400">{idx + 1}</td>
-                            <td className="p-2.5">
+                          <tr key={item.id} className="hover:bg-slate-50">
+                            <td className="border border-slate-800 p-2.5 text-slate-600">{idx + 1}</td>
+                            <td className="border border-slate-800 p-2.5">
                               <img
                                 src={item.image}
                                 alt={item.name}
-                                className="w-8 h-8 rounded-lg object-contain bg-white border p-0.5"
+                                className="w-8 h-8 rounded object-contain bg-white border border-slate-300 p-0.5"
                                 onError={(e) => {
-                                  (e.target as HTMLImageElement).src =
-                                    'https://images.unsplash.com/photo-1544441893-675973e31985?w=100&auto=format&fit=crop&q=60';
+                                  (e.target as HTMLImageElement).style.display = 'none';
                                 }}
                               />
                             </td>
-                            <td className="p-2.5 font-mono font-bold text-blue-700">{item.code}</td>
-                            <td className="p-2.5 font-bold text-slate-900">{item.name}</td>
-                            <td className="p-2.5 text-slate-600">{item.type_name}</td>
-                            <td className="p-2.5 text-center text-slate-700">{available} {item.unit}</td>
-                            <td className="p-2.5 text-center text-slate-900 font-bold">{threshold} {item.unit}</td>
-                            <td className="p-2.5 text-center font-black text-rose-700 bg-rose-50 text-sm">
+                            <td className="border border-slate-800 p-2.5 font-mono font-bold text-slate-900">{item.code}</td>
+                            <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{item.name}</td>
+                            <td className="border border-slate-800 p-2.5 text-slate-700">{item.type_name}</td>
+                            <td className="border border-slate-800 p-2.5 text-center text-slate-700">{available} {item.unit}</td>
+                            <td className="border border-slate-800 p-2.5 text-center text-slate-900 font-bold">{threshold} {item.unit}</td>
+                            <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900 text-sm">
                               {deficit} {item.unit}
                             </td>
-                            <td className="p-2.5 text-slate-600 text-[11px]">
+                            <td className="border border-slate-800 p-2.5 text-slate-700 text-[11px]">
                               {supplier?.name || 'مورد عام'} {supplier?.phone ? `(${supplier.phone})` : ''}
                             </td>
                           </tr>
@@ -1572,61 +1593,57 @@ export const AccessoriesWarehouseView: React.FC = () => {
                       </tbody>
                     </table>
                   ) : (
-                    <p className="text-xs text-slate-400 py-2 italic">لا توجد نواقص في الإكسسوارات المستمرة (رصيد المخزن في أمان).</p>
+                    <p className="text-xs text-slate-500 py-2 font-bold">لا توجد نواقص في الإكسسوارات المستمرة (رصيد المخزن في أمان).</p>
                   )}
                 </div>
               )}
 
               {/* TABLE 2: Model-Specific Deficits */}
               {(modalAlertTab === 'all' || modalAlertTab === 'custom_model') && (
-                <div className="space-y-3 pt-4 border-t border-slate-200">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-pink-500"></span>
-                    <h3 className="font-black text-sm text-slate-900">
-                      ثانياً: نواقص إكسسوارات الموديلات المخصصة (حسب تشغيلة الموديل المستهدفة - Model-Specific)
-                    </h3>
-                    <span className="text-xs text-slate-500 font-semibold">({modelDeficits.length} صنف عجز توريد)</span>
-                  </div>
+                <div className="space-y-3 pt-4 border-t-2 border-slate-900">
+                  <h3 className="font-black text-sm text-slate-900 bg-slate-100 border border-slate-800 rounded px-2 py-1">
+                    ثانياً: نواقص إكسسوارات الموديلات المخصصة (حسب تشغيلة الموديل المستهدفة - Model-Specific)
+                    <span className="text-xs text-slate-600 font-bold"> ({modelDeficits.length} صنف عجز توريد)</span>
+                  </h3>
 
                   {modelDeficits.length > 0 ? (
-                    <table className="w-full text-xs text-start border border-slate-200">
-                      <thead className="bg-pink-100/70 text-pink-950 font-black border-b border-pink-200">
+                    <table className="w-full text-xs text-start border-collapse">
+                      <thead className="bg-slate-100 text-slate-900 font-black">
                         <tr>
-                          <th className="p-2.5">م</th>
-                          <th className="p-2.5">الصورة</th>
-                          <th className="p-2.5">الكود</th>
-                          <th className="p-2.5">اسم الإكسسوار</th>
-                          <th className="p-2.5">الموديل المخصص</th>
-                          <th className="p-2.5 text-center">الكمية الموردة</th>
-                          <th className="p-2.5 text-center">الكمية المستهدفة</th>
-                          <th className="p-2.5 text-center font-black text-rose-800">العجز المطلوب توريده</th>
-                          <th className="p-2.5">المورد ورقم الهاتف</th>
+                          <th className="border border-slate-800 p-2.5">م</th>
+                          <th className="border border-slate-800 p-2.5">الصورة</th>
+                          <th className="border border-slate-800 p-2.5">الكود</th>
+                          <th className="border border-slate-800 p-2.5">اسم الإكسسوار</th>
+                          <th className="border border-slate-800 p-2.5">الموديل المخصص</th>
+                          <th className="border border-slate-800 p-2.5 text-center">الكمية الموردة</th>
+                          <th className="border border-slate-800 p-2.5 text-center">الكمية المستهدفة</th>
+                          <th className="border border-slate-800 p-2.5 text-center">العجز المطلوب توريده</th>
+                          <th className="border border-slate-800 p-2.5">المورد ورقم الهاتف</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100 font-semibold">
+                      <tbody className="font-semibold">
                         {modelDeficits.map(({ item, supplier, threshold, deficit }, idx) => (
-                          <tr key={item.id} className="hover:bg-pink-50/40">
-                            <td className="p-2.5 text-slate-400">{idx + 1}</td>
-                            <td className="p-2.5">
+                          <tr key={item.id} className="hover:bg-slate-50">
+                            <td className="border border-slate-800 p-2.5 text-slate-600">{idx + 1}</td>
+                            <td className="border border-slate-800 p-2.5">
                               <img
                                 src={item.image}
                                 alt={item.name}
-                                className="w-8 h-8 rounded-lg object-contain bg-white border p-0.5"
+                                className="w-8 h-8 rounded object-contain bg-white border border-slate-300 p-0.5"
                                 onError={(e) => {
-                                  (e.target as HTMLImageElement).src =
-                                    'https://images.unsplash.com/photo-1544441893-675973e31985?w=100&auto=format&fit=crop&q=60';
+                                  (e.target as HTMLImageElement).style.display = 'none';
                                 }}
                               />
                             </td>
-                            <td className="p-2.5 font-mono font-bold text-blue-700">{item.code}</td>
-                            <td className="p-2.5 font-bold text-slate-900">{item.name}</td>
-                            <td className="p-2.5 font-black text-pink-700">موديل {item.custom_model_code || 'خاص'}</td>
-                            <td className="p-2.5 text-center text-slate-700">{item.delivered_quantity ?? item.quantity} {item.unit}</td>
-                            <td className="p-2.5 text-center text-slate-900 font-bold">{threshold} {item.unit}</td>
-                            <td className="p-2.5 text-center font-black text-rose-700 bg-rose-50 text-sm">
+                            <td className="border border-slate-800 p-2.5 font-mono font-bold text-slate-900">{item.code}</td>
+                            <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{item.name}</td>
+                            <td className="border border-slate-800 p-2.5 font-black text-slate-900">موديل {item.custom_model_code || 'خاص'}</td>
+                            <td className="border border-slate-800 p-2.5 text-center text-slate-700">{item.delivered_quantity ?? item.quantity} {item.unit}</td>
+                            <td className="border border-slate-800 p-2.5 text-center text-slate-900 font-bold">{threshold} {item.unit}</td>
+                            <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900 text-sm">
                               {deficit} {item.unit}
                             </td>
-                            <td className="p-2.5 text-slate-600 text-[11px]">
+                            <td className="border border-slate-800 p-2.5 text-slate-700 text-[11px]">
                               {supplier?.name || 'مورد عام'} {supplier?.phone ? `(${supplier.phone})` : ''}
                             </td>
                           </tr>
@@ -1634,12 +1651,12 @@ export const AccessoriesWarehouseView: React.FC = () => {
                       </tbody>
                     </table>
                   ) : (
-                    <p className="text-xs text-slate-400 py-2 italic">لا توجد نواقص في إكسسوارات الموديلات المخصصة.</p>
+                    <p className="text-xs text-slate-500 py-2 font-bold">لا توجد نواقص في إكسسوارات الموديلات المخصصة.</p>
                   )}
                 </div>
               )}
 
-              <div className="pt-6 border-t border-slate-200 text-xs text-slate-500 flex justify-between">
+              <div className="pt-6 border-t-2 border-slate-900 text-xs text-slate-700 flex justify-between font-bold">
                 <span>توقيع مسؤول المشتريات: ______________________</span>
                 <span>اعتماد مدير الإنتاج: ______________________</span>
               </div>
