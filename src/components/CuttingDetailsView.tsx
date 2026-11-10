@@ -17,7 +17,7 @@ import {
   Ruler,
   StickyNote
 } from 'lucide-react';
-import { CuttingSpreadLayer, GarmentPart, getPartLabel } from '../types';
+import { CuttingSpreadLayer, GarmentPart, PART_EMOJI, getPartLabel } from '../types';
 import { printCuttingOrder } from '../utils/printCuttingOrder';
 
 interface CuttingDetailsViewProps {
@@ -227,17 +227,36 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     setCuttingNotes('');
   };
 
-  const handleFinishCutting = () => {
-    if (modelCuttingRecords.length === 0) {
+  const handleFinishCutting = (parts?: GarmentPart[]) => {
+    const targetParts = parts && parts.length > 0 ? parts : undefined;
+    const scopedRecords = targetParts
+      ? modelCuttingRecords.filter((r) =>
+          targetParts.includes((r.part_type || r.partType || 'shirt') as GarmentPart)
+        )
+      : modelCuttingRecords;
+    if (scopedRecords.length === 0) {
       alert('يجب تسجيل فرشة قص واحدة على الأقل قبل التحويل للفرز!');
       return;
     }
+
+    const partsLabel = targetParts
+      ? targetParts.map((part) => getPartLabel(part)).join(' + ')
+      : 'كل القطع';
     if (
-      window.confirm(
-        'هل أنت متأكد من إنهاء القص وتحويل الموديل للفرز والكنترول (العد قبل الطباعة)؟'
+      !window.confirm(
+        `هل أنت متأكد من إنهاء قص [${partsLabel}] وتحويلها للفرز والكنترول (العد قبل الطباعة)?`
       )
     ) {
-      finishCuttingToQC(modelId, canWriteNotes ? cuttingNotes.trim() : '');
+      return;
+    }
+
+    finishCuttingToQC(modelId, canWriteNotes ? cuttingNotes.trim() : '', targetParts);
+
+    // Stay on the screen while other parts are still in cutting.
+    const remainingParts = targetParts
+      ? modelParts.filter((part) => !targetParts.includes(part))
+      : [];
+    if (remainingParts.length === 0) {
       onFinishedToQC();
     }
   };
@@ -956,17 +975,50 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             </div>
           </div>
 
-          <div className="pt-6 mt-6 border-t border-slate-100">
+          <div className="pt-6 mt-6 border-t border-slate-100 space-y-3">
             {canEdit && (
-              <button
-                onClick={handleFinishCutting}
-                className="w-full py-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <CheckCircle2 className="w-5 h-5" />
-                <span>
-                  ✔️ إنهاء القص والتحويل للفرز والكنترول (جدول العد قبل الطباعة)
-                </span>
-              </button>
+              <>
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-500">
+                  <Scissors className="w-4 h-4 text-emerald-600" />
+                  <span>إنهاء قص القطع بشكل مستقل (كل قطعة تنتقل للفرز على حدة):</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {modelParts.map((part) => {
+                    const partSpreadCount = modelCuttingRecords.filter(
+                      (r) => (r.part_type || r.partType || 'shirt') === part
+                    ).length;
+                    return (
+                      <button
+                        key={part}
+                        type="button"
+                        onClick={() => handleFinishCutting([part])}
+                        disabled={partSpreadCount === 0}
+                        className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-full font-extrabold text-xs border transition ${
+                          partSpreadCount === 0
+                            ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                            : 'bg-white text-emerald-800 border-emerald-300 hover:bg-emerald-50 cursor-pointer'
+                        }`}
+                      >
+                        <span>{PART_EMOJI[part]}</span>
+                        <span>إنهاء قص {getPartLabel(part)}</span>
+                        <span className="text-[10px] font-bold text-slate-400">
+                          ({partSpreadCount} فرشة)
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleFinishCutting()}
+                  className="w-full py-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <CheckCircle2 className="w-5 h-5" />
+                  <span>
+                    ✔️ إنهاء قص كل القطع والتحويل للفرز والكنترول (جدول العد قبل الطباعة)
+                  </span>
+                </button>
+              </>
             )}
           </div>
         </div>

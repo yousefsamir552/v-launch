@@ -701,6 +701,67 @@ export const PART_STAGE_LABELS: Record<PartStage, string> = {
 /** Stages at which a part counts as "arrived at packaging" for the lock rule. */
 export const PACKAGING_READY_STAGES: PartStage[] = ['packaging', 'dest', 'completed'];
 
+/** Visual badge per garment part (used on the independent part cards). */
+export const PART_EMOJI: Record<GarmentPart, string> = {
+  shirt: '👕',
+  pants: '👖',
+  jacket: '🧥',
+  single: '🧵'
+};
+
+/** Coarse ModelStatus implied by each part stage (least advanced part wins). */
+export const PART_STAGE_STATUS_MAP: Record<PartStage, ModelStatus> = {
+  cutting: 'في القص',
+  qc_before_print: 'العد قبل الطباعة',
+  printing: 'جاهز للطباعة / التجميع',
+  qc_after_print: 'العد بعد الطباعة',
+  sewing: 'في قسم المكن',
+  qc_after_sewing: 'العد بعد المكن',
+  finishing: 'في التشطيب',
+  ironing: 'في المكواة',
+  packaging: 'في التعبئة والتغليف',
+  dest: 'جاهز للدَست',
+  completed: 'مخزن الإنتاج التام'
+};
+
+/** Legacy fallback: coarse status -> part stage (used when part_stages is empty). */
+export const MODEL_STATUS_TO_PART_STAGE: Record<string, PartStage> = {
+  'مرحلة التصميم': 'cutting',
+  'تصميم': 'cutting',
+  'في القص': 'cutting',
+  'جاري القص': 'cutting',
+  'العد قبل الطباعة': 'qc_before_print',
+  'فرز قبل الطباعة': 'qc_before_print',
+  'فرز وكنترول': 'qc_before_print',
+  'جاهز للطباعة / التجميع': 'printing',
+  'جاهز للمطبعة': 'printing',
+  'مرسل للمطبعة': 'printing',
+  'في المطبعة': 'printing',
+  'العد بعد الطباعة': 'qc_after_print',
+  'في قسم المكن': 'sewing',
+  'العد بعد المكن': 'qc_after_sewing',
+  'في التشطيب': 'finishing',
+  'في المكواة': 'ironing',
+  'في التعبئة والتغليف': 'packaging',
+  'جاهز للدَست': 'dest',
+  'مخزن الإنتاج التام': 'completed',
+  'مكتمل الإنتاج': 'completed'
+};
+
+/** Derives the coarse model status from a {part: stage} map (slowest part wins). */
+export const deriveStatusFromStages = (
+  stages?: Partial<Record<GarmentPart, PartStage>>
+): ModelStatus | undefined => {
+  const values = (Object.values(stages || {}) as (PartStage | undefined)[]).filter(
+    (stage): stage is PartStage => Boolean(stage)
+  );
+  if (!values.length) return undefined;
+  const slowest = values.reduce((acc, stage) =>
+    PART_STAGE_ORDER.indexOf(stage) < PART_STAGE_ORDER.indexOf(acc) ? stage : acc
+  );
+  return PART_STAGE_STATUS_MAP[slowest];
+};
+
 export interface PartStageInfo {
   stage: PartStage;
   stage_label?: string;

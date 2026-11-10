@@ -24,7 +24,7 @@ export const ProductionControlView: React.FC<ProductionControlViewProps> = ({
 
   const activeModels = models.filter((m) => !m.is_deleted);
   const printingCount = activeModels.filter(
-    (m) => m.status === 'جاهز للمطبعة' || m.status === 'في المطبعة' || m.status === 'مرسل للمطبعة'
+    (m) => m.status === 'جاهز للمطبعة' || m.status === 'في المطبعة' || m.status === 'مرسل للمطبعة' || m.status === 'جاهز للطباعة / التجميع'
   ).length;
 
   const qcCount = activeModels.filter(

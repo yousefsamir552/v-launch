@@ -9,15 +9,18 @@ import {
   X,
   Lock
 } from 'lucide-react';
-import { DispatchStatus, GarmentPart, getPartLabel, partsForComposition } from '../types';
+import { DispatchStatus, GarmentPart, PART_EMOJI, getPartLabel } from '../types';
 
 export const DispatchAssemblyView: React.FC = () => {
   const {
     models,
     qcRecords,
     printDispatches,
+    getModelParts,
+    getPartStages,
     addPrintDispatch,
     updateDispatchStatus,
+    skipPrintToSewing,
     hasPermission,
     canViewPrintingCosts,
     canEditPrintingCosts,
@@ -28,9 +31,28 @@ export const DispatchAssemblyView: React.FC = () => {
   const canEdit = hasPermission('printing', true) || hasPermission('qc', true) || hasPermission('cutting', true);
   const allowPrintNotes = canAddPrintingNotes() || canAddQCBeforePrintNotes();
 
-  // Models ready to send to print house
+  // Parts that already have an open print dispatch are not "ready" any more;
+  // they wait in the dispatches table until received.
+  const openPrintKeys = new Set(
+    printDispatches
+      .filter((d) => d.status !== 'تم الاستلام بالمصنع')
+      .map((d) => `${d.model_id}-${d.piece_type || 'shirt'}`)
+  );
+
+  // Parts currently at the printing stage — every part is its own independent card.
+  const readyPartCards = models.flatMap((m) => {
+    if (m.is_deleted) return [] as { model: typeof m; part: GarmentPart }[];
+    const stages = getPartStages(m.id);
+    return getModelParts(m.id)
+      .filter(
+        (part) =>
+          (stages[part] || 'cutting') === 'printing' &&
+          !openPrintKeys.has(`${m.id}-${part}`)
+      )
+      .map((part) => ({ model: m, part }));
+  });
   const readyModels = models.filter(
-    (m) => !m.is_deleted && m.status === 'جاهز للطباعة / التجميع'
+    (m) => !m.is_deleted && readyPartCards.some((card) => card.model.id === m.id)
   );
 
   const [showModal, setShowModal] = useState(false);
@@ -42,9 +64,13 @@ export const DispatchAssemblyView: React.FC = () => {
   const [printLocation, setPrintLocation] = useState('صدر');
   const [printDetails, setPrintDetails] = useState('');
 
-  // Garment parts available for the currently selected model (تيشرت / بنطلون / جاكيت)
+  // Garment parts of the selected model that are still awaiting printing.
   const selectedModel = readyModels.find((m) => m.id === modelId) || null;
-  const selectedModelParts = partsForComposition(selectedModel?.garment_composition);
+  const selectedModelParts = selectedModel
+    ? readyPartCards
+        .filter((card) => card.model.id === selectedModel.id)
+        .map((card) => card.part)
+    : [];
   // القطعة المختارة يجب أن تكون من قطع الموديل فعلياً، وإلا نرجع لأول قطعة متاحة
   const effectivePieceType: GarmentPart = selectedModelParts.includes(pieceType)
     ? pieceType
@@ -124,62 +150,90 @@ export const DispatchAssemblyView: React.FC = () => {
         )}
       </div>
 
-      {/* Ready Models Summary Bar (Disappears immediately when sent!) */}
+      {/* Ready Parts — every garment part is its own card */}
       <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs">
         <h3 className="font-extrabold text-slate-900 text-sm mb-4 flex items-center justify-between">
           <span className="flex items-center gap-2">
             <Layers className="w-4 h-4 text-teal-600" />
-            <span>الموديلات الجاهزة للإرسال للمطابع والتطريز ({readyModels.length}):</span>
+            <span>القطع الجاهزة للإرسال للمطابع والتطريز ({readyPartCards.length}):</span>
           </span>
           <span className="text-[11px] text-slate-400 font-normal">
-            (تختفي فوراً بمجرد إرسالها للمطبعة)
+            (كل قطعة تُرسل وتُستلم وتُتخطى بشكل مستقل)
           </span>
         </h3>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {readyModels.length > 0 ? (
-            readyModels.map((m) => {
-              const mQc = qcRecords.filter((q) => q.model_id === m.id);
-              const goodTotal = mQc.reduce((sum, q) => sum + q.good_qty, 0) || m.actual_cut_count || m.target_cut_quantity;
+          {readyPartCards.length > 0 ? (
+            readyPartCards.map(({ model: m, part }) => {
+              const partQcRecords = qcRecords.filter(
+                (q) => q.model_id === m.id && (q.part_type || 'shirt') === part
+              );
+              const partGoodQty =
+                m.qc_summary?.[part] ??
+                partQcRecords.reduce(
+                  (sum, q) => sum + (q.good_qty ?? q.counted_pieces ?? 0),
+                  0
+                );
 
               return (
                 <div
-                  key={m.id}
-                  className="p-4 rounded-2xl border border-teal-200 bg-teal-50/40 hover:bg-teal-50 transition flex items-center gap-3 shadow-2xs"
+                  key={`${m.id}-${part}`}
+                  className="p-4 rounded-2xl border border-teal-200 bg-teal-50/40 hover:bg-teal-50 transition flex flex-col gap-3 shadow-2xs"
                 >
-                  <img
-                    src={m.image}
-                    alt={m.model_code}
-                    className="w-12 h-12 rounded-xl object-contain bg-white border shrink-0 p-0.5"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src =
-                        'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
-                    }}
-                  />
-                  <div className="flex-grow min-w-0">
-                    <h4 className="font-black text-sm text-slate-900 truncate">{m.model_code}</h4>
-                    <p className="text-[11px] text-slate-500">
-                      قطع سليمة للطباعة:{' '}
-                      <strong className="text-teal-800">{goodTotal}</strong>
-                    </p>
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={m.image}
+                      alt={m.model_code}
+                      className="w-12 h-12 rounded-xl object-contain bg-white border shrink-0 p-0.5"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src =
+                          'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
+                      }}
+                    />
+                    <div className="flex-grow min-w-0">
+                      <h4 className="font-black text-sm text-slate-900 truncate">
+                        {m.model_code}
+                      </h4>
+                      <span className="inline-flex items-center gap-1 mt-0.5 px-2 py-0.5 rounded-md bg-teal-700 text-white text-[10px] font-bold">
+                        {PART_EMOJI[part]} {getPartLabel(part)}
+                      </span>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        سليم للطباعة:{' '}
+                        <strong className="text-teal-800">
+                          {Number(partGoodQty || 0).toLocaleString('ar-EG')}
+                        </strong>
+                      </p>
+                    </div>
                   </div>
-                  <button
-                    onClick={() => {
-                      setModelId(m.id);
-                      if (goodTotal > 0) setPiecesCount(goodTotal);
-                      setShowModal(true);
-                    }}
-                    className="p-2 rounded-xl bg-teal-600 text-white hover:bg-teal-700 transition font-bold text-xs shadow-xs cursor-pointer shrink-0"
-                    title="إرسال للمطبعة الآن"
-                  >
-                    <Truck className="w-4 h-4" />
-                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setModelId(m.id);
+                        setPieceType(part);
+                        if (Number(partGoodQty) > 0) setPiecesCount(Number(partGoodQty));
+                        setShowModal(true);
+                      }}
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 rounded-xl bg-teal-600 text-white hover:bg-teal-700 transition font-bold text-[11px] shadow-xs cursor-pointer"
+                      title="إرسال هذه القطعة للمطبعة"
+                    >
+                      <Truck className="w-3.5 h-3.5" />
+                      <span>إرسال للمطبعة</span>
+                    </button>
+                    <button
+                      onClick={() => skipPrintToSewing(m.id, part)}
+                      className="inline-flex items-center justify-center gap-1 py-2 px-3 rounded-xl bg-white text-slate-700 border border-slate-300 hover:border-teal-400 transition font-bold text-[11px] cursor-pointer"
+                      title="تخطي المطابع وتحويل هذه القطعة مباشرة إلى قسم المكن"
+                    >
+                      تخطي → المكن
+                    </button>
+                  </div>
                 </div>
               );
             })
           ) : (
             <p className="col-span-full text-slate-400 text-xs py-3">
-              لا توجد موديلات حالياً في انتظار الإرسال للمطابع. جميع الموديلات إما قيد التشغيل أو في مراحل لاحقة.
+              لا توجد قطع حالياً في انتظار الإرسال للمطابع. كل القطع إما قيد التشغيل أو في مراحل لاحقة.
             </p>
           )}
         </div>
@@ -385,8 +439,9 @@ export const DispatchAssemblyView: React.FC = () => {
                   onChange={(e) => {
                     const nextId = e.target.value;
                     setModelId(nextId);
-                    const nextModel = readyModels.find((m) => m.id === nextId);
-                    const nextParts = partsForComposition(nextModel?.garment_composition);
+                    const nextParts = readyPartCards
+                      .filter((card) => card.model.id === nextId)
+                      .map((card) => card.part);
                     if (nextParts.length && !nextParts.includes(pieceType)) {
                       setPieceType(nextParts[0]);
                     }

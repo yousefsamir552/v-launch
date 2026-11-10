@@ -49,7 +49,9 @@ import {
   AssemblyStageKey,
   PartStage,
   PART_STAGE_LABELS,
-  PART_STAGE_ORDER
+  PART_STAGE_ORDER,
+  MODEL_STATUS_TO_PART_STAGE,
+  deriveStatusFromStages
 } from '../types';
 
 interface FlashMessage {
@@ -57,6 +59,72 @@ interface FlashMessage {
   type: 'success' | 'danger' | 'warning' | 'info';
   text: string;
 }
+
+// ---------------------------------------------------------------------------
+// Per-part stage helpers shared by the pipeline actions.
+// Every garment part moves on its own; the coarse ModelItem.status is always
+// re-derived from the least advanced part.
+// ---------------------------------------------------------------------------
+const modelPartsOf = (model: DesignModel): GarmentPart[] => {
+  const explicit = Array.from(
+    new Set(
+      (model.garment_parts || [])
+        .map((p) => String(p).toLowerCase() as GarmentPart)
+        .filter((p) => (PART_ORDER as string[]).includes(p))
+    )
+  );
+  if (explicit.length > 0) return explicit;
+  if (model.parts && model.parts.length > 0) return model.parts;
+  return partsForComposition(model.garment_composition);
+};
+
+/** Seeds part_stages from the coarse status for models created before per-part tracking. */
+const seedModelPartStages = (model: DesignModel): DesignModel => {
+  if (model.part_stages && Object.keys(model.part_stages).length > 0) return model;
+  const fallback = MODEL_STATUS_TO_PART_STAGE[model.status as string] || 'cutting';
+  const seeded: Partial<Record<GarmentPart, PartStage>> = {};
+  modelPartsOf(model).forEach((part) => {
+    seeded[part] = fallback;
+  });
+  return { ...model, part_stages: seeded };
+};
+
+/** Moves a single part forward to a stage (never backward) and re-derives status. */
+const patchModelPartStage = (
+  model: DesignModel,
+  part: GarmentPart,
+  stage: PartStage
+): DesignModel => {
+  const seeded = seedModelPartStages(model);
+  const current = seeded.part_stages?.[part];
+  const nextStage: PartStage =
+    current && PART_STAGE_ORDER.indexOf(current) > PART_STAGE_ORDER.indexOf(stage)
+      ? current
+      : stage;
+  const stages: Partial<Record<GarmentPart, PartStage>> = {
+    ...(seeded.part_stages || {}),
+    [part]: nextStage
+  };
+  const derived = deriveStatusFromStages(stages);
+  return {
+    ...seeded,
+    part_stages: stages,
+    ...(derived ? { status: derived } : {})
+  };
+};
+
+/** Moves the given parts (defaults to every part) forward to one stage. */
+const patchModelPartsStage = (
+  model: DesignModel,
+  stage: PartStage,
+  parts?: GarmentPart[]
+): DesignModel => {
+  const targets = parts && parts.length > 0 ? parts : modelPartsOf(model);
+  return targets.reduce(
+    (acc, part) => patchModelPartStage(acc, part, stage),
+    seedModelPartStages(model)
+  );
+};
 
 const DEFAULT_GLOBAL_SETTINGS: GlobalSiteSettings = {
   site_name: 'نظام إدارة المصنع',
@@ -309,7 +377,7 @@ interface AppContextType {
     notes?: string;
     partType?: GarmentPart;
   }) => void;
-  finishCuttingToQC: (modelId: string, notes?: string) => void;
+  finishCuttingToQC: (modelId: string, notes?: string, parts?: GarmentPart[]) => void;
   exportCuttingCsv: (modelId: string) => void;
 
   // QC Actions & Multi-stage Matrix counting (Color x Size)
@@ -363,6 +431,7 @@ interface AppContextType {
     notes?: string;
   }) => void;
   updateDispatchStatus: (dispatchId: string, status: DispatchStatus) => void;
+  skipPrintToSewing: (modelId: string, part: GarmentPart) => void;
 
   // Sewing Actions
   dispatchModelToSewing: (data: {
@@ -2538,19 +2607,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
-  const finishCuttingToQC = (modelId: string, notes?: string) => {
+  const finishCuttingToQC = (modelId: string, notes?: string, parts?: GarmentPart[]) => {
     const model = models.find((m) => m.id === modelId);
     const cleanNotes = canAddCuttingNotes() ? (notes?.trim() || '') : '';
+    const targetParts =
+      parts && parts.length > 0 ? parts.map((part) => normalizePartKey(part)) : undefined;
+    const partsLabel = targetParts
+      ? targetParts.map((part) => getPartLabel(part)).join(' + ')
+      : 'جميع القطع';
+
     setModels((prev) =>
-      prev.map((m) => (m.id === modelId ? { ...m, status: 'العد قبل الطباعة' } : m))
+      prev.map((m) =>
+        m.id === modelId ? patchModelPartsStage(m, 'qc_before_print', targetParts) : m
+      )
     );
 
     api
-      .finishCuttingToQC(modelId, currentUser?.real_name || 'مسؤول القص', cleanNotes)
+      .finishCuttingToQC(
+        modelId,
+        currentUser?.real_name || 'مسؤول القص',
+        cleanNotes,
+        targetParts
+      )
       .then((savedModel) => {
         setModels((prev) => prev.map((m) => (m.id === modelId ? savedModel : m)));
-        logAction('القص', `إنهاء قص الموديل ${model?.model_code} وتحويله للعد والفرز قبل الطباعة`);
-        addFlashMessage('تم إنهاء القص وتحويل الموديل لقسم الفرز (العد قبل الطباعة) بنجاح');
+        logAction('القص', `إنهاء قص [${partsLabel}] من الموديل ${model?.model_code} وتحويلها للعد والفرز قبل الطباعة`);
+        addFlashMessage(`تم إنهاء قص [${partsLabel}] وتحويلها لقسم الفرز (العد قبل الطباعة) بنجاح`);
       })
       .catch((err) => {
         refreshState();
@@ -2853,7 +2935,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...(m.qc_summary || {}),
           [partType]: totalGoodFromMatrix
         } as Partial<Record<GarmentPart, number>>;
-        const patched = {
+        const patched: DesignModel = {
           ...m,
           qc_shirt_pieces: partType === 'shirt' ? totalGoodFromMatrix : (m.qc_shirt_pieces || 0),
           qc_pants_pieces: partType === 'pants' ? totalGoodFromMatrix : (m.qc_pants_pieces || 0),
@@ -2861,24 +2943,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           qc_summary: qcSummary
         };
         if (data.stage === 'before_print') {
-          return {
+          const withCount: DesignModel = {
             ...patched,
-            count_before_print: totalGoodFromMatrix,
-            ...(data.advanceStage ? { status: 'جاهز للطباعة / التجميع' } : {})
+            count_before_print: totalGoodFromMatrix
           };
+          return data.advanceStage
+            ? patchModelPartStage(withCount, partType, 'printing')
+            : withCount;
         }
         if (data.stage === 'after_print') {
-          return {
+          const withCount: DesignModel = {
             ...patched,
-            count_after_print: totalGoodFromMatrix,
-            ...(data.advanceStage ? { status: 'في قسم المكن' } : {})
+            count_after_print: totalGoodFromMatrix
           };
+          return data.advanceStage
+            ? patchModelPartStage(withCount, partType, 'sewing')
+            : withCount;
         }
-        return {
+        const withCount: DesignModel = {
           ...patched,
-          count_after_sewing: totalGoodFromMatrix,
-          ...(data.advanceStage ? { status: 'في التشطيب' } : {})
+          count_after_sewing: totalGoodFromMatrix
         };
+        return data.advanceStage
+          ? patchModelPartStage(withCount, partType, 'finishing')
+          : withCount;
       })
     );
 
@@ -3037,14 +3125,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setModels((prev) =>
       prev.map((m) => {
         if (m.id !== data.modelId) return m;
-        return {
+        const withPrint: DesignModel = {
           ...m,
-          status: 'مرسل للمطبعة',
           print_house_name: data.shopName.trim(),
           print_house: data.shopName.trim(),
           print_cost: data.costPerPiece,
           print_expected_date: data.expectedDeliveryDate
         };
+        // Only the dispatched part is at the printing stage.
+        return patchModelPartStage(withPrint, pieceType, 'printing');
       })
     );
 
@@ -3096,8 +3185,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     if (status === 'تم الاستلام بالمصنع') {
+      const receivedPart = (disp.piece_type || 'shirt') as GarmentPart;
       setModels((prev) =>
-        prev.map((m) => (m.id === disp.model_id ? { ...m, status: 'العد بعد الطباعة' } : m))
+        prev.map((m) =>
+          m.id === disp.model_id ? patchModelPartStage(m, receivedPart, 'qc_after_print') : m
+        )
       );
     }
 
@@ -3112,6 +3204,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .catch((err) => {
         refreshState();
         addFlashMessage(err.message || 'فشل تحديث حالة الإرسالية في الباك إند', 'danger');
+      });
+  };
+
+  /** Skips printing for one part and sends it straight to sewing. */
+  const skipPrintToSewing = (modelId: string, part: GarmentPart) => {
+    const targetModel = models.find((m) => m.id === modelId);
+    const resolvedPart = normalizePartKey(part);
+
+    setModels((prev) =>
+      prev.map((m) =>
+        m.id === modelId ? patchModelPartStage(m, resolvedPart, 'sewing') : m
+      )
+    );
+
+    api
+      .skipPrintToSewing(modelId, resolvedPart, currentUser?.real_name || 'مسؤول المطابع')
+      .then((saved) => {
+        if (saved) {
+          setModels((prev) => prev.map((m) => (m.id === modelId ? saved : m)));
+        }
+        refreshState();
+        logAction(
+          'المطابع والتطريز',
+          `تخطي المطابع للقطعة [${getPartLabel(resolvedPart)}] من موديل ${targetModel?.model_code} وتحويلها لقسم المكن`
+        );
+        addFlashMessage(
+          `تم تخطي المطابع وتحويل [${getPartLabel(resolvedPart)}] إلى قسم المكن بنجاح`
+        );
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل تخطي مرحلة المطابع في الباك إند', 'danger');
       });
   };
 
@@ -3149,7 +3273,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prev.map((m) => {
         if (m.id !== data.modelId) return m;
         const updates: Partial<DesignModel> = {
-          status: 'في قسم المكن',
           sewing_workshop: data.workshopName.trim(),
           sewing_expected_date: data.expectedDeliveryDate,
           sewing_pieces_count: data.piecesCount
@@ -3165,7 +3288,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           updates.sewing_pants_status = 'في ورشة المكن';
           updates.sewing_pants_pieces = data.piecesCount;
         }
-        return { ...m, ...updates };
+        // Only the dispatched part moves to sewing.
+        return patchModelPartStage({ ...m, ...updates }, resolvedType, 'sewing');
       })
     );
 
@@ -3215,10 +3339,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     setSewingDispatches(updatedDispatches);
 
-    const otherPending = updatedDispatches.filter(
-      (d) => d.model_id === targetModelId && d.id !== dispatchId && d.status !== 'تم الاستلام'
-    );
-    const allPiecesReceived = otherPending.length === 0;
+    // "All pieces received" only when every other part already reached
+    // (or passed) the "العد بعد المكن" stage.
+    const qcAfterSewingIndex = PART_STAGE_ORDER.indexOf('qc_after_sewing');
+    const allPiecesReceived = targetModel
+      ? getModelParts(targetModelId).every((part) => {
+          if (part === pieceType) return true;
+          const stage = getPartStages(targetModelId)[part] || 'cutting';
+          return PART_STAGE_ORDER.indexOf(stage) >= qcAfterSewingIndex;
+        })
+      : false;
 
     setModels((prev) =>
       prev.map((m) => {
@@ -3229,10 +3359,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } else if (pieceType === 'pants') {
           updates.sewing_pants_status = 'تم الاستلام';
         }
-        if (allPiecesReceived) {
-          updates.status = 'العد بعد المكن';
-        }
-        return { ...m, ...updates };
+        // Bug fix: only the received part leaves sewing; the sibling part stays put.
+        return patchModelPartStage({ ...m, ...updates }, pieceType, 'qc_after_sewing');
       })
     );
 
@@ -3319,15 +3447,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const model = models.find((m) => m.id === modelId);
       if (!model) return {};
       const raw = model.part_stages || {};
-      const statusFallback: Record<string, PartStage> = {
-        'في التشطيب': 'finishing',
-        'في المكواة': 'ironing',
-        'في التعبئة والتغليف': 'packaging',
-        'جاهز للدَست': 'dest',
-        'مخزن الإنتاج التام': 'completed',
-        'مكتمل الإنتاج': 'completed'
-      };
-      const fallback = statusFallback[model.status as string] || 'cutting';
+      const fallback = MODEL_STATUS_TO_PART_STAGE[model.status as string] || 'cutting';
       const stages: Partial<Record<GarmentPart, PartStage>> = {};
       getModelParts(modelId).forEach((part) => {
         const stage = raw[part];
@@ -4542,6 +4662,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         exportQcCsv,
         addPrintDispatch,
         updateDispatchStatus,
+        skipPrintToSewing,
         dispatchModelToSewing,
         receiveModelFromSewing,
         finishSewingToQC,

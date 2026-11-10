@@ -14,7 +14,7 @@ import {
   Clock,
   Lock
 } from 'lucide-react';
-import { Model, SewingDispatch, GarmentPart, getPartLabel } from '../types';
+import { Model, SewingDispatch, GarmentPart, PART_EMOJI, getPartLabel } from '../types';
 import { SewingPrintModal } from './SewingPrintModal';
 
 // Per-part card styling (kept independent so every part has its own colour identity).
@@ -45,6 +45,7 @@ export const SewingView: React.FC = () => {
   const { 
     models, 
     getModelParts,
+    getPartStages,
     sewingDispatches, 
     dispatchModelToSewing, 
     receiveModelFromSewing,
@@ -77,9 +78,16 @@ export const SewingView: React.FC = () => {
 
   const allowSewingNotes = canAddSewingNotes();
 
-  // Models ready for sewing: status 'في قسم المكن'
+  // Parts currently at the sewing stage — each part is tracked independently.
+  const readyPartCards = models.flatMap((m) => {
+    if (m.is_deleted) return [] as { model: Model; part: GarmentPart }[];
+    const stages = getPartStages(m.id);
+    return getModelParts(m.id)
+      .filter((part) => (stages[part] || 'cutting') === 'sewing')
+      .map((part) => ({ model: m, part }));
+  });
   const readyModels = models.filter(
-    (m) => !m.is_deleted && m.status === 'في قسم المكن'
+    (m) => !m.is_deleted && readyPartCards.some((card) => card.model.id === m.id)
   );
 
   const filteredDispatches = sewingDispatches.filter((disp) => {
@@ -301,10 +309,10 @@ export const SewingView: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
         <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-xs flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold text-slate-500 mb-1">موديلات جاهزة للمكن</p>
-            <h3 className="text-2xl font-black text-emerald-900">{readyModels.length}</h3>
+            <p className="text-xs font-bold text-slate-500 mb-1">قطع جاهزة للمكن</p>
+            <h3 className="text-2xl font-black text-emerald-900">{readyPartCards.length}</h3>
             <span className="text-[11px] text-emerald-600 font-semibold mt-1 inline-block">
-              {readyModels.length * 2} مسار عمل منفصل (تيشرت + بنطلون)
+              {readyModels.length} موديل — كل قطعة مسار عمل مستقل
             </span>
           </div>
           <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
@@ -354,7 +362,7 @@ export const SewingView: React.FC = () => {
           <div>
             <div className="flex items-center gap-2">
               <span className="px-3 py-1 rounded-full text-xs font-black bg-emerald-500 text-slate-900 uppercase tracking-wide">
-                الموديلات الجاهزة للمكن — بطاقات منفصلة (تيشرت / بنطلون)
+                القطع الجاهزة للمكن — بطاقة مستقلة لكل قطعة (تيشرت / بنطلون / جاكيت)
               </span>
               <span className="text-slate-300 text-xs">
                 (استقلالية كاملة لكل قطعة في تحديد اسم ورشة المكن وتاريخ الاستلام المتوقع)
@@ -367,35 +375,50 @@ export const SewingView: React.FC = () => {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 relative z-10">
-          {readyModels.length > 0 ? (
-            readyModels.flatMap((m) => {
-              const parts = getModelParts(m.id);
-              return parts.map((part) => {
+          {readyPartCards.length > 0 ? (
+            readyPartCards
+              .filter((card) => pieceFilter === 'all' || card.part === pieceFilter)
+              .map(({ model: m, part }) => {
                 const isShirt = part === 'shirt';
                 const isPants = part === 'pants';
-                const isDispatched = isShirt
+                // Dispatch state comes from the sewing dispatch records so each
+                // part keeps its own workshop / dates independently.
+                const partDispatches = sewingDispatches.filter(
+                  (d) => d.model_id === m.id && d.piece_type === part
+                );
+                const openDispatch = partDispatches.find((d) => d.status !== 'تم الاستلام');
+                const allReceived =
+                  partDispatches.length > 0 &&
+                  partDispatches.every((d) => d.status === 'تم الاستلام');
+                const legacyDispatched = isShirt
                   ? m.sewing_shirt_status === 'في ورشة المكن'
                   : isPants && m.sewing_pants_status === 'في ورشة المكن';
-                const isReceived = isShirt
-                  ? m.sewing_shirt_status === 'تم الاستلام'
-                  : isPants && m.sewing_pants_status === 'تم الاستلام';
-                const workshop = isShirt
-                  ? (m.sewing_shirt_workshop || m.sewing_workshop)
-                  : isPants
-                  ? (m.sewing_pants_workshop || m.sewing_workshop)
-                  : m.sewing_workshop;
-                const expectedDate = isShirt
-                  ? (m.sewing_shirt_expected_date || m.sewing_expected_date)
-                  : isPants
-                  ? (m.sewing_pants_expected_date || m.sewing_expected_date)
-                  : m.sewing_expected_date;
+                const isDispatched =
+                  Boolean(openDispatch) ||
+                  (partDispatches.length === 0 && Boolean(legacyDispatched));
+                const isReceived = allReceived && !openDispatch;
+                const workshop =
+                  openDispatch?.workshop_name ||
+                  (isShirt
+                    ? m.sewing_shirt_workshop || m.sewing_workshop
+                    : isPants
+                    ? m.sewing_pants_workshop || m.sewing_workshop
+                    : m.sewing_workshop);
+                const expectedDate =
+                  openDispatch?.expected_delivery_date ||
+                  (isShirt
+                    ? m.sewing_shirt_expected_date || m.sewing_expected_date
+                    : isPants
+                    ? m.sewing_pants_expected_date || m.sewing_expected_date
+                    : m.sewing_expected_date);
                 const prevPieces = isShirt
                   ? m.sewing_shirt_pieces
                   : isPants
                   ? m.sewing_pants_pieces
                   : 0;
                 // Each card shows ONLY its own part quantity (no shared combined number).
-                const pieces = prevPieces || Number(m.sewing_available?.[part] ?? 0);
+                const pieces =
+                  openDispatch?.pieces_count || prevPieces || Number(m.sewing_available?.[part] ?? 0);
                 const style = PART_CARD_STYLES[part] || PART_CARD_STYLES.shirt;
 
                 return {
@@ -411,12 +434,9 @@ export const SewingView: React.FC = () => {
                   workshop,
                   expectedDate,
                   pieces,
-                  dispatchRecord: sewingDispatches.find(
-                    (d) => d.model_id === m.id && d.piece_type === part && d.status !== 'تم الاستلام'
-                  )
+                  dispatchRecord: openDispatch
                 };
-              }).filter((item) => pieceFilter === 'all' || item.pieceType === pieceFilter);
-            }).map((item) => (
+              }).map((item) => (
               <div
                 key={item.id}
                 className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-4 flex flex-col justify-between hover:bg-white/15 transition group shadow-xs"
@@ -425,7 +445,7 @@ export const SewingView: React.FC = () => {
                   {/* Top Bar with Badge */}
                   <div className="flex items-center justify-between mb-3">
                     <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-black ${item.badgeColor}`}>
-                      {item.pieceLabel}
+                      {PART_EMOJI[item.pieceType]} {item.pieceLabel}
                     </span>
                     <button
                       onClick={() => setPrintTarget({ modelId: item.model.id, tab: item.pieceType })}
@@ -520,7 +540,7 @@ export const SewingView: React.FC = () => {
             ))
           ) : (
             <p className="col-span-full text-slate-300 text-xs py-6 text-center">
-              لا توجد موديلات بانتظار الإرسال إلى ورش المكن حالياً. جميع الموديلات إما بالورش أو بمراحل أخرى.
+              لا توجد قطع بانتظار الإرسال إلى ورش المكن حالياً. كل القطع إما بالورش أو بمراحل أخرى.
             </p>
           )}
         </div>
@@ -703,9 +723,17 @@ export const SewingView: React.FC = () => {
                 <div className="grid grid-cols-2 gap-2">
                   {(() => {
                     const dm = models.find((m) => m.id === selectedModelId);
-                    const parts: GarmentPart[] = dm
-                      ? getModelParts(dm.id)
-                      : (['shirt', 'pants'] as GarmentPart[]);
+                    const sewingParts = dm
+                      ? getModelParts(dm.id).filter(
+                          (part) => (getPartStages(dm.id)[part] || 'cutting') === 'sewing'
+                        )
+                      : [];
+                    const parts: GarmentPart[] =
+                      sewingParts.length > 0
+                        ? sewingParts
+                        : dm
+                        ? getModelParts(dm.id)
+                        : (['shirt', 'pants'] as GarmentPart[]);
                     return parts.map((part) => (
                       <button
                         key={part}
@@ -721,7 +749,9 @@ export const SewingView: React.FC = () => {
                         }`}
                       >
                         <Shirt className="w-4 h-4" />
-                        <span>خط {getPartLabel(part)}</span>
+                        <span>
+                          {PART_EMOJI[part]} خط {getPartLabel(part)}
+                        </span>
                       </button>
                     ));
                   })()}

@@ -707,7 +707,7 @@ PART_STAGE_LABELS = dict(PART_STAGE_CHOICES)
 PART_STAGE_TO_STATUS = {
     'cutting': 'في القص',
     'qc_before_print': 'العد قبل الطباعة',
-    'printing': 'مرسل للمطبعة',
+    'printing': 'جاهز للطباعة / التجميع',
     'qc_after_print': 'العد بعد الطباعة',
     'sewing': 'في قسم المكن',
     'qc_after_sewing': 'العد بعد المكن',

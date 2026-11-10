@@ -47,8 +47,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
   const inDesignCount = activeModels.filter((m) => m.status === 'تصميم' || m.status === 'مرحلة التصميم').length;
   const inCuttingCount = activeModels.filter((m) => m.status === 'في القص' || m.status === 'جاري القص').length;
-  const inQcCount = activeModels.filter((m) => m.status === 'فرز وكنترول' || m.status === 'فرز قبل الطباعة' || m.status === 'العد بعد الطباعة' || m.status === 'العد بعد المكن').length;
-  const inPrintingCount = activeModels.filter((m) => m.status === 'في المطبعة' || m.status === 'جاهز للمطبعة' || m.status === 'جاهز للطباعة / التجميع').length;
+  const inQcCount = activeModels.filter((m) => m.status === 'فرز وكنترول' || m.status === 'فرز قبل الطباعة' || m.status === 'العد قبل الطباعة' || m.status === 'العد بعد الطباعة' || m.status === 'العد بعد المكن').length;
+  const inPrintingCount = activeModels.filter((m) => m.status === 'في المطبعة' || m.status === 'جاهز للمطبعة' || m.status === 'مرسل للمطبعة' || m.status === 'جاهز للطباعة / التجميع').length;
   const inSewingCount = activeModels.filter((m) => m.status === 'في قسم المكن').length;
   const finishedCount = activeModels.filter((m) => m.status === 'مكتمل الإنتاج').length;
 
@@ -533,9 +533,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                         onClick={() => {
                           if (m.status === 'جاري القص' || m.status === 'في القص') {
                             onNavigate('cutting_details', m.id);
-                          } else if (m.status === 'فرز وكنترول' || m.status === 'فرز قبل الطباعة' || m.status === 'العد بعد الطباعة' || m.status === 'العد بعد المكن') {
+                          } else if (m.status === 'فرز وكنترول' || m.status === 'فرز قبل الطباعة' || m.status === 'العد قبل الطباعة' || m.status === 'العد بعد الطباعة' || m.status === 'العد بعد المكن') {
                             onNavigate('qc');
-                          } else if (m.status === 'في المطبعة' || m.status === 'جاهز للمطبعة') {
+                          } else if (m.status === 'في المطبعة' || m.status === 'جاهز للمطبعة' || m.status === 'مرسل للمطبعة' || m.status === 'جاهز للطباعة / التجميع') {
                             onNavigate('printing');
                           } else if (m.status === 'في قسم المكن') {
                             onNavigate('sewing');

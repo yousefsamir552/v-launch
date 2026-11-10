@@ -234,10 +234,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_name: userName, ...(extraData || {}) })
     }),
-  finishCuttingToQC: (modelId: string, userName?: string, notes?: string) =>
+  finishCuttingToQC: (modelId: string, userName?: string, notes?: string, parts?: string[]) =>
     request<any>(`/models/${encodeURIComponent(modelId)}/finish_cutting/`, {
       method: 'POST',
-      body: JSON.stringify({ user_name: userName, notes })
+      body: JSON.stringify({ user_name: userName, notes, parts })
     }),
   recordQCStageCount: (modelId: string, data: any) =>
     request<{ model: any; qcRecord?: any; qcRecords?: any[] }>(`/models/${encodeURIComponent(modelId)}/record_qc_count/`, {
@@ -330,6 +330,11 @@ export const api = {
     request<any>(`/dispatches/${encodeURIComponent(id)}/update_status/`, {
       method: 'POST',
       body: JSON.stringify({ status, user_name: userName })
+    }),
+  skipPrintToSewing: (modelId: string, pieceType: string, userName?: string) =>
+    request<any>('/dispatches/skip_print/', {
+      method: 'POST',
+      body: JSON.stringify({ model_id: modelId, piece_type: pieceType, user_name: userName })
     }),
   getSewingDispatches: () => request<any[]>('/sewing-dispatches/'),
   receiveFromSewing: (id: string, userName?: string, notes?: string) =>

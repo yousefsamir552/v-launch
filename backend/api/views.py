@@ -65,6 +65,9 @@ from .services import (
     part_stages_payload,
     normalize_part_key,
     recompute_model_part_totals,
+    advance_parts_to_stage,
+    derive_pipeline_status,
+    seed_part_stages_from_status,
 )
 from .reports import get_production_report
 from .permissions import (
@@ -1388,7 +1391,30 @@ class ModelItemViewSet(BasePermViewSet):
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         user_name = request.data.get('user_name') or 'مسؤول القص'
         notes = (request.data.get('notes') or '').strip()
-        model.status = 'العد قبل الطباعة'
+
+        # Optional per-part granularity: a single part key, a list of parts, or
+        # nothing (finish cutting for every part of the model).
+        requested_parts = request.data.get('parts') or request.data.get('part_types')
+        if isinstance(requested_parts, str):
+            requested_parts = [requested_parts]
+        single_part = request.data.get('part_type') or request.data.get('partType')
+        if single_part and not requested_parts:
+            requested_parts = [single_part]
+
+        seed_part_stages_from_status(model)
+        moved_parts = []
+        if requested_parts:
+            for part in requested_parts:
+                key = normalize_part_key(part)
+                advance_parts_to_stage(model, 'qc_before_print', [key])
+                moved_parts.append(key)
+            parts_label = ' / '.join(
+                dict(PART_TYPE_CHOICES).get(key, key) for key in moved_parts
+            )
+        else:
+            advance_parts_to_stage(model, 'qc_before_print')
+            parts_label = 'جميع القطع'
+        derive_pipeline_status(model)
         model._skip_timeline_signal = True
         model.save()
 
@@ -1396,7 +1422,7 @@ class ModelItemViewSet(BasePermViewSet):
         cut_records = CuttingRecordSerializer(spreads_qs, many=True).data
         total_layers = sum(int(r.get('layers_count') or 0) for r in cut_records)
 
-        tl_notes = f"إجمالي الفرشات: {len(cut_records)} | إجمالي القطع المقصوصة: {model.total_cut_pieces or 0} قطعة | إجمالي الراقات: {total_layers}"
+        tl_notes = f"إجمالي الفرشات: {len(cut_records)} | إجمالي القطع المقصوصة: {model.total_cut_pieces or 0} قطعة | إجمالي الراقات: {total_layers} | القطع المحولة: {parts_label}"
         if notes:
             tl_notes += f" | ملاحظات: {notes}"
 
@@ -1413,6 +1439,7 @@ class ModelItemViewSet(BasePermViewSet):
                 'target_cut_quantity': model.target_cut_quantity or 0,
                 'total_layers': total_layers,
                 'spreads_count': len(cut_records),
+                'parts_moved': moved_parts or 'all',
                 'cutter_name': model.cutter_name or user_name,
                 'spreader_name': model.spreader_name or '',
                 'cutting_records': cut_records,
@@ -1469,6 +1496,8 @@ class ModelItemViewSet(BasePermViewSet):
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         pieces_cut_ref = model.total_cut_pieces or model.target_cut_quantity or 0
         default_part_type = normalize_part_key(request.data.get('part_type') or request.data.get('partType') or 'shirt')
+        # Legacy models keep working: seed per-part stages before the first touch.
+        seed_part_stages_from_status(model)
 
         matrix_entries = request.data.get('matrix_entries') or request.data.get('matrixEntries')
         saved_records = []
@@ -1572,10 +1601,22 @@ class ModelItemViewSet(BasePermViewSet):
                 'worker_notes': notes,
             }
 
+            # Each QC stage advances only the part(s) actually counted. The coarse
+            # model status is then derived from the least advanced part.
+            advanced_parts = sorted({r.part_type for r in saved_records if r.part_type}) or [default_part_type]
+            if advance_stage:
+                next_stage = {
+                    'before_print': 'printing',
+                    'after_print': 'sewing',
+                    'after_sewing': 'finishing',
+                }.get(stage)
+                if next_stage:
+                    for part in advanced_parts:
+                        advance_parts_to_stage(model, next_stage, [part])
+                    derive_pipeline_status(model)
+
             if stage == 'before_print':
                 model.count_before_print = counted
-                if advance_stage:
-                    model.status = 'جاهز للطباعة / التجميع'
                 tl_text = f"مصفوفة الفرز قبل الطباعة — إجمالي السليم: {counted} | إجمالي التالف: {defects} {'-> تحويل للمطابع والتطريز' if advance_stage else ''}"
                 if notes:
                     tl_text += f" | ملاحظات: {notes}"
@@ -1590,8 +1631,6 @@ class ModelItemViewSet(BasePermViewSet):
                 )
             elif stage == 'after_print':
                 model.count_after_print = counted
-                if advance_stage:
-                    model.status = 'في قسم المكن'
                 tl_text = f"مصفوفة الفرز بعد الطباعة — إجمالي السليم: {counted} قطعة | إجمالي التالف: {defects} {'-> تحويل لقسم المكن' if advance_stage else ''}"
                 if notes:
                     tl_text += f" | ملاحظات: {notes}"
@@ -1606,10 +1645,6 @@ class ModelItemViewSet(BasePermViewSet):
                 )
             elif stage == 'after_sewing':
                 model.count_after_sewing = counted
-                if advance_stage:
-                    # بعد اعتماد العد بعد المكن ينتقل الموديل لقسم التشطيب
-                    # وليس لمخزن الإنتاج التام (المخزن لا يُستلم إلا بعد اكتمال الدَست).
-                    model.status = 'في التشطيب'
                 tl_text = f"مصفوفة الفحص النهائي بعد المكن — إجمالي السليم: {counted} قطعة | إجمالي التالف: {defects} {'-> تحويل لقسم التشطيب' if advance_stage else ''}"
                 if notes:
                     tl_text += f" | ملاحظات: {notes}"
@@ -1644,7 +1679,8 @@ class ModelItemViewSet(BasePermViewSet):
         model = self.get_object()
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         user_name = request.data.get('user_name') or 'مراقب الجودة'
-        model.status = 'جاهز للطباعة / التجميع'
+        advance_parts_to_stage(model, 'printing')
+        derive_pipeline_status(model)
         model._skip_timeline_signal = True
         model.save()
         ModelTimeline.objects.create(
@@ -1668,7 +1704,8 @@ class ModelItemViewSet(BasePermViewSet):
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         notes = request.data.get('notes') or ''
         user_name = request.data.get('user') or request.data.get('user_name') or 'مسؤول قسم المكن'
-        model.status = 'العد بعد المكن'
+        advance_parts_to_stage(model, 'qc_after_sewing')
+        derive_pipeline_status(model)
         model._skip_timeline_signal = True
         model.save()
         ModelTimeline.objects.create(
@@ -2417,7 +2454,9 @@ class PrintDispatchViewSet(BasePermViewSet):
             notes=notes,
         )
 
-        model.status = 'مرسل للمطبعة'
+        # Only this part is at the printing stage; the coarse status follows it.
+        advance_parts_to_stage(model, 'printing', [piece_type])
+        derive_pipeline_status(model)
         model.print_house = shop_name
         model.print_cost_per_piece = cost
         if exp_date:
@@ -2472,7 +2511,9 @@ class PrintDispatchViewSet(BasePermViewSet):
 
         if new_status in ('تم الاستلام', 'تم الاستلام بالمصنع'):
             m = disp.model
-            m.status = 'العد بعد الطباعة'
+            # Only the returned part moves to "عد بعد الطباعة"; sibling parts stay put.
+            advance_parts_to_stage(m, 'qc_after_print', [disp.piece_type or 'shirt'])
+            derive_pipeline_status(m)
             m._skip_timeline_signal = True
             m.save()
             ModelTimeline.objects.create(
@@ -2503,6 +2544,41 @@ class PrintDispatchViewSet(BasePermViewSet):
     def receive(self, request, pk=None):
         request.data['status'] = 'تم الاستلام بالمصنع'
         return self.update_status(request, pk=pk)
+
+    @action(detail=False, methods=['post'], url_path='skip_print')
+    def skip_print(self, request):
+        """Skips the printing stage for a single part and sends it to sewing."""
+        model = resolve_by_id(ModelItem, request.data.get('model_id') or request.data.get('modelId'))
+        if not model:
+            return Response({'detail': 'الموديل غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+
+        piece_type = normalize_part_key(
+            request.data.get('piece_type') or request.data.get('pieceType') or 'shirt'
+        )
+        user_name = request.data.get('user_name') or 'مسؤول المطابع'
+        now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+        label = dict(PART_TYPE_CHOICES).get(piece_type, piece_type)
+
+        advance_parts_to_stage(model, 'sewing', [piece_type])
+        derive_pipeline_status(model)
+        model._skip_timeline_signal = True
+        model.save()
+
+        ModelTimeline.objects.create(
+            model=model,
+            stage='المطابع والتطريز',
+            title=f'تخطي المطابع للقطعة [{label}]',
+            notes=f'تم تخطي مرحلة المطابع والتطريز للقطعة [{label}] وتحويلها مباشرة إلى قسم المكن',
+            user=user_name,
+            timestamp_str=now_str,
+            details={
+                'phase_type': 'printing_skipped',
+                'piece_type': piece_type,
+                'piece_label': label,
+                'operator_name': user_name,
+            }
+        )
+        return Response(ModelItemSerializer(model, context={'request': request}).data)
 
 
 class SewingDispatchViewSet(BasePermViewSet):

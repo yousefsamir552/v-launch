@@ -10,7 +10,14 @@ import {
   Grid,
   Save
 } from 'lucide-react';
-import { QCStageType, QCMatrixCellInput, GarmentPart, getPartLabel } from '../types';
+import {
+  QCStageType,
+  QCMatrixCellInput,
+  GarmentPart,
+  PART_EMOJI,
+  PART_STAGE_LABELS,
+  getPartLabel
+} from '../types';
 import { printManualCountSheet } from '../utils/printManualCountSheet';
 
 interface QCDetailsViewProps {
@@ -27,6 +34,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
   const {
     models,
     getModelParts,
+    getPartStages,
     getModelColorList,
     getModelSizeList,
     qcRecords,
@@ -44,14 +52,28 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
   const modelParts = getModelParts(modelId);
 
   const [selectedStage, setSelectedStage] = useState<QCStageType>(() => {
+    // Prefer the stage implied by the per-part tracking so the right tab opens.
+    const stages = Object.values(getPartStages(modelId));
+    if (stages.includes('qc_after_sewing')) return 'after_sewing';
+    if (stages.includes('qc_after_print')) return 'after_print';
+    if (stages.includes('qc_before_print')) return 'before_print';
     if (model?.status === 'العد بعد الطباعة') return 'after_print';
     if (model?.status === 'العد بعد المكن') return 'after_sewing';
     return 'before_print';
   });
 
-  const [selectedPart, setSelectedPart] = useState<GarmentPart>(
-    () => modelParts[0] || 'shirt'
-  );
+  const [selectedPart, setSelectedPart] = useState<GarmentPart>(() => {
+    const targetStage =
+      selectedStage === 'before_print'
+        ? 'qc_before_print'
+        : selectedStage === 'after_print'
+        ? 'qc_after_print'
+        : 'qc_after_sewing';
+    const stages = getPartStages(modelId);
+    return modelParts.find((part) => stages[part] === targetStage) || modelParts[0] || 'shirt';
+  });
+
+  const selectedPartStages = getPartStages(modelId);
 
   const canWriteNotes =
     selectedStage === 'before_print'
@@ -210,7 +232,22 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
         defectNotes: canWriteNotes ? defectNotes.trim() : '',
         advanceStage: true
       });
-      onFinishedApproval();
+
+      // Stay on the screen while another part is still waiting in this stage.
+      const stageKey =
+        selectedStage === 'before_print'
+          ? 'qc_before_print'
+          : selectedStage === 'after_print'
+          ? 'qc_after_print'
+          : 'qc_after_sewing';
+      const remainingParts = modelParts.filter(
+        (part) =>
+          part !== selectedPart &&
+          (selectedPartStages[part] || 'cutting') === stageKey
+      );
+      if (remainingParts.length === 0) {
+        onFinishedApproval();
+      }
     }
   };
 
@@ -361,20 +398,33 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
       {/* Garment part selector — each part is counted independently */}
       <div className="no-print flex items-center gap-2 flex-wrap bg-white rounded-2xl border border-slate-200/80 px-4 py-3 shadow-xs">
         <span className="text-xs font-extrabold text-slate-500">القطعة:</span>
-        {modelParts.map((part) => (
-          <button
-            key={part}
-            type="button"
-            onClick={() => setSelectedPart(part)}
-            className={`px-4 py-1.5 rounded-full text-xs font-bold border transition cursor-pointer ${
-              selectedPart === part
-                ? 'bg-purple-700 text-white border-purple-700 shadow-xs'
-                : 'bg-white text-slate-600 border-slate-300 hover:border-purple-400'
-            }`}
-          >
-            {getPartLabel(part)}
-          </button>
-        ))}
+        {modelParts.map((part) => {
+          const partStage = selectedPartStages[part] || 'cutting';
+          return (
+            <button
+              key={part}
+              type="button"
+              onClick={() => setSelectedPart(part)}
+              title={`المرحلة الحالية: ${PART_STAGE_LABELS[partStage]}`}
+              className={`px-4 py-1.5 rounded-full text-xs font-bold border transition cursor-pointer ${
+                selectedPart === part
+                  ? 'bg-purple-700 text-white border-purple-700 shadow-xs'
+                  : 'bg-white text-slate-600 border-slate-300 hover:border-purple-400'
+              }`}
+            >
+              <span>
+                {PART_EMOJI[part]} {getPartLabel(part)}
+              </span>
+              <span
+                className={`ms-1 text-[10px] font-semibold ${
+                  selectedPart === part ? 'text-purple-100' : 'text-slate-400'
+                }`}
+              >
+                — {PART_STAGE_LABELS[partStage]}
+              </span>
+            </button>
+          );
+        })}
         <span className="ms-auto text-[11px] font-bold text-purple-700">
           المتاح للخياطة: {Number(
             model.sewing_available?.[selectedPart] ??

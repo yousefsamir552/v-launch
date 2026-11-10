@@ -14,14 +14,24 @@ import {
   Grid,
   Save
 } from 'lucide-react';
-import { QCStageType, Model, QCMatrixCellInput, GarmentPart, getPartLabel } from '../types';
+import { QCStageType, Model, QCMatrixCellInput, GarmentPart, PART_EMOJI, getPartLabel } from '../types';
 import { printManualCountSheet } from '../utils/printManualCountSheet';
+
+type QCPartCard = { model: Model; part: GarmentPart };
+
+// QC tab -> the per-part stage that belongs in that tab.
+const QC_STAGE_TO_PART_STAGE: Record<QCStageType, string> = {
+  before_print: 'qc_before_print',
+  after_print: 'qc_after_print',
+  after_sewing: 'qc_after_sewing'
+};
 
 export const QCView: React.FC = () => {
   const {
     models,
     qcRecords,
     getModelParts,
+    getPartStages,
     getModelColorList,
     getModelSizeList,
     saveQCMatrix,
@@ -39,7 +49,14 @@ export const QCView: React.FC = () => {
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [countingModel, setCountingModel] = useState<Model | null>(null);
   const [modalPart, setModalPart] = useState<GarmentPart>('shirt');
-  const modalParts: GarmentPart[] = countingModel ? getModelParts(countingModel.id) : [];
+  // Only parts currently waiting in this QC stage can be counted here.
+  const modalParts: GarmentPart[] = countingModel
+    ? getModelParts(countingModel.id).filter(
+        (part) =>
+          (getPartStages(countingModel.id)[part] || 'cutting') ===
+          QC_STAGE_TO_PART_STAGE[activeTab]
+      )
+    : [];
 
   // Matrix state: key is `${color}___${size}` -> { good: number, defect: number }
   const [matrixState, setMatrixState] = useState<
@@ -52,43 +69,37 @@ export const QCView: React.FC = () => {
       ? canAddQCBeforePrintNotes()
       : canAddQCAfterPrintNotes();
 
-  // Filter models based on the active tab
-  const getModelsForStage = (stage: QCStageType) => {
-    return models.filter((m) => {
-      if (m.is_deleted) return false;
-      if (stage === 'before_print') {
-        return (
-          m.status === 'فرز وكنترول' ||
-          m.status === 'فرز قبل الطباعة' ||
-          m.status === 'العد قبل الطباعة'
-        );
-      }
-      if (stage === 'after_print') {
-        return m.status === 'العد بعد الطباعة';
-      }
-      if (stage === 'after_sewing') {
-        return m.status === 'العد بعد المكن';
-      }
-      return false;
+  // Filter part cards based on the active tab: every garment part is its own card.
+  const getPartCardsForStage = (stage: QCStageType): QCPartCard[] => {
+    const targetStage = QC_STAGE_TO_PART_STAGE[stage];
+    const cards: QCPartCard[] = [];
+    models.forEach((model) => {
+      if (model.is_deleted) return;
+      const stages = getPartStages(model.id);
+      getModelParts(model.id).forEach((part) => {
+        if ((stages[part] || 'cutting') === targetStage) {
+          cards.push({ model, part });
+        }
+      });
     });
+    return cards;
   };
 
-  const currentTabModels = getModelsForStage(activeTab).filter(
-    (m) =>
-      m.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (m.model_type && m.model_type.toLowerCase().includes(searchTerm.toLowerCase()))
+  const currentTabCards = getPartCardsForStage(activeTab).filter(
+    ({ model }) =>
+      model.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (model.model_type && model.model_type.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
-  const beforePrintCount = getModelsForStage('before_print').length;
-  const afterPrintCount = getModelsForStage('after_print').length;
-  const afterSewingCount = getModelsForStage('after_sewing').length;
+  const beforePrintCount = getPartCardsForStage('before_print').length;
+  const afterPrintCount = getPartCardsForStage('after_print').length;
+  const afterSewingCount = getPartCardsForStage('after_sewing').length;
   const totalQCModels = beforePrintCount + afterPrintCount + afterSewingCount;
 
   const makeCellKey = (color: string, size: string) => `${color}___${size}`;
 
-  const handleOpenCountModal = (model: Model) => {
-    const parts = getModelParts(model.id);
-    setModalPart(parts[0] || 'shirt');
+  const handleOpenCountModal = (model: Model, part: GarmentPart) => {
+    setModalPart(part);
     setCountingModel(model);
   };
 
@@ -221,8 +232,8 @@ export const QCView: React.FC = () => {
   };
 
   // Prints a blank A4 manual-count sheet (one table per garment part) for floor workers.
-  const handlePrintManualSheet = (model: Model) => {
-    const parts = getModelParts(model.id);
+  const handlePrintManualSheet = (model: Model, onlyPart?: GarmentPart) => {
+    const parts = onlyPart ? [onlyPart] : getModelParts(model.id);
     printManualCountSheet({
       siteName: globalSettings?.site_name,
       modelCode: model.model_code,
@@ -289,7 +300,7 @@ export const QCView: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-xs flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold text-slate-500 mb-1">إجمالي الموديلات بالفرز</p>
+            <p className="text-xs font-bold text-slate-500 mb-1">إجمالي قطع الفرز</p>
             <h3 className="text-2xl font-black text-purple-900">{totalQCModels}</h3>
             <span className="text-xs text-purple-600 font-semibold mt-1 inline-block">جميع مراحل الجودة</span>
           </div>
@@ -446,16 +457,19 @@ export const QCView: React.FC = () => {
 
       {/* Grid of Models in this stage */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-        {currentTabModels.length > 0 ? (
-          currentTabModels.map((model) => {
-            const cutPieces = model.total_cut_pieces || 0;
+        {currentTabCards.length > 0 ? (
+          currentTabCards.map(({ model, part }) => {
+            const cutPieces = Number(model.cut_summary?.[part] ?? 0);
             const targetPieces = model.target_cut_quantity || 0;
             const beforePrint = model.count_before_print;
             const afterPrint = model.count_after_print;
-            const mColors = getModelColorList(model.id);
+            const mColors = getModelColorList(model.id, part);
             const mSizes = getModelSizeList(model.id);
             const stageSavedRecs = qcRecords.filter(
-              (r) => r.model_id === model.id && r.stage === activeTab
+              (r) =>
+                r.model_id === model.id &&
+                r.stage === activeTab &&
+                (r.part_type || 'shirt') === part
             );
             const stageSavedGood = stageSavedRecs.reduce(
               (s, r) => s + (r.good_qty ?? r.counted_pieces ?? 0),
@@ -468,7 +482,7 @@ export const QCView: React.FC = () => {
 
             return (
               <div
-                key={model.id}
+                key={`${model.id}-${part}`}
                 className="bg-white rounded-3xl border border-slate-200/80 shadow-xs hover:shadow-lg transition-all duration-200 overflow-hidden flex flex-col justify-between group"
               >
                 <div className="h-52 w-full overflow-hidden bg-slate-100 relative">
@@ -489,11 +503,15 @@ export const QCView: React.FC = () => {
                   )}
 
                   <span className="absolute top-3 end-3 px-3 py-1 rounded-full text-[11px] font-bold bg-purple-700 text-white shadow-xs">
+                    {PART_EMOJI[part]} {getPartLabel(part)}
+                  </span>
+
+                  <span className="absolute bottom-3 start-3 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-purple-900/70 backdrop-blur-xs text-white">
                     {model.status}
                   </span>
 
                   {model.cutter_name && (
-                    <span className="absolute bottom-3 start-3 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-black/60 backdrop-blur-xs text-white">
+                    <span className="absolute bottom-3 end-3 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-black/60 backdrop-blur-xs text-white">
                       مقصدار: {model.cutter_name}
                     </span>
                   )}
@@ -505,8 +523,8 @@ export const QCView: React.FC = () => {
                       <h3 className="text-xl font-extrabold text-slate-900">
                         {model.model_code}
                       </h3>
-                      <span className="text-xs px-2.5 py-0.5 bg-slate-100 text-slate-700 rounded-lg font-bold">
-                        {model.model_type || 'تيشرت/بنطلون'}
+                      <span className="text-xs px-2.5 py-0.5 bg-purple-100 text-purple-800 rounded-lg font-bold">
+                        {PART_EMOJI[part]} {getPartLabel(part)}
                       </span>
                     </div>
 
@@ -533,21 +551,6 @@ export const QCView: React.FC = () => {
                           {cutPieces.toLocaleString('ar-EG')} ق
                         </strong>
                       </div>
-
-                      {/* Per-part cut breakdown (parts are never summed together) */}
-                      {getModelParts(model.id).length > 1 && (
-                        <div className="flex flex-wrap gap-1 pt-1">
-                          {getModelParts(model.id).map((part) => (
-                            <span
-                              key={part}
-                              className="px-2 py-0.5 rounded-lg bg-purple-50 text-purple-800 border border-purple-200 text-[10px] font-bold"
-                            >
-                              {getPartLabel(part)}:{' '}
-                              {Number(model.cut_summary?.[part] ?? 0).toLocaleString('ar-EG')}
-                            </span>
-                          ))}
-                        </div>
-                      )}
 
                       {stageSavedRecs.length > 0 && (
                         <div className="flex justify-between items-center text-emerald-700 pt-1 border-t border-slate-200/70">
@@ -580,14 +583,14 @@ export const QCView: React.FC = () => {
 
                   <div className="space-y-2">
                     <button
-                      onClick={() => handleOpenCountModal(model)}
+                      onClick={() => handleOpenCountModal(model, part)}
                       className="w-full py-2.5 px-4 rounded-full bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs transition shadow-md shadow-purple-600/20 flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <Grid className="w-4 h-4" />
                       <span>فتح جدول الفرز (الألوان × المقاسات)</span>
                     </button>
                     <button
-                      onClick={() => handlePrintManualSheet(model)}
+                      onClick={() => handlePrintManualSheet(model, part)}
                       className="w-full py-2 px-4 rounded-full bg-white hover:bg-purple-50 text-purple-700 border border-purple-300 font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <Printer className="w-4 h-4" />
@@ -602,10 +605,10 @@ export const QCView: React.FC = () => {
           <div className="col-span-full py-16 text-center bg-white rounded-3xl border border-slate-200/80 p-8 text-slate-400">
             <ClipboardCheck className="w-12 h-12 mx-auto mb-2 text-purple-300" />
             <p className="font-bold text-slate-700 text-base">
-              لا توجد موديلات في مرحلة "{getStageTitle(activeTab)}" حالياً
+              لا توجد قطع في مرحلة "{getStageTitle(activeTab)}" حالياً
             </p>
             <p className="text-xs text-slate-400 mt-1">
-              الموديلات تظهر في كل مرحلة تباعاً عند إنهاء المرحلة السابقة.
+              كل قطعة (تيشرت / بنطلون / جاكيت) تظهر هنا بشكل مستقل عند وصولها للمرحلة.
             </p>
           </div>
         )}
@@ -1011,7 +1014,7 @@ export const QCView: React.FC = () => {
                 </h2>
                 <div className="text-xs text-slate-500 mt-1 flex justify-center gap-6">
                   <span>تاريخ التقرير: {new Date().toLocaleDateString('ar-EG')}</span>
-                  <span>عدد الموديلات: {currentTabModels.length}</span>
+                  <span>عدد قطع الفرز: {currentTabCards.length}</span>
                 </div>
               </div>
 
@@ -1020,6 +1023,7 @@ export const QCView: React.FC = () => {
                   <tr className="bg-slate-100 border-y border-slate-300 text-slate-700 font-bold">
                     <th className="py-2.5 px-3">#</th>
                     <th className="py-2.5 px-3">كود الموديل</th>
+                    <th className="py-2.5 px-3">القطعة</th>
                     <th className="py-2.5 px-3">نوع الموديل</th>
                     <th className="py-2.5 px-3">المقصدار</th>
                     <th className="py-2.5 px-3 text-center">العدد المستهدف</th>
@@ -1031,11 +1035,14 @@ export const QCView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
-                  {currentTabModels.map((model, idx) => {
-                    const cut = model.total_cut_pieces || 0;
+                  {currentTabCards.map(({ model, part }, idx) => {
+                    const cut = Number(model.cut_summary?.[part] ?? 0);
                     const target = model.target_cut_quantity || 0;
                     const stageRecs = qcRecords.filter(
-                      (r) => r.model_id === model.id && r.stage === activeTab
+                      (r) =>
+                        r.model_id === model.id &&
+                        r.stage === activeTab &&
+                        (r.part_type || 'shirt') === part
                     );
                     const stageDefects = stageRecs.reduce(
                       (s, r) => s + (r.defect_qty ?? r.defect_pieces ?? 0),
@@ -1054,12 +1061,15 @@ export const QCView: React.FC = () => {
                     const deficit = cut - actual;
 
                     return (
-                      <tr key={model.id} className="hover:bg-slate-50">
+                      <tr key={`${model.id}-${part}`} className="hover:bg-slate-50">
                         <td className="py-2 px-3 font-semibold text-slate-400">
                           {idx + 1}
                         </td>
                         <td className="py-2 px-3 font-black text-slate-900">
                           {model.model_code}
+                        </td>
+                        <td className="py-2 px-3 text-purple-800 font-bold">
+                          {PART_EMOJI[part]} {getPartLabel(part)}
                         </td>
                         <td className="py-2 px-3 text-slate-700">
                           {model.model_type || '-'}

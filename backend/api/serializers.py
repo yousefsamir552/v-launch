@@ -7,7 +7,7 @@ from .models import (
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
     PackagingRequirement, FinishingRecord, AssemblyStageRecord,
-    PART_STAGE_LABELS, PART_TYPE_CHOICES,
+    PART_STAGE_LABELS, PART_STAGE_ORDER, PART_TYPE_CHOICES,
     HRJobTitle, HREmployee, HRAttendanceSettings,
     HRAttendanceRecord, HRPenalty, HRLoan,
     RANK_SUDO, RANK_LEVEL_THREE, DEFAULT_RANK_LEVEL,
@@ -529,9 +529,17 @@ class ModelItemSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def to_representation(self, instance):
-        from .services import model_part_summary, get_part_stages
+        from .services import model_part_summary
         parts_info = model_part_summary(instance)
-        part_stages = get_part_stages(instance)
+        # Raw per-part stages: parts without an explicit stage are omitted on
+        # purpose so the client can keep its own legacy fallback instead of
+        # being told that every part is still in cutting.
+        raw_stages = instance.part_stages if isinstance(instance.part_stages, dict) else {}
+        part_stages = {
+            part: stage
+            for part, stage in raw_stages.items()
+            if stage in PART_STAGE_ORDER
+        }
         return {
             'id': get_ext_id(instance),
             'model_code': instance.model_code,

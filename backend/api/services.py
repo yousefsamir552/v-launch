@@ -232,11 +232,99 @@ def get_part_stages(model):
     return stages
 
 
+# Full coarse-status -> part-stage map used to seed legacy models.
+# Older models were created before per-part tracking existed; before a pipeline
+# action touches them, every part is seeded to the stage implied by the current
+# status so the touched part can advance without regressing the model label.
+STATUS_TO_PART_STAGE = {
+    'مرحلة التصميم': 'cutting',
+    'تصميم': 'cutting',
+    'في القص': 'cutting',
+    'جاري القص': 'cutting',
+    'العد قبل الطباعة': 'qc_before_print',
+    'فرز قبل الطباعة': 'qc_before_print',
+    'فرز وكنترول': 'qc_before_print',
+    'فرز وكنترول (قبل الطباعة)': 'qc_before_print',
+    'جاهز للطباعة / التجميع': 'printing',
+    'جاهز للمطبعة': 'printing',
+    'مرسل للمطبعة': 'printing',
+    'في المطبعة': 'printing',
+    'العد بعد الطباعة': 'qc_after_print',
+    'في قسم المكن': 'sewing',
+    'في قسم المكن (الخياطة)': 'sewing',
+    'العد بعد المكن': 'qc_after_sewing',
+    'العد بعد المكن (الفحص النهائي)': 'qc_after_sewing',
+    'في التشطيب': 'finishing',
+    'في المكواة': 'ironing',
+    'في التعبئة والتغليف': 'packaging',
+    'جاهز للدَست': 'dest',
+    'مخزن الإنتاج التام': 'completed',
+    'مكتمل الإنتاج': 'completed',
+    'مكتمل الإنتاج (مخزن الإنتاج)': 'completed',
+}
+
+
+def seed_part_stages_from_status(model):
+    """Seeds part_stages from the coarse status for legacy models.
+
+    Returns the normalized stages. When part_stages already holds data it is
+    left untouched, so this is safe to call before every pipeline action.
+    """
+    raw = getattr(model, 'part_stages', None)
+    if isinstance(raw, dict) and raw:
+        return get_part_stages(model)
+    stage = STATUS_TO_PART_STAGE.get(getattr(model, 'status', '') or '', 'cutting')
+    return set_all_part_stages(model, stage, save=False)
+
+
+def derive_pipeline_status(model, save=False):
+    """Derives the coarse ModelItem.status from the *least advanced* part.
+
+    Unlike ``sync_model_status_from_part_stages`` (assembly only), this covers
+    the full pipeline (cutting → printing → sewing → finishing), so each part
+    advances the model label only as far as the slowest part has reached.
+    """
+    raw = getattr(model, 'part_stages', None)
+    if not isinstance(raw, dict) or not raw:
+        return model.status
+    stages = get_part_stages(model)
+    if not stages:
+        return model.status
+    min_stage = min(stages.values(), key=_stage_index)
+    new_status = PART_STAGE_TO_STATUS.get(min_stage)
+    if new_status and model.status != new_status:
+        model.status = new_status
+        if save:
+            model._skip_timeline_signal = True
+            model.save(update_fields=['status', 'updated_at'])
+    return model.status
+
+
+def advance_parts_to_stage(model, stage, parts=None):
+    """Moves the given (or all) parts forward to ``stage``.
+
+    Parts already at/after the target stage are left untouched, so a bulk action
+    can never push a more advanced part back.
+    """
+    if stage not in PART_STAGE_ORDER:
+        raise ValueError('مرحلة القطعة غير معروفة')
+    seed_part_stages_from_status(model)
+    stages = get_part_stages(model)
+    target_index = _stage_index(stage)
+    keys = [normalize_part_key(p) for p in parts] if parts else list(stages.keys())
+    for part in keys:
+        if _stage_index(stages.get(part, 'cutting')) < target_index:
+            stages[part] = stage
+    model.part_stages = stages
+    return stages
+
+
 def set_part_stage(model, part, stage, save=True):
     """Sets the stage of a single garment part (keeps other parts untouched)."""
     part = normalize_part_key(part)
     if stage not in PART_STAGE_ORDER:
         raise ValueError('مرحلة القطعة غير معروفة')
+    seed_part_stages_from_status(model)
     stages = get_part_stages(model)
     stages[part] = stage
     model.part_stages = stages
@@ -295,6 +383,24 @@ def ensure_part_stages(model):
     parts = get_model_parts(model)
 
     status_stage = {
+        # Pre-assembly pipeline positions (kept so a model opening the assembly
+        # screen is never seeded back to cutting).
+        'مرحلة التصميم': 'cutting',
+        'تصميم': 'cutting',
+        'في القص': 'cutting',
+        'جاري القص': 'cutting',
+        'العد قبل الطباعة': 'qc_before_print',
+        'فرز قبل الطباعة': 'qc_before_print',
+        'فرز وكنترول': 'qc_before_print',
+        'فرز وكنترول (قبل الطباعة)': 'qc_before_print',
+        'جاهز للطباعة / التجميع': 'printing',
+        'جاهز للمطبعة': 'printing',
+        'مرسل للمطبعة': 'printing',
+        'في المطبعة': 'printing',
+        'العد بعد الطباعة': 'qc_after_print',
+        'في قسم المكن': 'sewing',
+        'في قسم المكن (الخياطة)': 'sewing',
+        # Assembly treats a post-sewing model as ready for finishing.
         'العد بعد المكن': 'finishing',
         'العد بعد المكن (الفحص النهائي)': 'finishing',
         'في التشطيب': 'finishing',
@@ -1182,7 +1288,9 @@ def dispatch_model_to_sewing_service(
     model.sewing_workshop = workshop_name
     model.sewing_expected_date = expected_delivery_date
     model.sewing_pieces_count = pieces_count
-    model.status = 'في قسم المكن'
+    # Only this part moves to sewing; the coarse status follows the slowest part.
+    advance_parts_to_stage(model, 'sewing', [piece_type])
+    derive_pipeline_status(model)
     model._skip_timeline_signal = True
     model.save()
 
@@ -1252,11 +1360,14 @@ def receive_model_from_sewing_service(dispatch_id, user_name='مراقب الج�
     elif dispatch.piece_type == 'pants':
         model.sewing_pants_status = 'تم الاستلام'
 
+    # Bug fix: advance ONLY the received part. The other part keeps its stage so
+    # receiving one part never ejects the sibling part out of sewing.
+    advance_parts_to_stage(model, 'qc_after_sewing', [dispatch.piece_type or 'shirt'])
+    derive_pipeline_status(model)
+
     other_pending = SewingDispatch.objects.filter(model=model).exclude(id=dispatch.id).exclude(status='تم الاستلام').exists()
     all_done = not other_pending
 
-    if all_done:
-        model.status = 'العد بعد المكن'
     model._skip_timeline_signal = True
     model.save()
 
