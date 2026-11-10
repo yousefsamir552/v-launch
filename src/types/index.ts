@@ -653,6 +653,111 @@ export const ASSEMBLY_STAGE_LABELS: Record<AssemblyStageKey, string> = {
 };
 
 // ---------------------------------------------------------------------------
+// خامات التشغيل والأمبالاج (Packaging & Operating Materials MRP)
+// خمس فئات ثابتة: أكياس البلاستيك / الكرتون / الشماعات / أكياس حديثي الولادة /
+// أكياس الدست، ولكل فئة استهلاك لكل قطعة + مورد + حد تنبيه + رصيد.
+// ---------------------------------------------------------------------------
+export type PackagingMaterialKey = 'bags' | 'cartons' | 'hangers' | 'newborn_bags' | 'dozen_bags';
+
+export const PACKAGING_MATERIAL_KEYS: PackagingMaterialKey[] = [
+  'bags',
+  'cartons',
+  'hangers',
+  'newborn_bags',
+  'dozen_bags'
+];
+
+export const PACKAGING_MATERIAL_LABELS: Record<PackagingMaterialKey, string> = {
+  bags: 'أكياس البلاستيك',
+  cartons: 'الكرتون',
+  hangers: 'الشماعات',
+  newborn_bags: 'أكياس حديثي الولادة',
+  dozen_bags: 'أكياس الدست'
+};
+
+export const PACKAGING_MATERIAL_EMOJI: Record<PackagingMaterialKey, string> = {
+  bags: '🛍️',
+  cartons: '📦',
+  hangers: '🧷',
+  newborn_bags: '👶',
+  dozen_bags: '🎁'
+};
+
+export type PackagingMaterialUnit = 'قطعة' | 'كيلو' | 'دستة' | 'متر';
+
+export const PACKAGING_MATERIAL_UNITS: PackagingMaterialUnit[] = ['قطعة', 'كيلو', 'دستة', 'متر'];
+
+export type PackagingMaterialRuleMode = 'fixed' | 'variable';
+
+export const PACKAGING_MATERIAL_RULE_MODE_LABELS: Record<PackagingMaterialRuleMode, string> = {
+  fixed: 'ثابتة لكل المقاسات',
+  variable: 'متغيرة حسب المقاس'
+};
+
+export type PackagingMaterialOperation = 'add' | 'deduct' | 'adjust';
+
+export const PACKAGING_MATERIAL_OPERATION_LABELS: Record<PackagingMaterialOperation, string> = {
+  add: 'وارد جديد',
+  deduct: 'منصرف',
+  adjust: 'تعديل الرصيد'
+};
+
+export interface PackagingMaterialTransaction {
+  id: string;
+  size_rule_id: string;
+  operation: PackagingMaterialOperation;
+  operation_label?: string;
+  amount: number;
+  notes?: string;
+  timestamp?: string;
+  created_at?: string;
+}
+
+export interface PackagingMaterialSizeRule {
+  id: string;
+  rule_id: string;
+  rule_key?: PackagingMaterialKey;
+  size_group_id: string;
+  size_group_name: string;
+  consumption_per_piece: number;
+  dimensions_spec?: string;
+  supplier_id?: string;
+  supplier_name?: string;
+  supplier_phone?: string;
+  min_alert_threshold: number;
+  current_stock: number;
+  transactions?: PackagingMaterialTransaction[];
+  updated_at?: string;
+}
+
+export interface PackagingMaterialRule {
+  id: string;
+  material_key: PackagingMaterialKey;
+  name: string;
+  unit: PackagingMaterialUnit;
+  rule_mode: PackagingMaterialRuleMode;
+  applicable_size_groups: string[];
+  is_active: boolean;
+  total_stock?: number;
+  size_rules: PackagingMaterialSizeRule[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** نتيجة حساب MRP لصف خامة/مقاس واحد. */
+export interface PackagingMaterialDemand {
+  sizeRuleId: string;
+  totalPieces: number;
+  modelCount: number;
+  required: number;
+  stock: number;
+  shortage: number;
+  consumptionPerPiece: number;
+  belowMinThreshold: boolean;
+  hasShortage: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Independent per-part production stages.
 // Each garment part (تيشرت / بنطلون / جاكيت) moves through these on its own;
 // the model status is only a coarse label derived from the least advanced part.
@@ -813,14 +918,15 @@ export interface InternalMessage {
   is_read: boolean;
 }
 
-export type NotificationUrgency = 'tomorrow' | 'today' | 'overdue';
+export type NotificationUrgency = 'tomorrow' | 'today' | 'overdue' | 'critical';
 export type NotificationStage =
   | 'printing'
   | 'sewing'
   | 'finishing'
   | 'ironing'
   | 'packaging'
-  | 'dest';
+  | 'dest'
+  | 'materials';
 
 export interface AppNotification {
   id: string;
@@ -835,6 +941,10 @@ export interface AppNotification {
   message: string;
   is_read?: boolean;
   created_at: string;
+  /** يميز تنبيهات خامات التشغيل عن تنبيهات مواعيد الاستلام. */
+  kind?: 'delivery' | 'material';
+  /** رابط داخلي للانتقال إلى شاشة خامات التشغيل عند الضغط على التنبيه. */
+  link_tab?: string;
 }
 
 export type AccessoryUnit = 'قطعة' | 'دستة' | 'متر' | 'باكو' | 'كيس';

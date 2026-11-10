@@ -311,6 +311,21 @@ export const api = {
       body: JSON.stringify(data)
     }),
 
+  // خامات التشغيل والأمبالاج (Packaging & Operating Materials MRP)
+  getPackagingMaterialRules: () => request<any[]>('/packaging-material-rules/'),
+  savePackagingMaterialRule: (data: any) =>
+    request<any>('/packaging-material-rules/', { method: 'POST', body: JSON.stringify(data) }),
+  updatePackagingMaterialRule: (id: string, data: any) =>
+    request<any>(`/packaging-material-rules/${encodeURIComponent(id)}/`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    }),
+  recordPackagingMaterialTransaction: (data: any) =>
+    request<{ sizeRule: any; transaction: any }>('/packaging-material-transactions/', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+
   // سجلات القص، الفرز، المطابع، والمكن
   getCuttingRecords: () => request<any[]>('/cutting-records/'),
   createCuttingRecord: (data: any) =>

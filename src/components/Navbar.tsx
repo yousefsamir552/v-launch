@@ -304,7 +304,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                       ? 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100'
                       : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200/80'
                   }`}
-                  title="تنبيهات مواعيد الاستلام"
+                  title="التنبيهات والإشعارات"
                 >
                   <Bell className="w-4 h-4" />
                   {unreadNotificationsCount > 0 && (
@@ -320,7 +320,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                       <div className="flex items-center gap-2">
                         <Bell className="w-4 h-4 text-rose-600" />
                         <h4 className="font-black text-xs text-slate-900">
-                          إشعارات مواعيد الاستلام والمتابعة
+                          إشعارات المواعيد وخامات التشغيل
                         </h4>
                       </div>
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
@@ -331,6 +331,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                     <div className="max-h-80 overflow-y-auto divide-y divide-slate-100 p-2 space-y-1">
                       {appNotifications.length > 0 ? (
                         appNotifications.map((notif) => {
+                          const isCritical = notif.urgency === 'critical';
                           const isOverdue = notif.urgency === 'overdue';
                           const isToday = notif.urgency === 'today';
 
@@ -343,17 +344,35 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                                   'finishing',
                                   'ironing',
                                   'packaging',
-                                  'dest'
+                                  'dest',
+                                  'materials'
                                 ];
                                 setCurrentTab(
                                   assemblyStages.includes(notif.stage)
                                     ? 'assembly_packaging'
                                     : 'production_control'
                                 );
+                                if (notif.kind === 'material') {
+                                  // Deep-link into the packaging-materials screen even if the
+                                  // assembly view is not mounted yet.
+                                  try {
+                                    localStorage.setItem(
+                                      'erp_packaging_materials_focus',
+                                      String(Date.now())
+                                    );
+                                  } catch {}
+                                  window.setTimeout(() => {
+                                    window.dispatchEvent(
+                                      new CustomEvent('erp:open-packaging-materials')
+                                    );
+                                  }, 60);
+                                }
                                 setNotificationsOpen(false);
                               }}
                               className={`p-3 rounded-2xl transition cursor-pointer text-xs flex flex-col gap-1 border ${
-                                isOverdue
+                                isCritical
+                                  ? 'bg-purple-50/80 border-purple-300 text-purple-950 hover:bg-purple-100'
+                                  : isOverdue
                                   ? 'bg-rose-50/80 border-rose-300 text-rose-950 hover:bg-rose-100'
                                   : isToday
                                   ? 'bg-amber-50/80 border-amber-300 text-amber-950 hover:bg-amber-100'
@@ -363,28 +382,43 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                               <div className="flex items-center justify-between gap-1">
                                 <span
                                   className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-black text-[10px] ${
-                                    isOverdue
+                                    isCritical
+                                      ? 'bg-purple-700 text-white animate-pulse'
+                                      : isOverdue
                                       ? 'bg-rose-600 text-white animate-pulse'
                                       : isToday
                                       ? 'bg-amber-500 text-slate-900'
                                       : 'bg-blue-600 text-white'
                                   }`}
                                 >
+                                  {isCritical && <AlertCircle className="w-3 h-3" />}
                                   {isOverdue && <AlertCircle className="w-3 h-3" />}
                                   {isToday && <Clock className="w-3 h-3" />}
-                                  {!isOverdue && !isToday && <Calendar className="w-3 h-3" />}
+                                  {!isCritical && !isOverdue && !isToday && (
+                                    <Calendar className="w-3 h-3" />
+                                  )}
                                   <span>{notif.title}</span>
                                 </span>
                                 <span className="text-[10px] text-slate-400 font-mono">
-                                  موديل {notif.model_code}
+                                  {notif.kind === 'material'
+                                    ? `خامة: ${notif.model_code}`
+                                    : `موديل ${notif.model_code}`}
                                 </span>
                               </div>
                               <p className="font-bold text-slate-800 text-[11px] leading-relaxed">
                                 {notif.message}
                               </p>
                               <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1">
-                                <span>الموقع: {notif.source_name}</span>
-                                <span className="font-mono font-bold">تاريخ الاستلام: {notif.expected_date}</span>
+                                <span>
+                                  {notif.kind === 'material'
+                                    ? `المورد: ${notif.source_name}`
+                                    : `الموقع: ${notif.source_name}`}
+                                </span>
+                                <span className="font-mono font-bold">
+                                  {notif.kind === 'material'
+                                    ? `آخر تحديث: ${notif.expected_date}`
+                                    : `تاريخ الاستلام: ${notif.expected_date}`}
+                                </span>
                               </div>
                             </div>
                           );

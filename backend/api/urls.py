@@ -10,7 +10,8 @@ from .views import (
     SewingDispatchViewSet, NotificationViewSet, InternalMessageViewSet,
     AuditLogViewSet, ReportsViewSet,
     HRJobTitleViewSet, HREmployeeViewSet, HRAttendanceSettingsViewSet,
-    HRAttendanceRecordViewSet, HRPenaltyViewSet, HRLoanViewSet
+    HRAttendanceRecordViewSet, HRPenaltyViewSet, HRLoanViewSet,
+    PackagingMaterialRuleViewSet, PackagingMaterialTransactionViewSet
 )
 
 router = DefaultRouter()
@@ -44,6 +45,8 @@ router.register(r'hr-attendance-settings', HRAttendanceSettingsViewSet, basename
 router.register(r'hr-attendance-records', HRAttendanceRecordViewSet, basename='hr-attendance-records')
 router.register(r'hr-penalties', HRPenaltyViewSet, basename='hr-penalties')
 router.register(r'hr-loans', HRLoanViewSet, basename='hr-loans')
+router.register(r'packaging-material-rules', PackagingMaterialRuleViewSet, basename='packaging-material-rules')
+router.register(r'packaging-material-transactions', PackagingMaterialTransactionViewSet, basename='packaging-material-transactions')
 
 urlpatterns = [
     path('', include(router.urls)),

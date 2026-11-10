@@ -7,6 +7,7 @@ from .models import (
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
     PackagingRequirement, FinishingRecord, AssemblyStageRecord,
+    PackagingMaterialRule, PackagingMaterialSizeRule, PackagingMaterialTransaction,
     PART_STAGE_LABELS, PART_STAGE_ORDER, PART_TYPE_CHOICES,
     HRJobTitle, HREmployee, HRAttendanceSettings,
     HRAttendanceRecord, HRPenalty, HRLoan,
@@ -678,6 +679,74 @@ class AssemblyStageRecordSerializer(serializers.ModelSerializer):
             'is_completed': instance.is_completed,
             'is_overdue': instance.is_overdue,
             'notes': instance.notes or '',
+            'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
+        }
+
+
+class PackagingMaterialTransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PackagingMaterialTransaction
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        return {
+            'id': get_ext_id(instance),
+            'size_rule_id': get_ext_id(instance.size_rule),
+            'operation': instance.operation,
+            'operation_label': instance.get_operation_display(),
+            'amount': instance.amount,
+            'notes': instance.notes or '',
+            'timestamp': instance.timestamp or '',
+            'created_at': instance.created_at.isoformat() if instance.created_at else '',
+        }
+
+
+class PackagingMaterialSizeRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PackagingMaterialSizeRule
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        supplier = instance.supplier
+        return {
+            'id': get_ext_id(instance),
+            'rule_id': get_ext_id(instance.rule),
+            'rule_key': instance.rule.material_key if instance.rule else '',
+            'size_group_id': instance.size_group_id or '',
+            'size_group_name': instance.size_group_name or '',
+            'consumption_per_piece': instance.consumption_per_piece,
+            'dimensions_spec': instance.dimensions_spec or '',
+            'supplier_id': get_ext_id(supplier) if supplier else '',
+            'supplier_name': supplier.name if supplier else '',
+            'supplier_phone': (supplier.phone or '') if supplier else '',
+            'min_alert_threshold': instance.min_alert_threshold,
+            'current_stock': instance.current_stock,
+            'transactions': PackagingMaterialTransactionSerializer(
+                instance.transactions.all(), many=True
+            ).data,
+            'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
+        }
+
+
+class PackagingMaterialRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PackagingMaterialRule
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        size_rules = instance.size_rules.select_related('supplier').all()
+        total_stock = sum(float(row.current_stock or 0) for row in size_rules)
+        return {
+            'id': get_ext_id(instance),
+            'material_key': instance.material_key,
+            'name': instance.label,
+            'unit': instance.unit,
+            'rule_mode': instance.rule_mode,
+            'applicable_size_groups': instance.applicable_size_groups or [],
+            'is_active': instance.is_active,
+            'total_stock': round(total_stock, 3),
+            'size_rules': PackagingMaterialSizeRuleSerializer(size_rules, many=True).data,
+            'created_at': instance.created_at.isoformat() if instance.created_at else '',
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
         }
 

@@ -21,7 +21,10 @@ from .models import (
     COMPOSITION_TO_PARTS, DEFAULT_GARMENT_COMPOSITION,
     PART_TYPE_CHOICES, PART_TYPE_KEYS,
     PackagingRequirement, FinishingRecord, AssemblyStageRecord,
+    PackagingMaterialRule, PackagingMaterialSizeRule, PackagingMaterialTransaction,
     PACKAGING_STEP_ORDER, ASSEMBLY_STAGE_KEYS,
+    PACKAGING_MATERIAL_KEYS, PACKAGING_MATERIAL_LABELS,
+    PACKAGING_MATERIAL_UNIT_KEYS, PACKAGING_MATERIAL_RULE_MODE_KEYS,
     HRJobTitle, HREmployee, HRAttendanceSettings,
     HRAttendanceRecord, HRPenalty, HRLoan,
     HR_DEPARTMENT_LABELS, WEEK_DAY_LABELS, HR_ATTENDANCE_STATUS_CHOICES,
@@ -41,11 +44,15 @@ from .serializers import (
     PrintDispatchSerializer, SewingDispatchSerializer,
     AppNotificationSerializer, InternalMessageSerializer, AuditLogSerializer,
     PackagingRequirementSerializer, FinishingRecordSerializer, AssemblyStageRecordSerializer,
+    PackagingMaterialRuleSerializer, PackagingMaterialSizeRuleSerializer,
+    PackagingMaterialTransactionSerializer,
     HRJobTitleSerializer, HREmployeeSerializer, HRAttendanceSettingsSerializer,
     HRAttendanceRecordSerializer, HRPenaltySerializer, HRLoanSerializer
 )
 from .services import (
     ensure_initial_seed,
+    ensure_packaging_material_categories,
+    apply_packaging_material_transaction,
     sync_reserved_quantities,
     get_accessory_deficits,
     generate_smart_delivery_notifications,
@@ -355,6 +362,7 @@ class StateViewSet(viewsets.ViewSet):
 
     def list(self, request):
         ensure_initial_seed()
+        ensure_packaging_material_categories()
         sync_reserved_quantities()
         req_ctx = {'request': request}
 
@@ -410,6 +418,16 @@ class StateViewSet(viewsets.ViewSet):
             'packagingRequirements': PackagingRequirementSerializer(PackagingRequirement.objects.select_related('model').all(), many=True).data,
             'finishingRecords': FinishingRecordSerializer(FinishingRecord.objects.select_related('model').all(), many=True).data,
             'assemblyStageRecords': AssemblyStageRecordSerializer(AssemblyStageRecord.objects.select_related('model').all(), many=True).data,
+            'packagingMaterialRules': PackagingMaterialRuleSerializer(
+                PackagingMaterialRule.objects.prefetch_related(
+                    'size_rules', 'size_rules__supplier', 'size_rules__transactions'
+                ).all(),
+                many=True
+            ).data,
+            'packagingMaterialTransactions': PackagingMaterialTransactionSerializer(
+                PackagingMaterialTransaction.objects.select_related('size_rule').all()[:300],
+                many=True
+            ).data,
             'internalMessages': InternalMessageSerializer(visible_messages, many=True).data,
             'auditLogs': AuditLogSerializer(visible_logs, many=True).data,
         })
@@ -2594,6 +2612,143 @@ class SewingDispatchViewSet(BasePermViewSet):
         notes = request.data.get('notes') or ''
         disp = receive_model_from_sewing_service(get_ext_id(disp_obj), user, notes=notes)
         return Response(SewingDispatchSerializer(disp, context={'request': request}).data)
+
+
+class PackagingMaterialRuleViewSet(BasePermViewSet):
+    """
+    قواعد خامات التشغيل والأمبالاج (خمس فئات ثابتة).
+    الحفظ يستقبل تفاصيل كل مقاس داخل نفس الطلب عبر الحقل size_rules.
+    """
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'assembly_packaging'
+    queryset = PackagingMaterialRule.objects.prefetch_related(
+        'size_rules', 'size_rules__supplier', 'size_rules__transactions'
+    ).all()
+    serializer_class = PackagingMaterialRuleSerializer
+
+    def _as_float(self, value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _apply_size_rows(self, rule, rows):
+        """Upserts the size-level rows of a rule and drops the removed ones."""
+        keep_ids = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            size_group_id = str(row.get('size_group_id') or '').strip()
+            size_row = rule.size_rules.filter(size_group_id=size_group_id).first()
+            if size_row is None:
+                size_row = PackagingMaterialSizeRule(rule=rule, size_group_id=size_group_id)
+            size_row.size_group_name = row.get('size_group_name') or size_row.size_group_name or ''
+            size_row.consumption_per_piece = self._as_float(row.get('consumption_per_piece'))
+            size_row.dimensions_spec = row.get('dimensions_spec') or ''
+            supplier_val = row.get('supplier_id') or row.get('supplier')
+            size_row.supplier = resolve_by_id(Supplier, supplier_val) if supplier_val else None
+            size_row.min_alert_threshold = self._as_float(row.get('min_alert_threshold'))
+            if row.get('current_stock') is not None:
+                size_row.current_stock = self._as_float(row.get('current_stock'))
+            size_row.save()
+            keep_ids.append(size_row.pk)
+        # Never drop rows that still hold stock or a movement history; only prune empties.
+        rule.size_rules.exclude(pk__in=keep_ids).filter(
+            current_stock=0, transactions__isnull=True
+        ).delete()
+
+
+    def _save_rule(self, request, instance=None):
+        data = request.data
+        material_key = str(data.get('material_key') or (instance.material_key if instance else '')).strip()
+        if material_key not in PACKAGING_MATERIAL_KEYS:
+            return Response(
+                {'detail': 'نوع خامة التشغيل غير معروف'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        rule = instance or PackagingMaterialRule.objects.filter(material_key=material_key).first()
+        if rule is None:
+            rule = PackagingMaterialRule(material_key=material_key)
+        rule.name = data.get('name') or PACKAGING_MATERIAL_LABELS.get(material_key, material_key)
+        unit = data.get('unit')
+        if unit in PACKAGING_MATERIAL_UNIT_KEYS:
+            rule.unit = unit
+        rule_mode = data.get('rule_mode')
+        if rule_mode in PACKAGING_MATERIAL_RULE_MODE_KEYS:
+            rule.rule_mode = rule_mode
+        groups = data.get('applicable_size_groups')
+        if isinstance(groups, list):
+            rule.applicable_size_groups = [str(group) for group in groups]
+        if 'is_active' in data:
+            rule.is_active = bool(data.get('is_active'))
+        rule.save()
+
+        rows = data.get('size_rules')
+        if isinstance(rows, list):
+            self._apply_size_rows(rule, rows)
+
+        return Response(
+            PackagingMaterialRuleSerializer(rule, context={'request': request}).data,
+            status=status.HTTP_200_OK
+        )
+
+    def create(self, request, *args, **kwargs):
+        return self._save_rule(request)
+
+    def update(self, request, *args, **kwargs):
+        return self._save_rule(request, self.get_object())
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {'detail': 'فئات خامات التشغيل الخمس ثابتة ولا يمكن حذفها'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    @action(detail=True, methods=['post'])
+    def record_transaction(self, request, pk=None):
+        rule = self.get_object()
+        data = request.data
+        size_rule = resolve_by_id(
+            PackagingMaterialSizeRule, data.get('size_rule_id') or data.get('size_rule')
+        )
+        if not size_rule or size_rule.rule_id != rule.pk:
+            return Response({'detail': 'صف خامة التشغيل غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+        operation = data.get('operation') or 'add'
+        if operation not in ('add', 'deduct', 'adjust'):
+            return Response({'detail': 'نوع الحركة غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
+        txn = apply_packaging_material_transaction(
+            size_rule, operation, data.get('amount'), data.get('notes') or '', data.get('timestamp') or ''
+        )
+        return Response({
+            'sizeRule': PackagingMaterialSizeRuleSerializer(size_rule).data,
+            'transaction': PackagingMaterialTransactionSerializer(txn).data,
+        }, status=status.HTTP_201_CREATED)
+
+
+class PackagingMaterialTransactionViewSet(BasePermViewSet):
+    """سجل حركات مخزون خامات التشغيل (وارد / منصرف / تعديل رصيد)."""
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'assembly_packaging'
+    queryset = PackagingMaterialTransaction.objects.select_related('size_rule').all()
+    serializer_class = PackagingMaterialTransactionSerializer
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        size_rule = resolve_by_id(
+            PackagingMaterialSizeRule, data.get('size_rule_id') or data.get('size_rule')
+        )
+        if not size_rule:
+            return Response({'detail': 'صف خامة التشغيل غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+        operation = data.get('operation') or 'add'
+        if operation not in ('add', 'deduct', 'adjust'):
+            return Response({'detail': 'نوع الحركة غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
+        txn = apply_packaging_material_transaction(
+            size_rule, operation, data.get('amount'), data.get('notes') or '', data.get('timestamp') or ''
+        )
+        return Response({
+            'sizeRule': PackagingMaterialSizeRuleSerializer(size_rule).data,
+            'transaction': PackagingMaterialTransactionSerializer(txn).data,
+        }, status=status.HTTP_201_CREATED)
 
 
 class NotificationViewSet(viewsets.ViewSet):

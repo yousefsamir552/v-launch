@@ -1316,6 +1316,168 @@ class AssemblyStageRecord(models.Model):
 
 
 # ---------------------------------------------------------------------------
+# Packaging & Operating Materials MRP (خامات التشغيل والأمبالاج)
+# خمس فئات ثابتة: أكياس بلاستيك / كرتون / شماعات / أكياس حديثي الولادة /
+# أكياس الدست، ولكل فئة قاعدة استهلاك لكل قطعة ومقاسات ومورد وحد تنبيه ورصيد.
+# ---------------------------------------------------------------------------
+PACKAGING_MATERIAL_CHOICES = [
+    ('bags', 'أكياس البلاستيك'),
+    ('cartons', 'الكرتون'),
+    ('hangers', 'الشماعات'),
+    ('newborn_bags', 'أكياس حديثي الولادة'),
+    ('dozen_bags', 'أكياس الدست'),
+]
+
+PACKAGING_MATERIAL_KEYS = [key for key, _label in PACKAGING_MATERIAL_CHOICES]
+
+PACKAGING_MATERIAL_LABELS = dict(PACKAGING_MATERIAL_CHOICES)
+
+PACKAGING_MATERIAL_EMOJI = {
+    'bags': '🛍️',
+    'cartons': '📦',
+    'hangers': '🧷',
+    'newborn_bags': '👶',
+    'dozen_bags': '🎁',
+}
+
+# وحدات القياس المتاحة لخامات التشغيل.
+PACKAGING_MATERIAL_UNIT_CHOICES = [
+    ('قطعة', 'قطعة'),
+    ('كيلو', 'كيلو'),
+    ('دستة', 'دستة'),
+    ('متر', 'متر'),
+]
+
+PACKAGING_MATERIAL_UNIT_KEYS = [key for key, _label in PACKAGING_MATERIAL_UNIT_CHOICES]
+
+# نمط القاعدة: ثابتة (صف واحد يطبق على كل المقاسات) أو متغيرة حسب كل مقاس.
+PACKAGING_MATERIAL_RULE_MODE_CHOICES = [
+    ('fixed', 'ثابتة لكل المقاسات المختارة'),
+    ('variable', 'متغيرة حسب المقاس'),
+]
+
+PACKAGING_MATERIAL_RULE_MODE_KEYS = [key for key, _label in PACKAGING_MATERIAL_RULE_MODE_CHOICES]
+
+# أنواع حركة مخزون خامات التشغيل.
+PACKAGING_MATERIAL_TRANSACTION_CHOICES = [
+    ('add', 'وارد جديد'),
+    ('deduct', 'منصرف'),
+    ('adjust', 'تعديل الرصيد'),
+]
+
+
+class PackagingMaterialRule(models.Model):
+    """
+    قاعدة خامة تشغيل واحدة (أكياس / كرتون / شماعات / ...).
+    توجد خمس قواعد ثابتة تُزرع تلقائياً، ويُحفظ فيها الوحدة وفئات المقاسات ونمط القاعدة.
+    تفاصيل كل مقاس تُحفظ في PackagingMaterialSizeRule.
+    """
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    material_key = models.CharField(
+        max_length=30, choices=PACKAGING_MATERIAL_CHOICES, unique=True, verbose_name="نوع الخامة"
+    )
+    name = models.CharField(max_length=200, blank=True, default='', verbose_name="اسم الخامة")
+    unit = models.CharField(
+        max_length=30, choices=PACKAGING_MATERIAL_UNIT_CHOICES, default='قطعة', verbose_name="وحدة القياس"
+    )
+    rule_mode = models.CharField(
+        max_length=20, choices=PACKAGING_MATERIAL_RULE_MODE_CHOICES, default='fixed', verbose_name="نمط القاعدة"
+    )
+    applicable_size_groups = models.JSONField(default=list, blank=True, verbose_name="فئات المقاسات المستهدفة")
+    is_active = models.BooleanField(default=True, verbose_name="مفعّلة")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['id']
+        verbose_name = "قاعدة خامة تشغيل"
+        verbose_name_plural = "قواعد خامات التشغيل"
+
+    @property
+    def label(self) -> str:
+        return self.name or PACKAGING_MATERIAL_LABELS.get(self.material_key, self.material_key)
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('pack-mat')
+        if not self.name:
+            self.name = PACKAGING_MATERIAL_LABELS.get(self.material_key, self.material_key)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.label
+
+
+class PackagingMaterialSizeRule(models.Model):
+    """
+    تفاصيل خامة التشغيل لمقاس/فئة مقاس محددة:
+    معدل الاستهلاك لكل قطعة + المقاسات والمواصفات + المورد + حد التنبيه + الرصيد الحالي.
+    """
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    rule = models.ForeignKey(
+        PackagingMaterialRule, on_delete=models.CASCADE, related_name='size_rules', verbose_name="الخامة"
+    )
+    size_group_id = models.CharField(
+        max_length=100, blank=True, default='', db_index=True, verbose_name="معرف فئة المقاس"
+    )
+    size_group_name = models.CharField(max_length=150, blank=True, default='', verbose_name="فئة المقاس")
+    consumption_per_piece = models.FloatField(default=0.0, verbose_name="معدل الاستهلاك لكل قطعة")
+    dimensions_spec = models.CharField(
+        max_length=255, blank=True, default='', verbose_name="المقاسات والمواصفات"
+    )
+    supplier = models.ForeignKey(
+        Supplier, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='packaging_material_sizes', verbose_name="المورد"
+    )
+    min_alert_threshold = models.FloatField(default=0.0, verbose_name="حد التنبيه الأدنى")
+    current_stock = models.FloatField(default=0.0, verbose_name="الرصيد الحالي")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['id']
+        unique_together = ('rule', 'size_group_id')
+        verbose_name = "تفاصيل خامة تشغيل حسب المقاس"
+        verbose_name_plural = "تفاصيل خامات التشغيل حسب المقاس"
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('pack-mat-size')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.rule.label} - {self.size_group_name or 'كل المقاسات'}"
+
+
+class PackagingMaterialTransaction(models.Model):
+    """سجل حركة مخزون خامة تشغيل (وارد / منصرف / تعديل رصيد)."""
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    size_rule = models.ForeignKey(
+        PackagingMaterialSizeRule, on_delete=models.CASCADE, related_name='transactions', verbose_name="صف الخامة"
+    )
+    operation = models.CharField(
+        max_length=20, choices=PACKAGING_MATERIAL_TRANSACTION_CHOICES, default='add', verbose_name="نوع الحركة"
+    )
+    amount = models.FloatField(default=0.0, verbose_name="الكمية")
+    notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
+    timestamp = models.CharField(max_length=100, blank=True, default='', verbose_name="وقت الحركة")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        verbose_name = "حركة خامة تشغيل"
+        verbose_name_plural = "حركات خامات التشغيل"
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('pack-mat-txn')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.size_rule} - {self.get_operation_display()} {self.amount}"
+
+
+# ---------------------------------------------------------------------------
 # Human Resources (HR) - الموارد البشرية
 # ---------------------------------------------------------------------------
 

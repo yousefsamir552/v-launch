@@ -6,6 +6,7 @@ from .models import (
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
+    PackagingMaterialRule, PackagingMaterialSizeRule, PackagingMaterialTransaction,
     HRJobTitle, HREmployee, HRAttendanceSettings,
     HRAttendanceRecord, HRPenalty, HRLoan
 )
@@ -136,6 +137,31 @@ class AppNotificationAdmin(admin.ModelAdmin):
 @admin.register(AuditLog)
 class AuditLogAdmin(admin.ModelAdmin):
     list_display = ('action', 'user_name', 'details', 'ip_address', 'timestamp')
+
+
+class PackagingMaterialSizeRuleInline(admin.TabularInline):
+    model = PackagingMaterialSizeRule
+    extra = 0
+    fields = ('size_group_name', 'consumption_per_piece', 'dimensions_spec', 'supplier', 'min_alert_threshold', 'current_stock')
+
+
+@admin.register(PackagingMaterialRule)
+class PackagingMaterialRuleAdmin(admin.ModelAdmin):
+    list_display = ('material_key', 'name', 'unit', 'rule_mode', 'is_active', 'updated_at')
+    list_filter = ('rule_mode', 'is_active')
+    inlines = [PackagingMaterialSizeRuleInline]
+
+
+@admin.register(PackagingMaterialSizeRule)
+class PackagingMaterialSizeRuleAdmin(admin.ModelAdmin):
+    list_display = ('rule', 'size_group_name', 'consumption_per_piece', 'supplier', 'min_alert_threshold', 'current_stock')
+    list_filter = ('rule__material_key',)
+
+
+@admin.register(PackagingMaterialTransaction)
+class PackagingMaterialTransactionAdmin(admin.ModelAdmin):
+    list_display = ('size_rule', 'operation', 'amount', 'timestamp', 'created_at')
+    list_filter = ('operation',)
 
 
 @admin.register(HRJobTitle)

@@ -47,12 +47,16 @@ import {
   FinishingRecord,
   AssemblyStageRecord,
   AssemblyStageKey,
+  PackagingMaterialRule,
+  PackagingMaterialSizeRule,
+  PackagingMaterialOperation,
   PartStage,
   PART_STAGE_LABELS,
   PART_STAGE_ORDER,
   MODEL_STATUS_TO_PART_STAGE,
   deriveStatusFromStages
 } from '../types';
+import { buildPackagingDemandMap } from '../utils/packagingMaterials';
 
 interface FlashMessage {
   id: string;
@@ -183,6 +187,29 @@ interface AppContextType {
   packagingRequirements: PackagingRequirement[];
   finishingRecords: FinishingRecord[];
   assemblyStageRecords: AssemblyStageRecord[];
+  packagingMaterialRules: PackagingMaterialRule[];
+  savePackagingMaterialRule: (data: {
+    materialKey: PackagingMaterialRule['material_key'];
+    unit?: PackagingMaterialRule['unit'];
+    ruleMode?: PackagingMaterialRule['rule_mode'];
+    applicableSizeGroups?: string[];
+    sizeRules?: Array<{
+      id?: string;
+      sizeGroupId: string;
+      sizeGroupName: string;
+      consumptionPerPiece: number;
+      dimensionsSpec?: string;
+      supplierId?: string;
+      minAlertThreshold: number;
+      currentStock?: number;
+    }>;
+  }) => Promise<{ success: boolean; message: string }>;
+  recordPackagingMaterialTransaction: (data: {
+    sizeRuleId: string;
+    operation: PackagingMaterialOperation;
+    amount: number;
+    notes?: string;
+  }) => Promise<{ success: boolean; message: string }>;
   appNotifications: AppNotification[];
   unreadNotificationsCount: number;
   markNotificationRead: (id: string) => void;
@@ -579,6 +606,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [packagingRequirements, setPackagingRequirements] = useState<PackagingRequirement[]>([]);
   const [finishingRecords, setFinishingRecords] = useState<FinishingRecord[]>([]);
   const [assemblyStageRecords, setAssemblyStageRecords] = useState<AssemblyStageRecord[]>([]);
+  const [packagingMaterialRules, setPackagingMaterialRules] = useState<PackagingMaterialRule[]>([]);
   const [internalMessages, setInternalMessages] = useState<InternalMessage[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [flashMessages, setFlashMessages] = useState<FlashMessage[]>([]);
@@ -710,6 +738,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setFinishingRecords(Array.isArray(state.finishingRecords) ? state.finishingRecords : []);
         setAssemblyStageRecords(
           Array.isArray(state.assemblyStageRecords) ? state.assemblyStageRecords : []
+        );
+        setPackagingMaterialRules(
+          Array.isArray(state.packagingMaterialRules) ? state.packagingMaterialRules : []
         );
         setInternalMessages(Array.isArray(state.internalMessages) ? state.internalMessages : []);
         const rawLogs: AuditLog[] = Array.isArray(state.auditLogs) ? state.auditLogs : [];
@@ -4008,6 +4039,121 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
 
 
+  // -------------------------------------------------------------------------
+  // خامات التشغيل والأمبالاج (Packaging & Operating Materials MRP)
+  // -------------------------------------------------------------------------
+  const savePackagingMaterialRule = async (data: {
+    materialKey: PackagingMaterialRule['material_key'];
+    unit?: PackagingMaterialRule['unit'];
+    ruleMode?: PackagingMaterialRule['rule_mode'];
+    applicableSizeGroups?: string[];
+    sizeRules?: Array<{
+      id?: string;
+      sizeGroupId: string;
+      sizeGroupName: string;
+      consumptionPerPiece: number;
+      dimensionsSpec?: string;
+      supplierId?: string;
+      minAlertThreshold: number;
+      currentStock?: number;
+    }>;
+  }): Promise<{ success: boolean; message: string }> => {
+    const payload = {
+      material_key: data.materialKey,
+      unit: data.unit,
+      rule_mode: data.ruleMode,
+      applicable_size_groups: data.applicableSizeGroups || [],
+      size_rules: (data.sizeRules || []).map((row) => ({
+        id: row.id,
+        size_group_id: row.sizeGroupId,
+        size_group_name: row.sizeGroupName,
+        consumption_per_piece: row.consumptionPerPiece,
+        dimensions_spec: row.dimensionsSpec || '',
+        supplier_id: row.supplierId || '',
+        min_alert_threshold: row.minAlertThreshold,
+        current_stock: row.currentStock
+      }))
+    };
+
+    try {
+      const existing = packagingMaterialRules.find(
+        (rule) => rule.material_key === data.materialKey
+      );
+      const saved = existing
+        ? await api.updatePackagingMaterialRule(existing.id, payload)
+        : await api.savePackagingMaterialRule(payload);
+
+      if (saved && saved.id) {
+        setPackagingMaterialRules((prev) => {
+          const index = prev.findIndex(
+            (rule) => rule.id === saved.id || rule.material_key === saved.material_key
+          );
+          if (index === -1) return [...prev, saved];
+          const next = [...prev];
+          next[index] = saved;
+          return next;
+        });
+      }
+      refreshState();
+      logAction('خامات التشغيل', `حفظ قاعدة خامة: ${data.materialKey}`);
+      addFlashMessage('تم حفظ قاعدة خامة التشغيل بنجاح');
+      return { success: true, message: 'تم حفظ قاعدة خامة التشغيل بنجاح' };
+    } catch (err: any) {
+      refreshState();
+      const message = err?.message || 'فشل حفظ قاعدة خامة التشغيل في الباك إند';
+      addFlashMessage(message, 'danger');
+      return { success: false, message };
+    }
+  };
+
+  const recordPackagingMaterialTransaction = async (data: {
+    sizeRuleId: string;
+    operation: PackagingMaterialOperation;
+    amount: number;
+    notes?: string;
+  }): Promise<{ success: boolean; message: string }> => {
+    const sizeRule = packagingMaterialRules
+      .flatMap((rule) => rule.size_rules || [])
+      .find((row) => row.id === data.sizeRuleId);
+    if (!sizeRule) {
+      addFlashMessage('صف خامة التشغيل غير موجود', 'danger');
+      return { success: false, message: 'صف خامة التشغيل غير موجود' };
+    }
+
+    try {
+      const res = await api.recordPackagingMaterialTransaction({
+        size_rule_id: data.sizeRuleId,
+        operation: data.operation,
+        amount: data.amount,
+        notes: data.notes || '',
+        timestamp: new Date().toISOString()
+      });
+      const saved: PackagingMaterialSizeRule | undefined = res?.sizeRule;
+      if (saved && saved.id) {
+        setPackagingMaterialRules((prev) =>
+          prev.map((rule) => ({
+            ...rule,
+            size_rules: (rule.size_rules || []).map((row) =>
+              row.id === saved.id ? { ...row, ...saved } : row
+            )
+          }))
+        );
+      }
+      refreshState();
+      logAction(
+        'خامات التشغيل',
+        `حركة ${data.operation} بمقدار ${data.amount} لخامة ${sizeRule.rule_key || ''} - ${sizeRule.size_group_name || 'كل المقاسات'}`
+      );
+      addFlashMessage('تم تسجيل حركة مخزون خامة التشغيل بنجاح');
+      return { success: true, message: 'تم تسجيل الحركة بنجاح' };
+    } catch (err: any) {
+      refreshState();
+      const message = err?.message || 'فشل تسجيل حركة خامة التشغيل في الباك إند';
+      addFlashMessage(message, 'danger');
+      return { success: false, message };
+    }
+  };
+
   // Settings Actions
   const addSizeDef = (name: string, values: string) => {
     const newSize: SizeDef = {
@@ -4534,19 +4680,62 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
 
-    const priorityOrder = { overdue: 0, today: 1, tomorrow: 2 };
+    // تنبيهات خامات التشغيل والأمبالاج: الرصيد وصل حد التنبيه أو لا يكفي الاحتياج الحالي.
+    if (packagingMaterialRules.length) {
+      const demandMap = buildPackagingDemandMap(models, packagingMaterialRules);
+      packagingMaterialRules.forEach((rule) => {
+        (rule.size_rules || []).forEach((row) => {
+          const demand = demandMap[row.id];
+          if (!demand) return;
+          if (!demand.belowMinThreshold && !demand.hasShortage) return;
+
+          const notifId = `notif-material-${row.id}-${demand.belowMinThreshold ? 'min' : 'short'}`;
+          const sizeLabel = row.size_group_name || 'كل المقاسات';
+          const reason = demand.belowMinThreshold
+            ? `الرصيد الحالي ${demand.stock} ${rule.unit} وصل إلى حد التنبيه (${row.min_alert_threshold} ${rule.unit}).`
+            : `الاحتياج الحالي ${demand.required} ${rule.unit} والعجز ${demand.shortage} ${rule.unit}.`;
+
+          list.push({
+            id: notifId,
+            model_id: rule.id,
+            model_code: rule.name,
+            stage: 'materials',
+            source_name: row.supplier_name || 'مورد خامات التشغيل',
+            expected_date: new Date().toISOString().slice(0, 10),
+            urgency: 'critical',
+            days_diff: 0,
+            title: `⚠️ خامة تشغيل حرجة: ${rule.name} (${sizeLabel})`,
+            message: `${reason} يُرجى تجهيز طلب توريد من ${row.supplier_name || 'المورد'}.`,
+            is_read: readNotificationIds.includes(notifId),
+            created_at: new Date().toISOString(),
+            kind: 'material',
+            link_tab: 'materials'
+          });
+        });
+      });
+    }
+
+    const priorityOrder: Record<AppNotification['urgency'], number> = {
+      critical: -1,
+      overdue: 0,
+      today: 1,
+      tomorrow: 2
+    };
     return list.sort((a, b) => priorityOrder[a.urgency] - priorityOrder[b.urgency]);
   }, [
     printDispatches,
     sewingDispatches,
     finishingRecords,
     assemblyStageRecords,
+    packagingMaterialRules,
     models,
     readNotificationIds
   ]);
 
   const unreadNotificationsCount = useMemo(() => {
-    return appNotifications.filter((n) => n.urgency === 'overdue' || !n.is_read).length;
+    return appNotifications.filter(
+      (n) => n.urgency === 'overdue' || n.urgency === 'critical' || !n.is_read
+    ).length;
   }, [appNotifications]);
 
   return (
@@ -4581,6 +4770,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         packagingRequirements,
         finishingRecords,
         assemblyStageRecords,
+        packagingMaterialRules,
+        savePackagingMaterialRule,
+        recordPackagingMaterialTransaction,
         appNotifications,
         unreadNotificationsCount,
         markNotificationRead,

@@ -11,6 +11,8 @@ from .models import (
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
     COMPOSITION_TO_PARTS, DEFAULT_GARMENT_COMPOSITION,
     PackagingRequirement, FinishingRecord, AssemblyStageRecord,
+    PackagingMaterialRule, PackagingMaterialSizeRule, PackagingMaterialTransaction,
+    PACKAGING_MATERIAL_LABELS,
     PACKAGING_STEP_ORDER, PACKAGING_STEP_LABELS, ASSEMBLY_STAGE_LABELS,
     PART_STAGE_ORDER, PART_STAGE_LABELS, PART_STAGE_TO_STATUS,
 )
@@ -857,6 +859,62 @@ def ensure_schema_columns():
         _SCHEMA_ENSURED = True
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Packaging & Operating Materials MRP (خامات التشغيل والأمبالاج)
+# ---------------------------------------------------------------------------
+PACKAGING_MATERIAL_SEED = [
+    ('bags', 'أكياس البلاستيك', 'قطعة'),
+    ('cartons', 'الكرتون', 'قطعة'),
+    ('hangers', 'الشماعات', 'قطعة'),
+    ('newborn_bags', 'أكياس حديثي الولادة', 'قطعة'),
+    ('dozen_bags', 'أكياس الدست', 'دستة'),
+]
+
+
+def ensure_packaging_material_categories():
+    """
+    Idempotently ensures the five fixed packaging-material categories exist.
+    Safe to call on every state sync: it only creates the missing categories.
+    """
+    for key, name, unit in PACKAGING_MATERIAL_SEED:
+        PackagingMaterialRule.objects.get_or_create(
+            material_key=key,
+            defaults={'name': name or PACKAGING_MATERIAL_LABELS.get(key, key), 'unit': unit},
+        )
+
+
+def apply_packaging_material_transaction(size_rule, operation, amount, notes='', timestamp=''):
+    """
+    Applies an add / deduct / adjust movement to a packaging-material size row
+    and records it in the ledger. Returns the created transaction.
+    """
+    try:
+        amount = float(amount or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    if amount < 0:
+        amount = abs(amount)
+
+    current = float(size_rule.current_stock or 0)
+    if operation == 'add':
+        new_stock = current + amount
+    elif operation == 'deduct':
+        new_stock = max(0.0, current - amount)
+    else:
+        operation = 'adjust'
+        new_stock = max(0.0, amount)
+
+    size_rule.current_stock = new_stock
+    size_rule.save(update_fields=['current_stock', 'updated_at'])
+    return PackagingMaterialTransaction.objects.create(
+        size_rule=size_rule,
+        operation=operation,
+        amount=amount,
+        notes=notes or '',
+        timestamp=timestamp or '',
+    )
 
 
 def ensure_initial_seed():
