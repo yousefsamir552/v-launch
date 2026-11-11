@@ -3,6 +3,8 @@ from django.contrib.auth.hashers import make_password, check_password as django_
 from datetime import date, timedelta
 import uuid
 
+from .storage_r2 import guard_image_field
+
 
 def generate_client_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
@@ -186,6 +188,11 @@ class GlobalSettings(models.Model):
                 ]
             )
         return obj
+
+    def save(self, *args, **kwargs):
+        # الصور تُخزَّن على R2 كروابط فقط (لا Base64 داخل قاعدة البيانات).
+        guard_image_field(self, 'logo', 'شعار الموقع')
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.site_name
@@ -499,6 +506,7 @@ class Fabric(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
+        guard_image_field(self, 'image', 'صورة الخامة')
         if not self.client_id:
             self.client_id = generate_client_id('fab')
         super().save(*args, **kwargs)
@@ -602,6 +610,7 @@ class Accessory(models.Model):
         return max(0, self.min_threshold - self.current_stock)
 
     def save(self, *args, **kwargs):
+        guard_image_field(self, 'image', 'صورة الصنف')
         if not self.client_id:
             self.client_id = generate_client_id('acc')
         if not self.created_at_str:
@@ -825,6 +834,7 @@ class ModelItem(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def save(self, *args, **kwargs):
+        guard_image_field(self, 'image', 'صورة الموديل')
         if not self.client_id:
             self.client_id = generate_client_id('mod')
         super().save(*args, **kwargs)
@@ -863,6 +873,7 @@ class ModelAccessory(models.Model):
     image = models.TextField(blank=True, null=True, verbose_name="صورة الإكسسوار")
 
     def save(self, *args, **kwargs):
+        guard_image_field(self, 'image', 'صورة الإكسسوار')
         if not self.client_id:
             self.client_id = generate_client_id('macc')
         super().save(*args, **kwargs)
@@ -1624,6 +1635,7 @@ class HREmployee(models.Model):
         return HR_DEPARTMENT_LABELS.get(self.department, self.department)
 
     def save(self, *args, **kwargs):
+        guard_image_field(self, 'photo', 'صورة الموظف')
         if not self.client_id:
             self.client_id = generate_client_id('hr-emp')
         # الرتبة 0 (Sudo) محصورة حصرياً في حساب الطوارئ ولا تُمنح لأي موظف.

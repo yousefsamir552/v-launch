@@ -14,6 +14,7 @@ from .models import (
     RANK_SUDO, RANK_LEVEL_THREE, DEFAULT_RANK_LEVEL,
     coerce_rank_level, rank_visibility_label,
 )
+from .storage_r2 import normalize_image_field
 
 
 def resolve_by_id(model_cls, val):
@@ -78,6 +79,10 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = GlobalSettings
         fields = '__all__'
+
+    def validate_logo(self, value):
+        # Base64 from older clients is uploaded to R2 and replaced by its URL.
+        return normalize_image_field(value, 'settings', 'شعار الموقع')
 
     def to_representation(self, instance):
         return {
@@ -184,6 +189,9 @@ class FabricSerializer(serializers.ModelSerializer):
         model = Fabric
         fields = '__all__'
 
+    def validate_image(self, value):
+        return normalize_image_field(value, 'fabrics', 'صورة الخامة')
+
     def to_representation(self, instance):
         return {
             'id': get_ext_id(instance),
@@ -254,6 +262,9 @@ class AccessorySerializer(serializers.ModelSerializer):
         model = Accessory
         fields = '__all__'
 
+    def validate_image(self, value):
+        return normalize_image_field(value, 'accessories', 'صورة الصنف')
+
     def to_representation(self, instance):
         return {
             'id': get_ext_id(instance),
@@ -316,6 +327,9 @@ class ModelAccessorySerializer(serializers.ModelSerializer):
     class Meta:
         model = ModelAccessory
         fields = '__all__'
+
+    def validate_image(self, value):
+        return normalize_image_field(value, 'model-accessories', 'صورة الإكسسوار')
 
     def to_representation(self, instance):
         return {
@@ -528,6 +542,9 @@ class ModelItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = ModelItem
         fields = '__all__'
+
+    def validate_image(self, value):
+        return normalize_image_field(value, 'models', 'صورة الموديل')
 
     def to_representation(self, instance):
         from .services import model_part_summary
@@ -812,6 +829,9 @@ class HREmployeeSerializer(serializers.ModelSerializer):
     class Meta:
         model = HREmployee
         fields = '__all__'
+
+    def validate_photo(self, value):
+        return normalize_image_field(value, 'hr', 'صورة الموظف')
 
     def to_representation(self, instance):
         job = instance.job

@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    AuthViewSet, StateViewSet, GlobalSettingsViewSet,
+    AuthViewSet, StateViewSet, ImageUploadViewSet, GlobalSettingsViewSet,
     RoleViewSet, UserProfileViewSet, SizeDefViewSet, SupplierViewSet,
     FabricViewSet, FabricColorViewSet, FabricTransactionViewSet,
     AccessoryTypeViewSet, AccessoryViewSet, AccessoryTransactionViewSet,
@@ -17,6 +17,7 @@ from .views import (
 router = DefaultRouter()
 router.register(r'auth', AuthViewSet, basename='auth')
 router.register(r'state', StateViewSet, basename='state')
+router.register(r'upload-image', ImageUploadViewSet, basename='upload-image')
 router.register(r'global-settings', GlobalSettingsViewSet, basename='global-settings')
 router.register(r'roles', RoleViewSet)
 router.register(r'users', UserProfileViewSet)

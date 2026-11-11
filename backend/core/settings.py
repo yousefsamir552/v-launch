@@ -193,3 +193,29 @@ SECURE_HSTS_PRELOAD = not DEBUG
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_BROWSER_XSS_FILTER = True
 X_FRAME_OPTIONS = 'DENY'
+
+# ---------------------------------------------------------------------------
+# Cloudflare R2 object storage.
+# Images are uploaded to R2 and only their short public URLs are stored in the
+# database (see api/storage_r2.py). This is what stops the /state/ sync from
+# re-downloading megabytes of Base64 image data and exhausting Neon bandwidth.
+# ---------------------------------------------------------------------------
+R2_ACCOUNT_ID = os.environ.get('R2_ACCOUNT_ID', '').strip()
+R2_ACCESS_KEY_ID = os.environ.get('R2_ACCESS_KEY_ID', '').strip()
+R2_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY', '').strip()
+R2_BUCKET_NAME = os.environ.get('R2_BUCKET_NAME', '').strip()
+R2_PUBLIC_BASE_URL = os.environ.get('R2_PUBLIC_BASE_URL', '').strip().rstrip('/')
+R2_REGION = os.environ.get('R2_REGION', 'auto').strip() or 'auto'
+R2_ENDPOINT_URL = os.environ.get('R2_ENDPOINT_URL', '').strip() or (
+    'https://{}.r2.cloudflarestorage.com'.format(R2_ACCOUNT_ID) if R2_ACCOUNT_ID else ''
+)
+
+R2_IMAGE_MAX_UPLOAD_BYTES = int(
+    os.environ.get('R2_IMAGE_MAX_UPLOAD_BYTES', str(10 * 1024 * 1024))
+)
+# Up to this size an image is uploaded untouched; larger images are re-encoded
+# with Pillow until they fit (~1.5-2MB).
+R2_IMAGE_TARGET_BYTES = int(
+    os.environ.get('R2_IMAGE_TARGET_BYTES', str(2 * 1024 * 1024))
+)
+R2_IMAGE_MAX_DIMENSION = int(os.environ.get('R2_IMAGE_MAX_DIMENSION', '3200'))

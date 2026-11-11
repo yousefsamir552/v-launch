@@ -2,8 +2,9 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import models, transaction
 from django.http import Http404, HttpResponse
 from django.utils import timezone
@@ -82,7 +83,8 @@ from .permissions import (
     HasDynamicSectionPermission,
     IsAuthenticatedProfile,
 )
-from .throttles import LoginRateThrottle, SyncRateThrottle
+from .throttles import LoginRateThrottle, ProfileRateThrottle, SyncRateThrottle
+from .storage_r2 import normalize_image_field, upload_image_file
 from .hr_attendance_io import (
     build_template_csv,
     compute_attendance,
@@ -125,6 +127,19 @@ def resolve_request_user_profile(request):
     return UserProfile.objects.select_related('role').filter(
         auth_token=token, is_active=True
     ).first()
+
+
+def clean_image_value(value, folder, field_label='الصورة'):
+    """Uploads an embedded Base64 image to R2 and returns its public URL.
+
+    Raises a DRF 400 when the value is invalid or R2 is not configured, so a
+    Base64 payload can never be persisted in PostgreSQL.
+    """
+    try:
+        return normalize_image_field(value, folder, field_label)
+    except ValidationError as exc:
+        detail = ' '.join(exc.messages) if hasattr(exc, 'messages') else str(exc)
+        raise DRFValidationError({'detail': detail})
 
 
 def validate_new_password(password):
@@ -435,6 +450,38 @@ class StateViewSet(viewsets.ViewSet):
         })
 
 
+class ImageUploadViewSet(viewsets.ViewSet):
+    """رفع صورة إلى Cloudflare R2 وإرجاع الرابط العام فقط لتخزينه في قاعدة البيانات."""
+
+    permission_classes = [IsAuthenticatedProfile]
+    throttle_classes = [ProfileRateThrottle]
+
+    def create(self, request):
+        uploaded = request.FILES.get('file')
+        if uploaded is None:
+            return Response(
+                {'detail': 'لم يتم إرسال ملف الصورة.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        folder = request.data.get('folder') or 'general'
+        try:
+            result = upload_image_file(uploaded, folder)
+        except ValidationError as exc:
+            detail = ' '.join(exc.messages) if hasattr(exc, 'messages') else str(exc)
+            return Response({'detail': detail}, status=status.HTTP_400_BAD_REQUEST)
+        except ImproperlyConfigured:
+            return Response(
+                {
+                    'detail': (
+                        'تخزين الصور السحابي (R2) غير مهيأ. '
+                        'يرجى ضبط بيانات R2 في متغيرات البيئة.'
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(result, status=status.HTTP_201_CREATED)
+
+
 class GlobalSettingsViewSet(viewsets.ViewSet):
     """
     API endpoint for reading and updating Global Site Settings (Task 3).
@@ -477,7 +524,8 @@ class GlobalSettingsViewSet(viewsets.ViewSet):
             if 'site_name' in data and data['site_name'] is not None:
                 obj.site_name = str(data['site_name']).strip() or 'نظام إدارة المصنع'
             if 'logo' in data and data['logo'] is not None:
-                obj.logo = str(data['logo']).strip() or '🏭'
+                raw_logo = str(data['logo']).strip()
+                obj.logo = clean_image_value(raw_logo, 'settings', 'شعار الموقع') or '🏭'
             if 'footer_title' in data and data['footer_title'] is not None:
                 obj.footer_title = str(data['footer_title']).strip()
             if 'copyright_text' in data and data['copyright_text'] is not None:
@@ -859,7 +907,7 @@ class FabricViewSet(BasePermViewSet):
             description=data.get('description') or '',
             unit=data.get('unit') or 'كيلو',
             supplier_id_ref=data.get('supplier_id') or '',
-            image=data.get('image') or '',
+            image=clean_image_value(data.get('image') or '', 'fabrics', 'صورة الخامة'),
         )
         return Response(FabricSerializer(fab).data, status=status.HTTP_201_CREATED)
 
@@ -1024,7 +1072,7 @@ class AccessoryViewSet(BasePermViewSet):
             type_name=data.get('type_name') or 'عام',
             code=(data.get('code') or '').strip().upper(),
             name=(data.get('name') or '').strip(),
-            image=data.get('image') or '',
+            image=clean_image_value(data.get('image') or '', 'accessories', 'صورة الصنف'),
             unit=data.get('unit') or 'قطعة',
             current_stock=max(0, qty),
             reserved_quantity=float(data.get('reserved_quantity') or 0),
@@ -1043,12 +1091,18 @@ class AccessoryViewSet(BasePermViewSet):
     def update(self, request, *args, **kwargs):
         target = self.get_object()
         data = request.data
+        # ارفع الصورة (إن وُجدت) قبل فتح المعاملة حتى لا نمسك قفل الصف أثناء الشبكة.
+        new_image = None
+        if 'image' in data:
+            new_image = clean_image_value(data.get('image') or '', 'accessories', 'صورة الصنف')
         # Lock the row so concurrent stock adjustments are serialised.
         with transaction.atomic():
             acc = Accessory.objects.select_for_update().get(pk=target.pk)
-            for field in ['name', 'code', 'image', 'unit', 'usage_type', 'custom_model_code', 'type_name']:
+            for field in ['name', 'code', 'unit', 'usage_type', 'custom_model_code', 'type_name']:
                 if field in data:
                     setattr(acc, field, data[field])
+            if new_image is not None:
+                acc.image = new_image
             if 'type_id' in data:
                 acc.type_id_ref = data['type_id']
             if 'supplier_id' in data:
@@ -1171,7 +1225,12 @@ class ModelItemViewSet(BasePermViewSet):
             model_code=clean_code,
             model_type=data.get('model_type') or data.get('modelType') or 'أولادي',
             size_category_id=data.get('size_category_id') or data.get('sizeCategoryId') or '',
-            image=data.get('image') or data.get('imageUrl') or 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60',
+            image=clean_image_value(
+                data.get('image') or data.get('imageUrl')
+                or 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60',
+                'models',
+                'صورة الموديل',
+            ),
             status=data.get('status') or 'مرحلة التصميم',
             target_cut_quantity=target_qty,
             design_notes=design_notes,
@@ -1218,10 +1277,13 @@ class ModelItemViewSet(BasePermViewSet):
             'model_type', 'status', 'size_category_id', 'main_marker_url', 'print_marker_url',
             'target_cut_quantity', 'total_cut_pieces', 'cutter_name', 'spreader_name',
             'count_before_print', 'count_after_print', 'count_after_sewing',
-            'print_house', 'image', 'is_deleted', 'colored_at', 'cut_at', 'garment_parts'
+            'print_house', 'is_deleted', 'colored_at', 'cut_at', 'garment_parts'
         ]:
             if field in data:
                 setattr(model, field, data[field])
+
+        if 'image' in data:
+            model.image = clean_image_value(data.get('image') or '', 'models', 'صورة الموديل')
 
         if can_design_notes:
             for note_field in ['design_notes', 'notes_shirt', 'notes_pants']:
@@ -2097,7 +2159,7 @@ class ModelAccessoryViewSet(BasePermViewSet):
             piece_consumption=float(data.get('piece_consumption') or 1),
             planned_quantity=max(0.0, float(data.get('planned_quantity') or 0)),
             unit=data.get('unit') or 'قطعة',
-            image=data.get('image') or '',
+            image=clean_image_value(data.get('image') or '', 'model-accessories', 'صورة الإكسسوار'),
         )
         sync_reserved_quantities()
         return Response(ModelAccessorySerializer(m_acc).data, status=status.HTTP_201_CREATED)
@@ -2111,6 +2173,10 @@ class ModelAccessoryViewSet(BasePermViewSet):
             m_acc.piece_consumption = max(0.0, float(data.get('piece_consumption') or 1))
         if 'target_type' in data:
             m_acc.target_type = data.get('target_type') or 'shirt'
+        if 'image' in data:
+            m_acc.image = clean_image_value(
+                data.get('image') or '', 'model-accessories', 'صورة الإكسسوار'
+            )
         m_acc.save()
         sync_reserved_quantities()
         return Response(ModelAccessorySerializer(m_acc).data)
@@ -2975,7 +3041,7 @@ class HREmployeeViewSet(BasePermViewSet):
             rule_application_mode=mode,
             national_id=data.get('national_id') or None,
             phone=data.get('phone') or None,
-            photo=data.get('photo') or None,
+            photo=clean_image_value(data.get('photo') or '', 'hr', 'صورة الموظف') or None,
             notes=data.get('notes') or None,
             is_active=bool(data.get('is_active', True)),
             rank_level=rank,
@@ -3028,7 +3094,7 @@ class HREmployeeViewSet(BasePermViewSet):
         if 'phone' in data:
             obj.phone = data.get('phone') or None
         if 'photo' in data:
-            obj.photo = data.get('photo') or None
+            obj.photo = clean_image_value(data.get('photo') or '', 'hr', 'صورة الموظف') or None
         if 'notes' in data:
             obj.notes = data.get('notes') or None
         if 'is_active' in data:

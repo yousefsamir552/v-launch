@@ -6,3 +6,5 @@ psycopg2-binary
 python-dotenv
 gunicorn
 whitenoise
+boto3>=1.28,<2.0
+Pillow>=9.5
