@@ -527,6 +527,7 @@ DEFAULT_ROLES_SEED = [
             'qc_view': True, 'qc_edit': True,
             'printing_view': True, 'printing_edit': True,
             'sewing_view': True, 'sewing_edit': True,
+            'assembly_packaging_view': True, 'assembly_packaging_edit': True,
             'models_tracking_view': True, 'models_tracking_edit': True,
             'reports_view': True, 'reports_edit': True,
             'view_fabric_prices': True, 'edit_fabric_prices': True,

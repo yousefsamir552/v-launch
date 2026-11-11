@@ -38,6 +38,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
   const { 
     currentUser, 
     hasPermission,
+    hasAssemblyPackagingAccess,
     canAccessSettings,
     canManageHR,
     canAccessHRSection,
@@ -112,7 +113,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
       label: 'الأسمبلي والأمبالاج',
       icon: Boxes,
       color: 'text-orange-600',
-      isVisible: hasPermission('assembly_packaging')
+      isVisible: hasAssemblyPackagingAccess()
     },
     {
       id: 'models_tracking',

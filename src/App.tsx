@@ -25,6 +25,7 @@ export const App: React.FC = () => {
     logout,
     addFlashMessage,
     hasPermission,
+    hasAssemblyPackagingAccess,
     canAccessSettings,
     canViewAuditLogs,
     canAccessHRSection,
@@ -102,7 +103,7 @@ export const App: React.FC = () => {
       );
     }
     if (tab === 'models_tracking') return hasPermission('models_tracking');
-    if (tab === 'assembly_packaging') return hasPermission('assembly_packaging');
+    if (tab === 'assembly_packaging') return hasAssemblyPackagingAccess();
     if (tab === 'reports') return hasPermission('reports');
     if (tab === 'settings') return canAccessSettings();
     if (tab === 'logs') return canViewAuditLogs();

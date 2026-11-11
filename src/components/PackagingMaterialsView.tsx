@@ -294,6 +294,7 @@ export const PackagingMaterialsView: React.FC = () => {
     suppliers,
     packagingMaterialRules,
     hasPermission,
+    hasAssemblyPackagingAccess,
     canSendWhatsApp,
     formatSupplierWhatsappMessage,
     openWhatsAppOrder,
@@ -301,7 +302,7 @@ export const PackagingMaterialsView: React.FC = () => {
     savePackagingMaterialRule
   } = useApp();
 
-  const canEdit = hasPermission('assembly_packaging', true);
+  const canEdit = hasAssemblyPackagingAccess(true);
   const [view, setView] = useState<'stock' | 'rules'>('stock');
   const [editingKey, setEditingKey] = useState<PackagingMaterialKey>('bags');
   const [saving, setSaving] = useState(false);

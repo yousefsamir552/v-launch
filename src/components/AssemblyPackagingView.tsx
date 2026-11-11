@@ -977,7 +977,8 @@ export const AssemblyPackagingView: React.FC = () => {
     finishingRecords,
     assemblyStageRecords,
     getPartStages,
-    hasPermission
+    hasPermission,
+    hasAssemblyPackagingAccess
   } = useApp();
 
   const activeSectionDefault = (): 'pipeline' | 'materials' => {
@@ -990,7 +991,7 @@ export const AssemblyPackagingView: React.FC = () => {
     return 'pipeline';
   };
 
-  const canEdit = hasPermission('assembly_packaging', true);
+  const canEdit = hasAssemblyPackagingAccess(true);
   const [activeTab, setActiveTab] = useState<TabKey>('requirements');
   const [activeSection, setActiveSection] = useState<'pipeline' | 'materials'>(activeSectionDefault);
   const [searchTerm, setSearchTerm] = useState('');

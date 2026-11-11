@@ -978,7 +978,7 @@ export interface AppNotification {
   link_tab?: string;
 }
 
-export type AccessoryUnit = 'قطعة' | 'دستة' | 'متر' | 'باكو' | 'كيس';
+export type AccessoryUnit = 'قطعة' | 'دستة' | 'متر' | 'باكو' | 'كيس' | 'كيلو' | 'بكرة';
 export type AccessoryUsageType = 'stock' | 'custom_model';
 
 export interface AccessoryType {
@@ -1037,6 +1037,7 @@ export type HRDepartmentKey =
   | 'finishing'
   | 'ironing'
   | 'packaging'
+  | 'administration'
   | 'crow'
   | 'accounting';
 
@@ -1055,6 +1056,7 @@ export const HR_DEPARTMENT_LABELS: Record<HRDepartmentKey, string> = {
   finishing: 'التشطيب',
   ironing: 'المكواة',
   packaging: 'التعبئة والتغليف',
+  administration: 'الإداريين',
   crow: 'العمال (Crew)',
   accounting: 'المحاسبين (Accounting)'
 };

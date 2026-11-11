@@ -238,6 +238,9 @@ interface AppContextType {
     requireEdit?: boolean
   ) => boolean;
   hasSpecificPermission: (permKey: keyof RolePermissions | string) => boolean;
+  // "الأسمبلي والأمبالاج": يقبل المفتاح الرئيسي الحالي (assembly_packaging)
+  // والمفاتيح القديمة/الفرعية (assembly، packaging، finishing، ironing، dest، materials)
+  hasAssemblyPackagingAccess: (requireEdit?: boolean) => boolean;
 
   // Dynamic Administrative & Global Settings Permission Checkers (Tasks 2 & 3)
   canManagePermissions: () => boolean;
@@ -1226,6 +1229,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const legacyLevel = (currentUser.permissions as any)?.[module];
     if (!legacyLevel) return false;
     return requireEdit ? legacyLevel === 'edit' : true;
+  };
+
+  // مفاتيح صلاحية "الأسمبلي والأمبالاج" المعتمدة: المفتاح الرئيسي الحالي + أي قيمة
+  // قديمة/بديلة محفوظة سابقاً (assembly / packaging) + الصلاحيات الفرعية للقسم.
+  // الهدف: ألا يختفي الزر أو تتعطل الحسابات المحفوظة قبل توحيد المفتاح.
+  const ASSEMBLY_ACCESS_KEYS = [
+    'assembly_packaging',
+    'assembly',
+    'packaging',
+    'finishing',
+    'ironing',
+    'dest',
+    'materials'
+  ];
+
+  const hasAssemblyPackagingAccess = (requireEdit: boolean = false): boolean => {
+    if (!currentUser) return false;
+    if (currentUser.username?.toLowerCase() === 'sudo' || currentUser.is_sudo) return true;
+
+    const rolePerms = getUserPermissionsObject() as Record<string, any> | null;
+    const userCustom = currentUser.permissions as Record<string, any> | undefined;
+
+    const valueGrantsAccess = (val: any): boolean => {
+      if (typeof val === 'string') {
+        if (requireEdit) return val === 'edit';
+        return val === 'view' || val === 'edit' || val === 'true';
+      }
+      if (requireEdit) return false;
+      return Boolean(val);
+    };
+
+    return ASSEMBLY_ACCESS_KEYS.some((key) => {
+      const viewKey = `${key}_view`;
+      const editKey = `${key}_edit`;
+
+      // 1) الصلاحيات المدمجة (دور + تخصيص المستخدم) بصيغة _view / _edit
+      if (rolePerms) {
+        if (requireEdit && Boolean(rolePerms[editKey])) return true;
+        if (!requireEdit && (Boolean(rolePerms[viewKey]) || Boolean(rolePerms[editKey]))) return true;
+      }
+
+      // 2) المفاتيح القديمة المخزنة كنص مباشر (Bare) داخل تخصيص المستخدم
+      if (userCustom && key in userCustom && userCustom[key] !== undefined) {
+        return valueGrantsAccess(userCustom[key]);
+      }
+
+      // 3) المفاتيح القديمة المخزنة كنص مباشر داخل صلاحيات الدور
+      if (rolePerms && key in rolePerms && rolePerms[key] !== undefined) {
+        return valueGrantsAccess(rolePerms[key]);
+      }
+
+      return false;
+    });
   };
 
   // Dynamic Administrative & Global Settings Checkers (Tasks 2 & 3)
@@ -4974,6 +5030,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteRole,
         hasPermission,
         hasSpecificPermission,
+        hasAssemblyPackagingAccess,
         canManagePermissions,
         canManageUsers,
         canManageSuppliers,

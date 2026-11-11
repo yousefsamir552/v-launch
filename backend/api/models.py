@@ -198,6 +198,34 @@ class GlobalSettings(models.Model):
         return self.site_name
 
 
+# مفاتيح صلاحية "الأسمبلي والأمبالاج" المعتمدة: المفتاح الحالي + البدائل القديمة/الفرعية.
+# تُستخدم لتوحيد أي دور محفوظ بمفتاح قديم (assembly / packaging) أو بصلاحية فرعية
+# حتى لا تختفي الشاشة عن الحسابات المحفوظة مسبقاً.
+ASSEMBLY_ACCESS_KEYS = (
+    'assembly_packaging',
+    'assembly',
+    'packaging',
+    'finishing',
+    'ironing',
+    'dest',
+    'materials',
+)
+
+
+def normalize_assembly_permissions(perms: dict) -> dict:
+    """Fold legacy/alternate assembly permission keys into the canonical key."""
+    if not isinstance(perms, dict):
+        return perms
+    view = bool(perms.get('assembly_packaging_view'))
+    edit = bool(perms.get('assembly_packaging_edit'))
+    for key in ASSEMBLY_ACCESS_KEYS:
+        view = view or bool(perms.get('{}_view'.format(key)))
+        edit = edit or bool(perms.get('{}_edit'.format(key)))
+    perms['assembly_packaging_view'] = bool(view or edit)
+    perms['assembly_packaging_edit'] = bool(edit)
+    return perms
+
+
 class Role(models.Model):
     """
     Dynamic Role model - completely customizable without hardcoded limitations.
@@ -305,13 +333,14 @@ class Role(models.Model):
         }
         if isinstance(self.permissions_json, dict) and self.permissions_json:
             base.update(self.permissions_json)
-        return base
+        return normalize_assembly_permissions(base)
 
     def sync_booleans_from_permissions(self, perms: dict):
         if not isinstance(perms, dict):
             return
         merged = self.get_permissions_dict()
         merged.update(perms)
+        merged = normalize_assembly_permissions(merged)
         self.permissions_json = merged
         self.can_fabric_warehouse = bool(merged.get('fabric_warehouse_view') or merged.get('fabric_warehouse_edit'))
         self.can_accessories_warehouse = bool(merged.get('accessories_warehouse_view') or merged.get('accessories_warehouse_edit'))
@@ -394,6 +423,23 @@ class UserProfile(models.Model):
             if isinstance(val, str):
                 return val in ('view', 'edit', 'true', 'True')
             return bool(val)
+        # "الأسمبلي والأمبالاج": اقبل أيضاً المفاتيح القديمة/الفرعية المخزنة في تخصيص المستخدم
+        # (assembly / packaging / finishing / ironing / dest / materials) حتى لا تتعطل الحسابات المحفوظة.
+        if perm_name in ('assembly_packaging_view', 'assembly_packaging_edit') and isinstance(self.custom_permissions, dict):
+            want_edit = perm_name.endswith('_edit')
+            suffix = 'edit' if want_edit else 'view'
+            for key in ASSEMBLY_ACCESS_KEYS:
+                suffixed = self.custom_permissions.get('{}_{}'.format(key, suffix))
+                bare = self.custom_permissions.get(key)
+                for val, from_bare in ((suffixed, False), (bare, True)):
+                    if isinstance(val, str):
+                        if want_edit and val == 'edit':
+                            return True
+                        if not want_edit and val in ('view', 'edit', 'true', 'True'):
+                            return True
+                    elif bool(val):
+                        if not want_edit or not from_bare:
+                            return True
         # Master HR permission (legacy/manage_permissions) grants every HR sub-tab permission.
         if perm_name in HR_PERM_KEYS and isinstance(self.custom_permissions, dict):
             if (self.custom_permissions.get('can_manage_hr')
@@ -1559,6 +1605,7 @@ HR_DEPARTMENT_CHOICES = [
     ('finishing', 'التشطيب'),
     ('ironing', 'المكواة'),
     ('packaging', 'التعبئة والتغليف'),
+    ('administration', 'الإداريين'),
     ('crow', 'العمال (Crew)'),
     ('accounting', 'المحاسبين (Accounting)'),
 ]

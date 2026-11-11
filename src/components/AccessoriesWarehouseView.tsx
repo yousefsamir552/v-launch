@@ -1054,6 +1054,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     <option value="متر">متر</option>
                     <option value="باكو">باكو</option>
                     <option value="كيس">كيس</option>
+                    <option value="كيلو">كيلو</option>
+                    <option value="بكرة">بكرة</option>
                   </select>
                 </div>
 
@@ -1266,6 +1268,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     <option value="متر">متر</option>
                     <option value="باكو">باكو</option>
                     <option value="كيس">كيس</option>
+                    <option value="كيلو">كيلو</option>
+                    <option value="بكرة">بكرة</option>
                   </select>
                 </div>
 
