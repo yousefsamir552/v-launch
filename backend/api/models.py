@@ -1503,8 +1503,8 @@ HR_DEPARTMENT_CHOICES = [
     ('finishing', 'التشطيب'),
     ('ironing', 'المكواة'),
     ('packaging', 'التعبئة والتغليف'),
-    ('crow', 'عمال'),
-    ('accounting', 'حسابات'),
+    ('crow', 'العمال (Crew)'),
+    ('accounting', 'المحاسبين (Accounting)'),
 ]
 
 HR_DEPARTMENT_KEYS = [key for key, _label in HR_DEPARTMENT_CHOICES]

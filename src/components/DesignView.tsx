@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { api } from '../api/client';
 import {
   Palette,
   Search,
@@ -41,6 +42,8 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
   const [sizeCategoryId, setSizeCategoryId] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [imageError, setImageError] = useState('');
   const [targetCutQuantity, setTargetCutQuantity] = useState<number>(500);
   const [designNotes, setDesignNotes] = useState('');
   const [garmentComposition, setGarmentComposition] = useState<GarmentComposition>(
@@ -65,15 +68,24 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
     currentPage * itemsPerPage
   );
 
-  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImagePreview(reader.result as string);
-        setImageUrl(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+    // اسمح بإعادة اختيار نفس الملف مرة أخرى.
+    e.target.value = '';
+    if (!file) return;
+
+    setImageError('');
+    setUploadingImage(true);
+    try {
+      const uploaded = await api.uploadImage(file, 'models');
+      setImageUrl(uploaded.url);
+      setImagePreview(uploaded.url);
+    } catch (err: any) {
+      setImageUrl('');
+      setImagePreview(null);
+      setImageError(err?.message || 'فشل رفع صورة الموديل. يرجى المحاولة مرة أخرى.');
+    } finally {
+      setUploadingImage(false);
     }
   };
 
@@ -310,7 +322,11 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                     onChange={handleImageFileChange}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                   />
-                  {imagePreview ? (
+                  {uploadingImage ? (
+                    <div className="flex flex-col items-center">
+                      <span className="text-xs font-bold text-slate-600">جارٍ رفع الصورة...</span>
+                    </div>
+                  ) : imagePreview ? (
                     <img
                       src={imagePreview}
                       alt="Preview"
@@ -322,10 +338,13 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                       <span className="text-xs font-bold text-slate-600">
                         اضغط لرفع صورة الموديل من جهازك
                       </span>
-                      <span className="text-[10px] text-slate-400 mt-0.5">PNG, JPG حتى 5 ميجابايت</span>
+                      <span className="text-[10px] text-slate-400 mt-0.5">PNG, JPG حتى 10 ميجابايت</span>
                     </div>
                   )}
                 </div>
+                {imageError && (
+                  <p className="text-[10px] font-bold text-rose-600 mt-1">{imageError}</p>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -438,9 +457,10 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
               <div className="pt-2">
                 <button
                   type="submit"
-                  className="w-full py-3 rounded-full bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm transition shadow-lg cursor-pointer"
+                  disabled={uploadingImage}
+                  className="w-full py-3 rounded-full bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm transition shadow-lg cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  حفظ الموديل
+                  {uploadingImage ? 'جارٍ رفع الصورة...' : 'حفظ الموديل'}
                 </button>
               </div>
             </form>

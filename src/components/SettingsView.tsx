@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
+import { api } from '../api/client';
 import {
   Ruler,
   Building2,
@@ -123,6 +124,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
   // Global Settings Form State (Task 3 + Favorite Accessories)
   const [siteName, setSiteName] = useState(globalSettings.site_name);
   const [siteLogo, setSiteLogo] = useState(globalSettings.logo);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoUploadError, setLogoUploadError] = useState('');
   const [footerTitle, setFooterTitle] = useState(globalSettings.footer_title);
   const [copyrightText, setCopyrightText] = useState(globalSettings.copyright_text);
   const [whatsappTemplate, setWhatsappTemplate] = useState(globalSettings.whatsapp_supplier_template);
@@ -226,16 +229,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     setPassword('');
   };
 
-  const handleLogoFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (reader.result) {
-          setSiteLogo(reader.result as string);
-        }
-      };
-      reader.readAsDataURL(file);
+    e.target.value = '';
+    if (!file) return;
+
+    setLogoUploadError('');
+    setLogoUploading(true);
+    try {
+      const uploaded = await api.uploadImage(file, 'settings');
+      setSiteLogo(uploaded.url);
+    } catch (err: any) {
+      setLogoUploadError(err?.message || 'فشل رفع الشعار. يرجى المحاولة مرة أخرى.');
+    } finally {
+      setLogoUploading(false);
     }
   };
 
@@ -379,7 +386,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
 
               <button
                 type="submit"
-                disabled={!canEditHeaderSettings() && !canEditMessageTemplates()}
+                disabled={logoUploading || (!canEditHeaderSettings() && !canEditMessageTemplates())}
                 className="px-6 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-black text-xs shadow-md shadow-emerald-600/20 transition flex items-center gap-2 cursor-pointer self-start sm:self-auto"
               >
                 <Save className="w-4 h-4" />
@@ -438,18 +445,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                       className="flex-grow px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-hidden disabled:opacity-60"
                     />
                     {canEditHeaderSettings() && (
-                      <label className="px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer flex items-center gap-1.5 shrink-0 transition">
+                      <label
+                        className={`px-3.5 py-2.5 rounded-xl text-white text-xs font-bold cursor-pointer flex items-center gap-1.5 shrink-0 transition ${
+                          logoUploading ? 'bg-slate-400 cursor-wait' : 'bg-slate-900 hover:bg-slate-800'
+                        }`}
+                      >
                         <Upload className="w-3.5 h-3.5" />
-                        <span>رفع شعار</span>
+                        <span>{logoUploading ? 'جارٍ الرفع...' : 'رفع شعار'}</span>
                         <input
                           type="file"
                           accept="image/*"
                           onChange={handleLogoFileUpload}
+                          disabled={logoUploading}
                           className="hidden"
                         />
                       </label>
                     )}
                   </div>
+                  {logoUploadError && (
+                    <p className="text-[10px] font-bold text-rose-600 mt-1">{logoUploadError}</p>
+                  )}
                 </div>
 
                 <div>

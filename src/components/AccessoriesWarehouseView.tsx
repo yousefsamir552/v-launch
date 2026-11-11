@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { api } from '../api/client';
 import {
   Sparkles,
   Plus,
@@ -115,6 +116,10 @@ export const AccessoriesWarehouseView: React.FC = () => {
   // New Type Form state
   const [newTypeNameInput, setNewTypeNameInput] = useState<string>('');
   const [newTypeDescInput, setNewTypeDescInput] = useState<string>('');
+
+  // Image upload (Cloudflare R2) state
+  const [imageUploading, setImageUploading] = useState<boolean>(false);
+  const [imageUploadError, setImageUploadError] = useState<string>('');
 
   // Calculate low stock / deficit items with custom per-item min_threshold
   const lowStockItems = accessoryItems
@@ -383,21 +388,27 @@ export const AccessoriesWarehouseView: React.FC = () => {
     setShowAddTypeModal(false);
   };
 
-  const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>, isEdit: boolean = false) => {
+  const handleImageFileUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    isEdit: boolean = false
+  ) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (uploadEvent) => {
-        const result = uploadEvent.target?.result as string;
-        if (result) {
-          if (isEdit) {
-            setEditForm((prev) => ({ ...prev, image: result }));
-          } else {
-            setAddForm((prev) => ({ ...prev, image: result }));
-          }
-        }
-      };
-      reader.readAsDataURL(file);
+    e.target.value = '';
+    if (!file) return;
+
+    setImageUploadError('');
+    setImageUploading(true);
+    try {
+      const uploaded = await api.uploadImage(file, 'accessories');
+      if (isEdit) {
+        setEditForm((prev) => ({ ...prev, image: uploaded.url }));
+      } else {
+        setAddForm((prev) => ({ ...prev, image: uploaded.url }));
+      }
+    } catch (err: any) {
+      setImageUploadError(err?.message || 'فشل رفع صورة الإكسسوار. يرجى المحاولة مرة أخرى.');
+    } finally {
+      setImageUploading(false);
     }
   };
 
@@ -1098,9 +1109,16 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 <input
                   type="file"
                   accept="image/*"
+                  disabled={imageUploading}
                   onChange={(e) => handleImageFileUpload(e, false)}
-                  className="w-full text-xs text-slate-500 file:me-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
+                  className="w-full text-xs text-slate-500 file:me-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-60"
                 />
+                {imageUploading && (
+                  <p className="text-[10px] font-bold text-slate-500 mt-1">جارٍ رفع الصورة...</p>
+                )}
+                {imageUploadError && (
+                  <p className="text-[10px] font-bold text-rose-600 mt-1">{imageUploadError}</p>
+                )}
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
@@ -1113,9 +1131,10 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-full shadow-md shadow-blue-500/20"
+                  disabled={imageUploading}
+                  className="px-6 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-full shadow-md shadow-blue-500/20 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  حفظ الصنف
+                  {imageUploading ? 'جارٍ رفع الصورة...' : 'حفظ الصنف'}
                 </button>
               </div>
             </form>
@@ -1301,9 +1320,16 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 <input
                   type="file"
                   accept="image/*"
+                  disabled={imageUploading}
                   onChange={(e) => handleImageFileUpload(e, true)}
-                  className="w-full text-xs text-slate-500 file:me-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
+                  className="w-full text-xs text-slate-500 file:me-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-60"
                 />
+                {imageUploading && (
+                  <p className="text-[10px] font-bold text-slate-500 mt-1">جارٍ رفع الصورة...</p>
+                )}
+                {imageUploadError && (
+                  <p className="text-[10px] font-bold text-rose-600 mt-1">{imageUploadError}</p>
+                )}
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
@@ -1316,9 +1342,10 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-full shadow-md shadow-blue-500/20"
+                  disabled={imageUploading}
+                  className="px-6 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-full shadow-md shadow-blue-500/20 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  حفظ التعديلات
+                  {imageUploading ? 'جارٍ رفع الصورة...' : 'حفظ التعديلات'}
                 </button>
               </div>
             </form>

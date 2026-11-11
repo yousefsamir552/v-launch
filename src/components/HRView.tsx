@@ -910,6 +910,7 @@ const EmployeesPanel: React.FC<{
   const [deleteTarget, setDeleteTarget] = useState<HREmployee | null>(null);
   const [deleteError, setDeleteError] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isPhotoUploading, setIsPhotoUploading] = useState(false);
 
   const jobsForFilter = useMemo(() => {
     if (!departmentFilter) return jobTitles;
@@ -933,6 +934,23 @@ const EmployeesPanel: React.FC<{
 
   const updateForm = (patch: Partial<EmployeeForm>) =>
     setForm((prev) => ({ ...prev, ...patch }));
+
+  const handlePhotoUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setFormError('');
+    setIsPhotoUploading(true);
+    try {
+      const uploaded = await api.uploadImage(file, 'hr');
+      updateForm({ photo: uploaded.url });
+    } catch (err: any) {
+      setFormError(err?.message || 'فشل رفع صورة الموظف. يرجى المحاولة مرة أخرى.');
+    } finally {
+      setIsPhotoUploading(false);
+    }
+  };
 
   const openCreate = () => {
     setEditing(null);
@@ -1334,14 +1352,38 @@ const EmployeesPanel: React.FC<{
             </div>
 
             <div>
-              <label className={labelClass}>رابط صورة الموظف (اختياري)</label>
-              <input
-                value={form.photo}
-                onChange={(event) => updateForm({ photo: event.target.value })}
-                placeholder="https://..."
-                className={`${inputClass} font-mono`}
-                dir="ltr"
-              />
+              <label className={labelClass}>صورة الموظف (اختياري)</label>
+              <div className="flex items-center gap-2">
+                <input
+                  value={form.photo}
+                  onChange={(event) => updateForm({ photo: event.target.value })}
+                  placeholder="https://..."
+                  className={`${inputClass} font-mono flex-1`}
+                  dir="ltr"
+                />
+                <label
+                  className={`px-3 py-2 rounded-xl text-white text-[10px] font-black shrink-0 inline-flex items-center gap-1 cursor-pointer transition ${
+                    isPhotoUploading ? 'bg-slate-400 cursor-wait' : 'bg-purple-600 hover:bg-purple-700'
+                  }`}
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{isPhotoUploading ? 'جارٍ الرفع...' : 'رفع صورة'}</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    disabled={isPhotoUploading}
+                    onChange={handlePhotoUpload}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+              {form.photo && (
+                <img
+                  src={form.photo}
+                  alt="صورة الموظف"
+                  className="w-14 h-14 object-cover rounded-xl border border-slate-200 mt-2"
+                />
+              )}
             </div>
 
             <div>
@@ -1379,11 +1421,11 @@ const EmployeesPanel: React.FC<{
               </button>
               <button
                 type="submit"
-                disabled={isSaving}
+                disabled={isSaving || isPhotoUploading}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-purple-600 text-white text-[11px] font-black hover:bg-purple-700 transition cursor-pointer disabled:opacity-60"
               >
                 <Save className="w-4 h-4" />
-                {isSaving ? 'جاري الحفظ...' : 'حفظ بيانات الموظف'}
+                {isSaving ? 'جاري الحفظ...' : isPhotoUploading ? 'جارٍ رفع الصورة...' : 'حفظ بيانات الموظف'}
               </button>
             </div>
           </form>

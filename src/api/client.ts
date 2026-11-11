@@ -104,6 +104,17 @@ export const api = {
   // جلب الحالة الكاملة للنظام من قاعدة البيانات المركزية
   getState: () => request<any>('/state/'),
 
+  // رفع صورة إلى التخزين السحابي (Cloudflare R2) وإرجاع رابطها العام فقط
+  uploadImage: (file: File, folder: string = 'general') => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('folder', folder);
+    return requestForm<{ url: string; key: string; size: number; content_type: string }>(
+      '/upload-image/',
+      form
+    );
+  },
+
   // الإعدادات العامة للموقع (Global Settings)
   getGlobalSettings: () => request<any>('/global-settings/'),
   updateGlobalSettings: (data: any) =>

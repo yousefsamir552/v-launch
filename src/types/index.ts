@@ -1006,8 +1006,8 @@ export type HRDepartmentKey =
   | 'finishing'
   | 'ironing'
   | 'packaging'
-  | 'dest'
-  | 'finished_goods';
+  | 'crow'
+  | 'accounting';
 
 export interface HRDepartmentOption {
   key: HRDepartmentKey;
@@ -1024,8 +1024,8 @@ export const HR_DEPARTMENT_LABELS: Record<HRDepartmentKey, string> = {
   finishing: 'التشطيب',
   ironing: 'المكواة',
   packaging: 'التعبئة والتغليف',
-  dest: 'الدَست',
-  finished_goods: 'مخزن الإنتاج التام'
+  crow: 'العمال (Crew)',
+  accounting: 'المحاسبين (Accounting)'
 };
 
 export const HR_DEPARTMENTS: HRDepartmentOption[] = (
