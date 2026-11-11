@@ -201,7 +201,6 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
       itemId === 'production_control' &&
       (currentTab === 'production_control' ||
         currentTab === 'printing' ||
-        currentTab === 'assembly' ||
         currentTab === 'qc' ||
         currentTab === 'qc_details' ||
         currentTab === 'sewing')

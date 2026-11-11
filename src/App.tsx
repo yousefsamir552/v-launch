@@ -90,7 +90,6 @@ export const App: React.FC = () => {
     if (
       tab === 'production_control' ||
       tab === 'printing' ||
-      tab === 'assembly' ||
       tab === 'qc' ||
       tab === 'qc_details' ||
       tab === 'sewing'
@@ -211,7 +210,6 @@ export const App: React.FC = () => {
         {currentTab === 'production_control' && <ProductionControlView />}
 
         {currentTab === 'printing' && <ProductionControlView initialSubTab="printing" />}
-        {currentTab === 'assembly' && <ProductionControlView initialSubTab="printing" />}
         {currentTab === 'qc' && <ProductionControlView initialSubTab="qc" />}
         {currentTab === 'sewing' && <ProductionControlView initialSubTab="sewing" />}
 
