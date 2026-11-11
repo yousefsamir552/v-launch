@@ -903,6 +903,8 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
             'excuse_note': instance.excuse_note or '',
             'calculated_deduction_days': float(instance.calculated_deduction_days or 0),
             'calculated_deduction_hours': float(instance.calculated_deduction_hours or 0),
+            'late_minutes': float(instance.late_minutes or 0),
+            'early_minutes': float(instance.early_minutes or 0),
             'overtime_days': float(instance.overtime_days or 0),
             'overtime_hours': float(instance.overtime_hours or 0),
             'sunday_deduction_days': float(instance.sunday_deduction_days or 0),

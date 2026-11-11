@@ -1745,6 +1745,8 @@ class HRAttendanceRecord(models.Model):
     excuse_note = models.TextField(blank=True, null=True, verbose_name="ملاحظة العذر")
     calculated_deduction_days = models.FloatField(default=0.0, verbose_name="الخصم المحتسب (أيام)")
     calculated_deduction_hours = models.FloatField(default=0.0, verbose_name="الخصم المحتسب (ساعات)")
+    late_minutes = models.FloatField(default=0.0, verbose_name="دقائق التأخير (محتسبة)")
+    early_minutes = models.FloatField(default=0.0, verbose_name="دقائق الانصراف المبكر (محتسبة)")
     overtime_days = models.FloatField(default=0.0, verbose_name="العمل الإضافي (أيام)")
     overtime_hours = models.FloatField(default=0.0, verbose_name="العمل الإضافي (ساعات)")
     sunday_deduction_days = models.FloatField(default=0.0, verbose_name="خصم يوم الإجازة (أيام)")

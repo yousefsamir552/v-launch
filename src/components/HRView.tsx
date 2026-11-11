@@ -282,6 +282,147 @@ const sumSundayDeductionsForEmployeeMonth = (
 const dailyRateFor = (salary: number) => (Number(salary) || 0) / 30;
 const hourlyRateFor = (salary: number) => dailyRateFor(salary) / 8;
 
+/** تحويل قيمة وقت ("08:05" أو "08:05:00") إلى دقائق من منتصف الليل. */
+const timeToMinutes = (value?: string | null): number | null => {
+  if (!value) return null;
+  const parts = String(value).trim().split(':');
+  const hours = Number(parts[0]);
+  const minutes = parts.length > 1 ? Number(parts[1]) : 0;
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours * 60 + minutes;
+};
+
+/** دقائق التأخير = وقت الحضور − الموعد الرسمي (صفر إذا حضر مبكراً). */
+const lateMinutesFor = (checkIn?: string | null, officialStart?: string | null): number => {
+  const inMinutes = timeToMinutes(checkIn);
+  const startMinutes = timeToMinutes(officialStart);
+  if (inMinutes == null || startMinutes == null) return 0;
+  const diff = inMinutes - startMinutes;
+  return diff > 0 ? Math.round(diff) : 0;
+};
+
+/**
+ * مطابقة دقائق التأخير مع شرائح قواعد الحضور (شاملة الحدين)،
+ * مع تطبيق الشريحة الأعلى عند تجاوز كل الشرائح — مطابقة لاحتساب السيرفر.
+ */
+const matchLateRule = (
+  rules: HRAttendanceRule[] | undefined,
+  lateMinutes: number
+): HRAttendanceRule | null => {
+  if (!rules || lateMinutes <= 0) return null;
+  const candidates = rules.filter((rule) => rule.violation_type === 'late_arrival');
+  if (candidates.length === 0) return null;
+  const fromValue = (rule: HRAttendanceRule) => Number(rule.from_minutes) || 0;
+  const toValue = (rule: HRAttendanceRule): number | null => {
+    const raw = rule.to_minutes;
+    if (raw === undefined || raw === null || (raw as unknown) === '') return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  let best: HRAttendanceRule | null = null;
+  let bestFrom = -Infinity;
+  candidates.forEach((rule) => {
+    const from = fromValue(rule);
+    const to = toValue(rule);
+    if (lateMinutes < from) return;
+    if (to != null && lateMinutes > to) return;
+    if (from > bestFrom) {
+      best = rule;
+      bestFrom = from;
+    }
+  });
+  if (best) return best;
+
+  const maxTo = candidates.reduce<number | null>((max, rule) => {
+    const to = toValue(rule);
+    if (to == null) return max;
+    return max == null || to > max ? to : max;
+  }, null);
+  if (maxTo != null && lateMinutes > maxTo) {
+    return candidates.reduce((acc, rule) => {
+      const accTo = toValue(acc) ?? Infinity;
+      const ruleTo = toValue(rule) ?? Infinity;
+      return ruleTo > accTo || (ruleTo === accTo && fromValue(rule) > fromValue(acc)) ? rule : acc;
+    });
+  }
+  return null;
+};
+
+/** هل يوجد سجل حضور فعلي (حضور / إجازة بعذر / بصمة حضور)؟ */
+const isAttendedRecord = (record: HRAttendanceRecord): boolean => {
+  if (record.status === 'present') return true;
+  if (record.status === 'leave' && record.is_excused) return true;
+  return !!record.check_in;
+};
+
+interface MonthAccrual {
+  attendedDays: number;
+  paidSundayDays: number;
+  earnedDays: number;
+}
+
+/**
+ * استحقاق الموظف داخل شهر على أساس الحضور الفعلي:
+ * - أيام العمل الفعلية (عدا الأحد) التي حضر فيها.
+ * - أيام الأحد المدفوعة في الأسابيع التي حضر فيها (بعد خصم نسبة الغياب).
+ * - إذا اكتمل الشهر بحضور كامل يُمنح 30 يوماً (تعويض 28/29) وبحد أقصى 30.
+ */
+const computeMonthAccrual = (
+  employeeId: string,
+  records: HRAttendanceRecord[],
+  monthKey: string,
+  upToIso?: string
+): MonthAccrual => {
+  const empty: MonthAccrual = { attendedDays: 0, paidSundayDays: 0, earnedDays: 0 };
+  if (!monthKey) return empty;
+  const [yearStr, monthStr] = monthKey.split('-');
+  const year = Number(yearStr);
+  const monthNumber = Number(monthStr);
+  if (!year || !monthNumber) return empty;
+
+  const recordsByDate = new Map<string, HRAttendanceRecord>();
+  records
+    .filter((record) => record.employee_id === employeeId && record.review_status !== 'rejected')
+    .forEach((record) => recordsByDate.set(record.date, record));
+
+  const lastDay = new Date(year, monthNumber, 0).getDate();
+  let attendedDays = 0;
+  let workdaysInScope = 0;
+  let paidSundayDays = 0;
+
+  for (let day = 1; day <= lastDay; day += 1) {
+    const cursor = new Date(year, monthNumber - 1, day);
+    const iso = isoDate(cursor);
+    if (upToIso && iso > upToIso) continue;
+    if (cursor.getDay() === 0) {
+      const weekDates = weekDatesBeforeSunday(iso);
+      const hasWeekData = weekDates.some((dateStr) => recordsByDate.has(dateStr));
+      if (hasWeekData) {
+        paidSundayDays += Math.max(0, 1 - sundayDeductionForDate(recordsByDate, iso));
+      }
+      continue;
+    }
+    workdaysInScope += 1;
+    const record = recordsByDate.get(iso);
+    if (record && isAttendedRecord(record)) attendedDays += 1;
+  }
+
+  let earnedDays = attendedDays + paidSundayDays;
+  const monthLastIso = isoDate(new Date(year, monthNumber - 1, lastDay));
+  const monthComplete = !upToIso || upToIso >= monthLastIso;
+  if (monthComplete && workdaysInScope > 0 && attendedDays >= workdaysInScope) {
+    // شهر مكتمل بحضور كامل: 30 يوماً حسابية مهما كان طول الشهر.
+    earnedDays = 30;
+  }
+  earnedDays = Math.min(30, earnedDays);
+  return {
+    attendedDays: Math.round(attendedDays * 100) / 100,
+    paidSundayDays: Math.round(paidSundayDays * 100) / 100,
+    earnedDays: Math.round(earnedDays * 100) / 100
+  };
+};
+
 
 
 export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initialSubTab }) => {
@@ -2321,6 +2462,15 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
 
     setIsSaving(true);
     setFormError('');
+    // الخصم اليدوي يُحترم فقط عند تغيير المشرف لقيم الخصم؛ غير ذلك يُعاد الاحتساب تلقائياً.
+    const manualDays = Number(form.calculated_deduction_days) || 0;
+    const manualHours = Number(form.calculated_deduction_hours) || 0;
+    const originalDays = editing ? Number(editing.calculated_deduction_days) || 0 : 0;
+    const originalHours = editing ? Number(editing.calculated_deduction_hours) || 0 : 0;
+    const manualDeduction =
+      !form.is_excused &&
+      (Math.abs(manualDays - originalDays) > 1e-9 ||
+        Math.abs(manualHours - originalHours) > 1e-9);
     const payload: any = {
       employee_id: form.employee_id,
       date: form.date,
@@ -2329,10 +2479,11 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
       status: form.status,
       is_excused: form.is_excused,
       excuse_note: form.excuse_note.trim(),
-      calculated_deduction_days: Number(form.calculated_deduction_days) || 0,
-      calculated_deduction_hours: Number(form.calculated_deduction_hours) || 0,
+      calculated_deduction_days: manualDays,
+      calculated_deduction_hours: manualHours,
       review_status: form.review_status,
-      recalculate: true
+      manual_deduction: manualDeduction,
+      recalculate: !manualDeduction
     };
 
     try {
@@ -3230,8 +3381,9 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
             <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-blue-50 border border-blue-200 text-blue-800 text-[11px] font-bold">
               <Info className="w-4 h-4 shrink-0" />
               <span>
-                القيمة النهائية للخصم تُحسب كالتالي: (أيام × المرتب ÷ 30) + (ساعات × المرتب ÷ 30 ÷
-                8).
+                يُعاد احتساب التأخير تلقائياً من قواعد الحضور عند الحفظ. عدّل «خصم (أيام/ساعات)»
+                يدوياً فقط لتجاوز القواعد. القيمة المالية = (أيام × المرتب ÷ 30) + (ساعات × المرتب ÷
+                30 ÷ 8).
               </span>
             </div>
 
@@ -3477,6 +3629,9 @@ interface LoanDueRow {
   employee: HREmployee;
   salary: number;
   workdays: number;
+  earnedDays: number;
+  attendedDays: number;
+  paidSundayDays: number;
   attendanceDeductionDays: number;
   attendanceDeductionHours: number;
   sundayDeductionDays: number;
@@ -3563,7 +3718,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     };
   }, []);
 
-  // المستحق حتى أمس = (المرتب ÷ 30) × عدد الأيام − التأخيرات − خصم الأحد − الجزاءات − السُلف
+  // المستحق حتى أمس = (المرتب ÷ 30) × أيام الاستحقاق الفعلية − التأخير − الجزاءات − السُلف
   const loanDueRows = useMemo<LoanDueRow[]>(() => {
     const rangeSet = new Set(duePeriod.dates);
     return employees.map((employee) => {
@@ -3572,15 +3727,19 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       const hourRate = hourlyRateFor(salary);
       const employeeRecords = attendanceRecords.filter((record) => {
         if (record.employee_id !== employee.id || !rangeSet.has(record.date)) return false;
-        // يوم الأحد يُحسب منفصلاً ضمن خصم الأحد.
+        // يوم الأحد يُحسب منفصلاً ضمن أيام الأحد المدفوعة.
         const recordDay = new Date(`${record.date}T00:00:00`);
         return recordDay.getDay() !== 0;
       });
-      const attendanceDeductionDays = employeeRecords.reduce(
+      // خصم التأخير/الانصراف على أيام الحضور فقط (الغياب مستبعد من أيام الاستحقاق).
+      const penaltyRecords = employeeRecords.filter(
+        (record) => isAttendedRecord(record) && !record.is_excused
+      );
+      const attendanceDeductionDays = penaltyRecords.reduce(
         (sum, record) => sum + (Number(record.calculated_deduction_days) || 0),
         0
       );
-      const attendanceDeductionHours = employeeRecords.reduce(
+      const attendanceDeductionHours = penaltyRecords.reduce(
         (sum, record) => sum + (Number(record.calculated_deduction_hours) || 0),
         0
       );
@@ -3602,15 +3761,26 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       const previousLoans = loans
         .filter((loan) => loan.employee_id === employee.id && rangeSet.has(loan.date))
         .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
-      const earned = dayRate * duePeriod.workdays;
+      // المستحق يُبنى على الحضور الفعلي (أيام العمل + أيام الأحد المدفوعة) لا على أيام التقويم.
+      const accrual = computeMonthAccrual(
+        employee.id,
+        attendanceRecords,
+        duePeriod.monthKey,
+        duePeriod.yesterdayIso
+      );
+      const earned = dayRate * accrual.earnedDays;
+      // خصم الأحد مطبّق عبر تقليل أيام الاستحقاق، فلا يُخصم مالياً مرة أخرى.
       const deductionMoney =
-        dayRate * (attendanceDeductionDays + sundayDeductionDays + penaltyDays) +
+        dayRate * (attendanceDeductionDays + penaltyDays) +
         hourRate * (attendanceDeductionHours + penaltyHours);
       const currentDue = Math.max(0, earned - deductionMoney - previousLoans);
       return {
         employee,
         salary,
         workdays: duePeriod.workdays,
+        earnedDays: accrual.earnedDays,
+        attendedDays: accrual.attendedDays,
+        paidSundayDays: accrual.paidSundayDays,
         attendanceDeductionDays,
         attendanceDeductionHours,
         sundayDeductionDays,
@@ -3721,7 +3891,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         (group) => `<h2>${group.label} <span>(${group.rows.length} موظف)</span></h2>
         <table>
           <thead><tr>
-            <th>الكود</th><th>الموظف</th><th>المرتب</th><th>أيام العمل</th>
+            <th>الكود</th><th>الموظف</th><th>المرتب</th><th>الأيام المستحقة</th>
             <th>خصم التأخير</th><th>خصم الأحد</th><th>الجزاءات</th>
             <th>السُلف السابقة</th><th>المستحق الحالي</th>
           </tr></thead>
@@ -3734,7 +3904,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                   <td>${row.employee.employee_code || '-'}</td>
                   <td>${row.employee.name}</td>
                   <td>${formatMoney(row.salary)}</td>
-                  <td>${row.workdays}</td>
+                  <td>${row.earnedDays.toFixed(2)}</td>
                   <td>${attendanceDays.toFixed(2)} يوم</td>
                   <td>${row.sundayDeductionDays.toFixed(2)} يوم</td>
                   <td>${penaltyDays.toFixed(2)} يوم</td>
@@ -4008,7 +4178,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                 <th className="text-right px-4 py-2.5 font-black whitespace-nowrap">الموظف</th>
                 <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">المرتب</th>
                 <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">
-                  أيام العمل حتى أمس
+                  الأيام المستحقة حتى أمس
                 </th>
                 <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">
                   السُلف السابقة
@@ -4044,7 +4214,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                       {formatMoney(row.salary)}
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-bold text-slate-600">
-                      {row.workdays}
+                      {row.earnedDays.toFixed(2)}
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-bold text-amber-600 whitespace-nowrap">
                       {formatMoney(row.previousLoans)}
@@ -4982,6 +5152,10 @@ const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) =>
 interface PayrollRow {
   employee: HREmployee;
   baseSalary: number;
+  attendedDays: number;
+  paidSundayDays: number;
+  earnedDays: number;
+  earnedBase: number;
   overtimeDays: number;
   overtimeHours: number;
   overtimePay: number;
@@ -5005,20 +5179,23 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
   const [records, setRecords] = useState<HRAttendanceRecord[]>([]);
   const [penalties, setPenalties] = useState<HRPenalty[]>([]);
   const [loans, setLoans] = useState<HRLoan[]>([]);
+  const [settings, setSettings] = useState<HRAttendanceSettings | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [workerSheet, setWorkerSheet] = useState<PayrollRow | null>(null);
 
   const loadPayrollData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [recordsRes, penaltiesRes, loansRes] = await Promise.all([
+      const [recordsRes, penaltiesRes, loansRes, settingsRes] = await Promise.all([
         api.getHRAttendanceRecords(),
         api.getHRPenalties(),
-        api.getHRLoans()
+        api.getHRLoans(),
+        api.getHRAttendanceSettings().catch(() => null)
       ]);
       setRecords(Array.isArray(recordsRes) ? recordsRes : []);
       setPenalties(Array.isArray(penaltiesRes) ? penaltiesRes : []);
       setLoans(Array.isArray(loansRes) ? loansRes : []);
+      setSettings(settingsRes || null);
     } catch (err: any) {
       addFlashMessage(err?.message || 'فشل تحميل بيانات المرتبات', 'danger');
     } finally {
@@ -5039,12 +5216,14 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       month === currentMonthKey
         ? isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1))
         : undefined;
+    const officialStart = settings?.official_start_time || '08:30';
 
     return employees.map((employee) => {
       const baseSalary = Number(employee.monthly_salary) || 0;
       const dayRate = dailyRateFor(baseSalary);
       const hourRate = hourlyRateFor(baseSalary);
 
+      // خصم التأخير/الانصراف المبكر (على أيام الحضور فقط — الغياب لا يُحسب مرتين).
       let attendanceDays = 0;
       let attendanceHours = 0;
       let overtimeDays = 0;
@@ -5053,16 +5232,38 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         if (record.employee_id !== employee.id) return;
         if (!inMonth(record.date)) return;
         if (record.review_status === 'rejected') return;
-        // يوم الأحد إجازة مدفوعة ويُحسب خصمه بشكل منفصل.
+        // يوم الأحد إجازة مدفوعة ويُحسب ضمن الأيام المستحقة/خصم الأحد.
         const recordDay = new Date(`${record.date}T00:00:00`);
         if (recordDay.getDay() === 0) return;
-        attendanceDays += Number(record.calculated_deduction_days) || 0;
-        attendanceHours += Number(record.calculated_deduction_hours) || 0;
+
         overtimeDays += Number(record.overtime_days) || 0;
         overtimeHours += Number(record.overtime_hours) || 0;
+
+        // الغياب غير محسوب ضمن الأيام المستحقة أصلاً، فلا نخصمه مرة ثانية.
+        if (!isAttendedRecord(record)) return;
+        if (record.is_excused) return;
+
+        let dedDays = Number(record.calculated_deduction_days) || 0;
+        let dedHours = Number(record.calculated_deduction_hours) || 0;
+        // احتياطي ديناميكي: لو لم يُخزَّن الخصم، طبّق شريحة التأخير من الإعدادات.
+        if (dedDays === 0 && dedHours === 0) {
+          const lateMinutes = lateMinutesFor(record.check_in, officialStart);
+          const rule = matchLateRule(settings?.rules_json, lateMinutes);
+          const ruleValue = Number(rule?.deduction_value) || 0;
+          if (rule && ruleValue > 0) {
+            if (rule.deduction_type === 'days') dedDays = ruleValue;
+            else dedHours = ruleValue;
+          }
+        }
+        attendanceDays += dedDays;
+        attendanceHours += dedHours;
       });
 
-      // خصم يوم الأحد يُحسب من سجلات أيام العمل الستة (بدون الاعتماد على وجود سجل أحد).
+      // الأجر المكتسب على أساس الحضور الفعلي + أيام الأحد المدفوعة (بحد أقصى 30 يوماً).
+      const accrual = computeMonthAccrual(employee.id, records, month, upToIso);
+      const earnedBase = accrual.earnedDays * dayRate;
+
+      // خصم يوم الأحد يُحسب من سجلات أيام العمل الستة (للعرض فقط — مطبّق ضمن الأيام المستحقة).
       const sundayDeductionDays = sumSundayDeductionsForEmployeeMonth(
         records,
         employee.id,
@@ -5084,15 +5285,20 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
 
       const attendanceDeduction = attendanceDays * dayRate + attendanceHours * hourRate;
-      const sundayDeduction = sundayDeductionDays * dayRate;
+      // خصم الأحد ليس مبلغاً إضافياً: أثره ظاهر في تقليل الأيام المستحقة (earnedDays).
+      const sundayDeduction = 0;
       const penaltyDeduction = penaltyDays * dayRate + penaltyHours * hourRate;
       const overtimePay = overtimeDays * dayRate + overtimeHours * hourRate;
-      const totalDeduction =
-        attendanceDeduction + sundayDeduction + penaltyDeduction + loanDeduction;
+      // الخصومات المطروحة من الأجر المكتسب: التأخير + الجزاءات اليدوية + السُلف فقط.
+      const totalDeduction = attendanceDeduction + penaltyDeduction + loanDeduction;
 
       return {
         employee,
         baseSalary,
+        attendedDays: accrual.attendedDays,
+        paidSundayDays: accrual.paidSundayDays,
+        earnedDays: accrual.earnedDays,
+        earnedBase,
         overtimeDays,
         overtimeHours,
         overtimePay,
@@ -5106,16 +5312,17 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         penaltyDeduction,
         loanDeduction,
         totalDeduction,
-        netPay: baseSalary + overtimePay - totalDeduction
+        netPay: earnedBase + overtimePay - totalDeduction
       };
     });
-  }, [employees, records, penalties, loans, month]);
+  }, [employees, records, penalties, loans, month, settings]);
 
   const totals = useMemo(
     () =>
       rows.reduce(
         (acc, row) => ({
           baseSalary: acc.baseSalary + row.baseSalary,
+          earnedBase: acc.earnedBase + row.earnedBase,
           overtimePay: acc.overtimePay + row.overtimePay,
           attendanceDeduction: acc.attendanceDeduction + row.attendanceDeduction,
           sundayDeduction: acc.sundayDeduction + row.sundayDeduction,
@@ -5126,6 +5333,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         }),
         {
           baseSalary: 0,
+          earnedBase: 0,
           overtimePay: 0,
           attendanceDeduction: 0,
           sundayDeduction: 0,
@@ -5151,12 +5359,25 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       )
       .forEach((record) => recordsByDate.set(record.date, record));
 
+    // سُلف الشهر موزّعة على أيام تواريخها لتظهر في صف اليوم نفسه.
+    const loansByDate = new Map<string, HRLoan[]>();
+    loans
+      .filter(
+        (loan) => loan.employee_id === row.employee.id && (loan.date || '').startsWith(month)
+      )
+      .forEach((loan) => {
+        const key = loan.date;
+        if (!loansByDate.has(key)) loansByDate.set(key, []);
+        loansByDate.get(key)!.push(loan);
+      });
+
     const [yearStr, monthStr] = month.split('-');
     const year = Number(yearStr);
     const monthNumber = Number(monthStr);
     const daysInMonth = year && monthNumber ? new Date(year, monthNumber, 0).getDate() : 30;
     const dayRate = dailyRateFor(row.baseSalary);
     const hourRate = hourlyRateFor(row.baseSalary);
+    const officialStart = settings?.official_start_time || '08:30';
     const statusLabels: Record<string, string> = {
       present: 'حاضر',
       absent: 'غائب',
@@ -5172,6 +5393,10 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       const record = recordsByDate.get(iso);
       const dayLabel = WEEK_DAY_AR[cursor.getDay()];
       const dateLabel = `${String(day).padStart(2, '0')}/${String(monthNumber).padStart(2, '0')}`;
+      const dayLoans = loansByDate.get(iso) || [];
+      const loansTotal = dayLoans.reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
+      const loansCell = loansTotal > 0 ? formatMoney(loansTotal) : '—';
+      const loansReason = dayLoans.map((loan) => loan.notes || 'سلفة').join('، ');
 
       if (isSunday) {
         const weekDates = weekDatesBeforeSunday(iso);
@@ -5186,111 +5411,148 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
           ratio > 0
             ? `خصم ${sundayRatioLabel(ratio)} بسبب غياب ${absentCount} أيام بدون عذر`
             : 'إجازة أسبوعية مدفوعة';
-        dayRows.push(`<tr class="${ratio > 0 ? 'row-bad' : 'row-off'}">
-          <td class="mono">${dateLabel}</td><td>${dayLabel}</td><td>—</td><td>—</td>
-          <td>إجازة أسبوعية</td>
+        dayRows.push(`<tr class="${ratio > 0 ? 'row-absent' : 'row-off'}">
+          <td class="mono">${dateLabel} — ${dayLabel}</td><td>—</td><td>—</td><td>—</td>
+          <td class="mono">${loansCell}</td>
           <td class="mono">${deduction ? formatMoney(-deduction) : '—'}</td>
-          <td class="mono">—</td><td class="reason">${reason}</td></tr>`);
+          <td class="note">${reason}${loansReason ? ` — ${loansReason}` : ''}</td></tr>`);
         continue;
       }
 
       if (!record) {
         dayRows.push(`<tr class="row-off">
-          <td class="mono">${dateLabel}</td><td>${dayLabel}</td><td>—</td><td>—</td>
-          <td>لا يوجد سجل</td><td class="mono">—</td><td class="mono">—</td>
-          <td class="reason">لم يُسجّل حضور لهذا اليوم</td></tr>`);
+          <td class="mono">${dateLabel} — ${dayLabel}</td><td>—</td><td>—</td><td>—</td>
+          <td class="mono">${loansCell}</td><td class="mono">—</td>
+          <td class="note">لا يوجد سجل${loansReason ? ` — ${loansReason}` : ''}</td></tr>`);
         continue;
       }
 
-      const deduction =
+      let deduction =
         (Number(record.calculated_deduction_days) || 0) * dayRate +
         (Number(record.calculated_deduction_hours) || 0) * hourRate;
+      if (record.is_excused) deduction = 0;
       const overtime =
         (Number(record.overtime_days) || 0) * dayRate +
         (Number(record.overtime_hours) || 0) * hourRate;
+      const lateMinutes = lateMinutesFor(record.check_in, officialStart);
       let reason = 'حضور كامل';
       if (record.is_excused) reason = `بعذر: ${record.excuse_note || 'بدون خصم'}`;
       else if (record.status === 'absent') reason = 'غياب بدون عذر';
       else if (record.status === 'missing_punch') reason = 'بصمة ناقصة تحتاج مراجعة';
-      else if (record.status === 'leave') reason = 'إجازة';
-      else if (deduction > 0) reason = 'تأخير / انصراف مبكر';
+      else if (record.status === 'leave') reason = statusLabels[record.status] || 'إجازة';
+      else if (lateMinutes > 0) reason = `تأخير ${lateMinutes} دقيقة`;
+      else if (deduction > 0) reason = 'خصم تأخير / انصراف مبكر';
+      if (loansReason) reason += ` — ${loansReason}`;
+
+      // أحمر للغياب، أزرق لأيام الإضافي، أصفر للتأخير.
       let rowClass = 'row-ok';
-      if (record.status === 'absent') rowClass = 'row-bad';
+      if (record.status === 'absent') rowClass = 'row-absent';
+      else if (overtime > 0) rowClass = 'row-overtime';
       else if (record.status === 'missing_punch') rowClass = 'row-info';
       else if (record.status === 'leave') rowClass = 'row-off';
       else if (deduction > 0) rowClass = 'row-warn';
 
       dayRows.push(`<tr class="${rowClass}">
-        <td class="mono">${dateLabel}</td><td>${dayLabel}</td>
+        <td class="mono">${dateLabel} — ${dayLabel}</td>
         <td class="mono">${record.check_in || '—'}</td>
         <td class="mono">${record.check_out || '—'}</td>
-        <td>${statusLabels[record.status] || record.status}</td>
-        <td class="mono">${deduction ? formatMoney(-deduction) : '—'}</td>
         <td class="mono">${overtime ? formatMoney(overtime) : '—'}</td>
-        <td class="reason">${reason}</td></tr>`);
+        <td class="mono">${loansCell}</td>
+        <td class="mono">${deduction ? formatMoney(-deduction) : '—'}</td>
+        <td class="note">${reason}</td></tr>`);
     }
     const dayRowsHtml = dayRows.join('');
+    const overtimeText = `${row.overtimeDays} يوم / ${row.overtimeHours} ساعة`;
+    const attendanceText = `${row.attendanceDays.toFixed(2)} يوم / ${row.attendanceHours.toFixed(2)} ساعة`;
+    const penaltyText = `${row.penaltyDays.toFixed(2)} يوم / ${row.penaltyHours.toFixed(2)} ساعة`;
 
     return `<div class="sheet">
       <div class="head">
-        <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 40)}</div>
+        <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 46)}</div>
         <div class="title">
           <h1>${globalSettings.site_name || 'مصنع الملابس الجاهزة'}</h1>
           <p>ورقة مرتب عامل — شهر ${month}</p>
         </div>
       </div>
       <table class="info">
-        <tr><td class="label">اسم الموظف</td><td>${row.employee.name}</td><td class="label">كود الموظف</td><td class="mono">${row.employee.employee_code || '-'}</td></tr>
-        <tr><td class="label">الوظيفة</td><td>${row.employee.job_title || '—'}</td><td class="label">القسم</td><td>${workerDepartment(row)}</td></tr>
+        <tr>
+          <td class="label">اسم العامل</td><td>${row.employee.name}</td>
+          <td class="label">كود البصمة</td><td class="mono">${row.employee.employee_code || '-'}</td>
+        </tr>
+        <tr>
+          <td class="label">الوظيفة</td><td>${row.employee.job_title || '—'}</td>
+          <td class="label">القسم</td><td>${workerDepartment(row)}</td>
+        </tr>
+        <tr>
+          <td class="label">الأيام المستحقة</td>
+          <td class="mono">${row.earnedDays.toFixed(2)} يوم</td>
+          <td class="label">تفصيل الأيام</td>
+          <td class="mono">حضور ${row.attendedDays.toFixed(2)} + أحد ${row.paidSundayDays.toFixed(2)}</td>
+        </tr>
+        <tr class="screen-only">
+          <td class="label">المرتب الشهري</td>
+          <td class="mono">${formatMoney(row.baseSalary)}</td>
+          <td class="label">أجر اليوم / الساعة</td>
+          <td class="mono">${formatMoney(dayRate)} / ${formatMoney(hourRate)}</td>
+        </tr>
       </table>
       <table class="days">
         <thead><tr>
-          <th>التاريخ</th><th>اليوم</th><th>الحضور</th><th>الانصراف</th>
-          <th>الحالة</th><th>الخصم</th><th>الإضافي</th><th>الملاحظات</th>
+          <th>الأيام / التاريخ</th><th>حضور</th><th>انصراف</th>
+          <th>الإضافي</th><th>السُلف</th><th>الخصومات</th><th>ملاحظات</th>
         </tr></thead>
         <tbody>${dayRowsHtml}</tbody>
       </table>
       <table class="totals">
-        <tr><td>إجمالي الإضافي</td><td class="mono">${formatMoney(row.overtimePay)}</td></tr>
-        <tr><td>خصم الحضور والتأخير</td><td class="mono">${formatMoney(row.attendanceDeduction)}</td></tr>
-        <tr><td>خصم يوم الأحد</td><td class="mono">${formatMoney(row.sundayDeduction)}</td></tr>
-        <tr><td>الجزاءات</td><td class="mono">${formatMoney(row.penaltyDeduction)}</td></tr>
-        <tr><td>السُلف</td><td class="mono">${formatMoney(row.loanDeduction)}</td></tr>
+        <tr><td>الأجر المكتسب (${row.earnedDays.toFixed(2)} يوم)</td><td class="mono">${formatMoney(row.earnedBase)}</td></tr>
+        <tr><td>إجمالي الإضافي (${overtimeText})</td><td class="mono pos">${formatMoney(row.overtimePay)}</td></tr>
+        <tr><td>خصم التأخير والانصراف المبكر (${attendanceText})</td><td class="mono neg">${formatMoney(row.attendanceDeduction)}</td></tr>
+        <tr><td>خصم أيام الأحد (${row.sundayDeductionDays.toFixed(2)} يوم — مطبّق ضمن الأيام المستحقة)</td><td class="mono">—</td></tr>
+        <tr><td>الجزاءات (${penaltyText})</td><td class="mono neg">${formatMoney(row.penaltyDeduction)}</td></tr>
+        <tr><td>السُلف</td><td class="mono neg">${formatMoney(row.loanDeduction)}</td></tr>
+        <tr><td>إجمالي الخصومات</td><td class="mono neg">${formatMoney(row.totalDeduction)}</td></tr>
         <tr class="net-row"><td>صافي المستحق</td><td class="mono">${formatMoney(row.netPay)}</td></tr>
       </table>
-      <div class="sign"><span>توقيع الموظف: ....................</span><span>توقيع الإدارة: ....................</span></div>
+      <div class="sign"><span>توقيع العامل: ....................</span><span>توقيع الإدارة: ....................</span></div>
     </div>`;
   };
 
 
   const workerSheetStyles = `
-    @page{size:A4 portrait;margin:10mm}
-    *{box-sizing:border-box}
-    body{font-family:Tahoma,Arial,sans-serif;padding:4mm;color:#0f172a;margin:0}
-    .sheet{width:100%;margin:0 auto;page-break-after:always}
-    .sheet:last-child{page-break-after:auto}
-    .head{display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:2px solid #334155;padding-bottom:4mm;margin-bottom:3mm}
+    @page{size:A4 portrait;margin:8mm}
+    *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    body{font-family:Tahoma,Arial,sans-serif;padding:3mm;color:#0f172a;margin:0;background:#fff}
+    .sheet{width:100%;margin:0 auto;page-break-after:always;break-after:page}
+    .sheet:last-child{page-break-after:auto;break-after:auto}
+    .head{display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:2px solid #334155;padding-bottom:3mm;margin-bottom:3mm}
     .brand{text-align:right}
     .title{text-align:left}
     h1{font-size:15px;margin:0 0 1mm}
     .title p{font-size:11px;color:#475569;margin:0;font-weight:bold}
     table{width:100%;border-collapse:collapse;font-size:9px;margin-bottom:3mm}
-    th,td{border:1px solid #cbd5e1;padding:4px 5px;text-align:center}
+    th,td{border:1px solid #94a3b8;padding:4px 5px;text-align:center;vertical-align:middle}
     th{background:#e2e8f0;font-weight:bold;font-size:9px}
-    td.label{background:#f1f5f9;font-weight:bold;width:17%}
-    td.reason{text-align:right;font-size:8.5px;color:#334155}
+    td.label{background:#f1f5f9;font-weight:bold;width:18%}
+    td.note{text-align:right;font-size:8.5px;color:#334155}
     .mono{font-family:'Courier New',monospace;font-size:8.5px}
+    .pos{color:#047857;font-weight:bold}
+    .neg{color:#b91c1c;font-weight:bold}
     .days tbody td{padding:3px 4px}
-    .row-ok{background:#ecfdf5}
-    .row-warn{background:#fffbeb}
-    .row-bad{background:#fef2f2}
-    .row-info{background:#eff6ff}
+    .row-ok{background:#f0fdf4}
+    .row-warn{background:#fef9c3}
+    .row-absent{background:#fee2e2;color:#991b1b;font-weight:bold}
+    .row-overtime{background:#dbeafe;color:#1e40af}
+    .row-info{background:#eef2ff}
     .row-off{background:#f8fafc;color:#64748b}
-    .totals{width:60%;margin-left:auto}
+    .totals{width:62%;margin-left:auto}
     .totals td{font-size:10px;padding:5px 8px}
-    .totals td:first-child{background:#f1f5f9;font-weight:bold;text-align:right;width:60%}
-    .totals .net-row td{background:#ecfdf5;color:#047857;font-weight:bold;font-size:12px;border-top:2px solid #059669}
-    .sign{margin-top:10mm;display:flex;justify-content:space-between;font-size:10px}
+    .totals td:first-child{background:#f1f5f9;font-weight:bold;text-align:right;width:64%}
+    .totals .net-row td{background:#dcfce7;color:#047857;font-weight:bold;font-size:12px;border-top:2px solid #059669}
+    .sign{margin-top:8mm;display:flex;justify-content:space-between;font-size:10px}
+    @media print{
+      .screen-only{display:none !important}
+      .sheet{page-break-after:always}
+    }
   `;
 
   const printWorkerSheet = (row: PayrollRow) => {
@@ -5309,50 +5571,19 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
 
   const printAllEnvelopes = () => {
     if (rows.length === 0) {
-      addFlashMessage('لا يوجد موظفون لطباعة أظرفهم', 'danger');
+      addFlashMessage('لا يوجد موظفون لطباعة أوراقهم', 'danger');
       return;
     }
-    const cards = rows
-      .map(
-        (row) => `
-        <div class="env">
-          <div class="env-head">كارت أظرف المرتبات — شهر ${month}</div>
-          <div class="env-name">${row.employee.name}</div>
-          <div class="env-meta">${row.employee.employee_code || '-'} — ${
-          row.employee.job_title || '—'
-        }</div>
-          <div class="env-meta">${workerDepartment(row)}</div>
-          <table>
-            <tr><td>المرتب</td><td>${formatMoney(row.baseSalary)}</td></tr>
-            <tr><td>الإضافي</td><td>${formatMoney(row.overtimePay)}</td></tr>
-            <tr><td>الخصومات</td><td>${formatMoney(row.totalDeduction)}</td></tr>
-          </table>
-          <div class="env-net">الصافي: ${formatMoney(row.netPay)}</div>
-        </div>`
-      )
-      .join('');
+    // ورقة A4 كاملة لكل عامل، مع فاصل صفحات بين الأوراق.
+    const sheets = rows.map((row) => buildWorkerSheetHtml(row)).join('');
     const win = window.open('', '_blank', 'width=1000,height=800');
     if (!win) {
       addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
       return;
     }
     win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
-      <title>كروت أظرف المرتبات</title>
-      <style>
-        body{font-family:Tahoma,Arial,sans-serif;padding:16px;color:#0f172a}
-        .env{border:2px dashed #94a3b8;border-radius:12px;padding:14px;margin:0 10px 14px 0;width:320px;height:180px;display:inline-block;vertical-align:top;page-break-inside:avoid}
-        .env-head{font-size:10px;color:#64748b;margin-bottom:4px}
-        .env-name{font-size:17px;font-weight:bold;margin-bottom:2px}
-        .env-meta{font-size:11px;color:#475569}
-        .env table{width:100%;border-collapse:collapse;font-size:11px;margin:6px 0}
-        .env td{border-bottom:1px solid #e2e8f0;padding:2px 0}
-        .env td:last-child{text-align:left;font-family:monospace}
-        .env-net{margin-top:4px;padding:5px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;text-align:center;font-weight:bold;color:#047857;font-size:12px}
-        .brand{text-align:center;margin-bottom:10px}
-        @media print{.env{page-break-after:always}}
-      </style></head><body>
-      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 44)}</div>
-      ${cards}</body></html>`);
+      <title>أوراق مرتبات العمال — ${month}</title>
+      <style>${workerSheetStyles}</style></head><body>${sheets}</body></html>`);
     win.document.close();
     win.focus();
     win.print();
@@ -5368,7 +5599,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
             </p>
             <p className="text-3xl font-black mt-1 font-mono">{formatMoney(totals.netPay)}</p>
             <p className="text-[11px] font-bold text-emerald-50 mt-1">
-              عدد العمال: {rows.length} — إجمالي المرتبات: {formatMoney(totals.baseSalary)} — إجمالي
+              عدد العمال: {rows.length} — الأجور المكتسبة: {formatMoney(totals.earnedBase)} — إجمالي
               الخصومات: {formatMoney(totals.totalDeduction)}
             </p>
           </div>
@@ -5378,7 +5609,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
             className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-white text-emerald-700 text-[11px] font-black hover:bg-emerald-50 transition cursor-pointer shrink-0"
           >
             <Printer className="w-4 h-4" />
-            طباعة كروت أظرف المرتبات للجميع PDF
+            طباعة أوراق مرتبات العمال للجميع A4
           </button>
         </div>
       </div>
@@ -5388,8 +5619,8 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
           <div>
             <h2 className="text-sm font-black text-slate-900">مسير مرتبات الشهر</h2>
             <p className="text-[11px] font-bold text-slate-500 mt-0.5">
-              صافي المرتب = المرتب الشهري − (خصومات الحضور + الجزاءات + السُلف) على أساس 30 يوماً
-              للشهر.
+              صافي المرتب = الأجر المكتسب (أيام الحضور + أيام الأحد المدفوعة بحد أقصى 30 يوماً) +
+              الإضافي − (التأخير + الجزاءات + السُلف).
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -5417,7 +5648,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
           </span>
           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-50 border border-purple-200 text-[11px] font-black text-purple-700">
             <Banknote className="w-3.5 h-3.5" />
-            إجمالي المرتبات: {formatMoney(totals.baseSalary)}
+            الأجور المكتسبة: {formatMoney(totals.earnedBase)}
           </span>
           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] font-black text-emerald-700">
             <Timer className="w-3.5 h-3.5" />
@@ -5451,10 +5682,15 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                   <th className="text-right px-4 py-2.5 font-black whitespace-nowrap">الموظف</th>
                   <th className="text-right px-4 py-2.5 font-black whitespace-nowrap">الوظيفة / القسم</th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">
-                    المرتب الشهري
+                    الأيام المستحقة
+                  </th>
+                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">
+                    الأجر المكتسب
                   </th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">الإضافي</th>
-                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">خصم الحضور</th>
+                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">
+                    خصم التأخير
+                  </th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">جزاءات</th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">سُلف</th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">الصافي</th>
@@ -5480,7 +5716,14 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                       </p>
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-black text-slate-800 whitespace-nowrap">
-                      {formatMoney(row.baseSalary)}
+                      <p>{row.earnedDays.toFixed(2)} يوم</p>
+                      <p className="text-[10px] text-slate-400">
+                        حضور {row.attendedDays.toFixed(2)} + أحد {row.paidSundayDays.toFixed(2)}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3 text-center font-mono font-black text-slate-800 whitespace-nowrap">
+                      <p>{formatMoney(row.earnedBase)}</p>
+                      <p className="text-[10px] text-slate-400">من {formatMoney(row.baseSalary)}</p>
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-bold text-emerald-600 whitespace-nowrap">
                       <p>{formatMoney(row.overtimePay)}</p>
@@ -5489,11 +5732,11 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                       </p>
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-bold text-rose-600 whitespace-nowrap">
-                      <p>{formatMoney(row.attendanceDeduction + row.sundayDeduction)}</p>
+                      <p>{formatMoney(row.attendanceDeduction)}</p>
                       <p className="text-[10px] text-slate-400">
                         {row.attendanceDays} يوم / {row.attendanceHours} ساعة
                         {row.sundayDeductionDays > 0
-                          ? ` + أحد ${row.sundayDeductionDays.toFixed(2)} يوم`
+                          ? ` (أحد ${row.sundayDeductionDays.toFixed(2)} يوم داخل المستحق)`
                           : ''}
                       </p>
                     </td>
@@ -5535,14 +5778,15 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                   <td className="px-4 py-3 font-black text-slate-900" colSpan={2}>
                     الإجمالي
                   </td>
+                  <td className="px-4 py-3 text-center font-mono font-black text-slate-900">—</td>
                   <td className="px-4 py-3 text-center font-mono font-black text-slate-900">
-                    {formatMoney(totals.baseSalary)}
+                    {formatMoney(totals.earnedBase)}
                   </td>
                   <td className="px-4 py-3 text-center font-mono font-black text-emerald-700">
                     {formatMoney(totals.overtimePay)}
                   </td>
                   <td className="px-4 py-3 text-center font-mono font-black text-rose-700">
-                    {formatMoney(totals.attendanceDeduction + totals.sundayDeduction)}
+                    {formatMoney(totals.attendanceDeduction)}
                   </td>
                   <td className="px-4 py-3 text-center font-mono font-black text-rose-700">
                     {formatMoney(totals.penaltyDeduction)}
@@ -5564,8 +5808,9 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       <div className="flex items-start gap-2 px-4 py-3 rounded-2xl bg-blue-50 border border-blue-200 text-blue-800 text-[11px] font-bold">
         <Info className="w-4 h-4 shrink-0" />
         <span>
-          يتم تجاهل سجلات الحضور التي حالتها «مرفوض» عند حساب الخصم، ويُحسب راتب اليوم = المرتب ÷ 30
-          وراتب الساعة = راتب اليوم ÷ 8.
+          يُحسب الأجر على أيام الحضور الفعلي + أيام الأحد المدفوعة (بحد أقصى 30 يوماً)، وتُخصم
+          قواعد التأخير ومخالفات الجزاءات والسُلف فقط. تُتجاهل السجلات «المرفوضة»، وراتب اليوم =
+          المرتب ÷ 30 وراتب الساعة = راتب اليوم ÷ 8.
         </span>
       </div>
 
@@ -5584,6 +5829,8 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                 { label: 'الوظيفة', value: workerSheet.employee.job_title || '—' },
                 { label: 'القسم', value: workerDepartment(workerSheet) },
                 { label: 'المرتب الشهري', value: formatMoney(workerSheet.baseSalary) },
+                { label: 'الأيام المستحقة', value: `${workerSheet.earnedDays.toFixed(2)} يوم` },
+                { label: 'الأجر المكتسب', value: formatMoney(workerSheet.earnedBase) },
                 { label: 'الشهر', value: month }
               ].map((item) => (
                 <div
@@ -5606,6 +5853,16 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
+                  <tr className="bg-emerald-50/40">
+                    <td className="px-3 py-2 font-bold text-slate-700">الأجر المكتسب</td>
+                    <td className="px-3 py-2 text-center font-bold text-slate-600">
+                      حضور {workerSheet.attendedDays.toFixed(2)} + أحد{' '}
+                      {workerSheet.paidSundayDays.toFixed(2)} = {workerSheet.earnedDays.toFixed(2)} يوم
+                    </td>
+                    <td className="px-3 py-2 text-center font-mono font-black text-emerald-600">
+                      {formatMoney(workerSheet.earnedBase)}
+                    </td>
+                  </tr>
                   <tr>
                     <td className="px-3 py-2 font-bold text-slate-700">العمل الإضافي</td>
                     <td className="px-3 py-2 text-center font-bold text-slate-600">
@@ -5616,7 +5873,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                     </td>
                   </tr>
                   <tr>
-                    <td className="px-3 py-2 font-bold text-slate-700">خصم الحضور والتأخير</td>
+                    <td className="px-3 py-2 font-bold text-slate-700">خصم التأخير والانصراف المبكر</td>
                     <td className="px-3 py-2 text-center font-bold text-slate-600">
                       {workerSheet.attendanceDays} يوم / {workerSheet.attendanceHours} ساعة
                     </td>
@@ -5629,8 +5886,8 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                     <td className="px-3 py-2 text-center font-bold text-slate-600">
                       {workerSheet.sundayDeductionDays.toFixed(2)} يوم
                     </td>
-                    <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
-                      {formatMoney(workerSheet.sundayDeduction)}
+                    <td className="px-3 py-2 text-center font-mono font-bold text-slate-400">
+                      مطبّق ضمن المستحق
                     </td>
                   </tr>
                   <tr>

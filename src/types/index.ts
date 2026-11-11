@@ -1158,6 +1158,8 @@ export interface HRAttendanceRecord {
   excuse_note?: string;
   calculated_deduction_days: number;
   calculated_deduction_hours: number;
+  late_minutes?: number;
+  early_minutes?: number;
   overtime_days?: number;
   overtime_hours?: number;
   sunday_deduction_days?: number;

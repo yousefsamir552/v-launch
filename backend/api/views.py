@@ -3207,16 +3207,23 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         rec_date = parse_date(str(data.get('date'))) if data.get('date') else date.today()
         check_in_val = parse_time_value(data.get('check_in'))
         check_out_val = parse_time_value(data.get('check_out'))
-        if data.get('recalculate') and not is_excused:
-            # تطبيق قواعد الحضور تلقائياً عند إدخال/تعديل سجل يدوياً.
-            computed = compute_attendance(
-                HRAttendanceSettings.get_solo(),
-                employee,
-                rec_date or date.today(),
-                check_in_val,
-                check_out_val,
-                status_val,
-            )
+        # الاحتساب تلقائي دائماً، ويُحترم الخصم اليدوي فقط عند manual_deduction=true.
+        manual_deduction = bool(data.get('manual_deduction'))
+        computed = compute_attendance(
+            HRAttendanceSettings.get_solo(),
+            employee,
+            rec_date or date.today(),
+            check_in_val,
+            check_out_val,
+            status_val,
+        )
+        late_minutes_val = float(computed['late_minutes'] or 0)
+        early_minutes_val = float(computed['early_minutes'] or 0)
+        if is_excused:
+            ded_days = 0.0
+            ded_hours = 0.0
+            review_val = 'auto_applied'
+        elif not manual_deduction:
             ded_days = computed['deduction_days']
             ded_hours = computed['deduction_hours']
             if data.get('review_status') is None:
@@ -3225,6 +3232,8 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         if (rec_date or date.today()).weekday() == 6:
             ded_days = 0.0
             ded_hours = 0.0
+            late_minutes_val = 0.0
+            early_minutes_val = 0.0
             review_val = 'auto_applied'
         obj = HRAttendanceRecord.objects.create(
             client_id=(data.get('id') or data.get('client_id') or None),
@@ -3237,6 +3246,8 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             excuse_note=data.get('excuse_note') or None,
             calculated_deduction_days=ded_days,
             calculated_deduction_hours=ded_hours,
+            late_minutes=late_minutes_val,
+            early_minutes=early_minutes_val,
             review_status=review_val,
         )
         overtime = compute_overtime(HRAttendanceSettings.get_solo(), obj.check_out)
@@ -3304,43 +3315,57 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             or data.get('calculated_deduction_hours') is not None
         )
 
-        if data.get('recalculate'):
-            # إعادة احتساب التأخير/الانصراف المبكر/الغياب من قواعد الحضور الحالية.
-            settings_obj = HRAttendanceSettings.get_solo()
-            computed = compute_attendance(
-                settings_obj,
-                obj.employee,
-                obj.date,
-                obj.check_in,
-                obj.check_out,
-                obj.status,
-            )
-            overtime = compute_overtime(settings_obj, obj.check_out)
-            obj.overtime_days = overtime['overtime_days']
-            obj.overtime_hours = overtime['overtime_hours']
-            if obj.is_excused:
+        settings_obj = HRAttendanceSettings.get_solo()
+        # الاحتساب تلقائي دائماً، ويُحترم الخصم اليدوي فقط عند manual_deduction=true.
+        manual_deduction = bool(data.get('manual_deduction'))
+        computed = compute_attendance(
+            settings_obj,
+            obj.employee,
+            obj.date,
+            obj.check_in,
+            obj.check_out,
+            obj.status,
+        )
+        overtime = compute_overtime(settings_obj, obj.check_out)
+        obj.overtime_days = overtime['overtime_days']
+        obj.overtime_hours = overtime['overtime_hours']
+        obj.late_minutes = float(computed['late_minutes'] or 0)
+        obj.early_minutes = float(computed['early_minutes'] or 0)
+
+        if manual_deduction:
+            if obj.is_excused and not explicit_deductions:
                 obj.calculated_deduction_days = 0
                 obj.calculated_deduction_hours = 0
                 if data.get('review_status') is None:
                     obj.review_status = 'auto_applied'
-            else:
-                obj.calculated_deduction_days = computed['deduction_days']
-                obj.calculated_deduction_hours = computed['deduction_hours']
-                if data.get('review_status') is None:
-                    obj.review_status = computed['review_status']
-        elif obj.is_excused and not explicit_deductions:
+        elif obj.is_excused:
             # تسجيل العذر يلغي الخصم المحتسب تلقائياً.
             obj.calculated_deduction_days = 0
             obj.calculated_deduction_hours = 0
             if data.get('review_status') is None:
                 obj.review_status = 'auto_applied'
+        elif obj.review_status not in ('approved', 'rejected'):
+            # قرار مراجعة معتمد (قبول/رفض) لا يُستبدل بالاحتساب التلقائي.
+            obj.calculated_deduction_days = computed['deduction_days']
+            obj.calculated_deduction_hours = computed['deduction_hours']
+            if data.get('review_status') is None:
+                obj.review_status = computed['review_status']
+
+        # يوم الأحد إجازة مدفوعة: لا خصم قواعد ولا تأخير.
+        if obj.date.weekday() == 6:
+            obj.calculated_deduction_days = 0
+            obj.calculated_deduction_hours = 0
+            obj.late_minutes = 0
+            obj.early_minutes = 0
+            if data.get('review_status') is None:
+                obj.review_status = 'auto_applied'
 
         obj.save()
-        if data.get('recalculate'):
+        if not manual_deduction:
             # إعادة حساب خصم يوم الأحد بعد تحديث السجل (يعتمد على سجلات الأسبوع).
             month_start, month_end = month_bounds(obj.date)
             reapply_employee_month(
-                HRAttendanceSettings.get_solo(), obj.employee, month_start, month_end,
+                settings_obj, obj.employee, month_start, month_end,
                 preserve_decisions=True,
             )
             obj.refresh_from_db()

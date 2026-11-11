@@ -460,8 +460,14 @@ def _minutes_between(start: time, end: time) -> float:
 
 
 def _match_rule(rules, violation_type: str, minutes: float):
-    """اختيار أنسب قاعدة مطابقة للمخالفة (الأكثر تحديداً)."""
-    best = None
+    """اختيار أنسب قاعدة مطابقة للمخالفة (الأكثر تحديداً).
+
+    - المطابقة شاملة للحدين: ``from_minutes <= minutes <= to_minutes``.
+    - إذا تجاوزت الدقائق كل شرائح التأخير/الانصراف المبكر، تُطبَّق القاعدة
+      الأعلى (الأكبر ``to_minutes``) بدلاً من تجاهل الخصم بصمت.
+    - إذا كانت الدقائق أقل من كل الشرائح فلا خصم.
+    """
+    candidates = []
     for rule in rules or []:
         if not isinstance(rule, dict):
             continue
@@ -479,14 +485,34 @@ def _match_rule(rules, violation_type: str, minutes: float):
             to_minutes = float(raw_to) if raw_to not in (None, '') else None
         except (TypeError, ValueError):
             to_minutes = None
+        candidates.append((from_minutes, to_minutes, rule))
 
+    if not candidates:
+        return None
+
+    best = None
+    for from_minutes, to_minutes, rule in candidates:
         if minutes < from_minutes:
             continue
         if to_minutes is not None and minutes > to_minutes:
             continue
         if best is None or from_minutes > best[0]:
             best = (from_minutes, rule)
-    return best[1] if best else None
+    if best:
+        return best[1]
+
+    # لا توجد شريحة مطابقة: إن تجاوز التأخير كل الشرائح طبّق الشريحة الأعلى.
+    max_to = max((to for _from, to, _rule in candidates if to is not None), default=None)
+    if max_to is not None and minutes > max_to:
+        highest = max(
+            candidates,
+            key=lambda item: (
+                item[1] if item[1] is not None else float('inf'),
+                item[0],
+            ),
+        )
+        return highest[2]
+    return None
 
 
 def _apply_rule(rules, violation_type: str, minutes: float, totals) -> bool:
@@ -530,10 +556,23 @@ def compute_attendance(settings, employee, work_date, check_in, check_out, statu
     late_minutes = 0
     early_minutes = 0
     if status == 'present':
-        if check_in and check_in > official_start:
-            late_minutes = int(round(_minutes_between(official_start, check_in)))
-        if check_out and check_out < official_end:
-            early_minutes = int(round(_minutes_between(check_out, official_end)))
+        # مقارنة موحّدة بالدقائق من منتصف الليل حتى تعمل مع time أو "HH:MM(:SS)"
+        check_in_minutes = _clock_minutes(check_in)
+        check_out_minutes = _clock_minutes(check_out)
+        start_minutes = _clock_minutes(official_start)
+        end_minutes = _clock_minutes(official_end)
+        if (
+            check_in_minutes is not None
+            and start_minutes is not None
+            and check_in_minutes > start_minutes
+        ):
+            late_minutes = int(round(check_in_minutes - start_minutes))
+        if (
+            check_out_minutes is not None
+            and end_minutes is not None
+            and check_out_minutes < end_minutes
+        ):
+            early_minutes = int(round(end_minutes - check_out_minutes))
 
     totals = {'days': 0.0, 'hours': 0.0}
     manual_review = getattr(employee, 'rule_application_mode', 'auto') == 'manual_review'
@@ -767,6 +806,8 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
             'status': 'leave' if is_sunday else computed['status'],
             'calculated_deduction_days': deduction_days,
             'calculated_deduction_hours': deduction_hours,
+            'late_minutes': 0.0 if is_sunday else float(computed['late_minutes'] or 0),
+            'early_minutes': 0.0 if is_sunday else float(computed['early_minutes'] or 0),
             'overtime_days': overtime['overtime_days'],
             'overtime_hours': overtime['overtime_hours'],
             'sunday_deduction_days': sunday_days,
