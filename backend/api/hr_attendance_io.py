@@ -501,9 +501,11 @@ def _match_rule(rules, violation_type: str, minutes: float):
     if best:
         return best[1]
 
-    # لا توجد شريحة مطابقة: إن تجاوز التأخير كل الشرائح طبّق الشريحة الأعلى.
-    max_to = max((to for _from, to, _rule in candidates if to is not None), default=None)
-    if max_to is not None and minutes > max_to:
+    # لا توجد شريحة مطابقة: إما أن الدقائق وقعت في فجوة بين شريحتين أو تجاوزت
+    # أعلى شريحة مسجلة. في الحالتين تُطبَّق أعلى شريحة تأخير تلقائياً بدلاً من
+    # تجاهل الخصم بصمت (بشرط ألا تكون الدقائق أقل من كل الشرائح).
+    min_from = min((from_min for from_min, _to, _rule in candidates), default=None)
+    if min_from is not None and minutes >= min_from:
         highest = max(
             candidates,
             key=lambda item: (
@@ -552,10 +554,14 @@ def compute_attendance(settings, employee, work_date, check_in, check_out, statu
             status = 'missing_punch'
         else:
             status = 'absent'
+    elif check_in and status in ('absent', 'leave'):
+        # أي يوم له بصمة حضور فعلية يُعدّ حضوراً، حتى لو كان مُعلّماً كغياب/إجازة.
+        status = 'present' if check_out else 'missing_punch'
 
     late_minutes = 0
     early_minutes = 0
-    if status == 'present':
+    # تُحتسب دقائق التأخير/الانصراف المبكر متى وُجدت بصمة فعلية (حضور أو بصمة ناقصة).
+    if check_in or check_out:
         # مقارنة موحّدة بالدقائق من منتصف الليل حتى تعمل مع time أو "HH:MM(:SS)"
         check_in_minutes = _clock_minutes(check_in)
         check_out_minutes = _clock_minutes(check_out)
@@ -583,14 +589,15 @@ def compute_attendance(settings, employee, work_date, check_in, check_out, statu
     elif status == 'leave':
         # الإجازة غير المبررة تُعامل كغياب؛ تسجيل العذر (is_excused) يلغي الخصم لاحقاً.
         manual_review = _apply_rule(rules, 'absence', 0, totals) or manual_review
-    elif status == 'present':
+    elif status in ('present', 'missing_punch'):
+        # تُطبّق قواعد التأخير/الانصراف المبكر على أي يوم له بصمة فعلية.
         if late_minutes > 0:
             manual_review = _apply_rule(rules, 'late_arrival', late_minutes, totals) or manual_review
         if early_minutes > 0:
             manual_review = _apply_rule(rules, 'early_departure', early_minutes, totals) or manual_review
-    elif status == 'missing_punch':
-        # البصمة الناقصة تحتاج تدخل الموارد البشرية دائماً.
-        manual_review = True
+        if status == 'missing_punch':
+            # البصمة الناقصة تحتاج تدخل الموارد البشرية دائماً.
+            manual_review = True
 
     deduction_days = round(totals['days'], 2)
     deduction_hours = round(totals['hours'], 2)
@@ -786,16 +793,19 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
             deduction_hours = computed['deduction_hours']
             review_status = computed['review_status']
 
-        # يوم الأحد إجازة مدفوعة: لا تُطبّق عليه قواعد الغياب، ويُحسب خصمه بشكل منفصل.
+        # يوم الأحد إجازة أسبوعية مدفوعة فقط عندما لا توجد بصمة حضور فعلية له.
+        # أما الأحد الذي سجّل فيه الموظف بصمة حضور فيُعامل كيوم عمل عادي
+        # (تُطبّق عليه قواعد التأخير والإضافي ويُحتسب ضمن أيام الحضور).
         is_sunday = record.date.weekday() == 6
-        if is_sunday:
+        worked_sunday = is_sunday and bool(record.check_in)
+        if is_sunday and not worked_sunday:
             deduction_days = 0.0
             deduction_hours = 0.0
             review_status = 'auto_applied'
 
         sunday_days = 0.0
         sunday_note = ''
-        if is_sunday:
+        if is_sunday and not worked_sunday:
             result = sunday_deduction_for_week(
                 records_by_date, _week_dates_for_sunday(record.date)
             )
@@ -803,11 +813,11 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
             sunday_note = result['sunday_deduction_note']
 
         new_values = {
-            'status': 'leave' if is_sunday else computed['status'],
+            'status': 'leave' if (is_sunday and not worked_sunday) else computed['status'],
             'calculated_deduction_days': deduction_days,
             'calculated_deduction_hours': deduction_hours,
-            'late_minutes': 0.0 if is_sunday else float(computed['late_minutes'] or 0),
-            'early_minutes': 0.0 if is_sunday else float(computed['early_minutes'] or 0),
+            'late_minutes': 0.0 if (is_sunday and not worked_sunday) else float(computed['late_minutes'] or 0),
+            'early_minutes': 0.0 if (is_sunday and not worked_sunday) else float(computed['early_minutes'] or 0),
             'overtime_days': overtime['overtime_days'],
             'overtime_hours': overtime['overtime_hours'],
             'sunday_deduction_days': sunday_days,

@@ -273,6 +273,9 @@ const sumSundayDeductionsForEmployeeMonth = (
     if (cursor.getDay() !== 0) continue;
     const sundayIso = isoDate(cursor);
     if (upToIso && sundayIso > upToIso) continue;
+    // الأحد الذي سُجّلت له بصمة حضور يوم عمل وليس إجازة أسبوعية، فلا يُخصم.
+    const sundayRecord = recordsByDate.get(sundayIso);
+    if (sundayRecord && sundayRecord.check_in) continue;
     total += sundayDeductionForDate(recordsByDate, sundayIso);
   }
   return total;
@@ -334,12 +337,12 @@ const matchLateRule = (
   });
   if (best) return best;
 
-  const maxTo = candidates.reduce<number | null>((max, rule) => {
-    const to = toValue(rule);
-    if (to == null) return max;
-    return max == null || to > max ? to : max;
-  }, null);
-  if (maxTo != null && lateMinutes > maxTo) {
+  // لا شريحة مطابقة: إما فجوة بين شريحتين أو تجاوز أعلى شريحة — طبّق أعلى شريحة.
+  const minFrom = candidates.reduce<number>(
+    (min, rule) => Math.min(min, fromValue(rule)),
+    Infinity
+  );
+  if (Number.isFinite(minFrom) && lateMinutes >= minFrom) {
     return candidates.reduce((acc, rule) => {
       const accTo = toValue(acc) ?? Infinity;
       const ruleTo = toValue(rule) ?? Infinity;
@@ -394,8 +397,17 @@ const computeMonthAccrual = (
   for (let day = 1; day <= lastDay; day += 1) {
     const cursor = new Date(year, monthNumber - 1, day);
     const iso = isoDate(cursor);
-    if (upToIso && iso > upToIso) continue;
+    const record = recordsByDate.get(iso);
+    const hasCheckIn = !!record?.check_in;
+    // اليوم الحالي (بعد نقطة التوقف = أمس) يُحتسب إذا وُجدت له بصمة حضور فعلية.
+    if (upToIso && iso > upToIso && !hasCheckIn) continue;
     if (cursor.getDay() === 0) {
+      // الأحد الذي عمل فيه الموظف (له بصمة حضور) يوم عمل عادي مستحق.
+      if (hasCheckIn) {
+        workdaysInScope += 1;
+        attendedDays += 1;
+        continue;
+      }
       const weekDates = weekDatesBeforeSunday(iso);
       const hasWeekData = weekDates.some((dateStr) => recordsByDate.has(dateStr));
       if (hasWeekData) {
@@ -404,7 +416,6 @@ const computeMonthAccrual = (
       continue;
     }
     workdaysInScope += 1;
-    const record = recordsByDate.get(iso);
     if (record && isAttendedRecord(record)) attendedDays += 1;
   }
 
@@ -5181,7 +5192,6 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
   const [loans, setLoans] = useState<HRLoan[]>([]);
   const [settings, setSettings] = useState<HRAttendanceSettings | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [workerSheet, setWorkerSheet] = useState<PayrollRow | null>(null);
 
   const loadPayrollData = useCallback(async () => {
     setIsLoading(true);
@@ -5232,9 +5242,10 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         if (record.employee_id !== employee.id) return;
         if (!inMonth(record.date)) return;
         if (record.review_status === 'rejected') return;
-        // يوم الأحد إجازة مدفوعة ويُحسب ضمن الأيام المستحقة/خصم الأحد.
+        // يوم الأحد بدون بصمة حضور = إجازة أسبوعية مدفوعة (تُحسب ضمن الأيام المستحقة).
+        // أما الأحد الذي عمل فيه الموظف (له بصمة حضور) فيُعامل كيوم عمل عادي.
         const recordDay = new Date(`${record.date}T00:00:00`);
-        if (recordDay.getDay() === 0) return;
+        if (recordDay.getDay() === 0 && !record.check_in) return;
 
         overtimeDays += Number(record.overtime_days) || 0;
         overtimeHours += Number(record.overtime_hours) || 0;
@@ -5398,7 +5409,9 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       const loansCell = loansTotal > 0 ? formatMoney(loansTotal) : '—';
       const loansReason = dayLoans.map((loan) => loan.notes || 'سلفة').join('، ');
 
-      if (isSunday) {
+      // الأحد إجازة أسبوعية مدفوعة فقط عند غياب بصمة الحضور؛
+      // الأحد الذي عُمل فيه يُطبع كيوم عمل عادي ببصماته وخصمه.
+      if (isSunday && !(record && record.check_in)) {
         const weekDates = weekDatesBeforeSunday(iso);
         const hasWeekData = weekDates.some((dateStr) => recordsByDate.has(dateStr));
         const absentCount = weekDates.filter((dateStr) => {
@@ -5617,7 +5630,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
-            <h2 className="text-sm font-black text-slate-900">مسير مرتبات الشهر</h2>
+            <h2 className="text-sm font-black text-slate-900">مرتبات الشهر</h2>
             <p className="text-[11px] font-bold text-slate-500 mt-0.5">
               صافي المرتب = الأجر المكتسب (أيام الحضور + أيام الأحد المدفوعة بحد أقصى 30 يوماً) +
               الإضافي − (التأخير + الجزاءات + السُلف).
@@ -5763,10 +5776,10 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                     <td className="px-4 py-3 text-center">
                       <button
                         type="button"
-                        onClick={() => setWorkerSheet(row)}
+                        onClick={() => printWorkerSheet(row)}
                         className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white text-[10px] font-black hover:bg-indigo-700 transition cursor-pointer whitespace-nowrap"
                       >
-                        <FileText className="w-3 h-3" />
+                        <Printer className="w-3 h-3" />
                         ورقة العامل
                       </button>
                     </td>
@@ -5813,138 +5826,6 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
           المرتب ÷ 30 وراتب الساعة = راتب اليوم ÷ 8.
         </span>
       </div>
-
-      {workerSheet && (
-        <Modal
-          title="ورقة مرتب عامل"
-          subtitle={`${workerSheet.employee.name} — شهر ${month}`}
-          onClose={() => setWorkerSheet(null)}
-          maxWidthClass="max-w-2xl"
-        >
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-2">
-              {[
-                { label: 'الموظف', value: workerSheet.employee.name },
-                { label: 'الكود', value: workerSheet.employee.employee_code || '-' },
-                { label: 'الوظيفة', value: workerSheet.employee.job_title || '—' },
-                { label: 'القسم', value: workerDepartment(workerSheet) },
-                { label: 'المرتب الشهري', value: formatMoney(workerSheet.baseSalary) },
-                { label: 'الأيام المستحقة', value: `${workerSheet.earnedDays.toFixed(2)} يوم` },
-                { label: 'الأجر المكتسب', value: formatMoney(workerSheet.earnedBase) },
-                { label: 'الشهر', value: month }
-              ].map((item) => (
-                <div
-                  key={item.label}
-                  className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200"
-                >
-                  <p className="text-[10px] font-black text-slate-500">{item.label}</p>
-                  <p className="text-[11px] font-black text-slate-800">{item.value}</p>
-                </div>
-              ))}
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 overflow-hidden">
-              <table className="w-full text-xs">
-                <thead className="bg-slate-50 text-slate-500">
-                  <tr>
-                    <th className="text-right px-3 py-2 font-black">البند</th>
-                    <th className="text-center px-3 py-2 font-black">التفاصيل</th>
-                    <th className="text-center px-3 py-2 font-black">القيمة</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  <tr className="bg-emerald-50/40">
-                    <td className="px-3 py-2 font-bold text-slate-700">الأجر المكتسب</td>
-                    <td className="px-3 py-2 text-center font-bold text-slate-600">
-                      حضور {workerSheet.attendedDays.toFixed(2)} + أحد{' '}
-                      {workerSheet.paidSundayDays.toFixed(2)} = {workerSheet.earnedDays.toFixed(2)} يوم
-                    </td>
-                    <td className="px-3 py-2 text-center font-mono font-black text-emerald-600">
-                      {formatMoney(workerSheet.earnedBase)}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="px-3 py-2 font-bold text-slate-700">العمل الإضافي</td>
-                    <td className="px-3 py-2 text-center font-bold text-slate-600">
-                      {workerSheet.overtimeDays} يوم / {workerSheet.overtimeHours} ساعة
-                    </td>
-                    <td className="px-3 py-2 text-center font-mono font-black text-emerald-600">
-                      {formatMoney(workerSheet.overtimePay)}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="px-3 py-2 font-bold text-slate-700">خصم التأخير والانصراف المبكر</td>
-                    <td className="px-3 py-2 text-center font-bold text-slate-600">
-                      {workerSheet.attendanceDays} يوم / {workerSheet.attendanceHours} ساعة
-                    </td>
-                    <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
-                      {formatMoney(workerSheet.attendanceDeduction)}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="px-3 py-2 font-bold text-slate-700">خصم يوم الأحد</td>
-                    <td className="px-3 py-2 text-center font-bold text-slate-600">
-                      {workerSheet.sundayDeductionDays.toFixed(2)} يوم
-                    </td>
-                    <td className="px-3 py-2 text-center font-mono font-bold text-slate-400">
-                      مطبّق ضمن المستحق
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="px-3 py-2 font-bold text-slate-700">الجزاءات</td>
-                    <td className="px-3 py-2 text-center font-bold text-slate-600">
-                      {workerSheet.penaltyDays} يوم / {workerSheet.penaltyHours} ساعة
-                    </td>
-                    <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
-                      {formatMoney(workerSheet.penaltyDeduction)}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="px-3 py-2 font-bold text-slate-700">السُلف</td>
-                    <td className="px-3 py-2 text-center font-bold text-slate-600">—</td>
-                    <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
-                      {formatMoney(workerSheet.loanDeduction)}
-                    </td>
-                  </tr>
-                  <tr className="bg-slate-50/70">
-                    <td className="px-3 py-2 font-black text-slate-800" colSpan={2}>
-                      إجمالي الخصومات
-                    </td>
-                    <td className="px-3 py-2 text-center font-mono font-black text-rose-700">
-                      {formatMoney(workerSheet.totalDeduction)}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div className="rounded-2xl border-2 border-emerald-500 bg-emerald-50 px-4 py-3 text-center">
-              <p className="text-[11px] font-black text-emerald-700">صافي المستحق</p>
-              <p className="text-2xl font-black font-mono text-emerald-700">
-                {formatMoney(workerSheet.netPay)}
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setWorkerSheet(null)}
-                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-[11px] font-black hover:bg-slate-200 transition cursor-pointer"
-              >
-                إغلاق
-              </button>
-              <button
-                type="button"
-                onClick={() => printWorkerSheet(workerSheet)}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 text-white text-[11px] font-black hover:bg-indigo-700 transition cursor-pointer"
-              >
-                <Printer className="w-4 h-4" />
-                طباعة ورقة العامل
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
     </div>
   );
 };

@@ -3228,8 +3228,9 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             ded_hours = computed['deduction_hours']
             if data.get('review_status') is None:
                 review_val = computed['review_status']
-        # يوم الأحد إجازة مدفوعة: لا تُطبّق عليه قواعد الغياب في الإدخال اليدوي.
-        if (rec_date or date.today()).weekday() == 6:
+        # يوم الأحد إجازة أسبوعية مدفوعة فقط عند غياب بصمة الحضور.
+        # الأحد الذي سُجّلت له بصمة حضور يُعامل كيوم عمل عادي (خصم تأخير + إضافي).
+        if (rec_date or date.today()).weekday() == 6 and not check_in_val:
             ded_days = 0.0
             ded_hours = 0.0
             late_minutes_val = 0.0
@@ -3351,8 +3352,9 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             if data.get('review_status') is None:
                 obj.review_status = computed['review_status']
 
-        # يوم الأحد إجازة مدفوعة: لا خصم قواعد ولا تأخير.
-        if obj.date.weekday() == 6:
+        # يوم الأحد إجازة أسبوعية مدفوعة فقط عند غياب بصمة الحضور.
+        # الأحد الذي سُجّلت له بصمة حضور يُعامل كيوم عمل عادي (خصم تأخير + إضافي).
+        if obj.date.weekday() == 6 and not obj.check_in:
             obj.calculated_deduction_days = 0
             obj.calculated_deduction_hours = 0
             obj.late_minutes = 0
