@@ -476,11 +476,67 @@ class Supplier(models.Model):
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     name = models.CharField(max_length=200, verbose_name="اسم المورد")
     phone = models.CharField(max_length=50, blank=True, default='', verbose_name="رقم الهاتف")
+    whatsapp_group_link = models.CharField(
+        max_length=500,
+        blank=True,
+        default='',
+        verbose_name="رابط جروب الواتساب (اختياري)",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
         if not self.client_id:
             self.client_id = generate_client_id('sup')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
+# ---------------------------------------------------------------------------
+# الورش والمطابع الخارجية (External Workshops & Print Shops)
+# كل ورشة يمكن أن تحمل تخصصاً واحداً أو أكثر؛ نستخدم JSONField بقائمة مفاتيح.
+# ---------------------------------------------------------------------------
+WORKSHOP_TYPE_CHOICES = [
+    ('printing', 'مطبعة'),
+    ('embroidery', 'تطريز'),
+    ('sewing', 'ورشة مكن / خياطة'),
+    ('finishing', 'ورشة تشطيب'),
+    ('ironing', 'ورشة مكواة'),
+    ('packaging', 'ورشة تعبئة وتغليف'),
+]
+WORKSHOP_TYPE_KEYS = [key for key, _label in WORKSHOP_TYPE_CHOICES]
+WORKSHOP_TYPE_LABELS = dict(WORKSHOP_TYPE_CHOICES)
+
+
+class Workshop(models.Model):
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    name = models.CharField(max_length=200, verbose_name="اسم الورشة / المطبعة")
+    phone = models.CharField(max_length=50, blank=True, default='', verbose_name="رقم الهاتف")
+    whatsapp_group_link = models.CharField(
+        max_length=500,
+        blank=True,
+        default='',
+        verbose_name="رابط جروب الواتساب (اختياري)",
+    )
+    workshop_type = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="تخصص الورشة (يمكن اختيار أكثر من تخصص)",
+    )
+    notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def normalized_types(self):
+        """يرجع قائمة مفاتيح التخصصات الصحيحة فقط."""
+        raw = self.workshop_type if isinstance(self.workshop_type, list) else []
+        return [key for key in raw if key in WORKSHOP_TYPE_KEYS]
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('wrk')
+        if isinstance(self.workshop_type, list):
+            self.workshop_type = self.normalized_types()
         super().save(*args, **kwargs)
 
     def __str__(self):

@@ -239,6 +239,37 @@ export interface Supplier {
   id: string;
   name: string;
   phone: string;
+  whatsapp_group_link?: string;
+}
+
+export type WorkshopType = 'printing' | 'embroidery' | 'sewing' | 'finishing' | 'ironing' | 'packaging';
+
+export const WORKSHOP_TYPE_KEYS: WorkshopType[] = [
+  'printing',
+  'embroidery',
+  'sewing',
+  'finishing',
+  'ironing',
+  'packaging'
+];
+
+export const WORKSHOP_TYPE_LABELS: Record<WorkshopType, string> = {
+  printing: 'مطبعة',
+  embroidery: 'تطريز',
+  sewing: 'ورشة مكن / خياطة',
+  finishing: 'ورشة تشطيب',
+  ironing: 'ورشة مكواة',
+  packaging: 'ورشة تعبئة وتغليف'
+};
+
+export interface Workshop {
+  id: string;
+  name: string;
+  phone: string;
+  whatsapp_group_link?: string;
+  workshop_type: WorkshopType[];
+  workshop_type_labels?: string[];
+  notes?: string;
 }
 
 export type FabricUnit = 'توب' | 'كيلو' | 'متر';

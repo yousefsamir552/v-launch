@@ -158,6 +158,13 @@ export const api = {
     request<any>(`/suppliers/${encodeURIComponent(id)}/`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteSupplier: (id: string) =>
     request<any>(`/suppliers/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  getWorkshops: () => request<any[]>('/workshops/'),
+  createWorkshop: (data: any) =>
+    request<any>('/workshops/', { method: 'POST', body: JSON.stringify(data) }),
+  updateWorkshop: (id: string, data: any) =>
+    request<any>(`/workshops/${encodeURIComponent(id)}/`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteWorkshop: (id: string) =>
+    request<any>(`/workshops/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
 
   // الأقمشة والألوان وحركات المخزن (Fabrics & Colors)
   getFabrics: () => request<any[]>('/fabrics/'),

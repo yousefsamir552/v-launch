@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import (
-    SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier,
+    SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier, Workshop,
+    WORKSHOP_TYPE_KEYS, WORKSHOP_TYPE_LABELS,
     Fabric, FabricColor, FabricTransaction,
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
@@ -181,6 +182,25 @@ class SupplierSerializer(serializers.ModelSerializer):
             'id': get_ext_id(instance),
             'name': instance.name,
             'phone': instance.phone or '',
+            'whatsapp_group_link': instance.whatsapp_group_link or '',
+        }
+
+
+class WorkshopSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Workshop
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        types = instance.normalized_types()
+        return {
+            'id': get_ext_id(instance),
+            'name': instance.name,
+            'phone': instance.phone or '',
+            'whatsapp_group_link': instance.whatsapp_group_link or '',
+            'workshop_type': types,
+            'workshop_type_labels': [WORKSHOP_TYPE_LABELS.get(key, key) for key in types],
+            'notes': instance.notes or '',
         }
 
 

@@ -12,7 +12,8 @@ from datetime import date, timedelta
 import secrets
 
 from .models import (
-    SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier,
+    SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier, Workshop,
+    WORKSHOP_TYPE_KEYS,
     Fabric, FabricColor, FabricTransaction,
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
@@ -37,6 +38,7 @@ from .models import (
 from .serializers import (
     resolve_by_id, get_ext_id,
     GlobalSettingsSerializer, RoleSerializer, UserProfileSerializer, SizeDefSerializer, SupplierSerializer,
+    WorkshopSerializer,
     FabricSerializer, FabricColorSerializer, FabricTransactionSerializer,
     AccessoryTypeSerializer, AccessorySerializer, AccessoryTransactionSerializer,
     ModelItemSerializer, ModelRequirementSerializer, ModelAccessorySerializer,
@@ -402,6 +404,7 @@ class StateViewSet(viewsets.ViewSet):
             'onlineUsers': UserProfileSerializer(online_users, many=True, context=req_ctx).data,
             'sizeDefs': SizeDefSerializer(SizeDef.objects.all(), many=True).data,
             'suppliers': SupplierSerializer(Supplier.objects.all(), many=True).data,
+            'workshops': WorkshopSerializer(Workshop.objects.all(), many=True).data,
             'fabrics': FabricSerializer(Fabric.objects.filter(is_deleted=False), many=True, context=req_ctx).data,
             'fabricColors': FabricColorSerializer(FabricColor.objects.select_related('fabric').all(), many=True, context=req_ctx).data,
             'fabricTransactions': FabricTransactionSerializer(FabricTransaction.objects.select_related('color', 'fabric').all()[:300], many=True).data,
@@ -855,6 +858,7 @@ class SupplierViewSet(BasePermViewSet):
             client_id=data.get('id') or data.get('client_id'),
             name=(data.get('name') or '').strip(),
             phone=(data.get('phone') or '').strip(),
+            whatsapp_group_link=(data.get('whatsapp_group_link') or '').strip(),
         )
         return Response(SupplierSerializer(obj).data, status=status.HTTP_201_CREATED)
 
@@ -865,8 +869,56 @@ class SupplierViewSet(BasePermViewSet):
             obj.name = str(data['name']).strip()
         if 'phone' in data:
             obj.phone = str(data['phone'] or '').strip()
+        if 'whatsapp_group_link' in data:
+            obj.whatsapp_group_link = str(data['whatsapp_group_link'] or '').strip()
         obj.save()
         return Response(SupplierSerializer(obj).data)
+
+
+def normalize_workshop_types(value):
+    """يقبل قائمة أو نصاً مفرداً ويرجع قائمة مفاتيح تخصصات صحيحة فقط."""
+    if value is None:
+        return []
+    raw = value if isinstance(value, (list, tuple)) else [value]
+    cleaned = []
+    for item in raw:
+        key = str(item or '').strip()
+        if key in WORKSHOP_TYPE_KEYS and key not in cleaned:
+            cleaned.append(key)
+    return cleaned
+
+
+class WorkshopViewSet(BasePermViewSet):
+    queryset = Workshop.objects.all()
+    serializer_class = WorkshopSerializer
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        obj = Workshop.objects.create(
+            client_id=data.get('id') or data.get('client_id'),
+            name=(data.get('name') or '').strip(),
+            phone=(data.get('phone') or '').strip(),
+            whatsapp_group_link=(data.get('whatsapp_group_link') or '').strip(),
+            workshop_type=normalize_workshop_types(data.get('workshop_type')),
+            notes=(data.get('notes') or '').strip(),
+        )
+        return Response(WorkshopSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        data = request.data
+        if 'name' in data and data['name']:
+            obj.name = str(data['name']).strip()
+        if 'phone' in data:
+            obj.phone = str(data['phone'] or '').strip()
+        if 'whatsapp_group_link' in data:
+            obj.whatsapp_group_link = str(data['whatsapp_group_link'] or '').strip()
+        if 'workshop_type' in data:
+            obj.workshop_type = normalize_workshop_types(data['workshop_type'])
+        if 'notes' in data:
+            obj.notes = str(data['notes'] or '').strip()
+        obj.save()
+        return Response(WorkshopSerializer(obj).data)
 
 
 class FabricViewSet(BasePermViewSet):

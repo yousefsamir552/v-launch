@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AuthViewSet, StateViewSet, ImageUploadViewSet, GlobalSettingsViewSet,
     RoleViewSet, UserProfileViewSet, SizeDefViewSet, SupplierViewSet,
+    WorkshopViewSet,
     FabricViewSet, FabricColorViewSet, FabricTransactionViewSet,
     AccessoryTypeViewSet, AccessoryViewSet, AccessoryTransactionViewSet,
     ModelItemViewSet, ModelRequirementViewSet, ModelAccessoryViewSet,
@@ -23,6 +24,7 @@ router.register(r'roles', RoleViewSet)
 router.register(r'users', UserProfileViewSet)
 router.register(r'sizes', SizeDefViewSet)
 router.register(r'suppliers', SupplierViewSet)
+router.register(r'workshops', WorkshopViewSet)
 router.register(r'fabrics', FabricViewSet)
 router.register(r'fabric-colors', FabricColorViewSet)
 router.register(r'fabric-transactions', FabricTransactionViewSet)

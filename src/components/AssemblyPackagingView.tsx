@@ -22,8 +22,83 @@ import {
   PACKAGING_STEP_LABELS,
   PartStage,
   PART_STAGE_ORDER,
-  PART_STAGE_LABELS
+  PART_STAGE_LABELS,
+  WorkshopType
 } from '../types';
+
+const CUSTOM_WORKSHOP_OPTION = '__custom__';
+
+/**
+ * قائمة منسدلة مفلترة حسب تخصص الورشة + خيار "أخرى/كتابة يدوية".
+ * عند اختيار ورشة مسجّلة بها رقم أو رابط جروب يظهر زر واتساب لإرسال الطلب.
+ */
+const WorkshopPicker: React.FC<{
+  value: string;
+  onChange: (name: string) => void;
+  workshopType: WorkshopType;
+  placeholder: string;
+  whatsappMessage: string;
+}> = ({ value, onChange, workshopType, placeholder, whatsappMessage }) => {
+  const { workshops, openWhatsAppOrder } = useApp();
+  const options = workshops.filter((w) => (w.workshop_type || []).includes(workshopType));
+  const matched = options.find((w) => w.name === value) || null;
+  const [customMode, setCustomMode] = useState(Boolean(value) && !matched);
+  const selectValue = customMode ? CUSTOM_WORKSHOP_OPTION : matched ? matched.name : '';
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1.5">
+        <select
+          value={selectValue}
+          onChange={(event) => {
+            const next = event.target.value;
+            if (next === CUSTOM_WORKSHOP_OPTION) {
+              setCustomMode(true);
+              onChange('');
+            } else {
+              setCustomMode(false);
+              onChange(next);
+            }
+          }}
+          className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-semibold bg-white"
+        >
+          <option value="">{placeholder}</option>
+          {options.map((w) => (
+            <option key={w.id} value={w.name}>
+              {w.name}
+            </option>
+          ))}
+          <option value={CUSTOM_WORKSHOP_OPTION}>أخرى / كتابة يدوية</option>
+        </select>
+        {matched && (matched.phone || matched.whatsapp_group_link) && (
+          <button
+            type="button"
+            onClick={() =>
+              openWhatsAppOrder(matched.phone, matched.whatsapp_group_link, whatsappMessage)
+            }
+            className="shrink-0 px-2 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-bold hover:bg-emerald-700 transition cursor-pointer"
+            title={
+              matched.whatsapp_group_link
+                ? 'فتح جروب الواتساب (سيتم نسخ نص الطلب تلقائياً)'
+                : 'إرسال الطلب عبر واتساب'
+            }
+          >
+            💬
+          </button>
+        )}
+      </div>
+      {customMode && (
+        <input
+          type="text"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold"
+        />
+      )}
+    </div>
+  );
+};
 
 type TabKey = 'requirements' | 'finishing' | 'ironing' | 'packaging' | 'dest';
 
@@ -364,12 +439,12 @@ const PartFinishingRow: React.FC<{
                   className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
                 />
               </div>
-              <input
-                type="text"
+              <WorkshopPicker
                 value={vendor}
-                onChange={(event) => setVendor(event.target.value)}
+                onChange={setVendor}
+                workshopType="finishing"
                 placeholder="الجهة / ورشة التشطيب (اختياري)"
-                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold"
+                whatsappMessage={`طلب تشطيب - موديل ${model.model_code} - قطعة ${getPartLabel(part)}`}
               />
             </>
           )}
@@ -521,12 +596,12 @@ const PartIroningRow: React.FC<{
                   className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
                 />
               </div>
-              <input
-                type="text"
+              <WorkshopPicker
                 value={vendor}
-                onChange={(event) => setVendor(event.target.value)}
+                onChange={setVendor}
+                workshopType="ironing"
                 placeholder="الجهة / ورشة المكواة (اختياري)"
-                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold"
+                whatsappMessage={`طلب مكواة - موديل ${model.model_code} - قطعة ${getPartLabel(part)}`}
               />
               <button
                 type="button"
@@ -700,12 +775,12 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
                   className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
                 />
               </div>
-              <input
-                type="text"
+              <WorkshopPicker
                 value={vendor}
-                onChange={(event) => setVendor(event.target.value)}
+                onChange={setVendor}
+                workshopType="packaging"
                 placeholder="الجهة / ورشة التغليف (اختياري)"
-                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold"
+                whatsappMessage={`طلب تعبئة وتغليف - موديل ${model.model_code}`}
               />
               <button
                 type="button"
@@ -841,12 +916,12 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
                       className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
                     />
                   </div>
-                  <input
-                    type="text"
+                  <WorkshopPicker
                     value={vendor}
-                    onChange={(event) => setVendor(event.target.value)}
+                    onChange={setVendor}
+                    workshopType="packaging"
                     placeholder="الجهة / ورشة الدَست (اختياري)"
-                    className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold"
+                    whatsappMessage={`طلب دَست - موديل ${model.model_code}`}
                   />
                 </>
               )}

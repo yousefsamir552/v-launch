@@ -1,6 +1,6 @@
 from django.contrib import admin
 from .models import (
-    SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier,
+    SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier, Workshop,
     Fabric, FabricColor, FabricTransaction,
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
@@ -40,7 +40,13 @@ class SizeDefAdmin(admin.ModelAdmin):
 
 @admin.register(Supplier)
 class SupplierAdmin(admin.ModelAdmin):
-    list_display = ('name', 'phone', 'created_at')
+    list_display = ('name', 'phone', 'whatsapp_group_link', 'created_at')
+
+
+@admin.register(Workshop)
+class WorkshopAdmin(admin.ModelAdmin):
+    list_display = ('name', 'phone', 'workshop_type', 'whatsapp_group_link', 'created_at')
+    search_fields = ('name',)
 
 
 @admin.register(Fabric)

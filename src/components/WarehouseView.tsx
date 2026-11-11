@@ -50,6 +50,7 @@ export const WarehouseView: React.FC = () => {
     canEditFabricPrices,
     canSendWhatsApp,
     formatSupplierWhatsappMessage,
+    openWhatsAppOrder,
     addFlashMessage,
     globalSettings
   } = useApp();
@@ -301,11 +302,11 @@ export const WarehouseView: React.FC = () => {
       setTimeout(() => setCopiedOrder(false), 3000);
     }
 
-    if (reorderModalItem.supplier?.phone) {
-      const cleanPhone = reorderModalItem.supplier.phone.replace(/[^0-9]/g, '');
-      const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
-      window.open(url, '_blank');
-    }
+    openWhatsAppOrder(
+      reorderModalItem.supplier?.phone,
+      reorderModalItem.supplier?.whatsapp_group_link,
+      text
+    );
   };
 
   const handleOpenTransaction = (colorId: string) => {

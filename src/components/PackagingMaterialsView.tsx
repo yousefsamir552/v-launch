@@ -296,6 +296,7 @@ export const PackagingMaterialsView: React.FC = () => {
     hasPermission,
     canSendWhatsApp,
     formatSupplierWhatsappMessage,
+    openWhatsAppOrder,
     addFlashMessage,
     savePackagingMaterialRule
   } = useApp();
@@ -443,14 +444,12 @@ export const PackagingMaterialsView: React.FC = () => {
       unit: rule.unit,
       available: demand.stock
     });
-    if (row.supplier_phone) {
-      const cleanPhone = row.supplier_phone.replace(/[^0-9]/g, '');
-      window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`, '_blank');
-      addFlashMessage('تم فتح واتساب لإرسال طلب التوريد');
-    } else if (navigator.clipboard) {
-      navigator.clipboard.writeText(text);
-      addFlashMessage('تم نسخ نص طلب التوريد (المورد بدون رقم هاتف)', 'warning');
-    }
+    const supplier = suppliers.find((s) => s.id === row.supplier_id);
+    openWhatsAppOrder(
+      row.supplier_phone || supplier?.phone,
+      supplier?.whatsapp_group_link,
+      text
+    );
   };
 
   const renderRuleCard = (key: PackagingMaterialKey, rule?: PackagingMaterialRule) => {

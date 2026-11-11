@@ -5,6 +5,8 @@ import {
   AuditLog,
   SizeDef,
   Supplier,
+  Workshop,
+  WorkshopType,
   Fabric,
   FabricColor,
   FabricTransaction,
@@ -167,12 +169,20 @@ interface AppContextType {
     available: number | string;
     modelCode?: string;
   }) => string;
+  /**
+   * فتح واتساب لإرسال طلب موحّد:
+   * - إن وُجد رابط جروب → ينسخ نص الرسالة تلقائياً (لأن الواتساب لا يقبل نصاً مسبقاً في الجروبات) ثم يفتح الجروب.
+   * - وإلا إن وُجد رقم هاتف → يفتح محادثة wa.me مع النص جاهزاً.
+   * - وإلا → ينسخ النص مع تنبيه.
+   */
+  openWhatsAppOrder: (phone: string | undefined | null, groupLink: string | undefined | null, messageText: string) => void;
   users: User[];
   onlineUsers: User[];
   roles: CustomRole[];
   auditLogs: AuditLog[];
   sizeDefs: SizeDef[];
   suppliers: Supplier[];
+  workshops: Workshop[];
   fabrics: Fabric[];
   fabricColors: FabricColor[];
   fabricTransactions: FabricTransaction[];
@@ -515,9 +525,27 @@ interface AppContextType {
   addSizeDef: (name: string, values: string) => void;
   updateSizeDef: (id: string, name: string, values: string) => void;
   deleteSizeDef: (id: string) => void;
-  addSupplier: (name: string, phone: string) => void;
-  updateSupplier: (id: string, name: string, phone: string) => void;
+  addSupplier: (name: string, phone: string, whatsappGroupLink?: string) => void;
+  updateSupplier: (id: string, name: string, phone: string, whatsappGroupLink?: string) => void;
   deleteSupplier: (id: string) => void;
+  addWorkshop: (data: {
+    name: string;
+    phone: string;
+    whatsappGroupLink?: string;
+    workshopType: WorkshopType[];
+    notes?: string;
+  }) => void;
+  updateWorkshop: (
+    id: string,
+    data: {
+      name: string;
+      phone: string;
+      whatsappGroupLink?: string;
+      workshopType: WorkshopType[];
+      notes?: string;
+    }
+  ) => void;
+  deleteWorkshop: (id: string) => void;
   addUser: (user: Omit<User, 'id'>) => Promise<boolean>;
   toggleUserActive: (userId: string) => { success: boolean; message: string };
   updateUserPermissionsAndPassword: (
@@ -590,6 +618,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
   const [sizeDefs, setSizeDefs] = useState<SizeDef[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [workshops, setWorkshops] = useState<Workshop[]>([]);
   const [fabrics, setFabrics] = useState<Fabric[]>([]);
   const [fabricColorsRaw, setFabricColors] = useState<FabricColor[]>([]);
   const [fabricTransactions, setFabricTransactions] = useState<FabricTransaction[]>([]);
@@ -717,6 +746,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
         setSizeDefs(Array.isArray(state.sizeDefs) ? state.sizeDefs : []);
         setSuppliers(Array.isArray(state.suppliers) ? state.suppliers : []);
+        setWorkshops(Array.isArray(state.workshops) ? state.workshops : []);
         setFabrics(Array.isArray(state.fabrics) ? state.fabrics : []);
         setFabricColors(Array.isArray(state.fabricColors) ? state.fabricColors : []);
         setFabricTransactions(Array.isArray(state.fabricTransactions) ? state.fabricTransactions : []);
@@ -903,6 +933,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .replace(/\{available\}/g, String(params.available ?? ''))
       .replace(/\{model_code\}/g, params.modelCode || '');
   };
+  /**
+   * الدالة الموحدة لفتح واتساب وإرسال نص الطلب.
+   * الجروبات لا تدعم تمرير نص مسبق، لذلك ننسخ النص تلقائياً ثم نفتح الجروب.
+   */
+  const openWhatsAppOrder = (
+    phone: string | undefined | null,
+    groupLink: string | undefined | null,
+    messageText: string
+  ) => {
+    const cleanGroup = (groupLink || '').trim();
+    const cleanPhone = (phone || '').replace(/[^0-9]/g, '');
+
+    const copyText = (): boolean => {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(messageText).catch(() => undefined);
+        return true;
+      }
+      return false;
+    };
+
+    if (cleanGroup) {
+      copyText();
+      addFlashMessage(
+        '✅ تم نسخ نص الرسالة تلقائياً! اضغط لصق (Paste) داخل جروب الواتساب',
+        'success'
+      );
+      window.open(cleanGroup, '_blank');
+      return;
+    }
+
+    if (cleanPhone) {
+      const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(messageText)}`;
+      window.open(url, '_blank');
+      return;
+    }
+
+    if (copyText()) {
+      addFlashMessage('تم نسخ نص الرسالة (لا يوجد رقم هاتف أو جروب لهذه الجهة)', 'warning');
+    } else {
+      addFlashMessage('لا يوجد رقم هاتف أو جروب، وتعذّر نسخ النص تلقائياً', 'danger');
+    }
+  };
+
+
 
   const addModelTimelineEvent = (
     modelId: string,
@@ -4175,11 +4249,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
-  const addSupplier = (name: string, phone: string) => {
+  const addSupplier = (name: string, phone: string, whatsappGroupLink?: string) => {
     const newSup: Supplier = {
       id: 'sup-' + Date.now(),
       name: name.trim(),
-      phone: phone.trim()
+      phone: phone.trim(),
+      whatsapp_group_link: (whatsappGroupLink || '').trim()
     };
     setSuppliers((prev) => [...prev, newSup]);
     api
@@ -4231,16 +4306,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
-  const updateSupplier = (id: string, name: string, phone: string) => {
+  const updateSupplier = (id: string, name: string, phone: string, whatsappGroupLink?: string) => {
     const cleanName = name.trim();
     const cleanPhone = phone.trim();
+    const cleanGroup = (whatsappGroupLink || '').trim();
     if (!cleanName) return;
 
     setSuppliers((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, name: cleanName, phone: cleanPhone } : s))
+      prev.map((s) =>
+        s.id === id
+          ? { ...s, name: cleanName, phone: cleanPhone, whatsapp_group_link: cleanGroup }
+          : s
+      )
     );
     api
-      .updateSupplier(id, { name: cleanName, phone: cleanPhone })
+      .updateSupplier(id, {
+        name: cleanName,
+        phone: cleanPhone,
+        whatsapp_group_link: cleanGroup
+      })
       .then((saved) => {
         setSuppliers((prev) => prev.map((s) => (s.id === id ? saved : s)));
         logAction('الإعدادات', `تعديل بيانات المورد: ${cleanName}`);
@@ -4266,6 +4350,108 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addFlashMessage(err.message || 'فشل حذف المورد من الباك إند', 'danger');
       });
   };
+  const addWorkshop = (data: {
+    name: string;
+    phone: string;
+    whatsappGroupLink?: string;
+    workshopType: WorkshopType[];
+    notes?: string;
+  }) => {
+    const cleanName = data.name.trim();
+    if (!cleanName) {
+      addFlashMessage('يرجى إدخال اسم الورشة', 'danger');
+      return;
+    }
+    const newWorkshop: Workshop = {
+      id: 'wrk-' + Date.now(),
+      name: cleanName,
+      phone: (data.phone || '').trim(),
+      whatsapp_group_link: (data.whatsappGroupLink || '').trim(),
+      workshop_type: data.workshopType,
+      notes: (data.notes || '').trim()
+    };
+    setWorkshops((prev) => [...prev, newWorkshop]);
+    api
+      .createWorkshop(newWorkshop)
+      .then((saved) => {
+        setWorkshops((prev) => prev.map((w) => (w.id === newWorkshop.id ? saved : w)));
+        logAction('الإعدادات', `إضافة ورشة/مطبعة: ${cleanName}`);
+        addFlashMessage('تمت إضافة الورشة بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل حفظ الورشة في الباك إند', 'danger');
+      });
+  };
+
+  const updateWorkshop = (
+    id: string,
+    data: {
+      name: string;
+      phone: string;
+      whatsappGroupLink?: string;
+      workshopType: WorkshopType[];
+      notes?: string;
+    }
+  ) => {
+    const cleanName = data.name.trim();
+    if (!cleanName) {
+      addFlashMessage('يرجى إدخال اسم الورشة', 'danger');
+      return;
+    }
+    const cleanPhone = (data.phone || '').trim();
+    const cleanGroup = (data.whatsappGroupLink || '').trim();
+    const cleanNotes = (data.notes || '').trim();
+
+    setWorkshops((prev) =>
+      prev.map((w) =>
+        w.id === id
+          ? {
+              ...w,
+              name: cleanName,
+              phone: cleanPhone,
+              whatsapp_group_link: cleanGroup,
+              workshop_type: data.workshopType,
+              notes: cleanNotes
+            }
+          : w
+      )
+    );
+    api
+      .updateWorkshop(id, {
+        name: cleanName,
+        phone: cleanPhone,
+        whatsapp_group_link: cleanGroup,
+        workshop_type: data.workshopType,
+        notes: cleanNotes
+      })
+      .then((saved) => {
+        setWorkshops((prev) => prev.map((w) => (w.id === id ? saved : w)));
+        logAction('الإعدادات', `تعديل بيانات الورشة: ${cleanName}`);
+        addFlashMessage('تم تحديث بيانات الورشة بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل تعديل الورشة في الباك إند', 'danger');
+      });
+  };
+
+  const deleteWorkshop = (id: string) => {
+    const target = workshops.find((w) => w.id === id);
+    setWorkshops((prev) => prev.filter((w) => w.id !== id));
+    api
+      .deleteWorkshop(id)
+      .then(() => {
+        logAction('الإعدادات', `حذف الورشة: ${target?.name || id}`);
+        addFlashMessage('تم حذف الورشة بنجاح');
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل حذف الورشة من الباك إند', 'danger');
+      });
+  };
+
+
 
   const addUser = async (userData: Omit<User, 'id'>): Promise<boolean> => {
     if (userData.username.trim().toLowerCase() === 'sudo') {
@@ -4752,12 +4938,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         globalSettings,
         updateGlobalSettings,
         formatSupplierWhatsappMessage,
+        openWhatsAppOrder,
         users,
         onlineUsers,
         roles,
         auditLogs,
         sizeDefs,
         suppliers,
+        workshops,
         fabrics,
         fabricColors,
         fabricTransactions,
@@ -4877,6 +5065,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addSupplier,
         updateSupplier,
         deleteSupplier,
+        addWorkshop,
+        updateWorkshop,
+        deleteWorkshop,
         addUser,
         toggleUserActive,
         updateUserPermissionsAndPassword,

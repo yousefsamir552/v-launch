@@ -30,6 +30,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
     suppliers,
     hasPermission,
     canSendWhatsApp,
+    openWhatsAppOrder,
     addAccessoryType,
     addAccessoryItem,
     updateAccessoryItem,
@@ -291,25 +292,18 @@ export const AccessoriesWarehouseView: React.FC = () => {
       setCopiedOrder(true);
       setTimeout(() => setCopiedOrder(false), 3000);
     }
-    if (reorderItem.supplier?.phone) {
-      const cleanPhone = reorderItem.supplier.phone.replace(/[^0-9]/g, '');
-      const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
-      window.open(url, '_blank');
+    if (reorderItem.supplier) {
+      openWhatsAppOrder(
+        reorderItem.supplier.phone,
+        reorderItem.supplier.whatsapp_group_link,
+        text
+      );
     }
   };
 
   const handleDirectWhatsapp = (item: AccessoryItem, qty: number, sup?: Supplier) => {
     const text = generateWhatsappText(item, qty, sup?.name);
-    if (sup?.phone) {
-      const cleanPhone = sup.phone.replace(/[^0-9]/g, '');
-      const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
-      window.open(url, '_blank');
-    } else {
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(text);
-        alert('تم نسخ نص طلب التوريد بنجاح! لم يتم تسجيل رقم هاتف للمورد.');
-      }
-    }
+    openWhatsAppOrder(sup?.phone, sup?.whatsapp_group_link, text);
   };
 
   const handleConfirmReorderReceive = (e: React.FormEvent) => {

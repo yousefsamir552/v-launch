@@ -25,6 +25,8 @@ export const DispatchAssemblyView: React.FC = () => {
     addPrintDispatch,
     updateDispatchStatus,
     skipPrintToSewing,
+    workshops,
+    openWhatsAppOrder,
     hasPermission,
     canViewPrintingCosts,
     canAddPrintingNotes,
@@ -60,7 +62,8 @@ export const DispatchAssemblyView: React.FC = () => {
 
   const [showModal, setShowModal] = useState(false);
   const [modelId, setModelId] = useState(readyModels[0]?.id || '');
-  const [shopName, setShopName] = useState('');
+  const [shopSelection, setShopSelection] = useState('');
+  const [customShopName, setCustomShopName] = useState('');
   const [piecesCount, setPiecesCount] = useState<number>(100);
   const [pieceType, setPieceType] = useState<GarmentPart>('shirt');
   const [printLocation, setPrintLocation] = useState('صدر');
@@ -85,13 +88,41 @@ export const DispatchAssemblyView: React.FC = () => {
   const [notes, setNotes] = useState('');
   const [printTarget, setPrintTarget] = useState<PrintDispatch | null>(null);
 
+  // ورش المطابع والتطريز فقط (يمكن أن تحمل الورشة أكثر من تخصص).
+  const printWorkshops = workshops.filter((w) =>
+    (w.workshop_type || []).some((t) => t === 'printing' || t === 'embroidery')
+  );
+  const selectedShopWorkshop = printWorkshops.find((w) => w.id === shopSelection) || null;
+  const resolvedShopName =
+    selectedShopWorkshop
+      ? selectedShopWorkshop.name
+      : shopSelection === '__custom__'
+        ? customShopName.trim()
+        : '';
+
+  const buildShopWhatsappMessage = (): string => {
+    const modelCode = selectedModel?.model_code || '';
+    return [
+      `طلب تشغيلة طباعة / تطريز${selectedShopWorkshop ? ` - ${selectedShopWorkshop.name}` : ''}`,
+      `الموديل: ${modelCode}`,
+      `نوع القطعة: ${getPartLabel(effectivePieceType)}`,
+      `الكمية: ${piecesCount}`,
+      `مكان الطباعة: ${printLocation || '-'}`,
+      printDetails ? `تفاصيل الطباعة: ${printDetails}` : '',
+      `تاريخ التسليم المتوقع: ${expectedDeliveryDate}`,
+      notes ? `ملاحظات: ${notes}` : ''
+    ]
+      .filter(Boolean)
+      .join('\n');
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modelId || !shopName.trim()) return;
+    if (!modelId || !resolvedShopName) return;
 
     addPrintDispatch({
       modelId,
-      shopName: shopName.trim(),
+      shopName: resolvedShopName,
       piecesCount: Number(piecesCount) || 0,
       printType: DEFAULT_PRINT_TYPE,
       pieceType: effectivePieceType,
@@ -104,7 +135,8 @@ export const DispatchAssemblyView: React.FC = () => {
     });
 
     setShowModal(false);
-    setShopName('');
+    setShopSelection('');
+    setCustomShopName('');
     setNotes('');
     setPrintDetails('');
   };
@@ -468,17 +500,61 @@ export const DispatchAssemblyView: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  اسم المطبعة أو ورشة التطريز *
-                </label>
-                <input
-                  type="text"
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="block text-xs font-bold text-slate-600">
+                    اسم المطبعة أو ورشة التطريز *
+                  </label>
+                  {selectedShopWorkshop &&
+                    (selectedShopWorkshop.phone || selectedShopWorkshop.whatsapp_group_link) && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openWhatsAppOrder(
+                            selectedShopWorkshop.phone,
+                            selectedShopWorkshop.whatsapp_group_link,
+                            buildShopWhatsappMessage()
+                          )
+                        }
+                        className="px-3 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition cursor-pointer"
+                        title={
+                          selectedShopWorkshop.whatsapp_group_link
+                            ? 'فتح جروب الواتساب (سيتم نسخ نص الطلب تلقائياً)'
+                            : 'إرسال أمر التشغيل عبر واتساب'
+                        }
+                      >
+                        💬 إرسال عبر واتساب
+                      </button>
+                    )}
+                </div>
+                <select
                   required
-                  value={shopName}
-                  onChange={(e) => setShopName(e.target.value)}
-                  placeholder="مثال: مطبعة النجوم الحديثة، ورشة الهدى للتطريز..."
-                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
-                />
+                  value={shopSelection}
+                  onChange={(e) => setShopSelection(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                >
+                  <option value="">— اختر المطبعة / ورشة التطريز —</option>
+                  {printWorkshops.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                  <option value="__custom__">أخرى / كتابة يدوية</option>
+                </select>
+                {shopSelection === '__custom__' && (
+                  <input
+                    type="text"
+                    required
+                    value={customShopName}
+                    onChange={(e) => setCustomShopName(e.target.value)}
+                    placeholder="اكتب اسم المطبعة / الورشة يدوياً"
+                    className="mt-2 w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                  />
+                )}
+                {printWorkshops.length === 0 && (
+                  <p className="mt-1.5 text-[11px] text-amber-600 font-bold">
+                    لا توجد مطابع أو ورش تطريز مسجلة — أضفها من الإعدادات ← المقاسات والموردين والورش.
+                  </p>
+                )}
               </div>
 
               {/* نوع القطعة المرسلة (مقسمة حسب قطع الموديل) */}

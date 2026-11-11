@@ -49,6 +49,8 @@ export const SewingView: React.FC = () => {
     sewingDispatches, 
     dispatchModelToSewing, 
     receiveModelFromSewing,
+    workshops,
+    openWhatsAppOrder,
     logAction,
     globalSettings,
     canAddSewingNotes
@@ -67,7 +69,8 @@ export const SewingView: React.FC = () => {
   const [selectedModelId, setSelectedModelId] = useState('');
   const [dispatchPieceType, setDispatchPieceType] = useState<GarmentPart>('shirt');
   const [dispatchPieceLabel, setDispatchPieceLabel] = useState<string>('تيشرت');
-  const [workshopName, setWorkshopName] = useState('');
+  const [workshopSelection, setWorkshopSelection] = useState('');
+  const [customWorkshopName, setCustomWorkshopName] = useState('');
   const [piecesCount, setPiecesCount] = useState<number>(0);
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState('');
   const [dispatchNotes, setDispatchNotes] = useState('');
@@ -77,6 +80,29 @@ export const SewingView: React.FC = () => {
   const [receiveNotes, setReceiveNotes] = useState('');
 
   const allowSewingNotes = canAddSewingNotes();
+
+  // ورش المكن / الخياطة فقط.
+  const sewingWorkshops = workshops.filter((w) => (w.workshop_type || []).includes('sewing'));
+  const selectedSewingWorkshop = sewingWorkshops.find((w) => w.id === workshopSelection) || null;
+  const resolvedWorkshopName = selectedSewingWorkshop
+    ? selectedSewingWorkshop.name
+    : workshopSelection === '__custom__'
+      ? customWorkshopName.trim()
+      : '';
+
+  const buildSewingWhatsappMessage = (): string => {
+    const model = models.find((m) => m.id === selectedModelId);
+    return [
+      `طلب تشغيلة خياطة${selectedSewingWorkshop ? ` - ${selectedSewingWorkshop.name}` : ''}`,
+      `الموديل: ${model?.model_code || ''}`,
+      `نوع القطعة: ${dispatchPieceLabel || getPartLabel(dispatchPieceType)}`,
+      `عدد القطع: ${piecesCount}`,
+      `تاريخ الاستلام المتوقع: ${expectedDeliveryDate || '-'}`,
+      dispatchNotes ? `ملاحظات: ${dispatchNotes}` : ''
+    ]
+      .filter(Boolean)
+      .join('\n');
+  };
 
   // Parts currently at the sewing stage — each part is tracked independently.
   const readyPartCards = models.flatMap((m) => {
@@ -123,7 +149,18 @@ export const SewingView: React.FC = () => {
       : pieceType === 'pants'
       ? (model.sewing_pants_workshop || model.sewing_workshop || '')
       : (model.sewing_workshop || '');
-    setWorkshopName(prevWorkshop);
+    // إعادة اختيار الورشة السابقة من القائمة، أو فتح وضع الكتابة اليدوية إن لم تكن مسجّلة.
+    const matchedPrevWorkshop = sewingWorkshops.find((w) => w.name === prevWorkshop);
+    if (matchedPrevWorkshop) {
+      setWorkshopSelection(matchedPrevWorkshop.id);
+      setCustomWorkshopName('');
+    } else if (prevWorkshop) {
+      setWorkshopSelection('__custom__');
+      setCustomWorkshopName(prevWorkshop);
+    } else {
+      setWorkshopSelection('');
+      setCustomWorkshopName('');
+    }
 
     const prevDate = pieceType === 'shirt'
       ? model.sewing_shirt_expected_date
@@ -149,14 +186,14 @@ export const SewingView: React.FC = () => {
 
   const handleSubmitDispatch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedModelId || !workshopName.trim() || piecesCount <= 0 || !expectedDeliveryDate) {
+    if (!selectedModelId || !resolvedWorkshopName || piecesCount <= 0 || !expectedDeliveryDate) {
       alert('يرجى ملء جميع الحقول المطلوبة وتحديد اسم الورشة وتاريخ الاستلام المتوقع');
       return;
     }
 
     dispatchModelToSewing({
       modelId: selectedModelId,
-      workshopName: workshopName.trim(),
+      workshopName: resolvedWorkshopName,
       piecesCount: piecesCount,
       expectedDeliveryDate: expectedDeliveryDate,
       pieceType: dispatchPieceType,
@@ -166,7 +203,8 @@ export const SewingView: React.FC = () => {
 
     setShowDispatchModal(false);
     setSelectedModelId('');
-    setWorkshopName('');
+    setWorkshopSelection('');
+    setCustomWorkshopName('');
     setPiecesCount(0);
     setExpectedDeliveryDate('');
     setDispatchNotes('');
@@ -759,17 +797,61 @@ export const SewingView: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  اسم ورشة المكن / الخياطة *
-                </label>
-                <input
-                  type="text"
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="block text-xs font-bold text-slate-600">
+                    اسم ورشة المكن / الخياطة *
+                  </label>
+                  {selectedSewingWorkshop &&
+                    (selectedSewingWorkshop.phone || selectedSewingWorkshop.whatsapp_group_link) && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openWhatsAppOrder(
+                            selectedSewingWorkshop.phone,
+                            selectedSewingWorkshop.whatsapp_group_link,
+                            buildSewingWhatsappMessage()
+                          )
+                        }
+                        className="px-3 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition cursor-pointer"
+                        title={
+                          selectedSewingWorkshop.whatsapp_group_link
+                            ? 'فتح جروب الواتساب (سيتم نسخ نص الطلب تلقائياً)'
+                            : 'إرسال أمر التشغيل عبر واتساب'
+                        }
+                      >
+                        💬 إرسال عبر واتساب
+                      </button>
+                    )}
+                </div>
+                <select
                   required
-                  placeholder="مثال: ورشة الأمل، ورشة النور، خط إنتاج 2..."
-                  value={workshopName}
-                  onChange={(e) => setWorkshopName(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs font-bold focus:ring-2 focus:ring-emerald-700 focus:outline-hidden"
-                />
+                  value={workshopSelection}
+                  onChange={(e) => setWorkshopSelection(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs font-bold bg-white focus:ring-2 focus:ring-emerald-700 focus:outline-hidden"
+                >
+                  <option value="">— اختر ورشة المكن / الخياطة —</option>
+                  {sewingWorkshops.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                  <option value="__custom__">أخرى / كتابة يدوية</option>
+                </select>
+                {workshopSelection === '__custom__' && (
+                  <input
+                    type="text"
+                    required
+                    placeholder="اكتب اسم ورشة المكن / الخياطة يدوياً"
+                    value={customWorkshopName}
+                    onChange={(e) => setCustomWorkshopName(e.target.value)}
+                    className="mt-2 w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs font-bold focus:ring-2 focus:ring-emerald-700 focus:outline-hidden"
+                  />
+                )}
+                {sewingWorkshops.length === 0 && (
+                  <p className="mt-1.5 text-[11px] text-amber-600 font-bold">
+                    لا توجد ورش خياطة مسجلة — أضفها من الإعدادات ← المقاسات والموردين والورش.
+                  </p>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">

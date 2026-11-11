@@ -22,9 +22,10 @@ import {
   Pencil,
   Check,
   X,
-  Star
+  Star,
+  Factory
 } from 'lucide-react';
-import { User } from '../types';
+import { User, WorkshopType, WORKSHOP_TYPE_KEYS, WORKSHOP_TYPE_LABELS } from '../types';
 import { EditUserModal } from './EditUserModal';
 import { RoleManagementSection, DEFAULT_PERMISSIONS } from './RoleManagementSection';
 
@@ -39,6 +40,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     roles,
     sizeDefs,
     suppliers,
+    workshops,
     users,
     accessoryItems,
     globalSettings,
@@ -49,6 +51,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     addSupplier,
     updateSupplier,
     deleteSupplier,
+    addWorkshop,
+    updateWorkshop,
+    deleteWorkshop,
+    addFlashMessage,
     addUser,
     deleteUser,
     toggleUserActive,
@@ -102,9 +108,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
   // Supplier Form & Edit State
   const [supName, setSupName] = useState('');
   const [supPhone, setSupPhone] = useState('');
+  const [supGroupLink, setSupGroupLink] = useState('');
   const [editingSupId, setEditingSupId] = useState<string | null>(null);
   const [editSupName, setEditSupName] = useState('');
   const [editSupPhone, setEditSupPhone] = useState('');
+  const [editSupGroupLink, setEditSupGroupLink] = useState('');
+
+  // Workshop Form & Edit State
+  const [wrkName, setWrkName] = useState('');
+  const [wrkPhone, setWrkPhone] = useState('');
+  const [wrkGroupLink, setWrkGroupLink] = useState('');
+  const [wrkTypes, setWrkTypes] = useState<WorkshopType[]>([]);
+  const [wrkNotes, setWrkNotes] = useState('');
+  const [editingWrkId, setEditingWrkId] = useState<string | null>(null);
+  const [editWrkName, setEditWrkName] = useState('');
+  const [editWrkPhone, setEditWrkPhone] = useState('');
+  const [editWrkGroupLink, setEditWrkGroupLink] = useState('');
+  const [editWrkTypes, setEditWrkTypes] = useState<WorkshopType[]>([]);
+  const [editWrkNotes, setEditWrkNotes] = useState('');
 
   // User Form State
   const [realName, setRealName] = useState('');
@@ -182,21 +203,84 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
   const handleAddSupplier = (e: React.FormEvent) => {
     e.preventDefault();
     if (!supName.trim()) return;
-    addSupplier(supName.trim(), supPhone.trim());
+    addSupplier(supName.trim(), supPhone.trim(), supGroupLink.trim());
     setSupName('');
     setSupPhone('');
+    setSupGroupLink('');
   };
 
-  const handleStartEditSupplier = (id: string, currentName: string, currentPhone: string) => {
+  const handleStartEditSupplier = (
+    id: string,
+    currentName: string,
+    currentPhone: string,
+    currentGroupLink?: string
+  ) => {
     setEditingSupId(id);
     setEditSupName(currentName);
     setEditSupPhone(currentPhone || '');
+    setEditSupGroupLink(currentGroupLink || '');
   };
 
   const handleSaveEditSupplier = (id: string) => {
     if (!editSupName.trim()) return;
-    updateSupplier(id, editSupName.trim(), editSupPhone.trim());
+    updateSupplier(id, editSupName.trim(), editSupPhone.trim(), editSupGroupLink.trim());
     setEditingSupId(null);
+  };
+
+  const toggleWorkshopType = (type: WorkshopType, current: WorkshopType[]): WorkshopType[] =>
+    current.includes(type) ? current.filter((t) => t !== type) : [...current, type];
+
+  const handleAddWorkshop = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!wrkName.trim()) return;
+    if (wrkTypes.length === 0) {
+      addFlashMessage('يرجى اختيار تخصص واحد على الأقل للورشة', 'danger');
+      return;
+    }
+    addWorkshop({
+      name: wrkName,
+      phone: wrkPhone,
+      whatsappGroupLink: wrkGroupLink,
+      workshopType: wrkTypes,
+      notes: wrkNotes
+    });
+    setWrkName('');
+    setWrkPhone('');
+    setWrkGroupLink('');
+    setWrkTypes([]);
+    setWrkNotes('');
+  };
+
+  const handleStartEditWorkshop = (workshop: {
+    id: string;
+    name: string;
+    phone: string;
+    whatsapp_group_link?: string;
+    workshop_type: WorkshopType[];
+    notes?: string;
+  }) => {
+    setEditingWrkId(workshop.id);
+    setEditWrkName(workshop.name);
+    setEditWrkPhone(workshop.phone || '');
+    setEditWrkGroupLink(workshop.whatsapp_group_link || '');
+    setEditWrkTypes(workshop.workshop_type || []);
+    setEditWrkNotes(workshop.notes || '');
+  };
+
+  const handleSaveEditWorkshop = (id: string) => {
+    if (!editWrkName.trim()) return;
+    if (editWrkTypes.length === 0) {
+      addFlashMessage('يرجى اختيار تخصص واحد على الأقل للورشة', 'danger');
+      return;
+    }
+    updateWorkshop(id, {
+      name: editWrkName,
+      phone: editWrkPhone,
+      whatsappGroupLink: editWrkGroupLink,
+      workshopType: editWrkTypes,
+      notes: editWrkNotes
+    });
+    setEditingWrkId(null);
   };
 
   const handleToggleFavoriteAccessory = (accId: string) => {
@@ -356,7 +440,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
               }`}
             >
               <Sliders className="w-3.5 h-3.5" />
-              <span>المقاسات والموردين</span>
+              <span>المقاسات والموردين والورش</span>
             </button>
           )}
 
@@ -1118,6 +1202,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                       className="w-full px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
                     />
                   </div>
+                  <div>
+                    <input
+                      type="url"
+                      value={supGroupLink}
+                      onChange={(e) => setSupGroupLink(e.target.value)}
+                      placeholder="رابط جروب الواتساب (اختياري) - https://chat.whatsapp.com/..."
+                      className="w-full px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                    />
+                  </div>
                   <button
                     type="submit"
                     className="w-full py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
@@ -1133,6 +1226,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                     <tr>
                       <th className="px-4 py-2.5">اسم المورد</th>
                       <th className="px-4 py-2.5">رقم الهاتف</th>
+                      <th className="px-4 py-2.5">رابط جروب الواتساب</th>
                       {canManageSuppliers() && <th className="px-4 py-2.5 text-center">إجراءات</th>}
                     </tr>
                   </thead>
@@ -1165,6 +1259,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                               sup.phone || '-'
                             )}
                           </td>
+                          <td className="px-4 py-3 text-slate-600 font-mono text-[11px] max-w-[220px] truncate">
+                            {isEditing ? (
+                              <input
+                                type="url"
+                                value={editSupGroupLink}
+                                onChange={(e) => setEditSupGroupLink(e.target.value)}
+                                placeholder="https://chat.whatsapp.com/..."
+                                className="w-full px-2.5 py-1 rounded-lg border border-emerald-300 text-xs font-mono"
+                              />
+                            ) : sup.whatsapp_group_link ? (
+                              <a
+                                href={sup.whatsapp_group_link}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-emerald-600 hover:underline"
+                                title={sup.whatsapp_group_link}
+                              >
+                                🔗 جروب الواتساب
+                              </a>
+                            ) : (
+                              '-'
+                            )}
+                          </td>
                           {canManageSuppliers() && (
                             <td className="px-4 py-3 text-center">
                               <div className="flex items-center justify-center gap-1.5">
@@ -1191,7 +1308,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                                   <>
                                     <button
                                       type="button"
-                                      onClick={() => handleStartEditSupplier(sup.id, sup.name, sup.phone)}
+                                      onClick={() => handleStartEditSupplier(sup.id, sup.name, sup.phone, sup.whatsapp_group_link)}
                                       className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 transition cursor-pointer"
                                       title="تعديل المورد"
                                     >
@@ -1218,6 +1335,258 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
               </div>
             </div>
           </div>
+          {/* 3. Workshops & Print Shops Management */}
+          <div className="md:col-span-2 bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs">
+            <h3 className="text-base font-extrabold text-purple-600 mb-4 flex items-center gap-2">
+              <Factory className="w-5 h-5" />
+              <span>🏭 الورش والمطابع الخارجية</span>
+            </h3>
+
+            {canManageSuppliers() && (
+              <form
+                onSubmit={handleAddWorkshop}
+                className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6 bg-slate-50 p-4 rounded-2xl border border-slate-200/60"
+              >
+                <input
+                  type="text"
+                  required
+                  value={wrkName}
+                  onChange={(e) => setWrkName(e.target.value)}
+                  placeholder="اسم الورشة أو المطبعة"
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-xs focus:ring-2 focus:ring-purple-500 focus:outline-hidden"
+                />
+                <input
+                  type="text"
+                  value={wrkPhone}
+                  onChange={(e) => setWrkPhone(e.target.value)}
+                  placeholder="رقم الهاتف / الواتساب"
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-xs focus:ring-2 focus:ring-purple-500 focus:outline-hidden"
+                />
+                <input
+                  type="url"
+                  value={wrkGroupLink}
+                  onChange={(e) => setWrkGroupLink(e.target.value)}
+                  placeholder="رابط جروب الواتساب (اختياري) - https://chat.whatsapp.com/..."
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-xs focus:ring-2 focus:ring-purple-500 focus:outline-hidden"
+                />
+                <input
+                  type="text"
+                  value={wrkNotes}
+                  onChange={(e) => setWrkNotes(e.target.value)}
+                  placeholder="ملاحظات (اختياري)"
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-xs focus:ring-2 focus:ring-purple-500 focus:outline-hidden"
+                />
+                <div className="md:col-span-2">
+                  <div className="text-xs font-bold text-slate-600 mb-1.5">
+                    تخصص الورشة (اختر واحداً أو أكثر)
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {WORKSHOP_TYPE_KEYS.map((key) => (
+                      <label
+                        key={key}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-bold cursor-pointer transition ${
+                          wrkTypes.includes(key)
+                            ? 'bg-purple-600 text-white border-purple-600'
+                            : 'bg-white text-slate-600 border-slate-300 hover:border-purple-400'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="hidden"
+                          checked={wrkTypes.includes(key)}
+                          onChange={() => setWrkTypes((prev) => toggleWorkshopType(key, prev))}
+                        />
+                        {WORKSHOP_TYPE_LABELS[key]}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  type="submit"
+                  className="md:col-span-2 py-2.5 rounded-full bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
+                >
+                  إضافة الورشة
+                </button>
+              </form>
+            )}
+
+            <div className="overflow-x-auto rounded-2xl border border-slate-200">
+              <table className="w-full text-xs text-start">
+                <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
+                  <tr>
+                    <th className="px-4 py-2.5">اسم الورشة / المطبعة</th>
+                    <th className="px-4 py-2.5">التخصصات</th>
+                    <th className="px-4 py-2.5">رقم الهاتف</th>
+                    <th className="px-4 py-2.5">رابط جروب الواتساب</th>
+                    <th className="px-4 py-2.5">ملاحظات</th>
+                    {canManageSuppliers() && <th className="px-4 py-2.5 text-center">إجراءات</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {workshops.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-6 text-center text-slate-400 font-bold">
+                        لا توجد ورش أو مطابع مسجلة بعد
+                      </td>
+                    </tr>
+                  )}
+                  {workshops.map((wrk) => {
+                    const isEditing = editingWrkId === wrk.id;
+                    return (
+                      <tr key={wrk.id} className="hover:bg-slate-50 align-top">
+                        <td className="px-4 py-3 font-extrabold text-slate-900">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={editWrkName}
+                              onChange={(e) => setEditWrkName(e.target.value)}
+                              className="w-full px-2.5 py-1 rounded-lg border border-purple-300 text-xs font-bold"
+                            />
+                          ) : (
+                            wrk.name
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {isEditing ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {WORKSHOP_TYPE_KEYS.map((key) => (
+                                <label
+                                  key={key}
+                                  className={`flex items-center gap-1 px-2 py-1 rounded-full border text-[10px] font-bold cursor-pointer transition ${
+                                    editWrkTypes.includes(key)
+                                      ? 'bg-purple-600 text-white border-purple-600'
+                                      : 'bg-white text-slate-600 border-slate-300'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="hidden"
+                                    checked={editWrkTypes.includes(key)}
+                                    onChange={() =>
+                                      setEditWrkTypes((prev) => toggleWorkshopType(key, prev))
+                                    }
+                                  />
+                                  {WORKSHOP_TYPE_LABELS[key]}
+                                </label>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {(wrk.workshop_type || []).length > 0 ? (
+                                (wrk.workshop_type || []).map((t) => (
+                                  <span
+                                    key={t}
+                                    className="inline-block px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 text-[10px] font-bold border border-purple-100"
+                                  >
+                                    {WORKSHOP_TYPE_LABELS[t] || t}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="text-slate-400">-</span>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-slate-600 font-mono">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={editWrkPhone}
+                              onChange={(e) => setEditWrkPhone(e.target.value)}
+                              className="w-full px-2.5 py-1 rounded-lg border border-purple-300 text-xs font-mono"
+                            />
+                          ) : (
+                            wrk.phone || '-'
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-slate-600 font-mono text-[11px] max-w-[220px] truncate">
+                          {isEditing ? (
+                            <input
+                              type="url"
+                              value={editWrkGroupLink}
+                              onChange={(e) => setEditWrkGroupLink(e.target.value)}
+                              placeholder="https://chat.whatsapp.com/..."
+                              className="w-full px-2.5 py-1 rounded-lg border border-purple-300 text-xs font-mono"
+                            />
+                          ) : wrk.whatsapp_group_link ? (
+                            <a
+                              href={wrk.whatsapp_group_link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-emerald-600 hover:underline"
+                              title={wrk.whatsapp_group_link}
+                            >
+                              🔗 جروب الواتساب
+                            </a>
+                          ) : (
+                            '-'
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-slate-500 max-w-[180px] truncate">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={editWrkNotes}
+                              onChange={(e) => setEditWrkNotes(e.target.value)}
+                              className="w-full px-2.5 py-1 rounded-lg border border-purple-300 text-xs"
+                            />
+                          ) : (
+                            wrk.notes || '-'
+                          )}
+                        </td>
+                        {canManageSuppliers() && (
+                          <td className="px-4 py-3 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              {isEditing ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSaveEditWorkshop(wrk.id)}
+                                    className="p-1.5 rounded-lg bg-purple-600 text-white hover:bg-purple-700 transition cursor-pointer"
+                                    title="حفظ"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingWrkId(null)}
+                                    className="p-1.5 rounded-lg bg-slate-200 text-slate-700 hover:bg-slate-300 transition cursor-pointer"
+                                    title="إلغاء"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartEditWorkshop(wrk)}
+                                    className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 transition cursor-pointer"
+                                    title="تعديل الورشة"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteWorkshop(wrk.id)}
+                                    className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                                    title="حذف الورشة"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
         </div>
       )}
 
