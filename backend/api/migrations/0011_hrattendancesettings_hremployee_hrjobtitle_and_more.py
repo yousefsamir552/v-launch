@@ -56,7 +56,7 @@ class Migration(migrations.Migration):
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('client_id', models.CharField(blank=True, db_index=True, max_length=100, null=True, verbose_name='المعرف')),
                 ('title', models.CharField(max_length=200, verbose_name='اسم الوظيفة')),
-                ('department', models.CharField(choices=[('design', 'التصميم'), ('cutting', 'القص'), ('fabric_warehouse', 'مخزن القماش'), ('accessories_warehouse', 'مخزن الإكسسوارات'), ('sorting_control', 'الفرز والكنترول'), ('sewing', 'المكن والخياطة'), ('finishing', 'التشطيب'), ('ironing', 'المكواة'), ('packaging', 'التعبئة والتغليف'), ('dest', 'الدَست'), ('finished_goods', 'مخزن الإنتاج التام')], default='sewing', max_length=50, verbose_name='القسم / مكان العمل')),
+                ('department', models.CharField(choices=[('design', 'التصميم'), ('cutting', 'القص'), ('fabric_warehouse', 'مخزن القماش'), ('accessories_warehouse', 'مخزن الإكسسوارات'), ('sorting_control', 'الفرز والكنترول'), ('sewing', 'المكن والخياطة'), ('finishing', 'التشطيب'), ('ironing', 'المكواة'), ('packaging', 'التعبئة والتغليف'), ('crow', 'عمال'), ('accounting', 'حسابات')], default='sewing', max_length=50, verbose_name='القسم / مكان العمل')),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
             ],
