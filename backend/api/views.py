@@ -3,7 +3,6 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.exceptions import ValidationError as DRFValidationError
-from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import models, transaction
 from django.http import Http404, HttpResponse
@@ -140,17 +139,6 @@ def clean_image_value(value, folder, field_label='الصورة'):
     except ValidationError as exc:
         detail = ' '.join(exc.messages) if hasattr(exc, 'messages') else str(exc)
         raise DRFValidationError({'detail': detail})
-
-
-def validate_new_password(password):
-    """Returns an Arabic error message when the password is too weak, else None."""
-    if not password or len(password) < 6:
-        return 'كلمة المرور مطلوبة ويجب ألا تقل عن 6 أحرف'
-    try:
-        validate_password(password)
-    except ValidationError as exc:
-        return ' '.join(exc.messages)
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -688,12 +676,6 @@ class UserProfileViewSet(BasePermViewSet):
 
         if not username:
             return Response({'detail': 'اسم المستخدم مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
-        password_error = validate_new_password(password)
-        if password_error:
-            return Response(
-                {'detail': password_error},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         if username.lower() == 'sudo':
             return Response({'detail': 'اسم المستخدم هذا محجوز للنظام ولا يمكن استخدامه'}, status=status.HTTP_400_BAD_REQUEST)
         if UserProfile.objects.filter(username__iexact=username).exists():
@@ -793,12 +775,6 @@ class UserProfileViewSet(BasePermViewSet):
 
         new_password = data.get('password')
         if new_password:
-            password_error = validate_new_password(new_password)
-            if password_error:
-                return Response(
-                    {'detail': password_error},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
             user.set_password(new_password)
 
         user.save()

@@ -121,14 +121,10 @@ REST_FRAMEWORK = {
     },
 }
 
-# Enable Django's standard password strength validators.
-AUTH_PASSWORD_VALIDATORS = [
-    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-     'OPTIONS': {'min_length': 6}},
-    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
-]
+# Password strength validators are intentionally disabled: managers may create or
+# update employee accounts with any password they type (even short, simple, or
+# repeated across accounts) without the backend rejecting the save.
+AUTH_PASSWORD_VALIDATORS = []
 
 LANGUAGE_CODE = 'ar'
 TIME_ZONE = 'UTC'

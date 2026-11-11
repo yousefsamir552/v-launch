@@ -110,6 +110,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
   const [realName, setRealName] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
   const rankOptions = visibleRankOptions();
   // الأدوار القابلة للإسناد: لا يمكن إسناد دور مستواه مساوٍ أو أعلى من مستواك.
   const assignableRoles = roles.filter((r) => {
@@ -204,29 +205,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     );
   };
 
-  const handleAddUser = (e: React.FormEvent) => {
+  const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!realName.trim() || !username.trim() || !password) return;
+    if (isCreatingUser) return;
 
     const effectiveRoleId = selectedRoleId || assignableRoles[0]?.id || '';
     const matchedRole = assignableRoles.find((r) => r.id === effectiveRoleId);
 
-    addUser({
-      real_name: realName.trim(),
-      username: username.trim(),
-      password,
-      role: matchedRole ? matchedRole.name : 'موظف تشغيل',
-      role_id: effectiveRoleId || undefined,
-      is_active: true,
-      rank_level: newUserRank,
-      permissions: matchedRole?.permissions
-        ? { ...DEFAULT_PERMISSIONS, ...matchedRole.permissions }
-        : { ...DEFAULT_PERMISSIONS }
-    });
+    setIsCreatingUser(true);
+    try {
+      const created = await addUser({
+        real_name: realName.trim(),
+        username: username.trim(),
+        password,
+        role: matchedRole ? matchedRole.name : 'موظف تشغيل',
+        role_id: effectiveRoleId || undefined,
+        is_active: true,
+        rank_level: newUserRank,
+        permissions: matchedRole?.permissions
+          ? { ...DEFAULT_PERMISSIONS, ...matchedRole.permissions }
+          : { ...DEFAULT_PERMISSIONS }
+      });
 
-    setRealName('');
-    setUsername('');
-    setPassword('');
+      // نفرّغ الفورم فقط بعد نجاح الحفظ الفعلي في قاعدة البيانات.
+      if (created) {
+        setRealName('');
+        setUsername('');
+        setPassword('');
+      }
+    } finally {
+      setIsCreatingUser(false);
+    }
   };
 
   const handleLogoFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -770,6 +780,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                 <input
                   type="password"
                   required
+                  autoComplete="new-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
@@ -817,9 +828,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
             <div className="flex justify-end pt-2">
               <button
                 type="submit"
-                className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition cursor-pointer"
+                disabled={isCreatingUser}
+                className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                إنشاء حساب الموظف
+                {isCreatingUser ? 'جارٍ الإنشاء...' : 'إنشاء حساب الموظف'}
               </button>
             </div>
           </form>

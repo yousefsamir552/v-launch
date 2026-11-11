@@ -518,7 +518,7 @@ interface AppContextType {
   addSupplier: (name: string, phone: string) => void;
   updateSupplier: (id: string, name: string, phone: string) => void;
   deleteSupplier: (id: string) => void;
-  addUser: (user: Omit<User, 'id'>) => void;
+  addUser: (user: Omit<User, 'id'>) => Promise<boolean>;
   toggleUserActive: (userId: string) => { success: boolean; message: string };
   updateUserPermissionsAndPassword: (
     userId: string,
@@ -4267,31 +4267,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
-  const addUser = (userData: Omit<User, 'id'>) => {
+  const addUser = async (userData: Omit<User, 'id'>): Promise<boolean> => {
     if (userData.username.trim().toLowerCase() === 'sudo') {
       addFlashMessage('اسم المستخدم هذا محجوز للنظام ولا يمكن استخدامه', 'danger');
-      return;
+      return false;
     }
     // حماية الرتب: لا يمكن منح رتبة مساوية أو أعلى من رتبة المستخدم الحالي.
     const safeRank = clampRankToVisible(userData.rank_level);
-    const newUser: User = {
-      ...userData,
-      rank_level: safeRank,
-      is_sudo: false,
-      id: 'user-' + Date.now()
-    };
-    setUsers((prev) => [...prev, newUser]);
-    api
-      .createUser(newUser)
-      .then((saved) => {
-        setUsers((prev) => prev.map((u) => (u.id === newUser.id ? saved : u)));
-        logAction('إدارة الحسابات', `إنشاء حساب جديد للموظف: ${newUser.username}`);
-        addFlashMessage(`تم إنشاء حساب جديد للموظف ${newUser.real_name} وحفظه في قاعدة البيانات`);
-      })
-      .catch((err) => {
-        setUsers((prev) => prev.filter((u) => u.id !== newUser.id));
-        addFlashMessage(err.message || 'فشل إنشاء الحساب في الباك إند', 'danger');
+
+    // لا إضافة وهمية (No Optimistic Update): ننتظر استجابة السيرفر ونضيف
+    // الحساب الحقيقي المحفوظ في قاعدة البيانات فقط بعد نجاح الطلب.
+    try {
+      const saved = await api.createUser({
+        ...userData,
+        rank_level: safeRank,
+        is_sudo: false
       });
+      setUsers((prev) => [...prev, saved]);
+      logAction('إدارة الحسابات', `إنشاء حساب جديد للموظف: ${saved.username || userData.username}`);
+      addFlashMessage(
+        `تم إنشاء حساب جديد للموظف ${saved.real_name || userData.real_name} وحفظه في قاعدة البيانات`
+      );
+      return true;
+    } catch (err: any) {
+      // عند أي خطأ من السيرفر (مثل تكرار username) لا نمسح أو نعدّل أي حسابات.
+      addFlashMessage(err?.message || 'فشل إنشاء الحساب في الباك إند', 'danger');
+      return false;
+    }
   };
 
   const toggleUserActive = (userId: string) => {
