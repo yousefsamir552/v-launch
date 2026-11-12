@@ -1302,6 +1302,8 @@ class PackagingRequirement(models.Model):
     received_from_photo_date = models.DateField(blank=True, null=True, verbose_name="تاريخ استلام الصور من المصور")
     sent_to_print_cards_date = models.DateField(blank=True, null=True, verbose_name="تاريخ إرسال الصور للمطبعة")
     received_printed_cards_date = models.DateField(blank=True, null=True, verbose_name="تاريخ استلام الورق المطبوع")
+    photography_sent_qty = models.IntegerField(default=0, verbose_name="عدد قطع العينة المرسلة للتصوير")
+    photography_received_qty = models.IntegerField(default=0, verbose_name="عدد قطع العينة المستلمة من التصوير")
     notes = models.TextField(blank=True, null=True, verbose_name="ملاحظات الأمبالاج")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1321,6 +1323,21 @@ class PackagingRequirement(models.Model):
     @property
     def is_complete(self) -> bool:
         return len(self.missing_steps) == 0
+
+    @property
+    def photography_outstanding_qty(self) -> int:
+        """القطع التي ما زالت في التصوير (مرسلة ولم تُستلم) - خصم مؤقت."""
+        return max(0, int(self.photography_sent_qty or 0) - int(self.photography_received_qty or 0))
+
+    @property
+    def photography_shortage(self) -> int:
+        """
+        عجز في قطع العينة: يُحتسب فقط بعد استلام الصور من المصور ومع ذلك
+        ما زالت هناك قطع مرسلة ولم تُستلم (لم تُرجع للخط الإنتاجي).
+        """
+        if not self.received_from_photo_date:
+            return 0
+        return self.photography_outstanding_qty
 
     def save(self, *args, **kwargs):
         if not self.client_id:
@@ -1430,8 +1447,9 @@ class AssemblyStageRecord(models.Model):
 
 # ---------------------------------------------------------------------------
 # Packaging & Operating Materials MRP (خامات التشغيل والأمبالاج)
-# خمس فئات ثابتة: أكياس بلاستيك / كرتون / شماعات / أكياس حديثي الولادة /
-# أكياس الدست، ولكل فئة قاعدة استهلاك لكل قطعة ومقاسات ومورد وحد تنبيه ورصيد.
+# فئات ديناميكية: يمكن إضافة أي فئة جديدة أو حذفها من الواجهة.
+# الخمس فئات التالية تُزرع كبيانات أولية افتراضية فقط، ولكل فئة قاعدة استهلاك
+# لكل قطعة ومقاسات ومورد وحد تنبيه ورصيد.
 # ---------------------------------------------------------------------------
 PACKAGING_MATERIAL_CHOICES = [
     ('bags', 'أكياس البلاستيك'),
@@ -1487,9 +1505,10 @@ class PackagingMaterialRule(models.Model):
     """
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     material_key = models.CharField(
-        max_length=30, choices=PACKAGING_MATERIAL_CHOICES, unique=True, verbose_name="نوع الخامة"
+        max_length=60, unique=True, verbose_name="نوع الخامة"
     )
     name = models.CharField(max_length=200, blank=True, default='', verbose_name="اسم الخامة")
+    icon = models.CharField(max_length=20, blank=True, default='', verbose_name="أيقونة الخامة")
     unit = models.CharField(
         max_length=30, choices=PACKAGING_MATERIAL_UNIT_CHOICES, default='قطعة', verbose_name="وحدة القياس"
     )
@@ -1515,6 +1534,8 @@ class PackagingMaterialRule(models.Model):
             self.client_id = generate_client_id('pack-mat')
         if not self.name:
             self.name = PACKAGING_MATERIAL_LABELS.get(self.material_key, self.material_key)
+        if not self.icon:
+            self.icon = PACKAGING_MATERIAL_EMOJI.get(self.material_key, '📦')
         super().save(*args, **kwargs)
 
     def __str__(self):

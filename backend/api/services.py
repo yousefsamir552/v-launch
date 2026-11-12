@@ -12,7 +12,7 @@ from .models import (
     COMPOSITION_TO_PARTS, DEFAULT_GARMENT_COMPOSITION,
     PackagingRequirement, FinishingRecord, AssemblyStageRecord,
     PackagingMaterialRule, PackagingMaterialSizeRule, PackagingMaterialTransaction,
-    PACKAGING_MATERIAL_LABELS,
+    PACKAGING_MATERIAL_LABELS, PACKAGING_MATERIAL_EMOJI,
     PACKAGING_STEP_ORDER, PACKAGING_STEP_LABELS, ASSEMBLY_STAGE_LABELS,
     PART_STAGE_ORDER, PART_STAGE_LABELS, PART_STAGE_TO_STATUS,
 )
@@ -195,12 +195,17 @@ def model_part_summary(model):
         sewing_available['single'] = single_qty
         cut_summary['single'] = int(model.total_cut_pieces or 0)
         qc_summary['single'] = aggregate_good
+    # الأطقم المكتملة = عدد القطع المتاح من أقل قطعة (min) وليس مجموع القطع.
+    if 'single' in parts:
+        completed_sets = int(model.total_cut_pieces or 0)
+    else:
+        completed_sets = min((int(cut_map.get(part, 0) or 0) for part in parts), default=0)
     return {
         'parts': parts,
         'cut_summary': cut_summary,
         'qc_summary': qc_summary,
         'sewing_available': sewing_available,
-        'completed_sets': int(model.total_cut_pieces or 0),
+        'completed_sets': completed_sets,
     }
 
 
@@ -812,6 +817,19 @@ def ensure_schema_columns():
                 if 'part_type' not in cols:
                     cursor.execute("ALTER TABLE api_qcrecord ADD COLUMN part_type varchar(20) NOT NULL DEFAULT 'shirt';")
 
+            # Photography sample quantities + dynamic packaging-material icon.
+            if 'api_packagingrequirement' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_packagingrequirement')]
+                if 'photography_sent_qty' not in cols:
+                    cursor.execute('ALTER TABLE api_packagingrequirement ADD COLUMN photography_sent_qty integer NOT NULL DEFAULT 0;')
+                if 'photography_received_qty' not in cols:
+                    cursor.execute('ALTER TABLE api_packagingrequirement ADD COLUMN photography_received_qty integer NOT NULL DEFAULT 0;')
+
+            if 'api_packagingmaterialrule' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_packagingmaterialrule')]
+                if 'icon' not in cols:
+                    cursor.execute("ALTER TABLE api_packagingmaterialrule ADD COLUMN icon varchar(20) NOT NULL DEFAULT '';")
+
             if 'api_cuttingspreadlayer' not in table_names:
                 if connection.vendor == 'postgresql':
                     cursor.execute('''
@@ -876,14 +894,35 @@ PACKAGING_MATERIAL_SEED = [
 
 def ensure_packaging_material_categories():
     """
-    Idempotently ensures the five fixed packaging-material categories exist.
-    Safe to call on every state sync: it only creates the missing categories.
+    Seeds the five default packaging-material categories **only once**.
+
+    Earlier deployments re-created the fixed categories on every state sync, which made
+    them impossible to delete. A ``SystemSetting`` flag now marks the initial seed, so
+    categories deleted from the UI are never recreated (same idea as ``initial_seed_v1``).
     """
-    for key, name, unit in PACKAGING_MATERIAL_SEED:
-        PackagingMaterialRule.objects.get_or_create(
-            material_key=key,
-            defaults={'name': name or PACKAGING_MATERIAL_LABELS.get(key, key), 'unit': unit},
+    seeded = SystemSetting.objects.filter(key='packaging_material_seed_v1').exists()
+    if not seeded:
+        for key, name, unit in PACKAGING_MATERIAL_SEED:
+            rule, created = PackagingMaterialRule.objects.get_or_create(
+                material_key=key,
+                defaults={
+                    'name': name or PACKAGING_MATERIAL_LABELS.get(key, key),
+                    'unit': unit,
+                    'icon': PACKAGING_MATERIAL_EMOJI.get(key, '📦'),
+                },
+            )
+            if not created and not rule.icon:
+                rule.icon = PACKAGING_MATERIAL_EMOJI.get(key, '📦')
+                rule.save(update_fields=['icon'])
+        SystemSetting.objects.create(
+            key='packaging_material_seed_v1', value={'seeded': True}
         )
+
+    # Backfill icons for rows created before the icon column existed (never re-creates
+    # categories deleted from the UI, so deletions remain permanent).
+    for rule in PackagingMaterialRule.objects.filter(icon=''):
+        rule.icon = PACKAGING_MATERIAL_EMOJI.get(rule.material_key, '📦')
+        rule.save(update_fields=['icon'])
 
 
 def apply_packaging_material_transaction(size_rule, operation, amount, notes='', timestamp=''):
@@ -1501,14 +1540,36 @@ def packaging_requirement_summary(model):
 
 
 def set_packaging_step_service(model, step, step_date=None, notes=None,
-                               user_name='مسؤول الأمبالاج'):
-    """Sets one of the four packaging requirement dates and logs a timeline entry."""
+                               user_name='مسؤول الأمبالاج', sent_qty=None,
+                               received_qty=None):
+    """Sets one of the four packaging requirement dates and logs a timeline entry.
+
+    Additionally tracks the photography sample quantities:
+      * sent_to_photo     → photography_sent_qty (temporarily deducted from production)
+      * received_from_photo → photography_received_qty (returned when the photographer is done)
+    """
     if step not in PACKAGING_STEP_ORDER:
         raise ValueError('خطوة متطلبات الأمبالاج غير معروفة')
     requirement = get_or_create_packaging_requirement(model)
 
     parsed_date = _parse_date_value(step_date) or date.today()
     setattr(requirement, f'{step}_date', parsed_date)
+
+    def _as_int(value):
+        try:
+            return max(0, int(float(value)))
+        except (TypeError, ValueError):
+            return None
+
+    clean_sent_qty = _as_int(sent_qty)
+    clean_received_qty = _as_int(received_qty)
+    if step == 'sent_to_photo' and clean_sent_qty is not None:
+        requirement.photography_sent_qty = clean_sent_qty
+    if step == 'received_from_photo' and clean_received_qty is not None:
+        requirement.photography_received_qty = clean_received_qty
+    # Guard: never report receiving more than was actually sent.
+    if requirement.photography_received_qty > requirement.photography_sent_qty:
+        requirement.photography_received_qty = requirement.photography_sent_qty
 
     clean_notes = (notes or '').strip()
     if clean_notes:
@@ -1518,6 +1579,13 @@ def set_packaging_step_service(model, step, step_date=None, notes=None,
     step_label = PACKAGING_STEP_LABELS[step]
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
     tl_notes = f"تم تسجيل ({step_label}) بتاريخ {parsed_date.isoformat()}"
+    if step == 'sent_to_photo' and requirement.photography_sent_qty:
+        tl_notes += f" - أُرسل للتصوير {requirement.photography_sent_qty} قطعة (خصم مؤقت من الإنتاج)"
+    if step == 'received_from_photo':
+        tl_notes += (
+            f" - استُلم من التصوير {requirement.photography_received_qty} قطعة"
+            f" (المتبقي بالتصوير: {requirement.photography_outstanding_qty})"
+        )
     if requirement.is_complete:
         tl_notes += " - اكتملت متطلبات الأمبالاج وأصبح الموديل جاهزاً لمرحلة الدَست"
     elif clean_notes:
@@ -1536,6 +1604,9 @@ def set_packaging_step_service(model, step, step_date=None, notes=None,
             'step': step,
             'step_label': step_label,
             'step_date': parsed_date.isoformat(),
+            'photography_sent_qty': requirement.photography_sent_qty,
+            'photography_received_qty': requirement.photography_received_qty,
+            'photography_outstanding_qty': requirement.photography_outstanding_qty,
             'missing_steps': requirement.missing_steps,
             'is_complete': requirement.is_complete,
             'worker_notes': clean_notes,

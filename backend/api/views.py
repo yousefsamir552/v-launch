@@ -24,7 +24,7 @@ from .models import (
     PackagingRequirement, FinishingRecord, AssemblyStageRecord,
     PackagingMaterialRule, PackagingMaterialSizeRule, PackagingMaterialTransaction,
     PACKAGING_STEP_ORDER, ASSEMBLY_STAGE_KEYS,
-    PACKAGING_MATERIAL_KEYS, PACKAGING_MATERIAL_LABELS,
+    PACKAGING_MATERIAL_LABELS,
     PACKAGING_MATERIAL_UNIT_KEYS, PACKAGING_MATERIAL_RULE_MODE_KEYS,
     HRJobTitle, HREmployee, HRAttendanceSettings,
     HRAttendanceRecord, HRPenalty, HRLoan,
@@ -1922,9 +1922,12 @@ class ModelItemViewSet(BasePermViewSet):
         step_date = data.get('date') or data.get('step_date') or data.get('stepDate')
         notes = data.get('notes') or ''
         user_name = data.get('user_name') or data.get('user') or 'مسؤول الأمبالاج'
+        sent_qty = data.get('sent_qty') if data.get('sent_qty') is not None else data.get('sentQty')
+        received_qty = data.get('received_qty') if data.get('received_qty') is not None else data.get('receivedQty')
         try:
             requirement = set_packaging_step_service(
-                model, step, step_date=step_date, notes=notes, user_name=user_name
+                model, step, step_date=step_date, notes=notes, user_name=user_name,
+                sent_qty=sent_qty, received_qty=received_qty,
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -2712,7 +2715,7 @@ class SewingDispatchViewSet(BasePermViewSet):
 
 class PackagingMaterialRuleViewSet(BasePermViewSet):
     """
-    قواعد خامات التشغيل والأمبالاج (خمس فئات ثابتة).
+    قواعد خامات التشغيل والأمبالاج (فئات ديناميكية قابلة للإضافة والحذف).
     الحفظ يستقبل تفاصيل كل مقاس داخل نفس الطلب عبر الحقل size_rules.
     """
     permission_classes = [HasDynamicSectionPermission]
@@ -2756,16 +2759,24 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
 
     def _save_rule(self, request, instance=None):
         data = request.data
-        material_key = str(data.get('material_key') or (instance.material_key if instance else '')).strip()
-        if material_key not in PACKAGING_MATERIAL_KEYS:
-            return Response(
-                {'detail': 'نوع خامة التشغيل غير معروف'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        rule = instance or PackagingMaterialRule.objects.filter(material_key=material_key).first()
-        if rule is None:
-            rule = PackagingMaterialRule(material_key=material_key)
-        rule.name = data.get('name') or PACKAGING_MATERIAL_LABELS.get(material_key, material_key)
+        if instance is not None:
+            rule = instance
+        else:
+            material_key = str(data.get('material_key') or '').strip()[:60]
+            if not material_key:
+                # New category added from the UI without a key → generate a stable one.
+                material_key = f"custom-{secrets.token_hex(5)}"
+            rule = PackagingMaterialRule.objects.filter(material_key=material_key).first()
+            if rule is None:
+                rule = PackagingMaterialRule(material_key=material_key)
+        rule.name = (
+            str(data.get('name') or '').strip()
+            or rule.name
+            or PACKAGING_MATERIAL_LABELS.get(rule.material_key, rule.material_key)
+        )
+        icon = data.get('icon')
+        if icon is not None:
+            rule.icon = str(icon).strip()[:20]
         unit = data.get('unit')
         if unit in PACKAGING_MATERIAL_UNIT_KEYS:
             rule.unit = unit
@@ -2795,9 +2806,12 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
         return self._save_rule(request, self.get_object())
 
     def destroy(self, request, *args, **kwargs):
+        rule = self.get_object()
+        label = rule.label
+        rule.delete()
         return Response(
-            {'detail': 'فئات خامات التشغيل الخمس ثابتة ولا يمكن حذفها'},
-            status=status.HTTP_400_BAD_REQUEST
+            {'detail': f'تم حذف خامة التشغيل ({label}) بنجاح'},
+            status=status.HTTP_200_OK
         )
 
     @action(detail=True, methods=['post'])
