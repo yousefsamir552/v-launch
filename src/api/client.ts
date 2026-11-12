@@ -338,6 +338,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data)
     }),
+  deletePackagingMaterialRule: (id: string) =>
+    request<any>(`/packaging-material-rules/${encodeURIComponent(id)}/`, {
+      method: 'DELETE'
+    }),
   recordPackagingMaterialTransaction: (data: any) =>
     request<{ sizeRule: any; transaction: any }>('/packaging-material-transactions/', {
       method: 'POST',

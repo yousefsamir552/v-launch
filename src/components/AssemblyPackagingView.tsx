@@ -252,7 +252,16 @@ const RequirementsCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({
   const { getPackagingRequirement, setPackagingStep } = useApp();
   const requirement = getPackagingRequirement(model.id);
   const [draftDates, setDraftDates] = useState<Record<string, string>>({});
+  const [draftQty, setDraftQty] = useState<Record<string, string>>({
+    sent_to_photo: String(requirement?.photography_sent_qty ?? 0),
+    received_from_photo: String(requirement?.photography_received_qty ?? 0)
+  });
   const [notes, setNotes] = useState('');
+
+  const sentQty = Number(requirement?.photography_sent_qty || 0);
+  const receivedQty = Number(requirement?.photography_received_qty || 0);
+  const outstandingQty = Math.max(0, sentQty - receivedQty);
+  const shortageQty = Number(requirement?.photography_shortage || 0);
 
   const completedCount = PACKAGING_STEP_ORDER.filter((step) =>
     Boolean(stepDate(requirement, step))
@@ -316,30 +325,94 @@ const RequirementsCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({
               </div>
 
               {canEdit && (
-                <div className="flex items-center gap-1.5 mt-2">
-                  <input
-                    type="date"
-                    value={draftDates[step] ?? value ?? todayStr()}
-                    onChange={(event) =>
-                      setDraftDates((prev) => ({ ...prev, [step]: event.target.value }))
-                    }
-                    className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
-                  />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPackagingStep(model.id, step, draftDates[step] ?? value ?? todayStr(), notes)
-                    }
-                    className="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-[10px] font-bold hover:bg-slate-800 transition"
-                  >
-                    {value ? 'تحديث' : 'تسجيل'}
-                  </button>
+                <div className="space-y-1.5 mt-2">
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="date"
+                      value={draftDates[step] ?? value ?? todayStr()}
+                      onChange={(event) =>
+                        setDraftDates((prev) => ({ ...prev, [step]: event.target.value }))
+                      }
+                      className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPackagingStep(
+                          model.id,
+                          step,
+                          draftDates[step] ?? value ?? todayStr(),
+                          notes,
+                          step === 'sent_to_photo' || step === 'received_from_photo'
+                            ? Number(draftQty[step] || 0)
+                            : undefined
+                        )
+                      }
+                      className="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-[10px] font-bold hover:bg-slate-800 transition"
+                    >
+                      {value ? 'تحديث' : 'تسجيل'}
+                    </button>
+                  </div>
+                  {(step === 'sent_to_photo' || step === 'received_from_photo') && (
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 shrink-0">
+                        {step === 'sent_to_photo' ? 'عدد القطع المرسلة' : 'عدد القطع المستلمة'}
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={draftQty[step] ?? ''}
+                        onChange={(event) =>
+                          setDraftQty((prev) => ({ ...prev, [step]: event.target.value }))
+                        }
+                        className="w-20 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
+                      />
+                      <span className="text-[9px] font-bold text-slate-400">قطعة</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           );
         })}
       </div>
+
+      {sentQty > 0 && (
+        <div className="rounded-2xl border border-indigo-200 bg-indigo-50/70 p-2.5 space-y-1.5">
+          <div className="flex items-center justify-between text-[11px] font-black text-indigo-900">
+            <span>📸 قطع العينة في التصوير</span>
+            <span className="font-mono">{outstandingQty} قطعة</span>
+          </div>
+          <div className="grid grid-cols-3 gap-1 text-center text-[10px] font-bold">
+            <div className="rounded-lg bg-white/80 border border-indigo-100 py-1">
+              <span className="block text-[9px] text-slate-500">مرسل</span>
+              <strong className="text-indigo-900">{sentQty}</strong>
+            </div>
+            <div className="rounded-lg bg-white/80 border border-indigo-100 py-1">
+              <span className="block text-[9px] text-slate-500">مستلم</span>
+              <strong className="text-emerald-700">{receivedQty}</strong>
+            </div>
+            <div className="rounded-lg bg-white/80 border border-indigo-100 py-1">
+              <span className="block text-[9px] text-slate-500">متبقي بالتصوير</span>
+              <strong className="text-amber-700">{outstandingQty}</strong>
+            </div>
+          </div>
+          {outstandingQty > 0 ? (
+            <p className="text-[10px] font-bold text-indigo-800 leading-relaxed">
+              ⏳ {outstandingQty} قطعة مخصومة مؤقتاً من الإنتاج حتى رجوعها من التصوير.
+            </p>
+          ) : (
+            <p className="text-[10px] font-bold text-emerald-700">
+              ✅ تم إرجاع كل قطع العينة إلى الخط الإنتاجي.
+            </p>
+          )}
+          {shortageQty > 0 && (
+            <p className="text-[10px] font-black text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-2 py-1">
+              ⚠️ عجز {shortageQty} قطعة: تم استلام الصور ولم تُرجع كل القطع للخط الإنتاجي.
+            </p>
+          )}
+        </div>
+      )}
 
       {canEdit && (
         <input
@@ -886,7 +959,7 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
           <span>
             {outOfSequence ? (
               <>
-                لا يمكن بدء الدَست قبل وصول كل القطع إلى التعبئة والتغليف.
+                لا يمكن بدء الدَست قبل اكتمال استلام كل القطع من التعبئة والتغليف.
                 {` في الانتظار: ${waitingDest.map((part) => getPartLabel(part)).join(' / ')}`}
               </>
             ) : (
@@ -1052,16 +1125,45 @@ export const AssemblyPackagingView: React.FC = () => {
     return allPartsAtOrBeyond(model, 'completed');
   };
 
+  /** هل يظهر الموديل في هذا التبويب حسب المرحلة الحالية لكل قطعة؟ */
+  const modelInTab = (model: DesignModel, tab: TabKey): boolean => {
+    if (tab === 'requirements') return true;
+    const stages = Object.values(getPartStages(model.id)) as PartStage[];
+    if (!stages.length) return false;
+    const rank = (stage: PartStage) => PART_STAGE_ORDER.indexOf(stage);
+    if (tab === 'finishing') {
+      // تظل البطاقة ظاهرة ما دامت هناك قطعة لم تُستلم من التشطيب بعد (حتى لو تقدّمت قطعة أخرى).
+      return stages.some((stage) => rank(stage) <= rank('finishing'));
+    }
+    if (tab === 'ironing') {
+      return stages.some((stage) => stage === 'ironing');
+    }
+    if (tab === 'packaging') {
+      // بطاقة تغليف واحدة تظهر بمجرد وصول أول قطعة، وتُقفل حتى وصول كل القطع.
+      return (
+        stages.some((stage) => rank(stage) >= rank('packaging')) &&
+        !stages.every((stage) => rank(stage) >= rank('dest'))
+      );
+    }
+    // الدَست: لا يظهر الموديل إلا بعد اكتمال تعبئة كل القطع (ويُخفى بعد اكتمال الدَست).
+    return (
+      stages.every((stage) => rank(stage) >= rank('packaging')) &&
+      !stages.every((stage) => stage === 'completed')
+    );
+  };
+
   const pendingCountForTab = (tab: TabKey) =>
-    visibleModels.filter((model) => !isDoneForTab(model, tab)).length;
+    visibleModels.filter((model) => modelInTab(model, tab) && !isDoneForTab(model, tab)).length;
 
   const sortedModels = useMemo(() => {
-    return [...visibleModels].sort((a, b) => {
-      const aDone = isDoneForTab(a, activeTab) ? 1 : 0;
-      const bDone = isDoneForTab(b, activeTab) ? 1 : 0;
-      if (aDone !== bDone) return aDone - bDone;
-      return a.model_code.localeCompare(b.model_code);
-    });
+    return visibleModels
+      .filter((model) => modelInTab(model, activeTab))
+      .sort((a, b) => {
+        const aDone = isDoneForTab(a, activeTab) ? 1 : 0;
+        const bDone = isDoneForTab(b, activeTab) ? 1 : 0;
+        if (aDone !== bDone) return aDone - bDone;
+        return a.model_code.localeCompare(b.model_code);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     visibleModels,

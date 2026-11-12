@@ -1,5 +1,13 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useApp } from '../context/AppContext';
+import {
+  GarmentPart,
+  PartStage,
+  PART_EMOJI,
+  PART_STAGE_LABELS,
+  SNOOZE_OPTIONS,
+  getPartLabel
+} from '../types';
 import {
   Layers,
   Palette,
@@ -37,6 +45,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     qcRecords,
     printDispatches,
     appNotifications,
+    snoozeNotification,
+    getPartStages,
     exportWarehouseInventoryCsv,
     hasPermission
   } = useApp();
@@ -46,22 +56,72 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const totalFabrics = fabricColors.length;
 
   const inDesignCount = activeModels.filter((m) => m.status === 'تصميم' || m.status === 'مرحلة التصميم').length;
-  const inCuttingCount = activeModels.filter((m) => m.status === 'في القص' || m.status === 'جاري القص').length;
-  const inQcCount = activeModels.filter((m) => m.status === 'فرز وكنترول' || m.status === 'فرز قبل الطباعة' || m.status === 'العد قبل الطباعة' || m.status === 'العد بعد الطباعة' || m.status === 'العد بعد المكن').length;
-  const inPrintingCount = activeModels.filter((m) => m.status === 'في المطبعة' || m.status === 'جاهز للمطبعة' || m.status === 'مرسل للمطبعة' || m.status === 'جاهز للطباعة / التجميع').length;
-  const inSewingCount = activeModels.filter((m) => m.status === 'في قسم المكن').length;
-  const finishedCount = activeModels.filter((m) => m.status === 'مكتمل الإنتاج').length;
+
+  /**
+   * إحصائيات المراحل مبنية على **المرحلة الحالية لكل قطعة** لا على الحالة الكلية للموديل.
+   * الموديل ذو الثلاث قطع يُحتسب ثلاث مرات (مرة لكل قطعة) في المرحلة التي تمر بها فعلياً.
+   */
+  const stageStats = useMemo(() => {
+    const counts: Record<PartStage, number> = {
+      cutting: 0,
+      qc_before_print: 0,
+      printing: 0,
+      qc_after_print: 0,
+      sewing: 0,
+      qc_after_sewing: 0,
+      finishing: 0,
+      ironing: 0,
+      packaging: 0,
+      dest: 0,
+      completed: 0
+    };
+    let totalPartItems = 0;
+    activeModels.forEach((model) => {
+      Object.values(getPartStages(model.id)).forEach((stage) => {
+        const key = (stage || 'cutting') as PartStage;
+        counts[key] = (counts[key] || 0) + 1;
+        totalPartItems += 1;
+      });
+    });
+    return { counts, totalPartItems };
+  }, [activeModels, getPartStages]);
+
+  /** عدد الأطقم المكتملة للموديل = أقل عدد قطع بين كل القطع (min). */
+  const modelSets = (model: (typeof activeModels)[number]): number => {
+    const summary = model.cut_summary || {};
+    const values = Object.values(summary)
+      .map((value) => Number(value) || 0)
+      .filter((value) => Number.isFinite(value));
+    if (values.length) return Math.min(...values);
+    return Number(model.completed_sets || 0);
+  };
+  const totalSets = activeModels.reduce((sum, model) => sum + modelSets(model), 0);
+
+  const inCuttingCount = stageStats.counts.cutting;
+  const inPrintingCount = stageStats.counts.printing;
+  const inQcCount =
+    stageStats.counts.qc_before_print +
+    stageStats.counts.qc_after_print +
+    stageStats.counts.qc_after_sewing;
+  const inSewingCount = stageStats.counts.sewing;
+  const inAssemblyCount =
+    stageStats.counts.finishing +
+    stageStats.counts.ironing +
+    stageStats.counts.packaging +
+    stageStats.counts.dest;
+  const finishedCount = stageStats.counts.completed;
 
   const totalCutPieces = cuttingRecords.reduce((sum, c) => sum + c.pieces_count, 0);
   const totalQcGoodPieces = qcRecords.reduce((sum, q) => sum + q.good_qty, 0);
   const totalDispatchedPieces = printDispatches.reduce((sum, d) => sum + d.pieces_count, 0);
 
+  const totalPartItems = stageStats.totalPartItems;
   const designPct = totalModels > 0 ? (inDesignCount / totalModels) * 100 : 0;
-  const cuttingPct = totalModels > 0 ? (inCuttingCount / totalModels) * 100 : 0;
-  const printingPct = totalModels > 0 ? (inPrintingCount / totalModels) * 100 : 0;
-  const qcPct = totalModels > 0 ? (inQcCount / totalModels) * 100 : 0;
-  const sewingPct = totalModels > 0 ? (inSewingCount / totalModels) * 100 : 0;
-  const finishedPct = totalModels > 0 ? (finishedCount / totalModels) * 100 : 0;
+  const cuttingPct = totalPartItems > 0 ? (inCuttingCount / totalPartItems) * 100 : 0;
+  const printingPct = totalPartItems > 0 ? (inPrintingCount / totalPartItems) * 100 : 0;
+  const qcPct = totalPartItems > 0 ? (inQcCount / totalPartItems) * 100 : 0;
+  const sewingPct = totalPartItems > 0 ? (inSewingCount / totalPartItems) * 100 : 0;
+  const finishedPct = totalPartItems > 0 ? (finishedCount / totalPartItems) * 100 : 0;
 
   const recentModels = [...activeModels]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
@@ -215,6 +275,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   <div className="pt-2 border-t border-black/5 flex items-center justify-between text-[11px] text-slate-500 font-medium">
                     <span>{notif.source_name}</span>
                     <span className="font-mono font-bold text-slate-700">تاريخ: {notif.expected_date}</span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1 pt-1">
+                    <span className="text-[9px] font-black text-slate-500">تأجيل مؤقت:</span>
+                    {SNOOZE_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.hours}
+                        type="button"
+                        title={`إخفاء التنبيه لمدة ${opt.label}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          snoozeNotification(notif.id, opt.hours);
+                        }}
+                        className="px-1.5 py-0.5 rounded-md bg-white/90 border border-slate-200 text-[9px] font-bold text-slate-700 hover:bg-slate-900 hover:text-white transition cursor-pointer"
+                      >
+                        ⏰ {opt.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
               );
@@ -409,7 +487,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
               <div className="mt-2">
                 <span className="text-2xl font-black text-rose-900">{inCuttingCount}</span>
-                <span className="text-[10px] text-rose-700 block">موديل</span>
+                <span className="text-[10px] text-rose-700 block">قطعة</span>
               </div>
             </div>
 
@@ -423,7 +501,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
               <div className="mt-2">
                 <span className="text-2xl font-black text-indigo-900">{inPrintingCount}</span>
-                <span className="text-[10px] text-indigo-700 block">موديل</span>
+                <span className="text-[10px] text-indigo-700 block">قطعة</span>
               </div>
             </div>
 
@@ -437,7 +515,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
               <div className="mt-2">
                 <span className="text-2xl font-black text-purple-900">{inQcCount}</span>
-                <span className="text-[10px] text-purple-700 block">موديل</span>
+                <span className="text-[10px] text-purple-700 block">قطعة</span>
               </div>
             </div>
 
@@ -451,7 +529,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
               <div className="mt-2">
                 <span className="text-2xl font-black text-emerald-900">{inSewingCount}</span>
-                <span className="text-[10px] text-emerald-700 block">موديل</span>
+                <span className="text-[10px] text-emerald-700 block">قطعة</span>
               </div>
             </div>
 
@@ -470,6 +548,83 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Per-part current stages + completed sets */}
+      <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-orange-50 border border-orange-200/60 flex items-center justify-center text-orange-600">
+              <GitCommit className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-slate-900">
+                المرحلة الحالية لكل قطعة • الأطقم المكتملة
+              </h3>
+              <p className="text-xs text-slate-500">
+                كل قطعة (تيشرت / بنطلون / جاكيت) تتحرك مستقلة؛ الأطقم المكتملة للموديل = أقل عدد قطع
+                بين القطع.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-[11px] font-black">
+            <span className="px-3 py-1 rounded-full bg-slate-900 text-white">
+              إجمالي الأطقم: {totalSets.toLocaleString('ar-EG')}
+            </span>
+            <span className="px-3 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+              قطع قيد التشغيل: {totalPartItems.toLocaleString('ar-EG')}
+            </span>
+            <span className="px-3 py-1 rounded-full bg-orange-50 text-orange-800 border border-orange-200">
+              في الأسمبلي والأمبالاج: {inAssemblyCount.toLocaleString('ar-EG')}
+            </span>
+          </div>
+        </div>
+
+        {activeModels.length === 0 ? (
+          <p className="text-xs text-slate-400 text-center py-3">لا توجد موديلات مسجلة بعد.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+            {activeModels.slice(0, 10).map((model) => {
+              const stages = getPartStages(model.id);
+              const parts = Object.keys(stages) as GarmentPart[];
+              return (
+                <div
+                  key={model.id}
+                  className="rounded-2xl border border-slate-200 bg-slate-50/60 p-3"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('model_details', model.id)}
+                      className="text-xs font-black text-slate-900 hover:text-indigo-700 transition cursor-pointer"
+                    >
+                      {model.model_code}
+                    </button>
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-700">
+                      أطقم: {modelSets(model).toLocaleString('ar-EG')}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {parts.map((part) => {
+                      const stage = (stages[part] || 'cutting') as PartStage;
+                      return (
+                        <span
+                          key={part}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-slate-200 text-[10px] font-bold text-slate-700"
+                        >
+                          <span>{PART_EMOJI[part]}</span>
+                          <span>{getPartLabel(part)}</span>
+                          <span className="text-slate-300">•</span>
+                          <span className="text-indigo-700">{PART_STAGE_LABELS[stage]}</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Recent Models Table */}

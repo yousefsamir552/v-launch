@@ -27,6 +27,7 @@ import {
   Wallet
 } from 'lucide-react';
 import { InternalMessagingModal } from './InternalMessagingModal';
+import { SNOOZE_OPTIONS } from '../types';
 
 interface NavbarProps {
   currentTab: string;
@@ -46,6 +47,9 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     appNotifications, 
     unreadNotificationsCount, 
     markNotificationRead,
+    snoozeNotification,
+    clearSnoozedNotifications,
+    snoozedNotificationsCount,
     unreadMessagesCount,
     addFlashMessage
   } = useApp();
@@ -323,9 +327,19 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                           إشعارات المواعيد وخامات التشغيل
                         </h4>
                       </div>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                        {appNotifications.length} إشعار
-                      </span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                          {appNotifications.length} إشعار
+                        </span>
+                        <button
+                          type="button"
+                          onClick={clearSnoozedNotifications}
+                          title="استعادة كل التنبيهات المؤجلة"
+                          className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition cursor-pointer"
+                        >
+                          ↺ استعادة ({snoozedNotificationsCount})
+                        </button>
+                      </div>
                     </div>
 
                     <div className="max-h-80 overflow-y-auto divide-y divide-slate-100 p-2 space-y-1">
@@ -420,6 +434,23 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                                     : `تاريخ الاستلام: ${notif.expected_date}`}
                                 </span>
                               </div>
+                              <div className="flex flex-wrap items-center gap-1 pt-1.5 mt-1 border-t border-white/70">
+                                <span className="text-[9px] font-black text-slate-500">تأجيل مؤقت:</span>
+                                {SNOOZE_OPTIONS.map((opt) => (
+                                  <button
+                                    key={opt.hours}
+                                    type="button"
+                                    title={`إخفاء التنبيه لمدة ${opt.label}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      snoozeNotification(notif.id, opt.hours);
+                                    }}
+                                    className="px-1.5 py-0.5 rounded-md bg-white/90 border border-slate-200 text-[9px] font-bold text-slate-700 hover:bg-slate-900 hover:text-white transition cursor-pointer"
+                                  >
+                                    ⏰ {opt.label}
+                                  </button>
+                                ))}
+                              </div>
                             </div>
                           );
                         })
@@ -427,6 +458,11 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                         <div className="py-8 text-center text-slate-400">
                           <CheckCircle2 className="w-8 h-8 mx-auto mb-1 text-emerald-500" />
                           <p className="font-bold text-xs text-slate-700">لا توجد تنبيهات متأخرة أو عاجلة حالياً</p>
+                          {snoozedNotificationsCount > 0 && (
+                            <p className="mt-1 text-[10px] font-bold text-amber-600">
+                              {snoozedNotificationsCount} تنبيه مؤجل — اضغط «↺ استعادة» لإظهاره.
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>

@@ -649,6 +649,14 @@ export interface PackagingRequirement {
   received_from_photo_date?: string | null;
   sent_to_print_cards_date?: string | null;
   received_printed_cards_date?: string | null;
+  /** عدد قطع العينة المرسلة للتصوير (خصم مؤقت من الإنتاج). */
+  photography_sent_qty?: number;
+  /** عدد قطع العينة المستلمة من التصوير. */
+  photography_received_qty?: number;
+  /** القطع التي ما زالت في التصوير (مرسلة - مستلمة). */
+  photography_outstanding_qty?: number;
+  /** عجز في قطع العينة (يُحتسب بعد استلام الصور إن لم تُرجع كل القطع). */
+  photography_shortage?: number;
   steps?: Record<PackagingStepKey, string | null>;
   missing_steps: string[];
   is_complete: boolean;
@@ -685,12 +693,12 @@ export const ASSEMBLY_STAGE_LABELS: Record<AssemblyStageKey, string> = {
 
 // ---------------------------------------------------------------------------
 // خامات التشغيل والأمبالاج (Packaging & Operating Materials MRP)
-// خمس فئات ثابتة: أكياس البلاستيك / الكرتون / الشماعات / أكياس حديثي الولادة /
-// أكياس الدست، ولكل فئة استهلاك لكل قطعة + مورد + حد تنبيه + رصيد.
+// فئات ديناميكية: يمكن إضافة أي فئة جديدة أو حذفها من الواجهة.
+// الفئات الخمس التالية هي الافتراضية التي تُزرع تلقائياً كبيانات أولية فقط.
 // ---------------------------------------------------------------------------
-export type PackagingMaterialKey = 'bags' | 'cartons' | 'hangers' | 'newborn_bags' | 'dozen_bags';
+export type PackagingMaterialKey = string;
 
-export const PACKAGING_MATERIAL_KEYS: PackagingMaterialKey[] = [
+export const DEFAULT_PACKAGING_MATERIAL_KEYS: PackagingMaterialKey[] = [
   'bags',
   'cartons',
   'hangers',
@@ -698,7 +706,10 @@ export const PACKAGING_MATERIAL_KEYS: PackagingMaterialKey[] = [
   'dozen_bags'
 ];
 
-export const PACKAGING_MATERIAL_LABELS: Record<PackagingMaterialKey, string> = {
+/** الفئات الافتراضية (متوافق مع الكود القديم - استخدم packagingMaterialRules بدلاً منه). */
+export const PACKAGING_MATERIAL_KEYS: PackagingMaterialKey[] = DEFAULT_PACKAGING_MATERIAL_KEYS;
+
+export const PACKAGING_MATERIAL_LABELS: Record<string, string> = {
   bags: 'أكياس البلاستيك',
   cartons: 'الكرتون',
   hangers: 'الشماعات',
@@ -706,13 +717,16 @@ export const PACKAGING_MATERIAL_LABELS: Record<PackagingMaterialKey, string> = {
   dozen_bags: 'أكياس الدست'
 };
 
-export const PACKAGING_MATERIAL_EMOJI: Record<PackagingMaterialKey, string> = {
+export const PACKAGING_MATERIAL_EMOJI: Record<string, string> = {
   bags: '🛍️',
   cartons: '📦',
   hangers: '🧷',
   newborn_bags: '👶',
   dozen_bags: '🎁'
 };
+
+/** أيقونة افتراضية لأي فئة جديدة لا تملك أيقونة محددة. */
+export const PACKAGING_MATERIAL_FALLBACK_ICON = '📦';
 
 export type PackagingMaterialUnit = 'قطعة' | 'كيلو' | 'دستة' | 'متر';
 
@@ -765,6 +779,8 @@ export interface PackagingMaterialRule {
   id: string;
   material_key: PackagingMaterialKey;
   name: string;
+  /** أيقونة/إيموجي الفئة (اختياري للفئات القديمة). */
+  icon?: string;
   unit: PackagingMaterialUnit;
   rule_mode: PackagingMaterialRuleMode;
   applicable_size_groups: string[];
@@ -976,7 +992,24 @@ export interface AppNotification {
   kind?: 'delivery' | 'material';
   /** رابط داخلي للانتقال إلى شاشة خامات التشغيل عند الضغط على التنبيه. */
   link_tab?: string;
+  /** مفتاح الصلاحية المطلوبة لرؤية هذا التنبيه (بدونها لا يظهر للمستخدم). */
+  permission_key?: string;
+  /** موعد انتهاء تأجيل (إخفاء) التنبيه — يبقى مخفياً حتى هذا التوقيت. */
+  snoozed_until?: string | null;
 }
+
+/** مدة تأجيل التنبيه بالساعات (Quick Snooze). */
+export type SnoozeHours = 1 | 2 | 24 | 48;
+
+export const SNOOZE_OPTIONS: { hours: SnoozeHours; label: string }[] = [
+  { hours: 1, label: 'ساعة' },
+  { hours: 2, label: 'ساعتين' },
+  { hours: 24, label: 'يوم' },
+  { hours: 48, label: 'يومين' }
+];
+
+/** مفتاح localStorage لحفظ التنبيهات المؤجلة. */
+export const SNOOZED_NOTIFICATIONS_STORAGE_KEY = 'erp_snoozed_notifications';
 
 export type AccessoryUnit = 'قطعة' | 'دستة' | 'متر' | 'باكو' | 'كيس' | 'كيلو' | 'بكرة';
 export type AccessoryUsageType = 'stock' | 'custom_model';

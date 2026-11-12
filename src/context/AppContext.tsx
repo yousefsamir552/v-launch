@@ -56,9 +56,25 @@ import {
   PART_STAGE_LABELS,
   PART_STAGE_ORDER,
   MODEL_STATUS_TO_PART_STAGE,
-  deriveStatusFromStages
+  deriveStatusFromStages,
+  SnoozeHours,
+  SNOOZED_NOTIFICATIONS_STORAGE_KEY
 } from '../types';
 import { buildPackagingDemandMap } from '../utils/packagingMaterials';
+
+/**
+ * ربط مرحلة التنبيه بمفتاح الصلاحية المطلوبة لرؤيته.
+ * التنبيهات لا تظهر إلا لمن يملك صلاحية القسم — حساب sudo يرى كل شيء.
+ */
+const NOTIFICATION_STAGE_PERMISSION: Record<AppNotification['stage'], string> = {
+  printing: 'printing',
+  sewing: 'sewing',
+  finishing: 'assembly_packaging',
+  ironing: 'assembly_packaging',
+  packaging: 'assembly_packaging',
+  dest: 'assembly_packaging',
+  materials: 'assembly_packaging'
+};
 
 interface FlashMessage {
   id: string;
@@ -200,6 +216,8 @@ interface AppContextType {
   packagingMaterialRules: PackagingMaterialRule[];
   savePackagingMaterialRule: (data: {
     materialKey: PackagingMaterialRule['material_key'];
+    name?: string;
+    icon?: string;
     unit?: PackagingMaterialRule['unit'];
     ruleMode?: PackagingMaterialRule['rule_mode'];
     applicableSizeGroups?: string[];
@@ -220,9 +238,14 @@ interface AppContextType {
     amount: number;
     notes?: string;
   }) => Promise<{ success: boolean; message: string }>;
+  deletePackagingMaterialRule: (ruleId: string) => Promise<{ success: boolean; message: string }>;
   appNotifications: AppNotification[];
   unreadNotificationsCount: number;
   markNotificationRead: (id: string) => void;
+  snoozeNotification: (id: string, hours: SnoozeHours) => void;
+  clearSnoozedNotifications: () => void;
+  /** عدد التنبيهات المخفية حالياً بسبب التأجيل (لعرض زر الاستعادة فقط عند الحاجة). */
+  snoozedNotificationsCount: number;
   flashMessages: FlashMessage[];
   addFlashMessage: (text: string, type?: 'success' | 'danger' | 'warning' | 'info') => void;
   removeFlashMessage: (id: string) => void;
@@ -489,7 +512,13 @@ interface AppContextType {
 
   // Assembly & Packaging Actions (الأسمبلي والأمبالاج)
   getPackagingRequirement: (modelId: string) => PackagingRequirement | undefined;
-  setPackagingStep: (modelId: string, step: PackagingStepKey, date?: string, notes?: string) => void;
+  setPackagingStep: (
+    modelId: string,
+    step: PackagingStepKey,
+    date?: string,
+    notes?: string,
+    qty?: number
+  ) => void;
   startFinishing: (data: {
     modelId: string;
     parts?: GarmentPart[];
@@ -648,6 +677,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
+    }
+  });
+  // Snoozed notifications: map of notification id → ISO date-time until it stays hidden.
+  const [snoozedNotifications, setSnoozedNotifications] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem(SNOOZED_NOTIFICATIONS_STORAGE_KEY);
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
     }
   });
 
@@ -3637,11 +3675,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     modelId: string,
     step: PackagingStepKey,
     date?: string,
-    notes?: string
+    notes?: string,
+    qty?: number
   ) => {
     const targetModel = models.find((m) => m.id === modelId);
     const resolvedDate = date || new Date().toISOString().slice(0, 10);
     const cleanNotes = notes?.trim() || '';
+    const cleanQty =
+      qty === undefined || qty === null ? undefined : Math.max(0, Math.floor(Number(qty) || 0));
 
     const existing = packagingRequirements.find((req) => req.model_id === modelId);
     const merged = {
@@ -3654,10 +3695,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...(existing?.steps || {}),
         [step]: resolvedDate
       },
+      // تتبع قطع العينة المرسلة/المستلمة من التصوير (خصم مؤقت من الإنتاج).
+      ...(step === 'sent_to_photo' && cleanQty !== undefined
+        ? { photography_sent_qty: cleanQty }
+        : {}),
+      ...(step === 'received_from_photo' && cleanQty !== undefined
+        ? { photography_received_qty: cleanQty }
+        : {}),
       notes: cleanNotes || existing?.notes || '',
       missing_steps: existing?.missing_steps || [],
       is_complete: existing?.is_complete || false
     } as PackagingRequirement;
+
+    const sentQty = Number(merged.photography_sent_qty || 0);
+    const receivedQty = sentQty > 0 ? Math.min(Number(merged.photography_received_qty || 0), sentQty) : 0;
+    merged.photography_received_qty = receivedQty;
+    merged.photography_outstanding_qty = Math.max(0, sentQty - receivedQty);
+    merged.photography_shortage = merged.received_from_photo_date
+      ? merged.photography_outstanding_qty
+      : 0;
 
     setPackagingRequirements((prev) =>
       existing
@@ -3670,7 +3726,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         step,
         date: resolvedDate,
         notes: cleanNotes,
-        user_name: currentUser?.real_name || 'مسؤول الأمبالاج'
+        user_name: currentUser?.real_name || 'مسؤول الأمبالاج',
+        ...(step === 'sent_to_photo' && cleanQty !== undefined ? { sent_qty: cleanQty } : {}),
+        ...(step === 'received_from_photo' && cleanQty !== undefined
+          ? { received_qty: cleanQty }
+          : {})
       })
       .then((res) => {
         const saved: PackagingRequirement | undefined = res?.packagingRequirement;
@@ -4174,6 +4234,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // -------------------------------------------------------------------------
   const savePackagingMaterialRule = async (data: {
     materialKey: PackagingMaterialRule['material_key'];
+    name?: string;
+    icon?: string;
     unit?: PackagingMaterialRule['unit'];
     ruleMode?: PackagingMaterialRule['rule_mode'];
     applicableSizeGroups?: string[];
@@ -4190,6 +4252,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }): Promise<{ success: boolean; message: string }> => {
     const payload = {
       material_key: data.materialKey,
+      name: data.name,
+      icon: data.icon,
       unit: data.unit,
       rule_mode: data.ruleMode,
       applicable_size_groups: data.applicableSizeGroups || [],
@@ -4225,12 +4289,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       }
       refreshState();
-      logAction('خامات التشغيل', `حفظ قاعدة خامة: ${data.materialKey}`);
+      logAction('خامات التشغيل', `حفظ قاعدة خامة: ${data.name || data.materialKey || 'فئة جديدة'}`);
       addFlashMessage('تم حفظ قاعدة خامة التشغيل بنجاح');
       return { success: true, message: 'تم حفظ قاعدة خامة التشغيل بنجاح' };
     } catch (err: any) {
       refreshState();
       const message = err?.message || 'فشل حفظ قاعدة خامة التشغيل في الباك إند';
+      addFlashMessage(message, 'danger');
+      return { success: false, message };
+    }
+  };
+
+  const deletePackagingMaterialRule = async (
+    ruleId: string
+  ): Promise<{ success: boolean; message: string }> => {
+    const rule = packagingMaterialRules.find((item) => item.id === ruleId);
+    try {
+      await api.deletePackagingMaterialRule(ruleId);
+      setPackagingMaterialRules((prev) => prev.filter((item) => item.id !== ruleId));
+      refreshState();
+      logAction('خامات التشغيل', `حذف خامة تشغيل: ${rule?.name || ruleId}`);
+      addFlashMessage('تم حذف خامة التشغيل بنجاح');
+      return { success: true, message: 'تم حذف خامة التشغيل بنجاح' };
+    } catch (err: any) {
+      const message = err?.message || 'فشل حذف خامة التشغيل من الباك إند';
       addFlashMessage(message, 'danger');
       return { success: false, message };
     }
@@ -4670,6 +4752,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  /** Snoozes a notification for N hours: it disappears from the bell/dashboard until then. */
+  const snoozeNotification = (id: string, hours: SnoozeHours) => {
+    const until = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+    setSnoozedNotifications((prev) => {
+      const updated = { ...prev, [id]: until };
+      try {
+        localStorage.setItem(SNOOZED_NOTIFICATIONS_STORAGE_KEY, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+  };
+
+  /** Clears every snooze (useful from the bell's "restore all" button). */
+  const clearSnoozedNotifications = () => {
+    setSnoozedNotifications({});
+    try {
+      localStorage.removeItem(SNOOZED_NOTIFICATIONS_STORAGE_KEY);
+    } catch {}
+  };
+
   // Smart Real-time In-App Notifications for Expected Delivery Dates
   const appNotifications = useMemo<AppNotification[]>(() => {
     const list: AppNotification[] = [];
@@ -4965,7 +5067,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       today: 1,
       tomorrow: 2
     };
-    return list.sort((a, b) => priorityOrder[a.urgency] - priorityOrder[b.urgency]);
+    // Attach the required permission key to every notification (stage-driven).
+    const withPermissions = list.map((notif) => ({
+      ...notif,
+      permission_key: notif.permission_key || NOTIFICATION_STAGE_PERMISSION[notif.stage] || ''
+    }));
+    return withPermissions.sort((a, b) => priorityOrder[a.urgency] - priorityOrder[b.urgency]);
   }, [
     printDispatches,
     sewingDispatches,
@@ -4976,11 +5083,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     readNotificationIds
   ]);
 
+  /**
+   * Notifications actually visible to the current user:
+   *  - Hidden while snoozed (until `snoozed_until`).
+   *  - Hidden unless the user has the section permission tied to the notification.
+   *  - Sudo sees everything.
+   */
+  const visibleAppNotifications = useMemo<AppNotification[]>(() => {
+    const isSudo =
+      Boolean(currentUser?.is_sudo) || currentUser?.username?.toLowerCase() === 'sudo';
+    const now = Date.now();
+    return appNotifications.filter((notif) => {
+      const until = snoozedNotifications[notif.id];
+      if (until && new Date(until).getTime() > now) return false;
+      if (isSudo) return true;
+      if (!notif.permission_key) return true;
+      return hasPermission(notif.permission_key as SystemSectionKey);
+    });
+  }, [appNotifications, snoozedNotifications, currentUser, roles]);
+
   const unreadNotificationsCount = useMemo(() => {
-    return appNotifications.filter(
+    return visibleAppNotifications.filter(
       (n) => n.urgency === 'overdue' || n.urgency === 'critical' || !n.is_read
     ).length;
-  }, [appNotifications]);
+  }, [visibleAppNotifications]);
+
+  /** عدد التنبيهات المؤجلة حالياً (تأجيل لم ينتهِ بعد) — لعرض زر «استعادة». */
+  const snoozedNotificationsCount = useMemo(() => {
+    const now = Date.now();
+    return appNotifications.filter((n) => {
+      const until = snoozedNotifications[n.id];
+      return Boolean(until) && new Date(until as string).getTime() > now;
+    }).length;
+  }, [appNotifications, snoozedNotifications]);
 
   return (
     <AppContext.Provider
@@ -5019,9 +5154,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         packagingMaterialRules,
         savePackagingMaterialRule,
         recordPackagingMaterialTransaction,
-        appNotifications,
+        deletePackagingMaterialRule,
+        appNotifications: visibleAppNotifications,
         unreadNotificationsCount,
         markNotificationRead,
+        snoozeNotification,
+        clearSnoozedNotifications,
+        snoozedNotificationsCount,
         flashMessages,
         addFlashMessage,
         removeFlashMessage,

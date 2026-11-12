@@ -7,15 +7,17 @@ import {
   MessageCircle,
   Package,
   Pencil,
+  Plus,
   Ruler,
   Save,
   Settings2,
   ShoppingCart,
+  Trash2,
   TrendingDown
 } from 'lucide-react';
 import {
   PACKAGING_MATERIAL_EMOJI,
-  PACKAGING_MATERIAL_KEYS,
+  PACKAGING_MATERIAL_FALLBACK_ICON,
   PACKAGING_MATERIAL_LABELS,
   PACKAGING_MATERIAL_OPERATION_LABELS,
   PACKAGING_MATERIAL_RULE_MODE_LABELS,
@@ -28,6 +30,12 @@ import {
   PackagingMaterialUnit
 } from '../types';
 import { computePackagingDemand } from '../utils/packagingMaterials';
+
+/** اسم/أيقونة الفئة: الفئات الديناميكية قد لا تملك تسمية ثابتة في القاموس. */
+const materialLabel = (rule?: PackagingMaterialRule, key?: PackagingMaterialKey): string =>
+  rule?.name || (key ? PACKAGING_MATERIAL_LABELS[key] : '') || key || 'فئة جديدة';
+const materialIcon = (rule?: PackagingMaterialRule, key?: PackagingMaterialKey): string =>
+  rule?.icon || (key ? PACKAGING_MATERIAL_EMOJI[key] : '') || PACKAGING_MATERIAL_FALLBACK_ICON;
 
 const formatNumber = (value: number): string => {
   const num = Number(value) || 0;
@@ -299,25 +307,46 @@ export const PackagingMaterialsView: React.FC = () => {
     formatSupplierWhatsappMessage,
     openWhatsAppOrder,
     addFlashMessage,
-    savePackagingMaterialRule
+    savePackagingMaterialRule,
+    deletePackagingMaterialRule
   } = useApp();
 
   const canEdit = hasAssemblyPackagingAccess(true);
   const [view, setView] = useState<'stock' | 'rules'>('stock');
-  const [editingKey, setEditingKey] = useState<PackagingMaterialKey>('bags');
+  // مفتاح الفئة قيد التعديل — نص فارغ يعني "إضافة فئة جديدة".
+  const [editingKey, setEditingKey] = useState<PackagingMaterialKey>(
+    () => packagingMaterialRules[0]?.material_key || ''
+  );
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  // يميّز وضع "إضافة فئة جديدة" عن مجرد عدم تحديد فئة بعد تحميل البيانات.
+  const [creatingNew, setCreatingNew] = useState(false);
+
+  /** اختيار فئة موجودة للتعديل. */
+  const selectRule = (key: PackagingMaterialKey) => {
+    setCreatingNew(false);
+    setEditingKey(key);
+  };
+
+  // بعد تحميل الفئات من الباك إند: اختر أول فئة تلقائياً إن لم يُحدد شيء.
+  useEffect(() => {
+    if (!creatingNew && !editingKey && packagingMaterialRules.length) {
+      setEditingKey(packagingMaterialRules[0].material_key);
+    }
+  }, [packagingMaterialRules, creatingNew, editingKey]);
 
   const rulesByKey = useMemo(() => {
-    const map: Partial<Record<PackagingMaterialKey, PackagingMaterialRule>> = {};
+    const map: Record<PackagingMaterialKey, PackagingMaterialRule> = {};
     packagingMaterialRules.forEach((rule) => {
       map[rule.material_key] = rule;
     });
     return map;
   }, [packagingMaterialRules]);
 
+  // الفئات ديناميكية: تُعرض كما هي قادمة من الباك إند (بدون قائمة ثابتة).
   const orderedRules = useMemo(
-    () => PACKAGING_MATERIAL_KEYS.map((key) => ({ key, rule: rulesByKey[key] })),
-    [rulesByKey]
+    () => packagingMaterialRules.map((rule) => ({ key: rule.material_key, rule })),
+    [packagingMaterialRules]
   );
 
   const summary = useMemo(() => {
@@ -337,6 +366,8 @@ export const PackagingMaterialsView: React.FC = () => {
   }, [orderedRules, models]);
 
   const activeRule = rulesByKey[editingKey];
+  const [formName, setFormName] = useState('');
+  const [formIcon, setFormIcon] = useState(PACKAGING_MATERIAL_FALLBACK_ICON);
   const [formUnit, setFormUnit] = useState<PackagingMaterialUnit>('قطعة');
   const [formMode, setFormMode] = useState<PackagingMaterialRuleMode>('fixed');
   const [formGroups, setFormGroups] = useState<string[]>([]);
@@ -344,12 +375,16 @@ export const PackagingMaterialsView: React.FC = () => {
 
   useEffect(() => {
     if (!activeRule) {
+      setFormName('');
+      setFormIcon(PACKAGING_MATERIAL_FALLBACK_ICON);
       setFormUnit('قطعة');
       setFormMode('fixed');
       setFormGroups([]);
       setFormRows([blankRow()]);
       return;
     }
+    setFormName(activeRule.name || '');
+    setFormIcon(materialIcon(activeRule, activeRule.material_key));
     setFormUnit(activeRule.unit);
     setFormMode(activeRule.rule_mode);
     setFormGroups(
@@ -400,10 +435,16 @@ export const PackagingMaterialsView: React.FC = () => {
       addFlashMessage('لا تمتلك صلاحية تعديل قواعد خامات التشغيل', 'danger');
       return;
     }
+    if (!editingKey && !formName.trim()) {
+      addFlashMessage('اكتب اسم خامة التشغيل الجديدة أولاً', 'warning');
+      return;
+    }
     const rows = formRows.length ? formRows : [blankRow()];
     setSaving(true);
     const result = await savePackagingMaterialRule({
       materialKey: editingKey,
+      name: formName.trim(),
+      icon: formIcon.trim() || PACKAGING_MATERIAL_FALLBACK_ICON,
       unit: formUnit,
       ruleMode: formMode,
       applicableSizeGroups: formGroups,
@@ -420,6 +461,40 @@ export const PackagingMaterialsView: React.FC = () => {
     });
     setSaving(false);
     if (result.success) {
+      setCreatingNew(false);
+      setView('stock');
+    }
+  };
+
+  const startNewMaterial = () => {
+    setCreatingNew(true);
+    setEditingKey('');
+    setFormName('');
+    setFormIcon(PACKAGING_MATERIAL_FALLBACK_ICON);
+    setFormUnit('قطعة');
+    setFormMode('fixed');
+    setFormGroups([]);
+    setFormRows([blankRow()]);
+    setView('rules');
+  };
+
+  const handleDeleteRule = async () => {
+    if (!activeRule) return;
+    if (!canEdit) {
+      addFlashMessage('لا تمتلك صلاحية حذف خامات التشغيل', 'danger');
+      return;
+    }
+    const confirmed = window.confirm(
+      `هل تريد حذف فئة خامة التشغيل (${materialLabel(activeRule, activeRule.material_key)})؟ ` +
+        'سيتم حذف كل المقاسات وحركات المخزون المرتبطة بها نهائياً.'
+    );
+    if (!confirmed) return;
+    setDeleting(true);
+    const result = await deletePackagingMaterialRule(activeRule.id);
+    setDeleting(false);
+    if (result.success) {
+      setCreatingNew(false);
+      setEditingKey('');
       setView('stock');
     }
   };
@@ -455,7 +530,8 @@ export const PackagingMaterialsView: React.FC = () => {
 
   const renderRuleCard = (key: PackagingMaterialKey, rule?: PackagingMaterialRule) => {
     const rows = rule?.size_rules || [];
-    const label = rule?.name || PACKAGING_MATERIAL_LABELS[key];
+    const label = materialLabel(rule, key);
+    const icon = materialIcon(rule, key);
     const demandRows = rule
       ? rows.map((row) => ({ row, demand: computePackagingDemand(models, rule, row) }))
       : [];
@@ -473,7 +549,7 @@ export const PackagingMaterialsView: React.FC = () => {
       >
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-gradient-to-l from-slate-50 to-white border-b border-slate-100">
           <div className="flex items-center gap-3">
-            <span className="text-2xl">{PACKAGING_MATERIAL_EMOJI[key]}</span>
+            <span className="text-2xl">{icon}</span>
             <div>
               <h3 className="font-black text-sm text-slate-900">{label}</h3>
               <p className="text-[10px] font-bold text-slate-500">
@@ -503,7 +579,7 @@ export const PackagingMaterialsView: React.FC = () => {
             <button
               type="button"
               onClick={() => {
-                setEditingKey(key);
+                selectRule(key);
                 setView('rules');
               }}
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white text-slate-700 border border-slate-200 hover:bg-slate-50"
@@ -525,7 +601,7 @@ export const PackagingMaterialsView: React.FC = () => {
             <button
               type="button"
               onClick={() => {
-                setEditingKey(key);
+                selectRule(key);
                 setView('rules');
               }}
               className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900 text-white text-[11px] font-black"
@@ -557,9 +633,28 @@ export const PackagingMaterialsView: React.FC = () => {
 
   const stockContent = (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-white rounded-3xl border border-slate-200 px-4 py-3">
+        <div className="flex items-center gap-2 text-[11px] font-black text-slate-600">
+          <Package className="w-4 h-4" />
+          فئات خامات التشغيل: {packagingMaterialRules.length}
+          <span className="text-[10px] font-bold text-slate-400">
+            (كل فئة قابلة للتعديل أو الحذف، ويمكن إضافة فئات جديدة)
+          </span>
+        </div>
+        {canEdit && (
+          <button
+            type="button"
+            onClick={startNewMaterial}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
+          >
+            <Plus className="w-3.5 h-3.5" /> إضافة خامة جديدة
+          </button>
+        )}
+      </div>
+
       {packagingMaterialRules.length === 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-3xl p-4 text-[11px] font-bold text-amber-800">
-          جارٍ تهيئة فئات خامات التشغيل... إذا استمرت الشاشة فارغة أعد تحديث الصفحة.
+          لا توجد فئات خامات تشغيل مسجلة. اضغط "إضافة خامة جديدة" لإنشاء أول فئة.
         </div>
       )}
       {orderedRules.map(({ key, rule }) => renderRuleCard(key, rule))}
@@ -581,15 +676,15 @@ export const PackagingMaterialsView: React.FC = () => {
               <button
                 key={key}
                 type="button"
-                onClick={() => setEditingKey(key)}
+                onClick={() => selectRule(key)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-black border transition ${
                   isActive
                     ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
                     : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                 }`}
               >
-                <span>{PACKAGING_MATERIAL_EMOJI[key]}</span>
-                <span>{rule?.name || PACKAGING_MATERIAL_LABELS[key]}</span>
+                <span>{materialIcon(rule, key)}</span>
+                <span>{materialLabel(rule, key)}</span>
                 {configured && (
                   <CheckCircle2
                     className={`w-3 h-3 ${isActive ? 'text-emerald-300' : 'text-emerald-600'}`}
@@ -598,21 +693,69 @@ export const PackagingMaterialsView: React.FC = () => {
               </button>
             );
           })}
+          {canEdit && (
+            <button
+              type="button"
+              onClick={startNewMaterial}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-black border border-dashed transition ${
+                creatingNew
+                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                  : 'bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100'
+              }`}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>فئة جديدة</span>
+            </button>
+          )}
         </div>
       </div>
 
       <div className="bg-white rounded-3xl border border-slate-200 p-4 shadow-xs space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="font-black text-sm text-slate-900">
-            {activeRule?.name || PACKAGING_MATERIAL_LABELS[editingKey]}
+            {creatingNew
+              ? '➕ إضافة خامة تشغيل جديدة'
+              : materialLabel(activeRule, editingKey)}
           </h3>
-          <div className="flex items-center gap-1.5 text-[10px] font-black text-slate-500">
-            <ClipboardList className="w-3.5 h-3.5" />
-            تُحسب الكميات من الموديلات التي وصلت للتشطيب أو تجاوزته
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 text-[10px] font-black text-slate-500">
+              <ClipboardList className="w-3.5 h-3.5" />
+              تُحسب الكميات من الموديلات التي وصلت للتشطيب أو تجاوزته
+            </div>
+            {canEdit && activeRule && (
+              <button
+                type="button"
+                onClick={handleDeleteRule}
+                disabled={deleting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-black hover:bg-rose-100 disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> {deleting ? 'جارٍ الحذف...' : 'حذف الفئة'}
+              </button>
+            )}
           </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="text-[10px] font-black text-slate-600">
+            اسم الخامة
+            <input
+              type="text"
+              value={formName}
+              onChange={(event) => setFormName(event.target.value)}
+              placeholder="مثال: استيكرات المقاس"
+              className="mt-1 block w-full px-2 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold focus:outline-none focus:ring-2 focus:ring-orange-300"
+            />
+          </label>
+          <label className="text-[10px] font-black text-slate-600">
+            أيقونة الفئة
+            <input
+              type="text"
+              value={formIcon}
+              onChange={(event) => setFormIcon(event.target.value)}
+              placeholder="📦"
+              className="mt-1 block w-full px-2 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold focus:outline-none focus:ring-2 focus:ring-orange-300"
+            />
+          </label>
           <label className="text-[10px] font-black text-slate-600">
             وحدة القياس
             <select
@@ -812,11 +955,11 @@ export const PackagingMaterialsView: React.FC = () => {
             <div>
               <h2 className="text-xl font-black">خامات التشغيل والأمبالاج</h2>
               <p className="text-[12px] text-white/80 font-semibold mt-1 leading-relaxed">
-                تخطيط احتياجات التعبئة (MRP): أكياس البلاستيك، الكرتون، الشماعات، أكياس حديثي
-                الولادة، وأكياس الدست.
+                تخطيط احتياجات التعبئة (MRP): فئات خامات التشغيل ديناميكية (أكياس، كرتون، شماعات،
+                وأي فئة تضيفها).
                 <span className="block text-[11px] text-white/70 mt-0.5">
                   الاحتياج = إجمالي القطع × معدل الاستهلاك لكل قطعة، والعجز = الاحتياج − الرصيد
-                  الحالي.
+                  الحالي. يمكن إضافة فئة جديدة أو حذف أي فئة من تبويب «قواعد الاستهلاك».
                 </span>
               </p>
             </div>

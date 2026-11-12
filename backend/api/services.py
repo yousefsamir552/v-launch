@@ -1119,6 +1119,52 @@ def get_accessory_deficits():
     }
 
 
+# ---------------------------------------------------------------------------
+# In-App notifications: ربط كل مرحلة بمفتاح القسم المطلوب لعرض التنبيه.
+# نفس الخريطة موجودة في الواجهة (AppContext.NOTIFICATION_STAGE_PERMISSION) حتى
+# يظل السلوك متطابقاً بين الباك إند والشاشات.
+# ---------------------------------------------------------------------------
+NOTIFICATION_STAGE_PERMISSION = {
+    'printing': 'printing',
+    'sewing': 'sewing',
+    'finishing': 'assembly_packaging',
+    'ironing': 'assembly_packaging',
+    'packaging': 'assembly_packaging',
+    'dest': 'assembly_packaging',
+    'materials': 'assembly_packaging',
+}
+
+
+def attach_notification_permission_keys(notifications):
+    """Adds ``permission_key`` to every notification so clients can scope them by section."""
+    for notification in notifications:
+        if not notification.get('permission_key'):
+            notification['permission_key'] = NOTIFICATION_STAGE_PERMISSION.get(
+                notification.get('stage'), ''
+            )
+    return notifications
+
+
+def filter_notifications_by_permission(notifications, profile=None):
+    """
+    Keeps only the notifications of sections the user may view.
+
+    ``profile=None`` (طلب بدون توكن معروف) يحافظ على السلوك القديم فيرجع القائمة
+    كاملة، وحساب sudo يرى كل التنبيهات دائماً.
+    """
+    notifications = list(notifications)
+    if profile is None:
+        return notifications
+    if getattr(profile, 'is_sudo', False) or str(getattr(profile, 'username', '')).lower() == 'sudo':
+        return notifications
+    allowed = []
+    for notification in notifications:
+        permission_key = notification.get('permission_key')
+        if not permission_key or profile.has_perm('{}_view'.format(permission_key)):
+            allowed.append(notification)
+    return allowed
+
+
 def generate_smart_delivery_notifications():
     """
     Computes delivery date notifications for PrintDispatches and SewingDispatches:
@@ -1240,7 +1286,7 @@ def generate_smart_delivery_notifications():
 
     urgency_weights = {'overdue': 0, 'today': 1, 'tomorrow': 2}
     notifications.sort(key=lambda n: urgency_weights.get(n['urgency'], 3))
-    return notifications
+    return attach_notification_permission_keys(notifications)
 
 
 # ---------------------------------------------------------------------------
@@ -1357,7 +1403,7 @@ def generate_assembly_delivery_notifications():
 
     urgency_weights = {'overdue': 0, 'today': 1, 'tomorrow': 2}
     notifications.sort(key=lambda n: urgency_weights.get(n['urgency'], 3))
-    return notifications
+    return attach_notification_permission_keys(notifications)
 
 
 def dispatch_model_to_sewing_service(

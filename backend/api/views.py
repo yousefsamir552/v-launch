@@ -59,6 +59,7 @@ from .services import (
     get_accessory_deficits,
     generate_smart_delivery_notifications,
     generate_assembly_delivery_notifications,
+    filter_notifications_by_permission,
     dispatch_model_to_sewing_service,
     receive_model_from_sewing_service,
     get_or_create_packaging_requirement,
@@ -2863,12 +2864,17 @@ class PackagingMaterialTransactionViewSet(BasePermViewSet):
 
 class NotificationViewSet(viewsets.ViewSet):
     """
-    Smart In-App Notifications for Expected Delivery Dates (Printing & Sewing).
+    Smart In-App Notifications for Expected Delivery Dates (Printing & Sewing
+    + التشطيب/المكواة/التعبئة/الدست).
+
+    التنبيهات مقيّدة بالصلاحيات: المستخدم لا يستلم إلا تنبيهات الأقسام التي يملك
+    صلاحية عرضها (وحساب sudo يرى كل شيء) — بنفس منطق جرس التنبيهات في الواجهة.
     """
     def list(self, request):
         ensure_initial_seed()
         notifs = generate_smart_delivery_notifications()
         notifs.extend(generate_assembly_delivery_notifications())
+        notifs = filter_notifications_by_permission(notifs, resolve_request_user_profile(request))
         urgency_weights = {'overdue': 0, 'today': 1, 'tomorrow': 2}
         notifs.sort(key=lambda n: urgency_weights.get(n.get('urgency'), 3))
         return Response({
