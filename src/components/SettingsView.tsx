@@ -71,7 +71,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     visibleRankOptions,
     visibleRankLevels,
     rankLabelFor,
-    currentUserRank
+    currentUserRank,
+    isRoleAssignable,
+    getCreatedDescendants
   } = useApp();
 
   // Strictly filter out sudo so regular users never see or know of sudo (Task 2)
@@ -133,10 +135,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
   const [password, setPassword] = useState('');
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const rankOptions = visibleRankOptions();
-  // الأدوار القابلة للإسناد: لا يمكن إسناد دور مستواه مساوٍ أو أعلى من مستواك.
+  // الأدوار القابلة للإسناد: لا يمكن إسناد دور مستواه مساوٍ أو أعلى من مستواك،
+  // ولا دور يحمل صلاحيات (أو حقوق تفويض) لا تملكها أنت (منع تصعيد الصلاحيات).
   const assignableRoles = roles.filter((r) => {
     const roleRank = Number(r.rank_level ?? 3);
-    return roleRank !== 0 && visibleRankLevels().includes(roleRank as 0 | 1 | 2 | 3);
+    return (
+      roleRank !== 0 &&
+      visibleRankLevels().includes(roleRank as 0 | 1 | 2 | 3) &&
+      isRoleAssignable(r)
+    );
   });
   const [selectedRoleId, setSelectedRoleId] = useState<string>(assignableRoles[0]?.id || '');
   const [newUserRank, setNewUserRank] = useState<number>(
@@ -307,6 +314,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
         role_id: effectiveRoleId || undefined,
         is_active: true,
         rank_level: newUserRank,
+        // كل الصلاحيات شخصية فقط افتراضياً؛ يحق للحساب تفويض ما يورّثه الدور فقط.
+        delegatable_permissions: [],
         permissions: matchedRole?.permissions
           ? { ...DEFAULT_PERMISSIONS, ...matchedRole.permissions }
           : { ...DEFAULT_PERMISSIONS }
@@ -369,6 +378,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     siteLogo.startsWith('https://') ||
     siteLogo.startsWith('data:image/') ||
     siteLogo.startsWith('/');
+
+  // -------------------------------------------------------------------------
+  // Suspension/Deletion cascade: أي حساب أنشأه هذا المستخدم يُوقف/يُحذف معه.
+  // -------------------------------------------------------------------------
+  const handleToggleUserWithCascade = (target: User) => {
+    const descendants = getCreatedDescendants(target.id);
+    if (descendants.length === 0) {
+      toggleUserActive(target.id);
+      return;
+    }
+    if (target.is_active) {
+      const ok = window.confirm(
+        `هذا الحساب أنشأ ${descendants.length} حساب آخر.\n` +
+          'إيقاف هذا الحساب سيوقف تلقائياً كل الحسابات التي أنشأها منعاً لتجاوز العقوبة.\n\n' +
+          'هل تريد المتابعة؟'
+      );
+      if (!ok) return;
+      toggleUserActive(target.id, true);
+      return;
+    }
+    const withCascade = window.confirm(
+      `هذا الحساب أنشأ ${descendants.length} حساب.\n\n` +
+        'موافق = تفعيل الحساب وكل من أنشأهم.\nإلغاء = تفعيل هذا الحساب فقط.'
+    );
+    toggleUserActive(target.id, withCascade);
+  };
+
+  const handleDeleteUserWithCascade = (target: User) => {
+    const descendants = getCreatedDescendants(target.id);
+    const message =
+      descendants.length > 0
+        ? `سيتم حذف الحساب "${target.real_name}" نهائياً مع ${descendants.length} حساب أنشأها.\nهل أنت متأكد؟`
+        : `هل أنت متأكد من حذف حساب "${target.real_name}" نهائياً؟`;
+    if (!window.confirm(message)) return;
+    deleteUser(target.id, descendants.length > 0);
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -941,7 +986,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                         <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-800 font-bold flex items-center justify-center text-xs">
                           {u.real_name ? u.real_name[0] : 'U'}
                         </div>
-                        <span>{u.real_name}</span>
+                        <div className="text-start">
+                          <span>{u.real_name}</span>
+                          {u.created_by_name && (
+                            <span className="block text-[9px] font-semibold text-slate-400">
+                              أُنشئ بواسطة: {u.created_by_name}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       <td className="px-4 py-3.5 text-slate-500 font-mono">@{u.username}</td>
@@ -978,7 +1030,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                         ) : (
                           <div className="flex items-center justify-center gap-2">
                             <button
-                              onClick={() => toggleUserActive(u.id)}
+                              onClick={() => handleToggleUserWithCascade(u)}
                               className={`px-3 py-1 rounded-full text-xs font-bold transition border cursor-pointer ${
                                 u.is_active
                                   ? 'border-rose-300 text-rose-700 hover:bg-rose-50'
@@ -997,7 +1049,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                             </button>
 
                             <button
-                              onClick={() => deleteUser(u.id)}
+                              onClick={() => handleDeleteUserWithCascade(u)}
                               className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
                               title="حذف حساب الموظف"
                             >
@@ -1595,8 +1647,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
         <EditUserModal
           user={selectedUserForModal}
           onClose={() => setSelectedUserForModal(null)}
-          onSave={(userId, permissions, newPassword, newRole, roleId, newRank) => {
-            updateUserPermissionsAndPassword(userId, permissions, newPassword, newRole, roleId, newRank);
+          onSave={(userId, permissions, newPassword, newRole, roleId, newRank, delegatablePermissions) => {
+            updateUserPermissionsAndPassword(
+              userId,
+              permissions,
+              newPassword,
+              newRole,
+              roleId,
+              newRank,
+              delegatablePermissions
+            );
             setSelectedUserForModal(null);
           }}
         />

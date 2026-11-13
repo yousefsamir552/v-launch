@@ -6,7 +6,8 @@ import {
   NOTES_PERMISSIONS_LIST,
   ADMIN_AND_SETTINGS_PERMISSIONS_LIST,
   HR_PERMISSIONS_LIST,
-  DEFAULT_PERMISSIONS
+  DEFAULT_PERMISSIONS,
+  DelegationBadge
 } from './RoleManagementSection';
 import {
   X,
@@ -30,22 +31,40 @@ interface EditUserModalProps {
     newPassword?: string,
     newRole?: string,
     roleId?: string,
-    newRank?: number
+    newRank?: number,
+    delegatablePermissions?: string[]
   ) => void;
 }
 
 export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSave }) => {
-  const { roles, visibleRankOptions, visibleRankLevels, currentUserRank } = useApp();
+  const {
+    roles,
+    visibleRankOptions,
+    visibleRankLevels,
+    currentUserRank,
+    canDelegatePermission,
+    hasSpecificPermission,
+    isRoleAssignable
+  } = useApp();
   const [selectedRoleId, setSelectedRoleId] = useState<string>(user.role_id || '');
   const [roleName, setRoleName] = useState<string>(user.role);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  // الصلاحيات التي يحق لهذا المستخدم منحها/توريثها للغير (🔒 شخصية / 🔑 قابلة للتفويض).
+  const [delegatablePerms, setDelegatablePerms] = useState<string[]>(
+    () => [...(user.delegatable_permissions || [])]
+  );
 
   const rankOptions = visibleRankOptions();
-  // الأدوار القابلة للإسناد: مستويات أقل من مستوى المستخدم الحالي فقط.
+  // الأدوار القابلة للإسناد: مستويات أقل من مستوى المستخدم الحالي فقط،
+  // ولا يُعرض دور يحمل صلاحيات لا يملك المدير حق تفويضها (منع تصعيد الصلاحيات).
   const assignableRoles = roles.filter((r) => {
     const roleRank = Number(r.rank_level ?? 3);
-    return roleRank !== 0 && visibleRankLevels().includes(roleRank as 0 | 1 | 2 | 3);
+    return (
+      roleRank !== 0 &&
+      visibleRankLevels().includes(roleRank as 0 | 1 | 2 | 3) &&
+      isRoleAssignable(r)
+    );
   });
   // لا يُعرض اختيار النطاق إلا لمن يملك أكثر من خيار واحد (رتبة 3 و2 يُثبتان على العام).
   const canChooseRank = currentUserRank !== 3 && rankOptions.length > 1;
@@ -83,8 +102,15 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
     }
   };
 
+  // تظهر الصلاحية للمدير إذا كان يملكها، أو كان الحساب يملكها أصلاً (ليتمكن من سحبها).
+  const isPermissionVisible = (permKey: string): boolean =>
+    hasSpecificPermission(permKey) || Boolean((customPerms as any)[permKey]);
+
   const togglePermKey = (key: string) => {
     setCustomPerms((prev) => {
+      const enabling = !prev[key];
+      // لا يمكن منح صلاحية لا يملكها المدير الحالي.
+      if (enabling && !hasSpecificPermission(key)) return prev;
       const next = { ...prev, [key]: !prev[key] };
       if (key.endsWith('_edit') && next[key]) {
         const viewKey = key.replace('_edit', '_view');
@@ -101,6 +127,12 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
     });
   };
 
+  const toggleDelegatable = (permKey: string) => {
+    setDelegatablePerms((prev) =>
+      prev.includes(permKey) ? prev.filter((key) => key !== permKey) : [...prev, permKey]
+    );
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (isSudoUser) {
@@ -108,13 +140,19 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
       return;
     }
 
+    // لا يُحفظ في قائمة التفويض إلا ما يملكه الحساب فعلاً بعد التعديل.
+    const delegatablePayload = Array.from(
+      new Set(delegatablePerms.filter((key) => Boolean((customPerms as any)[key])))
+    );
+
     onSave(
       user.id,
       customPerms as UserPermissions,
       password || undefined,
       roleName,
       selectedRoleId || undefined,
-      canChooseRank ? rankLevel : forcedRankLevel
+      canChooseRank ? rankLevel : forcedRankLevel,
+      delegatablePayload
     );
     onClose();
   };
@@ -137,6 +175,12 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
               <p className="text-xs text-slate-500">
                 اسم المستخدم: <span className="font-mono text-slate-700">@{user.username}</span> • يمكنك تخصيص أي صلاحية مباشرة لهذا المستخدم
               </p>
+              {user.created_by_name && (
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  أُنشئ بواسطة:{' '}
+                  <span className="font-bold text-slate-600">{user.created_by_name}</span>
+                </p>
+              )}
             </div>
           </div>
 
@@ -172,6 +216,13 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                 {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
+          </div>
+
+          {/* Legend: 🔒 personal only / 🔑 delegatable */}
+          <div className="flex items-center gap-2 p-3 rounded-2xl bg-amber-50 border border-amber-200 text-[11px] font-bold text-amber-900">
+            <span>
+              🔒 شخصية فقط (لا يمكن منحها للغير) &nbsp;|&nbsp; 🔑 قابلة للتفويض والوراثة لمن هم أدنى.
+            </span>
           </div>
 
           {/* Dynamic Role Selection */}
@@ -225,7 +276,11 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                 <span>2. تخصيص صلاحيات الأقسام لهذا المستخدم:</span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {SYSTEM_SECTIONS.map((sec) => {
+                {SYSTEM_SECTIONS.filter(
+                  (sec) =>
+                    isPermissionVisible(`${sec.key}_view`) ||
+                    isPermissionVisible(`${sec.key}_edit`)
+                ).map((sec) => {
                   const viewKey = `${sec.key}_view`;
                   const editKey = `${sec.key}_edit`;
                   const hasView = Boolean(customPerms[viewKey]);
@@ -263,6 +318,20 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                         >
                           تعديل
                         </button>
+                        <DelegationBadge
+                          permKey={viewKey}
+                          granted={hasView}
+                          isDelegatable={delegatablePerms.includes(viewKey)}
+                          canDelegate={canDelegatePermission(viewKey)}
+                          onToggle={toggleDelegatable}
+                        />
+                        <DelegationBadge
+                          permKey={editKey}
+                          granted={hasEdit}
+                          isDelegatable={delegatablePerms.includes(editKey)}
+                          canDelegate={canDelegatePermission(editKey)}
+                          onToggle={toggleDelegatable}
+                        />
                       </div>
                     </div>
                   );
@@ -277,7 +346,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                 <span>3. صلاحيات كتابة الملاحظات في الأقسام (مستقلة لكل قسم):</span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {NOTES_PERMISSIONS_LIST.map((np) => (
+                {NOTES_PERMISSIONS_LIST.filter((np) => isPermissionVisible(String(np.key))).map((np) => (
                   <label
                     key={np.key}
                     className="flex items-center gap-2.5 p-2.5 rounded-xl bg-white border border-purple-200 cursor-pointer hover:border-purple-400 transition"
@@ -288,10 +357,18 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                       onChange={() => togglePermKey(np.key)}
                       className="w-4 h-4 text-purple-600 rounded-sm"
                     />
-                    <div className="text-start">
+                    <div className="text-start flex-1">
                       <span className="font-bold text-xs text-slate-900 block">{np.label}</span>
                       <span className="text-[10px] text-slate-500">{np.description}</span>
                     </div>
+                    <DelegationBadge
+                      permKey={String(np.key)}
+                      granted={Boolean(customPerms[np.key])}
+                      isDelegatable={delegatablePerms.includes(String(np.key))}
+                      canDelegate={canDelegatePermission(String(np.key))}
+                      onToggle={toggleDelegatable}
+                      tone="purple"
+                    />
                   </label>
                 ))}
               </div>
@@ -304,7 +381,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                 <span>4. الصلاحيات الإدارية وإعدادات الموقع العامة (بما فيها إدارة الصلاحيات):</span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {ADMIN_AND_SETTINGS_PERMISSIONS_LIST.map((ap) => (
+                {ADMIN_AND_SETTINGS_PERMISSIONS_LIST.filter((ap) => isPermissionVisible(String(ap.key))).map((ap) => (
                   <label
                     key={ap.key}
                     className="flex items-center gap-2.5 p-2.5 rounded-xl bg-white border border-indigo-200 cursor-pointer hover:border-indigo-400 transition"
@@ -315,10 +392,18 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                       onChange={() => togglePermKey(ap.key)}
                       className="w-4 h-4 text-indigo-600 rounded-sm"
                     />
-                    <div className="text-start">
+                    <div className="text-start flex-1">
                       <span className="font-bold text-xs text-slate-900 block">{ap.label}</span>
                       <span className="text-[10px] text-slate-500">{ap.description}</span>
                     </div>
+                    <DelegationBadge
+                      permKey={String(ap.key)}
+                      granted={Boolean(customPerms[ap.key])}
+                      isDelegatable={delegatablePerms.includes(String(ap.key))}
+                      canDelegate={canDelegatePermission(String(ap.key))}
+                      onToggle={toggleDelegatable}
+                      tone="indigo"
+                    />
                   </label>
                 ))}
               </div>
@@ -331,7 +416,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                 <span>صلاحيات تبويبات الموارد البشرية (مستقلة لكل تبويب):</span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {HR_PERMISSIONS_LIST.map((hp) => {
+                {HR_PERMISSIONS_LIST.filter((hp) => isPermissionVisible(String(hp.permKey))).map((hp) => {
                   const permKey = HR_SECTION_PERM_MAP[hp.key];
                   return (
                     <label
@@ -344,10 +429,18 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                         onChange={() => togglePermKey(permKey)}
                         className="w-4 h-4 text-rose-600 rounded-sm"
                       />
-                      <div className="text-start">
+                      <div className="text-start flex-1">
                         <span className="font-bold text-xs text-slate-900 block">{hp.label}</span>
                         <span className="text-[10px] text-slate-500">{hp.description}</span>
                       </div>
+                      <DelegationBadge
+                        permKey={String(permKey)}
+                        granted={Boolean(customPerms[permKey])}
+                        isDelegatable={delegatablePerms.includes(String(permKey))}
+                        canDelegate={canDelegatePermission(String(permKey))}
+                        onToggle={toggleDelegatable}
+                        tone="rose"
+                      />
                     </label>
                   );
                 })}
@@ -370,7 +463,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                   { key: 'edit_printing_costs', label: 'تعديل تكاليف المطابع' },
                   { key: 'send_whatsapp_requests', label: 'إرسال طلبات النواقص عبر الواتساب' },
                   { key: 'send_internal_messages', label: 'إرسال الرسائل والمراسلات الداخلية' }
-                ].map((fp) => (
+                ].filter((fp) => isPermissionVisible(fp.key)).map((fp) => (
                   <label
                     key={fp.key}
                     className="flex items-center gap-2.5 p-2.5 rounded-xl bg-white border border-amber-200 cursor-pointer hover:border-amber-400 transition"
@@ -381,7 +474,15 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                       onChange={() => togglePermKey(fp.key)}
                       className="w-4 h-4 text-amber-600 rounded-sm"
                     />
-                    <span className="font-bold text-xs text-slate-900">{fp.label}</span>
+                    <span className="font-bold text-xs text-slate-900 flex-1">{fp.label}</span>
+                    <DelegationBadge
+                      permKey={fp.key}
+                      granted={Boolean(customPerms[fp.key])}
+                      isDelegatable={delegatablePerms.includes(fp.key)}
+                      canDelegate={canDelegatePermission(fp.key)}
+                      onToggle={toggleDelegatable}
+                      tone="amber"
+                    />
                   </label>
                 ))}
               </div>

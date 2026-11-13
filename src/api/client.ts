@@ -138,10 +138,16 @@ export const api = {
     request<any>('/users/', { method: 'POST', body: JSON.stringify(data) }),
   updateUser: (id: string, data: any) =>
     request<any>(`/users/${encodeURIComponent(id)}/`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteUser: (id: string) =>
-    request<any>(`/users/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
-  toggleUserActive: (id: string) =>
-    request<any>(`/users/${encodeURIComponent(id)}/toggle_active/`, { method: 'POST' }),
+  deleteUser: (id: string, cascade = false) =>
+    request<any>(`/users/${encodeURIComponent(id)}/`, {
+      method: 'DELETE',
+      body: JSON.stringify({ cascade })
+    }),
+  toggleUserActive: (id: string, cascade = false) =>
+    request<any>(`/users/${encodeURIComponent(id)}/toggle_active/`, {
+      method: 'POST',
+      body: JSON.stringify({ cascade })
+    }),
 
   // المقاسات والموردين (Sizes & Suppliers)
   getSizeDefs: () => request<any[]>('/sizes/'),

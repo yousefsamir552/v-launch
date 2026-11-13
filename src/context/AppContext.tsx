@@ -261,6 +261,15 @@ interface AppContextType {
     requireEdit?: boolean
   ) => boolean;
   hasSpecificPermission: (permKey: keyof RolePermissions | string) => boolean;
+
+  // Privilege Delegation (تفويض الصلاحيات ومنع تصعيدها)
+  /** الصلاحيات القابلة للتفويض للمستخدم الحالي (null = sudo، أي كل شيء). */
+  getEffectiveDelegatablePermissions: () => string[] | null;
+  canDelegatePermission: (permKey: string) => boolean;
+  getRoleEnabledPermissionKeys: (role: CustomRole | null | undefined) => string[];
+  isRoleAssignable: (role: CustomRole | null | undefined) => boolean;
+  /** كل الحسابات التي أنشأها هذا المستخدم (شجرة متكررة عبر created_by). */
+  getCreatedDescendants: (userId: string) => User[];
   // "الأسمبلي والأمبالاج": يقبل المفتاح الرئيسي الحالي (assembly_packaging)
   // والمفاتيح القديمة/الفرعية (assembly، packaging، finishing، ironing، dest، materials)
   hasAssemblyPackagingAccess: (requireEdit?: boolean) => boolean;
@@ -579,16 +588,17 @@ interface AppContextType {
   ) => void;
   deleteWorkshop: (id: string) => void;
   addUser: (user: Omit<User, 'id'>) => Promise<boolean>;
-  toggleUserActive: (userId: string) => { success: boolean; message: string };
+  toggleUserActive: (userId: string, cascade?: boolean) => { success: boolean; message: string };
   updateUserPermissionsAndPassword: (
     userId: string,
     permissions: User['permissions'],
     newPassword?: string,
     newRole?: string,
     roleId?: string,
-    newRank?: number
+    newRank?: number,
+    delegatablePermissions?: string[]
   ) => void;
-  deleteUser: (userId: string) => { success: boolean; message: string };
+  deleteUser: (userId: string, cascade?: boolean) => { success: boolean; message: string };
 
   // Log & Timeline helper
   logAction: (action: string, details: string) => void;
@@ -1453,6 +1463,79 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const allowed = visibleRankOptions().map((opt) => Number(opt.value));
     if (allowed.includes(requested)) return requested as RankLevel;
     return Number(allowed[allowed.length - 1] ?? 3) as RankLevel;
+  };
+
+  // -------------------------------------------------------------------------
+  // Privilege Delegation (تفويض الصلاحيات)
+  // كل صلاحية "شخصية فقط" افتراضياً ولا يمكن منحها للغير إلا إذا أُدرجت صراحةً
+  // في قائمة التفويض الخاصة بالمدير (أو كان الحساب sudo).
+  // -------------------------------------------------------------------------
+  const getEffectiveDelegatablePermissions = (): string[] | null => {
+    if (isCurrentUserSudo()) return null; // sudo يملك حق تفويض كل شيء
+    const keys = new Set<string>();
+    (currentUser?.delegatable_permissions || []).forEach((key) => {
+      if (key) keys.add(String(key));
+    });
+    const ownRole = roles.find(
+      (r) => (currentUser?.role_id && r.id === currentUser.role_id) || r.name === currentUser?.role
+    );
+    (ownRole?.delegatable_permissions || []).forEach((key) => {
+      if (key) keys.add(String(key));
+    });
+    return Array.from(keys);
+  };
+
+  const canDelegatePermission = (permKey: string): boolean => {
+    const allowed = getEffectiveDelegatablePermissions();
+    if (allowed === null) return true;
+    return allowed.includes(String(permKey));
+  };
+
+  const getRoleEnabledPermissionKeys = (role: CustomRole | null | undefined): string[] => {
+    if (!role || !role.permissions) return [];
+    return Object.entries(role.permissions)
+      .filter(([, value]) => {
+        if (typeof value === 'string') {
+          return ['view', 'edit', 'true', '1', 'yes'].includes(value.toLowerCase());
+        }
+        return Boolean(value);
+      })
+      .map(([key]) => key);
+  };
+
+  const isRoleAssignable = (role: CustomRole | null | undefined): boolean => {
+    if (!role) return false;
+    const allowed = getEffectiveDelegatablePermissions();
+    if (allowed === null) return true; // sudo
+    const requiredKeys = [
+      ...getRoleEnabledPermissionKeys(role),
+      ...(role.delegatable_permissions || [])
+    ];
+    return requiredKeys.every((key) => allowed.includes(String(key)));
+  };
+
+  const getCreatedDescendants = (userId: string): User[] => {
+    const byCreator = new Map<string, User[]>();
+    users.forEach((u) => {
+      if (!u.created_by) return;
+      const key = String(u.created_by);
+      const bucket = byCreator.get(key);
+      if (bucket) bucket.push(u);
+      else byCreator.set(key, [u]);
+    });
+    const result: User[] = [];
+    const seen = new Set<string>([userId]);
+    const queue: string[] = [userId];
+    while (queue.length > 0) {
+      const current = queue.shift() as string;
+      (byCreator.get(current) || []).forEach((child) => {
+        if (seen.has(child.id)) return;
+        seen.add(child.id);
+        result.push(child);
+        queue.push(child.id);
+      });
+    }
+    return result;
   };
 
   // Department Notes Permission Checkers (Task 4)
@@ -4620,7 +4703,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const toggleUserActive = (userId: string) => {
+  const toggleUserActive = (userId: string, cascade = false) => {
     const targetUser = users.find((u) => u.id === userId);
     if (!targetUser) return { success: false, message: 'المستخدم غير موجود' };
     if (targetUser.username?.toLowerCase() === 'sudo' || targetUser.is_sudo) {
@@ -4640,11 +4723,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const actText = nextState ? 'تفعيل' : 'إيقاف';
 
     api
-      .toggleUserActive(userId)
+      .toggleUserActive(userId, cascade)
       .then((saved) => {
         setUsers((prev) => prev.map((u) => (u.id === userId ? saved : u)));
+        if (cascade) {
+          const affectedIds: string[] = Array.isArray(saved?.affected_user_ids)
+            ? saved.affected_user_ids
+            : [];
+          const cascadeState = typeof saved?.is_active === 'boolean' ? saved.is_active : nextState;
+          setUsers((prev) =>
+            prev.map((u) =>
+              affectedIds.includes(u.id) ? { ...u, is_active: cascadeState } : u
+            )
+          );
+        }
         logAction('إدارة الحسابات', `${actText} حساب المستخدم: ${targetUser.username}`);
-        addFlashMessage(`تم ${actText} الحساب بنجاح`);
+        addFlashMessage(
+          cascade
+            ? `تم ${actText} الحساب وجميع الحسابات التي أنشأها بنجاح`
+            : `تم ${actText} الحساب بنجاح`
+        );
       })
       .catch((err) => {
         refreshState();
@@ -4660,7 +4758,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     newPassword?: string,
     newRole?: string,
     roleId?: string,
-    newRank?: number
+    newRank?: number,
+    delegatablePermissions?: string[]
   ) => {
     const target = users.find((u) => u.id === userId);
     if (target && (target.username?.toLowerCase() === 'sudo' || target.is_sudo)) {
@@ -4686,6 +4785,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return {
           ...u,
           permissions: { ...permissions },
+          ...(delegatablePermissions !== undefined
+            ? { delegatable_permissions: [...delegatablePermissions] }
+            : {}),
           ...(newRole ? { role: newRole } : {}),
           ...(roleId ? { role_id: roleId } : {}),
           ...(safeNewRank !== undefined ? { rank_level: safeNewRank } : {})
@@ -4696,6 +4798,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     api
       .updateUser(userId, {
         permissions,
+        ...(delegatablePermissions !== undefined
+          ? { delegatable_permissions: delegatablePermissions }
+          : {}),
         ...(newPassword ? { password: newPassword } : {}),
         ...(newRole ? { role: newRole } : {}),
         ...(roleId ? { role_id: roleId } : {}),
@@ -4715,7 +4820,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
-  const deleteUser = (userId: string) => {
+  const deleteUser = (userId: string, cascade = false) => {
     const target = users.find((u) => u.id === userId);
     if (!target) return { success: false, message: 'المستخدم غير موجود' };
     if (target.username?.toLowerCase() === 'sudo' || target.is_sudo) {
@@ -4727,13 +4832,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!isRankVisibleToActor(target.rank_level)) {
       return { success: false, message: 'لا تمتلك صلاحية حذف هذا المستخدم' };
     }
+    const descendants = cascade ? getCreatedDescendants(userId) : [];
+    const removedIds = new Set<string>([userId, ...descendants.map((d) => d.id)]);
     const previousUsers = [...users];
-    setUsers((prev) => prev.filter((u) => u.id !== userId));
+    setUsers((prev) => prev.filter((u) => !removedIds.has(u.id)));
     api
-      .deleteUser(userId)
+      .deleteUser(userId, cascade)
       .then(() => {
         logAction('إدارة الحسابات', `حذف المستخدم: ${target.username}`);
-        addFlashMessage(`تم حذف المستخدم ${target.real_name} نهائياً من قاعدة البيانات`);
+        const extra = descendants.length > 0 ? ` و${descendants.length} حساب أنشأها` : '';
+        addFlashMessage(
+          `تم حذف المستخدم ${target.real_name}${extra} نهائياً من قاعدة البيانات`
+        );
       })
       .catch((err) => {
         setUsers(previousUsers);
@@ -5169,6 +5279,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteRole,
         hasPermission,
         hasSpecificPermission,
+        getEffectiveDelegatablePermissions,
+        canDelegatePermission,
+        getRoleEnabledPermissionKeys,
+        isRoleAssignable,
+        getCreatedDescendants,
         hasAssemblyPackagingAccess,
         canManagePermissions,
         canManageUsers,

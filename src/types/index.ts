@@ -145,6 +145,8 @@ export interface CustomRole {
   name: string;
   description: string;
   permissions: RolePermissions;
+  /** الصلاحيات التي يحق لحاملي هذا الدور منحها/تفويضها للغير. */
+  delegatable_permissions?: string[];
   users_count?: number;
   created_at?: string;
   /** الرتبة الهرمية للدور (0 محصورة في sudo). */
@@ -211,6 +213,11 @@ export interface User {
   role_id?: string;
   is_sudo?: boolean;
   permissions: UserPermissions;
+  /** الصلاحيات التي يحق لهذا المستخدم منحها/تفويضها لغيره. */
+  delegatable_permissions?: string[];
+  /** معرّف واسم المدير الذي أنشأ هذا الحساب. */
+  created_by?: string | null;
+  created_by_name?: string;
   is_active: boolean;
   last_active?: string;
   last_seen?: string;

@@ -32,8 +32,63 @@ import {
   FileText,
   Settings,
   Globe,
-  Users
+  Users,
+  Lock,
+  KeyRound
 } from 'lucide-react';
+
+/**
+ * زر تفويض صلاحية واحدة:
+ * 🔒 = شخصية فقط (لا يمكن منحها للغير) | 🔑 = قابلة للتفويض والوراثة للغير.
+ * لا يُعرض إلا للصلاحيات الممنوحة فعلاً، ويُعطَّل إذا كان المدير لا يملك حق تفويضها.
+ */
+const DELEGATION_TONE_CLASSES: Record<string, string> = {
+  amber: 'text-amber-700 bg-amber-50 border-amber-200 hover:bg-amber-100',
+  purple: 'text-purple-700 bg-purple-50 border-purple-200 hover:bg-purple-100',
+  indigo: 'text-indigo-700 bg-indigo-50 border-indigo-200 hover:bg-indigo-100',
+  rose: 'text-rose-700 bg-rose-50 border-rose-200 hover:bg-rose-100',
+  blue: 'text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100',
+  emerald: 'text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100',
+  slate: 'text-slate-700 bg-slate-50 border-slate-200 hover:bg-slate-100'
+};
+
+export const DelegationBadge: React.FC<{
+  permKey: string;
+  granted: boolean;
+  isDelegatable: boolean;
+  canDelegate: boolean;
+  onToggle: (key: string) => void;
+  tone?: string;
+}> = ({ permKey, granted, isDelegatable, canDelegate, onToggle, tone = 'slate' }) => {
+  if (!granted) return null;
+  const toneClass = DELEGATION_TONE_CLASSES[tone] || DELEGATION_TONE_CLASSES.slate;
+  return (
+    <button
+      type="button"
+      title={
+        !canDelegate
+          ? 'هذه الصلاحية شخصية فقط ولا تملك حق تفويضها للغير'
+          : isDelegatable
+            ? 'قابلة للتفويض للغير — اضغط لجعلها شخصية فقط'
+            : 'شخصية فقط — اضغط للسماح بتفويضها للغير'
+      }
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!canDelegate) return;
+        onToggle(permKey);
+      }}
+      disabled={!canDelegate}
+      className={`shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-full border transition ${
+        canDelegate
+          ? `cursor-pointer ${toneClass}`
+          : 'cursor-not-allowed bg-slate-50 text-slate-300 border-slate-200'
+      }`}
+    >
+      {isDelegatable ? <KeyRound className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
+    </button>
+  );
+};
 
 export const SYSTEM_SECTIONS: {
   key: SystemSectionKey;
@@ -339,6 +394,8 @@ export const RoleManagementSection: React.FC = () => {
     updateRole,
     deleteRole,
     canManagePermissions,
+    canDelegatePermission,
+    hasSpecificPermission,
     visibleRankOptions,
     visibleRankLevels,
     currentUserRank,
@@ -351,6 +408,13 @@ export const RoleManagementSection: React.FC = () => {
   const [roleName, setRoleName] = useState('');
   const [roleDescription, setRoleDescription] = useState('');
   const [permissions, setPermissions] = useState<RolePermissions>(DEFAULT_PERMISSIONS);
+  // الصلاحيات التي يحق لحاملي الدور منحها/تفويضها للغير (فارغة = كلها شخصية فقط).
+  const [delegatable, setDelegatable] = useState<string[]>([]);
+
+  // تظهر الصلاحية للمدير إذا كان يملكها، أو كان الدور يملكها أصلاً (ليتمكن من سحبها).
+  // منح صلاحية جديدة يتطلب أن يملكها المدير الفعلي (fail-closed من الواجهة أيضاً).
+  const isPermissionVisible = (permKey: string): boolean =>
+    hasSpecificPermission(permKey) || Boolean((permissions as any)[permKey]);
 
   // Permissions modal main section (4 sections) + role rank
   const rankOptions = visibleRankOptions();
@@ -410,6 +474,7 @@ export const RoleManagementSection: React.FC = () => {
     setRoleName('');
     setRoleDescription('');
     setPermissions({ ...DEFAULT_PERMISSIONS });
+    setDelegatable([]);
     setRoleRank(Number(visibleRankOptions()[visibleRankOptions().length - 1]?.value ?? 3));
     setPermSection('manufacturing');
     setModalOpen(true);
@@ -425,6 +490,7 @@ export const RoleManagementSection: React.FC = () => {
       ...DEFAULT_PERMISSIONS,
       ...role.permissions
     });
+    setDelegatable([...(role.delegatable_permissions || [])]);
     const allowedRanks = visibleRankOptions().map((opt) => Number(opt.value));
     const currentRank = normalizedRank(role.rank_level);
     setRoleRank(
@@ -432,6 +498,13 @@ export const RoleManagementSection: React.FC = () => {
     );
     setPermSection('manufacturing');
     setModalOpen(true);
+  };
+
+  // تفعيل/تعطيل تفويض صلاحية واحدة (🔑 ↔ 🔒).
+  const toggleDelegatable = (permKey: string) => {
+    setDelegatable((prev) =>
+      prev.includes(permKey) ? prev.filter((key) => key !== permKey) : [...prev, permKey]
+    );
   };
 
   const handleToggle = (section: SystemSectionKey, type: 'view' | 'edit') => {
@@ -442,12 +515,15 @@ export const RoleManagementSection: React.FC = () => {
       const next = { ...prev };
       if (type === 'view') {
         const newVal = !next[viewKey];
+        // لا يمكن منح صلاحية لا يملكها المدير الحالي.
+        if (newVal && !hasSpecificPermission(String(viewKey))) return prev;
         (next as any)[viewKey] = newVal;
         if (!newVal) {
           (next as any)[editKey] = false;
         }
       } else {
         const newVal = !next[editKey];
+        if (newVal && !hasSpecificPermission(String(editKey))) return prev;
         (next as any)[editKey] = newVal;
         if (newVal) {
           (next as any)[viewKey] = true;
@@ -462,6 +538,8 @@ export const RoleManagementSection: React.FC = () => {
       const next = { ...prev };
       const currentVal = Boolean(next[key]);
       const newVal = !currentVal;
+      // لا يمكن منح صلاحية لا يملكها المدير الحالي.
+      if (newVal && !hasSpecificPermission(String(key))) return prev;
       (next as any)[key] = newVal;
 
       // Auto enable view when edit is enabled
@@ -570,6 +648,13 @@ export const RoleManagementSection: React.FC = () => {
         next.can_add_sewing_notes = true;
         next.can_add_printing_notes = true;
       }
+      // لا يمنح النمط السريع أي صلاحية لا يملكها المدير أو لا يحق له تفويضها.
+      Object.keys(next).forEach((key) => {
+        const changed = (next as any)[key] !== (prev as any)[key];
+        if (changed && (!hasSpecificPermission(key) || !canDelegatePermission(key))) {
+          (next as any)[key] = (prev as any)[key];
+        }
+      });
       return next;
     });
   };
@@ -585,11 +670,17 @@ export const RoleManagementSection: React.FC = () => {
       ? Number(roleRank)
       : Number(allowedRanks[allowedRanks.length - 1] ?? 3);
 
+    // لا يُحفظ في قائمة التفويض إلا ما يملكه الدور فعلاً (المفاتيح المعطلة تُستبعد).
+    const delegatablePayload = Array.from(
+      new Set(delegatable.filter((key) => Boolean((permissions as any)[key])))
+    );
+
     if (editingRole) {
       updateRole(editingRole.id, {
         name: roleName.trim(),
         description: roleDescription.trim(),
         permissions,
+        delegatable_permissions: delegatablePayload,
         rank_level: safeRank
       });
     } else {
@@ -597,6 +688,7 @@ export const RoleManagementSection: React.FC = () => {
         name: roleName.trim(),
         description: roleDescription.trim(),
         permissions,
+        delegatable_permissions: delegatablePayload,
         rank_level: safeRank
       });
     }
@@ -841,6 +933,18 @@ export const RoleManagementSection: React.FC = () => {
                 </div>
               </div>
 
+              {/* شرح آلية التفويض (🔒 / 🔑) */}
+              <div className="flex items-start gap-2 p-3 rounded-2xl bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
+                <Lock className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" />
+                <div>
+                  <span className="font-black block">آلية تفويض الصلاحيات (🔒 / 🔑)</span>
+                  <span>
+                    كل صلاحية <b>شخصية فقط (🔒)</b> افتراضياً ولا يمكن منحها للغير. اضغط الزر بجوار الصلاحية
+                    لتحويلها إلى <b>قابلة للتفويض (🔑)</b>، فيحقّ لحاملي هذا الدور منحها وتوريثها لمن هم أدنى منهم فقط.
+                  </span>
+                </div>
+              </div>
+
               {/* Quick Presets */}
               <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-bold text-slate-600">تطبيق نمط صلاحيات سريع:</span>
@@ -933,7 +1037,11 @@ export const RoleManagementSection: React.FC = () => {
                 </h4>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {SYSTEM_SECTIONS.map((sec) => {
+                  {SYSTEM_SECTIONS.filter(
+                    (sec) =>
+                      isPermissionVisible(`${sec.key}_view`) ||
+                      isPermissionVisible(`${sec.key}_edit`)
+                  ).map((sec) => {
                     const viewKey = `${sec.key}_view` as keyof RolePermissions;
                     const editKey = `${sec.key}_edit` as keyof RolePermissions;
                     const canView = Boolean(permissions[viewKey]);
@@ -990,6 +1098,30 @@ export const RoleManagementSection: React.FC = () => {
                             <span>تعديل وحفظ</span>
                           </button>
                         </div>
+
+                        {(canView || canEdit) && (
+                          <div className="flex items-center justify-between gap-2 mt-2">
+                            <span className="text-[10px] font-bold text-slate-500">
+                              تفويض الصلاحية للغير (🔒 شخصية / 🔑 قابلة للتفويض)
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <DelegationBadge
+                                permKey={String(viewKey)}
+                                granted={Boolean(canView)}
+                                isDelegatable={delegatable.includes(String(viewKey))}
+                                canDelegate={canDelegatePermission(String(viewKey))}
+                                onToggle={toggleDelegatable}
+                              />
+                              <DelegationBadge
+                                permKey={String(editKey)}
+                                granted={Boolean(canEdit)}
+                                isDelegatable={delegatable.includes(String(editKey))}
+                                canDelegate={canDelegatePermission(String(editKey))}
+                                onToggle={toggleDelegatable}
+                              />
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1013,7 +1145,7 @@ export const RoleManagementSection: React.FC = () => {
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                  {NOTES_PERMISSIONS_LIST.map((np) => (
+                  {NOTES_PERMISSIONS_LIST.filter((np) => isPermissionVisible(String(np.key))).map((np) => (
                     <label
                       key={np.key}
                       className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-purple-200 hover:border-purple-400 cursor-pointer transition shadow-2xs"
@@ -1024,10 +1156,18 @@ export const RoleManagementSection: React.FC = () => {
                         onChange={() => handleToggleBooleanPerm(np.key)}
                         className="w-4 h-4 text-purple-600 rounded-sm focus:ring-purple-500"
                       />
-                      <div className="text-start">
+                      <div className="text-start flex-1">
                         <span className="font-bold text-xs text-slate-900 block">{np.label}</span>
                         <span className="text-[10px] text-slate-500">{np.description}</span>
                       </div>
+                      <DelegationBadge
+                        permKey={String(np.key)}
+                        granted={Boolean(permissions[np.key])}
+                        isDelegatable={delegatable.includes(String(np.key))}
+                        canDelegate={canDelegatePermission(String(np.key))}
+                        onToggle={toggleDelegatable}
+                        tone="purple"
+                      />
                     </label>
                   ))}
                 </div>
@@ -1054,6 +1194,7 @@ export const RoleManagementSection: React.FC = () => {
                     </div>
                   </div>
 
+                  {isPermissionVisible('can_manage_hr') && (
                   <label className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-rose-300 hover:border-rose-500 cursor-pointer transition shadow-2xs">
                     <input
                       type="checkbox"
@@ -1061,7 +1202,7 @@ export const RoleManagementSection: React.FC = () => {
                       onChange={() => handleToggleBooleanPerm('can_manage_hr')}
                       className="w-4 h-4 text-rose-600 rounded-sm focus:ring-rose-500"
                     />
-                    <div className="text-start">
+                    <div className="text-start flex-1">
                       <span className="font-black text-xs text-rose-950 block">
                         صلاحية إدارة الموارد البشرية كاملة (Master)
                       </span>
@@ -1069,10 +1210,23 @@ export const RoleManagementSection: React.FC = () => {
                         تمنح كل تبويبات الموارد البشرية السبعة دفعة واحدة
                       </span>
                     </div>
+                    <DelegationBadge
+                      permKey="can_manage_hr"
+                      granted={Boolean(permissions.can_manage_hr)}
+                      isDelegatable={delegatable.includes('can_manage_hr')}
+                      canDelegate={canDelegatePermission('can_manage_hr')}
+                      onToggle={toggleDelegatable}
+                      tone="rose"
+                    />
                   </label>
+                  )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {HR_PERMISSIONS_LIST.map((hp) => {
+                    {HR_PERMISSIONS_LIST.filter(
+                      (hp) =>
+                        Boolean(permissions.can_manage_hr) ||
+                        isPermissionVisible(String(hp.permKey))
+                    ).map((hp) => {
                       const masterOn = Boolean(permissions.can_manage_hr);
                       const enabled = masterOn || Boolean(permissions[hp.permKey]);
                       return (
@@ -1091,12 +1245,20 @@ export const RoleManagementSection: React.FC = () => {
                             onChange={() => handleToggleBooleanPerm(hp.permKey)}
                             className="w-4 h-4 text-rose-600 rounded-sm focus:ring-rose-500"
                           />
-                          <div className="text-start">
+                          <div className="text-start flex-1">
                             <span className="font-bold text-xs text-slate-900 block">
                               {hp.label}
                             </span>
                             <span className="text-[10px] text-slate-500">{hp.description}</span>
                           </div>
+                          <DelegationBadge
+                            permKey={String(hp.permKey)}
+                            granted={!masterOn && Boolean(permissions[hp.permKey])}
+                            isDelegatable={delegatable.includes(String(hp.permKey))}
+                            canDelegate={canDelegatePermission(String(hp.permKey))}
+                            onToggle={toggleDelegatable}
+                            tone="rose"
+                          />
                         </label>
                       );
                     })}
@@ -1124,7 +1286,7 @@ export const RoleManagementSection: React.FC = () => {
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                  {ADMIN_AND_SETTINGS_PERMISSIONS_LIST.map((ap) => (
+                  {ADMIN_AND_SETTINGS_PERMISSIONS_LIST.filter((ap) => isPermissionVisible(String(ap.key))).map((ap) => (
                     <label
                       key={ap.key}
                       className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-indigo-200 hover:border-indigo-400 cursor-pointer transition shadow-2xs"
@@ -1135,7 +1297,7 @@ export const RoleManagementSection: React.FC = () => {
                         onChange={() => handleToggleBooleanPerm(ap.key)}
                         className="w-4 h-4 text-indigo-600 rounded-sm focus:ring-indigo-500"
                       />
-                      <div className="text-start">
+                      <div className="text-start flex-1">
                         <div className="flex items-center gap-1.5">
                           <span className="font-bold text-xs text-slate-900">{ap.label}</span>
                           {ap.badge && (
@@ -1146,6 +1308,14 @@ export const RoleManagementSection: React.FC = () => {
                         </div>
                         <span className="text-[10px] text-slate-500 block">{ap.description}</span>
                       </div>
+                      <DelegationBadge
+                        permKey={String(ap.key)}
+                        granted={Boolean(permissions[ap.key])}
+                        isDelegatable={delegatable.includes(String(ap.key))}
+                        canDelegate={canDelegatePermission(String(ap.key))}
+                        onToggle={toggleDelegatable}
+                        tone="indigo"
+                      />
                     </label>
                   ))}
                 </div>
@@ -1177,95 +1347,164 @@ export const RoleManagementSection: React.FC = () => {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                   {/* Fabric Prices */}
-                  <label className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs">
+                  <label
+                    style={{ display: isPermissionVisible('view_fabric_prices') ? undefined : 'none' }}
+                    className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
+                  >
                     <input
                       type="checkbox"
                       checked={permissions.view_fabric_prices}
                       onChange={() => handleToggleBooleanPerm('view_fabric_prices')}
                       className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
                     />
-                    <div className="text-start">
+                    <div className="text-start flex-1">
                       <span className="font-bold text-xs text-slate-900 block">رؤية أسعار القماش</span>
                       <span className="text-[10px] text-slate-500">إظهار أسعار الكيلو/التوب في مخزن الأقمشة</span>
                     </div>
+                    <DelegationBadge
+                      permKey="view_fabric_prices"
+                      granted={Boolean(permissions.view_fabric_prices)}
+                      isDelegatable={delegatable.includes('view_fabric_prices')}
+                      canDelegate={canDelegatePermission('view_fabric_prices')}
+                      onToggle={toggleDelegatable}
+                      tone="amber"
+                    />
                   </label>
 
-                  <label className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs">
+                  <label
+                    style={{ display: isPermissionVisible('edit_fabric_prices') ? undefined : 'none' }}
+                    className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
+                  >
                     <input
                       type="checkbox"
                       checked={permissions.edit_fabric_prices}
                       onChange={() => handleToggleBooleanPerm('edit_fabric_prices')}
                       className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
                     />
-                    <div className="text-start">
+                    <div className="text-start flex-1">
                       <span className="font-bold text-xs text-slate-900 block">تعديل أسعار القماش</span>
                       <span className="text-[10px] text-slate-500">السماح بتحديث سعر الوحدة لألوان الأقمشة</span>
                     </div>
+                    <DelegationBadge
+                      permKey="edit_fabric_prices"
+                      granted={Boolean(permissions.edit_fabric_prices)}
+                      isDelegatable={delegatable.includes('edit_fabric_prices')}
+                      canDelegate={canDelegatePermission('edit_fabric_prices')}
+                      onToggle={toggleDelegatable}
+                      tone="amber"
+                    />
                   </label>
 
                   {/* Accessory Prices */}
-                  <label className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs">
+                  <label
+                    style={{ display: isPermissionVisible('view_accessory_prices') ? undefined : 'none' }}
+                    className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
+                  >
                     <input
                       type="checkbox"
                       checked={permissions.view_accessory_prices}
                       onChange={() => handleToggleBooleanPerm('view_accessory_prices')}
                       className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
                     />
-                    <div className="text-start">
+                    <div className="text-start flex-1">
                       <span className="font-bold text-xs text-slate-900 block">رؤية أسعار الإكسسوارات</span>
                       <span className="text-[10px] text-slate-500">إظهار سعر القطعة في مخزن الإكسسوارات والمستلزمات</span>
                     </div>
+                    <DelegationBadge
+                      permKey="view_accessory_prices"
+                      granted={Boolean(permissions.view_accessory_prices)}
+                      isDelegatable={delegatable.includes('view_accessory_prices')}
+                      canDelegate={canDelegatePermission('view_accessory_prices')}
+                      onToggle={toggleDelegatable}
+                      tone="amber"
+                    />
                   </label>
 
-                  <label className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs">
+                  <label
+                    style={{ display: isPermissionVisible('edit_accessory_prices') ? undefined : 'none' }}
+                    className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
+                  >
                     <input
                       type="checkbox"
                       checked={permissions.edit_accessory_prices}
                       onChange={() => handleToggleBooleanPerm('edit_accessory_prices')}
                       className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
                     />
-                    <div className="text-start">
+                    <div className="text-start flex-1">
                       <span className="font-bold text-xs text-slate-900 block">تعديل أسعار الإكسسوارات</span>
                       <span className="text-[10px] text-slate-500">السماح بتحديث وتعديل أسعار أصناف الإكسسوارات</span>
                     </div>
+                    <DelegationBadge
+                      permKey="edit_accessory_prices"
+                      granted={Boolean(permissions.edit_accessory_prices)}
+                      isDelegatable={delegatable.includes('edit_accessory_prices')}
+                      canDelegate={canDelegatePermission('edit_accessory_prices')}
+                      onToggle={toggleDelegatable}
+                      tone="amber"
+                    />
                   </label>
 
                   {/* Printing Costs */}
-                  <label className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs">
+                  <label
+                    style={{ display: isPermissionVisible('view_printing_costs') ? undefined : 'none' }}
+                    className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
+                  >
                     <input
                       type="checkbox"
                       checked={permissions.view_printing_costs}
                       onChange={() => handleToggleBooleanPerm('view_printing_costs')}
                       className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
                     />
-                    <div className="text-start">
+                    <div className="text-start flex-1">
                       <span className="font-bold text-xs text-slate-900 block">رؤية تكاليف المطابع</span>
                       <span className="text-[10px] text-slate-500">إظهار تكلفة تشغيل وطباعة القطعة والإجمالي</span>
                     </div>
+                    <DelegationBadge
+                      permKey="view_printing_costs"
+                      granted={Boolean(permissions.view_printing_costs)}
+                      isDelegatable={delegatable.includes('view_printing_costs')}
+                      canDelegate={canDelegatePermission('view_printing_costs')}
+                      onToggle={toggleDelegatable}
+                      tone="amber"
+                    />
                   </label>
 
-                  <label className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs">
+                  <label
+                    style={{ display: isPermissionVisible('edit_printing_costs') ? undefined : 'none' }}
+                    className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
+                  >
                     <input
                       type="checkbox"
                       checked={permissions.edit_printing_costs}
                       onChange={() => handleToggleBooleanPerm('edit_printing_costs')}
                       className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
                     />
-                    <div className="text-start">
+                    <div className="text-start flex-1">
                       <span className="font-bold text-xs text-slate-900 block">تعديل تكاليف المطابع</span>
                       <span className="text-[10px] text-slate-500">السماح بتسجيل وتعديل تكلفة التشغيل للمطابع</span>
                     </div>
+                    <DelegationBadge
+                      permKey="edit_printing_costs"
+                      granted={Boolean(permissions.edit_printing_costs)}
+                      isDelegatable={delegatable.includes('edit_printing_costs')}
+                      canDelegate={canDelegatePermission('edit_printing_costs')}
+                      onToggle={toggleDelegatable}
+                      tone="amber"
+                    />
                   </label>
 
                   {/* WhatsApp Orders Permission */}
-                  <label className="sm:col-span-2 flex items-center gap-3 p-3 bg-emerald-50/80 rounded-2xl border border-emerald-300 hover:border-emerald-500 cursor-pointer transition shadow-2xs">
+                  <label
+                    style={{ display: isPermissionVisible('send_whatsapp_requests') ? undefined : 'none' }}
+                    className="sm:col-span-2 flex items-center gap-3 p-3 bg-emerald-50/80 rounded-2xl border border-emerald-300 hover:border-emerald-500 cursor-pointer transition shadow-2xs"
+                  >
                     <input
                       type="checkbox"
                       checked={permissions.send_whatsapp_requests}
                       onChange={() => handleToggleBooleanPerm('send_whatsapp_requests')}
                       className="w-4 h-4 text-emerald-600 rounded-sm focus:ring-emerald-500"
                     />
-                    <div className="text-start">
+                    <div className="text-start flex-1">
                       <span className="font-black text-xs text-emerald-950 block flex items-center gap-1.5">
                         <MessageCircle className="w-3.5 h-3.5 text-emerald-600" />
                         إرسال طلبات النواقص عبر الواتساب (WhatsApp Direct Ordering)
@@ -1274,17 +1513,28 @@ export const RoleManagementSection: React.FC = () => {
                         إظهار أزرار التواصل المباشر وإرسال طلبات النواقص للموردين عبر الواتساب في مخازن الأقمشة والإكسسوارات.
                       </span>
                     </div>
+                    <DelegationBadge
+                      permKey="send_whatsapp_requests"
+                      granted={Boolean(permissions.send_whatsapp_requests)}
+                      isDelegatable={delegatable.includes('send_whatsapp_requests')}
+                      canDelegate={canDelegatePermission('send_whatsapp_requests')}
+                      onToggle={toggleDelegatable}
+                      tone="emerald"
+                    />
                   </label>
 
                   {/* Internal Messaging Permission */}
-                  <label className="sm:col-span-2 flex items-center gap-3 p-3 bg-blue-50/80 rounded-2xl border border-blue-300 hover:border-blue-500 cursor-pointer transition shadow-2xs">
+                  <label
+                    style={{ display: isPermissionVisible('send_internal_messages') ? undefined : 'none' }}
+                    className="sm:col-span-2 flex items-center gap-3 p-3 bg-blue-50/80 rounded-2xl border border-blue-300 hover:border-blue-500 cursor-pointer transition shadow-2xs"
+                  >
                     <input
                       type="checkbox"
                       checked={permissions.send_internal_messages}
                       onChange={() => handleToggleBooleanPerm('send_internal_messages')}
                       className="w-4 h-4 text-blue-600 rounded-sm focus:ring-blue-500"
                     />
-                    <div className="text-start">
+                    <div className="text-start flex-1">
                       <span className="font-black text-xs text-blue-950 block flex items-center gap-1.5">
                         <Send className="w-3.5 h-3.5 text-blue-600" />
                         إرسال الرسائل والمراسلات الداخلية (Can Send Internal Messages)
@@ -1293,6 +1543,14 @@ export const RoleManagementSection: React.FC = () => {
                         السماح للمستخدم بإرسال ومراسلة الزملاء مباشرة في نظام الرسائل والتوجيهات الداخلية.
                       </span>
                     </div>
+                    <DelegationBadge
+                      permKey="send_internal_messages"
+                      granted={Boolean(permissions.send_internal_messages)}
+                      isDelegatable={delegatable.includes('send_internal_messages')}
+                      canDelegate={canDelegatePermission('send_internal_messages')}
+                      onToggle={toggleDelegatable}
+                      tone="blue"
+                    />
                   </label>
                 </div>
               </div>
