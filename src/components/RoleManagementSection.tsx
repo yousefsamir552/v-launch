@@ -41,15 +41,88 @@ import {
  * زر تفويض صلاحية واحدة:
  * 🔒 = شخصية فقط (لا يمكن منحها للغير) | 🔑 = قابلة للتفويض والوراثة للغير.
  * لا يُعرض إلا للصلاحيات الممنوحة فعلاً، ويُعطَّل إذا كان المدير لا يملك حق تفويضها.
+ *
+ * التمييز البصري (لتفادي الخلط بين قفل الرؤية وقفل التعديل):
+ * - صلاحيات الرؤية/المشاهدة  → أزرق فاتح (🔒) / أزرق صريح (🔑) + التسمية «رؤية».
+ * - صلاحيات التعديل/الحفظ    → أخضر فاتح (🔒) / أخضر صريح (🔑) + التسمية «تعديل».
+ * - باقي الصلاحيات المفردة    → لون القسم الخاص بها + التسمية «تفويض».
  */
-const DELEGATION_TONE_CLASSES: Record<string, string> = {
-  amber: 'text-amber-700 bg-amber-50 border-amber-200 hover:bg-amber-100',
-  purple: 'text-purple-700 bg-purple-50 border-purple-200 hover:bg-purple-100',
-  indigo: 'text-indigo-700 bg-indigo-50 border-indigo-200 hover:bg-indigo-100',
-  rose: 'text-rose-700 bg-rose-50 border-rose-200 hover:bg-rose-100',
-  blue: 'text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100',
-  emerald: 'text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100',
-  slate: 'text-slate-700 bg-slate-50 border-slate-200 hover:bg-slate-100'
+export type DelegationScope = 'view' | 'edit' | 'other';
+
+/** استنتاج نوع الصلاحية من مفتاحها حتى يظهر القفل باللون والنص المناسبين تلقائياً. */
+export const inferDelegationScope = (permKey: string): DelegationScope => {
+  const key = String(permKey || '').toLowerCase();
+  if (key.endsWith('_view') || key.startsWith('view_')) return 'view';
+  if (key.endsWith('_edit') || key.startsWith('edit_')) return 'edit';
+  return 'other';
+};
+
+const DELEGATION_SCOPE_META: Record<
+  DelegationScope,
+  { shortLabel: string; subject: string; personalTitle: string; delegatableTitle: string }
+> = {
+  view: {
+    shortLabel: 'رؤية',
+    subject: 'الرؤية والمشاهدة',
+    personalTitle:
+      'تفويض الرؤية والمشاهدة: شخصية فقط (🔒) — اضغط للسماح بتفويض الرؤية للغير',
+    delegatableTitle:
+      'تفويض الرؤية والمشاهدة: مسموح بتوريثها للغير (🔑) — اضغط لجعل الرؤية شخصية فقط'
+  },
+  edit: {
+    shortLabel: 'تعديل',
+    subject: 'التعديل والحفظ',
+    personalTitle:
+      'تفويض التعديل والحفظ: شخصية فقط (🔒) — اضغط للسماح بتفويض التعديل للغير',
+    delegatableTitle:
+      'تفويض التعديل والحفظ: مسموح بتوريثها للغير (🔑) — اضغط لجعل التعديل شخصياً فقط'
+  },
+  other: {
+    shortLabel: 'تفويض',
+    subject: 'هذه الصلاحية',
+    personalTitle: 'تفويض الصلاحية: شخصية فقط (🔒) — اضغط للسماح بتفويضها للغير',
+    delegatableTitle:
+      'تفويض الصلاحية: مسموح بتوريثها للغير (🔑) — اضغط لجعلها شخصية فقط'
+  }
+};
+
+/** ستايل الحالتين لكل لون: شخصية (فاتحة) / قابلة للتفويض (صريحة). */
+const DELEGATION_TONE_CLASSES: Record<string, { personal: string; delegatable: string }> = {
+  blue: {
+    personal: 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100',
+    delegatable:
+      'bg-blue-600 border-blue-600 text-white hover:bg-blue-700 shadow-xs shadow-blue-500/30'
+  },
+  emerald: {
+    personal: 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100',
+    delegatable:
+      'bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-700 shadow-xs shadow-emerald-500/30'
+  },
+  amber: {
+    personal: 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100',
+    delegatable:
+      'bg-amber-600 border-amber-600 text-white hover:bg-amber-700 shadow-xs shadow-amber-500/30'
+  },
+  purple: {
+    personal: 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100',
+    delegatable:
+      'bg-purple-600 border-purple-600 text-white hover:bg-purple-700 shadow-xs shadow-purple-500/30'
+  },
+  indigo: {
+    personal: 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100',
+    delegatable:
+      'bg-indigo-600 border-indigo-600 text-white hover:bg-indigo-700 shadow-xs shadow-indigo-500/30'
+  },
+  rose: {
+    personal: 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100',
+    delegatable:
+      'bg-rose-600 border-rose-600 text-white hover:bg-rose-700 shadow-xs shadow-rose-500/30'
+  },
+  slate: {
+    personal: 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100',
+    delegatable:
+      'bg-slate-700 border-slate-700 text-white hover:bg-slate-800 shadow-xs shadow-slate-500/30'
+  }
 };
 
 export const DelegationBadge: React.FC<{
@@ -58,34 +131,64 @@ export const DelegationBadge: React.FC<{
   isDelegatable: boolean;
   canDelegate: boolean;
   onToggle: (key: string) => void;
+  /** لون القسم للصلاحيات المفردة (يُتجاهل لصلاحيات الرؤية/التعديل لضمان ثبات اللغة اللونية). */
   tone?: string;
-}> = ({ permKey, granted, isDelegatable, canDelegate, onToggle, tone = 'slate' }) => {
+  /** نوع الصلاحية؛ يُستنتج من permKey تلقائياً عند عدم تمريره. */
+  scope?: DelegationScope;
+  /** التسمية المختصرة داخل الزر؛ الافتراضي «رؤية» / «تعديل» / «تفويض». */
+  label?: string;
+  className?: string;
+}> = ({
+  permKey,
+  granted,
+  isDelegatable,
+  canDelegate,
+  onToggle,
+  tone = 'slate',
+  scope,
+  label,
+  className = ''
+}) => {
   if (!granted) return null;
-  const toneClass = DELEGATION_TONE_CLASSES[tone] || DELEGATION_TONE_CLASSES.slate;
+
+  const resolvedScope: DelegationScope = scope || inferDelegationScope(permKey);
+  const meta = DELEGATION_SCOPE_META[resolvedScope];
+  // الرؤية أزرق دائماً والتعديل أخضر دائماً، وباقي الصلاحيات تتبع لون قسمها.
+  const resolvedTone =
+    resolvedScope === 'view' ? 'blue' : resolvedScope === 'edit' ? 'emerald' : tone;
+  const toneClasses = DELEGATION_TONE_CLASSES[resolvedTone] || DELEGATION_TONE_CLASSES.slate;
+
+  const tooltip = !canDelegate
+    ? `تفويض ${meta.subject}: لا تملك حق تفويضها — تبقى شخصية فقط على مستوى حسابك (🔒)`
+    : isDelegatable
+      ? meta.delegatableTitle
+      : meta.personalTitle;
+
   return (
     <button
       type="button"
-      title={
-        !canDelegate
-          ? 'هذه الصلاحية شخصية فقط ولا تملك حق تفويضها للغير'
-          : isDelegatable
-            ? 'قابلة للتفويض للغير — اضغط لجعلها شخصية فقط'
-            : 'شخصية فقط — اضغط للسماح بتفويضها للغير'
-      }
+      title={tooltip}
+      aria-label={tooltip}
+      aria-pressed={isDelegatable}
+      data-delegation-scope={resolvedScope}
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
         if (!canDelegate) return;
         onToggle(permKey);
       }}
-      disabled={!canDelegate}
-      className={`shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-full border transition ${
-        canDelegate
-          ? `cursor-pointer ${toneClass}`
-          : 'cursor-not-allowed bg-slate-50 text-slate-300 border-slate-200'
-      }`}
+      aria-disabled={!canDelegate}
+      tabIndex={canDelegate ? 0 : -1}
+      className={`shrink-0 inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-black leading-none transition ${
+        canDelegate ? 'cursor-pointer' : 'cursor-not-allowed bg-slate-50 border-slate-200 text-slate-400'
+      } ${canDelegate ? (isDelegatable ? toneClasses.delegatable : toneClasses.personal) : ''} ${className}`}
     >
-      {isDelegatable ? <KeyRound className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
+      {isDelegatable ? (
+        <KeyRound className="w-3 h-3" aria-hidden="true" />
+      ) : (
+        <Lock className="w-3 h-3" aria-hidden="true" />
+      )}
+      <span>{label || meta.shortLabel}</span>
     </button>
   );
 };
@@ -936,11 +1039,22 @@ export const RoleManagementSection: React.FC = () => {
               {/* شرح آلية التفويض (🔒 / 🔑) */}
               <div className="flex items-start gap-2 p-3 rounded-2xl bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
                 <Lock className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" />
-                <div>
+                <div className="space-y-1.5">
                   <span className="font-black block">آلية تفويض الصلاحيات (🔒 / 🔑)</span>
-                  <span>
+                  <span className="block">
                     كل صلاحية <b>شخصية فقط (🔒)</b> افتراضياً ولا يمكن منحها للغير. اضغط الزر بجوار الصلاحية
                     لتحويلها إلى <b>قابلة للتفويض (🔑)</b>، فيحقّ لحاملي هذا الدور منحها وتوريثها لمن هم أدنى منهم فقط.
+                  </span>
+                  <span className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-blue-50 border border-blue-200 text-blue-700 font-black">
+                      <Lock className="w-3 h-3" aria-hidden="true" /> رؤية
+                    </span>
+                    <span className="text-amber-800">= تفويض الرؤية والمشاهدة (أزرق)</span>
+                    <span className="text-amber-300">|</span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 font-black">
+                      <Lock className="w-3 h-3" aria-hidden="true" /> تعديل
+                    </span>
+                    <span className="text-amber-800">= تفويض التعديل والحفظ (أخضر)</span>
                   </span>
                 </div>
               </div>
@@ -1100,24 +1214,27 @@ export const RoleManagementSection: React.FC = () => {
                         </div>
 
                         {(canView || canEdit) && (
-                          <div className="flex items-center justify-between gap-2 mt-2">
-                            <span className="text-[10px] font-bold text-slate-500">
-                              تفويض الصلاحية للغير (🔒 شخصية / 🔑 قابلة للتفويض)
-                            </span>
-                            <div className="flex items-center gap-1.5">
+                          <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-slate-100">
+                            <div className="flex justify-center">
                               <DelegationBadge
                                 permKey={String(viewKey)}
                                 granted={Boolean(canView)}
                                 isDelegatable={delegatable.includes(String(viewKey))}
                                 canDelegate={canDelegatePermission(String(viewKey))}
                                 onToggle={toggleDelegatable}
+                                scope="view"
+                                label="رؤية"
                               />
+                            </div>
+                            <div className="flex justify-center">
                               <DelegationBadge
                                 permKey={String(editKey)}
                                 granted={Boolean(canEdit)}
                                 isDelegatable={delegatable.includes(String(editKey))}
                                 canDelegate={canDelegatePermission(String(editKey))}
                                 onToggle={toggleDelegatable}
+                                scope="edit"
+                                label="تعديل"
                               />
                             </div>
                           </div>

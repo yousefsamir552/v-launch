@@ -219,9 +219,20 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
           </div>
 
           {/* Legend: 🔒 personal only / 🔑 delegatable */}
-          <div className="flex items-center gap-2 p-3 rounded-2xl bg-amber-50 border border-amber-200 text-[11px] font-bold text-amber-900">
+          <div className="flex flex-col gap-1 p-3 rounded-2xl bg-amber-50 border border-amber-200 text-[11px] font-bold text-amber-900">
             <span>
               🔒 شخصية فقط (لا يمكن منحها للغير) &nbsp;|&nbsp; 🔑 قابلة للتفويض والوراثة لمن هم أدنى.
+            </span>
+            <span className="flex flex-wrap items-center gap-1.5 text-[10px] font-black">
+              <span className="px-2 py-0.5 rounded-lg bg-blue-50 border border-blue-200 text-blue-700">
+                🔒 رؤية
+              </span>
+              <span className="font-bold text-amber-800">= تفويض الرؤية والمشاهدة</span>
+              <span className="text-amber-300">|</span>
+              <span className="px-2 py-0.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700">
+                🔒 تعديل
+              </span>
+              <span className="font-bold text-amber-800">= تفويض التعديل والحفظ</span>
             </span>
           </div>
 
@@ -295,43 +306,51 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                         <sec.icon className={`w-3.5 h-3.5 ${sec.color}`} />
                         <span>{sec.label}</span>
                       </div>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => togglePermKey(viewKey)}
-                          className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition cursor-pointer ${
-                            hasView
-                              ? 'bg-blue-50 text-blue-700 border-blue-300'
-                              : 'bg-slate-50 text-slate-400 border-slate-200'
-                          }`}
-                        >
-                          عرض
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => togglePermKey(editKey)}
-                          className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition cursor-pointer ${
-                            hasEdit
-                              ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
-                              : 'bg-slate-50 text-slate-400 border-slate-200'
-                          }`}
-                        >
-                          تعديل
-                        </button>
-                        <DelegationBadge
-                          permKey={viewKey}
-                          granted={hasView}
-                          isDelegatable={delegatablePerms.includes(viewKey)}
-                          canDelegate={canDelegatePermission(viewKey)}
-                          onToggle={toggleDelegatable}
-                        />
-                        <DelegationBadge
-                          permKey={editKey}
-                          granted={hasEdit}
-                          isDelegatable={delegatablePerms.includes(editKey)}
-                          canDelegate={canDelegatePermission(editKey)}
-                          onToggle={toggleDelegatable}
-                        />
+                      <div className="flex items-start gap-1.5">
+                        <div className="flex flex-col items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => togglePermKey(viewKey)}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition cursor-pointer ${
+                              hasView
+                                ? 'bg-blue-50 text-blue-700 border-blue-300'
+                                : 'bg-slate-50 text-slate-400 border-slate-200'
+                            }`}
+                          >
+                            عرض
+                          </button>
+                          <DelegationBadge
+                            permKey={viewKey}
+                            granted={hasView}
+                            isDelegatable={delegatablePerms.includes(viewKey)}
+                            canDelegate={canDelegatePermission(viewKey)}
+                            onToggle={toggleDelegatable}
+                            scope="view"
+                            label="رؤية"
+                          />
+                        </div>
+                        <div className="flex flex-col items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => togglePermKey(editKey)}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition cursor-pointer ${
+                              hasEdit
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                                : 'bg-slate-50 text-slate-400 border-slate-200'
+                            }`}
+                          >
+                            تعديل
+                          </button>
+                          <DelegationBadge
+                            permKey={editKey}
+                            granted={hasEdit}
+                            isDelegatable={delegatablePerms.includes(editKey)}
+                            canDelegate={canDelegatePermission(editKey)}
+                            onToggle={toggleDelegatable}
+                            scope="edit"
+                            label="تعديل"
+                          />
+                        </div>
                       </div>
                     </div>
                   );
