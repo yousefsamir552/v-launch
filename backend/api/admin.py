@@ -24,13 +24,14 @@ class GlobalSettingsAdmin(admin.ModelAdmin):
 
 @admin.register(Role)
 class RoleAdmin(admin.ModelAdmin):
-    list_display = ('name', 'client_id', 'description', 'created_at')
+    list_display = ('name', 'client_id', 'description', 'rank_level', 'created_at')
 
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ('username', 'real_name', 'role', 'is_sudo', 'is_active', 'last_active')
+    list_display = ('username', 'real_name', 'role', 'is_sudo', 'is_active', 'created_by', 'last_active')
     list_filter = ('is_sudo', 'is_active', 'role')
+    search_fields = ('username', 'real_name')
 
 
 @admin.register(SizeDef)

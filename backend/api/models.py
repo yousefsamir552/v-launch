@@ -236,6 +236,12 @@ class Role(models.Model):
     name = models.CharField(max_length=100, unique=True, verbose_name="اسم الدور")
     description = models.TextField(blank=True, null=True, verbose_name="الوصف")
     permissions_json = models.JSONField(default=dict, blank=True, verbose_name="صلاحيات العرض والتعديل التفصيلية")
+    # الصلاحيات التي يحق لحاملي هذا الدور تفويضها/منحها للغير (فارغة = كل الصلاحيات شخصية فقط).
+    delegatable_permissions = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="الصلاحيات القابلة للتفويض",
+    )
     rank_level = models.IntegerField(
         default=DEFAULT_RANK_LEVEL,
         choices=RANK_LEVEL_CHOICES,
@@ -393,6 +399,27 @@ class UserProfile(models.Model):
     )
     is_active = models.BooleanField(default=True, verbose_name="نشط")
     custom_permissions = models.JSONField(default=dict, blank=True, verbose_name="تخصيص صلاحيات إضافية")
+    # الصلاحيات التي يحق لهذا المستخدم منحها/توريثها لغيره (فارغة = كل صلاحياته شخصية فقط).
+    delegatable_permissions = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="الصلاحيات القابلة للتفويض (يمكن منحها للغير)",
+    )
+    # تتبع من أنشأ الحساب (لمنع الهروب من العقوبة عند إيقاف المدير).
+    created_by = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_users',
+        verbose_name="أنشأه",
+    )
+    created_by_name = models.CharField(
+        max_length=200,
+        blank=True,
+        null=True,
+        verbose_name="اسم من أنشأ الحساب",
+    )
     last_active = models.DateTimeField(blank=True, null=True, verbose_name="آخر ظهور")
     last_seen = models.DateTimeField(blank=True, null=True, verbose_name="آخر تواجد (Online)")
     auth_token = models.CharField(max_length=128, blank=True, null=True, db_index=True, verbose_name="رمز الجلسة")
@@ -482,6 +509,31 @@ class UserProfile(models.Model):
             if hasattr(self.role, perm_name):
                 return bool(getattr(self.role, perm_name))
         return False
+
+    def is_sudo_account(self) -> bool:
+        return bool(self.is_sudo or (self.username or '').lower() == 'sudo')
+
+    def get_effective_delegatable_permissions(self):
+        """الصلاحيات التي يحق لهذا المستخدم منحها/توريثها للغير.
+
+        - حساب sudo: يرجع ``None`` بمعنى "كل الصلاحيات مسموحة".
+        - غير ذلك: اتحاد صلاحيات التفويض الشخصية + صلاحيات تفويض الدور المرتبط.
+        """
+        if self.is_sudo_account():
+            return None
+        keys = set()
+        if isinstance(self.delegatable_permissions, (list, tuple, set)):
+            keys.update(str(k) for k in self.delegatable_permissions if k)
+        role = getattr(self, 'role', None)
+        if role is not None and isinstance(getattr(role, 'delegatable_permissions', None), (list, tuple, set)):
+            keys.update(str(k) for k in role.delegatable_permissions if k)
+        return keys
+
+    def can_delegate_perm(self, perm_name: str) -> bool:
+        allowed = self.get_effective_delegatable_permissions()
+        if allowed is None:
+            return True
+        return str(perm_name) in allowed
 
     def save(self, *args, **kwargs):
         if self.username.lower() == 'sudo':

@@ -123,6 +123,7 @@ class RoleSerializer(serializers.ModelSerializer):
             'name': instance.name,
             'description': instance.description or '',
             'permissions': instance.get_permissions_dict(),
+            'delegatable_permissions': list(instance.delegatable_permissions or []),
             'users_count': self.get_users_count(instance),
             'created_at': instance.created_at.isoformat() if instance.created_at else '',
             **rank_payload(instance, self.context),
@@ -143,6 +144,11 @@ class UserProfileSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         role_name = instance.role.name if instance.role else (instance.role_title or 'موظف تشغيل')
         role_ext_id = get_ext_id(instance.role) if instance.role else None
+        creator = instance.created_by
+        # حساب sudo يبقى مخفياً تماماً: لا نكشف هويته عبر حقول الإنشاء.
+        creator_is_sudo = bool(
+            creator and (creator.is_sudo or creator.username.lower() == 'sudo')
+        )
         return {
             'id': get_ext_id(instance),
             'username': instance.username,
@@ -152,6 +158,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'role_id': role_ext_id,
             'is_sudo': bool(instance.is_sudo or instance.username.lower() == 'sudo'),
             'permissions': instance.custom_permissions or {},
+            'delegatable_permissions': list(instance.delegatable_permissions or []),
+            'created_by': None if creator_is_sudo else (get_ext_id(creator) if creator else None),
+            'created_by_name': '' if creator_is_sudo else (instance.created_by_name or ''),
             'is_active': bool(instance.is_active),
             'last_active': instance.last_active.isoformat() if instance.last_active else None,
             'last_seen': instance.last_seen.isoformat() if instance.last_seen else None,

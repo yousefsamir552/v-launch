@@ -126,7 +126,7 @@ def resolve_request_user_profile(request):
         token = request.headers.get('X-Auth-Token', '').strip()
     if not token:
         return None
-    return UserProfile.objects.select_related('role').filter(
+    return UserProfile.objects.select_related('role', 'created_by').filter(
         auth_token=token, is_active=True
     ).first()
 
@@ -197,6 +197,147 @@ def can_manage_target(request, target_rank) -> bool:
     return can_manage_rank(get_viewer_rank(request), target_rank)
 
 
+# ---------------------------------------------------------------------------
+# Privilege delegation (تفويض الصلاحيات ومنع تصعيد الصلاحيات)
+# ---------------------------------------------------------------------------
+DELEGATION_DENIED_MESSAGE = 'غير مسموح لك بمنح صلاحيات لا تملك حق تفويضها وتوريثها'
+
+
+def _truthy_permission_keys(permissions_dict) -> set:
+    """مفاتيح الصلاحيات المفعّلة فعلاً داخل قاموس صلاحيات أو قائمة مفاتيح.
+
+    - ``dict``: يتجاهل القيم False/الفارغة.
+    - ``list/tuple/set``: يُعد كل عنصر مفتاحاً مفعّلاً (يُستخدم كخط أساس).
+    """
+    if isinstance(permissions_dict, (list, tuple, set)):
+        return {str(key) for key in permissions_dict if key}
+    keys = set()
+    if not isinstance(permissions_dict, dict):
+        return keys
+    for key, value in permissions_dict.items():
+        if isinstance(value, str):
+            if value.strip().lower() in ('view', 'edit', 'true', '1', 'yes'):
+                keys.add(str(key))
+        elif bool(value):
+            keys.add(str(key))
+    return keys
+
+
+def get_allowed_delegatable_keys(profile):
+    """الصلاحيات القابلة للتفويض للمدير الحالي (``None`` = sudo، أي كل شيء)."""
+    if profile is None:
+        return set()
+    if is_sudo_profile(profile):
+        return None
+    allowed = profile.get_effective_delegatable_permissions()
+    return set(allowed or ())
+
+
+def validate_permission_delegation(request, permissions_dict, baseline=None, extra_permissions=None):
+    """يمنع منح أي صلاحية لا يملك المدير الحالي حق تفويضها.
+
+    - ``baseline``: الصلاحيات الحالية للهدف؛ المفاتيح التي كانت مفعّلة أصلاً لا
+      تُعد منحاً جديداً (لئلا يُمنع مجرد تعديل اسم الدور مثلاً).
+    - ``extra_permissions``: صلاحيات إضافية مكتسبة (مثل دور جديد يُعيَّن) تُفحص كلها.
+
+    يُرجع ``Response`` بخطأ 403 عند المخالفة، أو ``None`` عند النجاح.
+    """
+    allowed = get_allowed_delegatable_keys(get_viewer_profile(request))
+    if allowed is None:
+        return None
+    requested = _truthy_permission_keys(permissions_dict)
+    if baseline is not None:
+        requested -= _truthy_permission_keys(baseline)
+    if extra_permissions:
+        requested |= _truthy_permission_keys(extra_permissions)
+    forbidden = requested - allowed
+    if forbidden:
+        return Response(
+            {
+                'detail': DELEGATION_DENIED_MESSAGE,
+                'forbidden_permissions': sorted(forbidden),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return None
+
+
+def sanitize_delegatable_list(request, raw_keys, granted_permissions, baseline=None):
+    """يتحقق من قائمة التفويض المطلوبة ويرجع ``(sanitized_list, error_response)``.
+
+    - كل مفتاح جديد يطلبه المدير يجب أن يكون ضمن صلاحياته القابلة للتفويض (وإلا 403).
+    - مفاتيح ``baseline`` (المحفوظة مسبقاً) تُقبل كما هي حتى لو منحها مدير أعلى،
+      لئلا يمحوها تعديل يقوم به مدير أقل صلاحية.
+    - المفاتيح التي لا يملكها الهدف فعلياً تُستبعد تلقائياً.
+    """
+    if not isinstance(raw_keys, (list, tuple, set)):
+        return [], None
+    allowed = get_allowed_delegatable_keys(get_viewer_profile(request))
+    baseline_keys = set()
+    if isinstance(baseline, (list, tuple, set)):
+        baseline_keys = {str(key) for key in baseline if key}
+    granted = _truthy_permission_keys(granted_permissions)
+    result = []
+    forbidden = []
+    seen = set()
+    for key in raw_keys:
+        key = str(key)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if allowed is not None and key not in allowed and key not in baseline_keys:
+            forbidden.append(key)
+            continue
+        if key not in granted:
+            continue
+        result.append(key)
+    if forbidden:
+        return [], Response(
+            {
+                'detail': DELEGATION_DENIED_MESSAGE,
+                'forbidden_permissions': sorted(forbidden),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return result, None
+
+
+def effective_permission_keys(profile) -> set:
+    """كل الصلاحيات المفعّلة الفعلية للحساب (تخصيص + دور)."""
+    if profile is None:
+        return set()
+    keys = _truthy_permission_keys(getattr(profile, 'custom_permissions', None))
+    role = getattr(profile, 'role', None)
+    if role is not None:
+        keys |= _truthy_permission_keys(role.get_permissions_dict())
+    return keys
+
+
+def collect_created_descendants(user, request=None):
+    """كل الحسابات التي أنشأها هذا المستخدم (شجرة متكررة عبر ``created_by``)."""
+    descendants = []
+    seen = {user.pk}
+    frontier = [user.pk]
+    while frontier:
+        children = list(
+            UserProfile.objects.filter(created_by_id__in=frontier)
+            .exclude(pk__in=seen)
+            .exclude(username__iexact='sudo')
+            .exclude(is_sudo=True)
+        )
+        if not children:
+            break
+        if request is not None:
+            children = [c for c in children if can_manage_target(request, c.rank_level)]
+        if not children:
+            break
+        descendants.extend(children)
+        seen.update(child.pk for child in children)
+        frontier = [child.pk for child in children]
+    return descendants
+
+
+
 def hidden_employee_error(request, employee):
     """يرجع استجابة 404 إذا كان الموظف خارج نطاق رؤية الناظر، وإلا None."""
     if employee is not None and not can_manage_target(request, employee.rank_level):
@@ -263,7 +404,7 @@ class AuthViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        user = UserProfile.objects.select_related('role').filter(username__iexact=username).first()
+        user = UserProfile.objects.select_related('role', 'created_by').filter(username__iexact=username).first()
         if not user:
             return Response(
                 {'detail': 'اسم المستخدم أو كلمة المرور غير صحيحة'},
@@ -333,7 +474,7 @@ class AuthViewSet(viewsets.ViewSet):
             )
         request.user_profile = user
         UserProfile.objects.filter(pk=user.pk).update(last_seen=timezone.now())
-        visible_users = UserProfile.objects.select_related('role').exclude(
+        visible_users = UserProfile.objects.select_related('role', 'created_by').exclude(
             username__iexact='sudo'
         ).exclude(is_sudo=True)
         visible_users = rank_scoped_queryset(visible_users, request)
@@ -381,7 +522,7 @@ class StateViewSet(viewsets.ViewSet):
             request.user_profile = current_profile
             UserProfile.objects.filter(pk=current_profile.pk).update(last_seen=timezone.now())
 
-        visible_users = UserProfile.objects.select_related('role').exclude(username__iexact='sudo').exclude(is_sudo=True)
+        visible_users = UserProfile.objects.select_related('role', 'created_by').exclude(username__iexact='sudo').exclude(is_sudo=True)
         viewer_rank = get_viewer_rank(request)
         visible_ranks = visible_rank_levels(viewer_rank)
         if current_profile is not None and not is_sudo_profile(current_profile):
@@ -576,11 +717,23 @@ class RoleViewSet(BasePermViewSet):
         rank, rank_error = resolve_rank_for_grant(request, data.get('rank_level'))
         if rank_error:
             return rank_error
+        permissions = data.get('permissions') or {}
+        if not isinstance(permissions, dict):
+            permissions = {}
+        denied = validate_permission_delegation(request, permissions)
+        if denied:
+            return denied
+        delegatable, delegatable_error = sanitize_delegatable_list(
+            request, data.get('delegatable_permissions'), permissions
+        )
+        if delegatable_error:
+            return delegatable_error
         role = Role(
             client_id=data.get('id') or data.get('client_id'),
             name=name,
             description=data.get('description') or '',
-            permissions_json=data.get('permissions') or {},
+            permissions_json=permissions,
+            delegatable_permissions=delegatable,
             rank_level=rank,
         )
         role.save()
@@ -604,7 +757,28 @@ class RoleViewSet(BasePermViewSet):
         if 'description' in data:
             role.description = data['description'] or ''
         if 'permissions' in data and isinstance(data['permissions'], dict):
+            denied = validate_permission_delegation(
+                request, data['permissions'], baseline=role.get_permissions_dict()
+            )
+            if denied:
+                return denied
             role.sync_booleans_from_permissions(data['permissions'])
+        if 'delegatable_permissions' in data:
+            delegatable, delegatable_error = sanitize_delegatable_list(
+                request,
+                data.get('delegatable_permissions'),
+                role.get_permissions_dict(),
+                baseline=role.delegatable_permissions,
+            )
+            if delegatable_error:
+                return delegatable_error
+            role.delegatable_permissions = delegatable
+        elif 'permissions' in data and isinstance(data['permissions'], dict):
+            # تنظيف تلقائي: لا يبقى في قائمة التفويض ما لم يعد الدور يملكه فعلاً.
+            granted = _truthy_permission_keys(role.get_permissions_dict())
+            role.delegatable_permissions = [
+                key for key in (role.delegatable_permissions or []) if str(key) in granted
+            ]
         if data.get('rank_level') not in (None, ''):
             new_rank, rank_error = resolve_rank_for_grant(request, data.get('rank_level'))
             if rank_error:
@@ -639,12 +813,12 @@ class UserProfileViewSet(BasePermViewSet):
     Strictly hides the 'sudo' emergency account from all list/retrieve responses
     and blocks any attempt to modify, disable, or delete 'sudo' (Task 2).
     """
-    queryset = UserProfile.objects.select_related('role').exclude(username__iexact='sudo').exclude(is_sudo=True)
+    queryset = UserProfile.objects.select_related('role', 'created_by').exclude(username__iexact='sudo').exclude(is_sudo=True)
     serializer_class = UserProfileSerializer
 
     def get_queryset(self):
         """يقيّد المستخدمين الظاهرين بالرتب المسموحة + الحساب الشخصي دائماً."""
-        base = UserProfile.objects.select_related('role').exclude(
+        base = UserProfile.objects.select_related('role', 'created_by').exclude(
             username__iexact='sudo'
         ).exclude(is_sudo=True)
         profile = get_viewer_profile(self.request)
@@ -702,6 +876,37 @@ class UserProfileViewSet(BasePermViewSet):
         if rank_error:
             return rank_error
 
+        custom_permissions = data.get('permissions') or data.get('custom_permissions') or {}
+        if not isinstance(custom_permissions, dict):
+            custom_permissions = {}
+        denied = validate_permission_delegation(request, custom_permissions)
+        if denied:
+            return denied
+        # تعيين دور يمنح صلاحياته الفعلية: يجب أن تكون كلها ضمن صلاحيات التفويض للمدير الحالي.
+        if role_obj is not None:
+            denied = validate_permission_delegation(
+                request, None, extra_permissions=role_obj.get_permissions_dict()
+            )
+            if denied:
+                return denied
+            # الدور قد يورّث حق تفويض صلاحيات أخرى؛ لا يجوز منحه إن لم يملكه المدير.
+            denied = validate_permission_delegation(
+                request,
+                {str(key): True for key in (role_obj.delegatable_permissions or [])},
+            )
+            if denied:
+                return denied
+
+        creator = get_viewer_profile(request)
+        granted_keys = _truthy_permission_keys(custom_permissions)
+        if role_obj is not None:
+            granted_keys |= _truthy_permission_keys(role_obj.get_permissions_dict())
+        delegatable, delegatable_error = sanitize_delegatable_list(
+            request, data.get('delegatable_permissions'), {key: True for key in granted_keys}
+        )
+        if delegatable_error:
+            return delegatable_error
+
         user = UserProfile(
             client_id=data.get('id') or data.get('client_id'),
             username=username,
@@ -711,7 +916,10 @@ class UserProfileViewSet(BasePermViewSet):
             role_title=role_obj.name if role_obj else (data.get('role') or 'موظف تشغيل'),
             is_sudo=False,  # Sudo is strictly reserved for the immutable emergency account
             is_active=data.get('is_active', True),
-            custom_permissions=data.get('permissions') or data.get('custom_permissions') or {},
+            custom_permissions=custom_permissions,
+            delegatable_permissions=delegatable,
+            created_by=creator,
+            created_by_name=((creator.real_name or creator.username) if creator else ''),
             rank_level=rank,
         )
         user.set_password(password)
@@ -742,6 +950,17 @@ class UserProfileViewSet(BasePermViewSet):
             )
 
         data = request.data
+
+        # منع تصعيد الذات: لا يعدّل المستخدم صلاحياته أو دوره أو قائمة تفويضه بنفسه.
+        self_privilege_fields = {
+            'permissions', 'custom_permissions', 'delegatable_permissions', 'role', 'role_id',
+        }
+        if is_self and any(field in data for field in self_privilege_fields):
+            return Response(
+                {'detail': 'لا يمكنك تعديل صلاحياتك أو دورك أو صلاحيات التفويض الخاصة بحسابك بنفسك'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         if 'real_name' in data and data['real_name']:
             user.real_name = data['real_name'].strip()
         if 'phone' in data:
@@ -750,25 +969,70 @@ class UserProfileViewSet(BasePermViewSet):
             user.is_active = bool(data['is_active'])
             if not user.is_active:
                 user.auth_token = None
-        if 'permissions' in data and isinstance(data['permissions'], dict):
-            user.custom_permissions = data['permissions']
-        elif 'custom_permissions' in data and isinstance(data['custom_permissions'], dict):
-            user.custom_permissions = data['custom_permissions']
 
+        incoming_permissions = None
+        if 'permissions' in data and isinstance(data['permissions'], dict):
+            incoming_permissions = data['permissions']
+        elif 'custom_permissions' in data and isinstance(data['custom_permissions'], dict):
+            incoming_permissions = data['custom_permissions']
+        if incoming_permissions is not None:
+            # المقارنة تكون مع الصلاحيات الفعلية الحالية (تخصيص + دور) لا التخصيص فقط،
+            # حتى لا يُرفض مجرد تعديل كلمة المرور أو الاسم لحساب يحمل دوراً بصلاحيات.
+            denied = validate_permission_delegation(
+                request, incoming_permissions, baseline=effective_permission_keys(user)
+            )
+            if denied:
+                return denied
+            user.custom_permissions = incoming_permissions
+
+        role_changed = False
         if 'role_id' in data or 'role' in data:
             role_obj = resolve_by_id(Role, data.get('role_id'))
             if not role_obj and data.get('role'):
                 role_obj = Role.objects.filter(name=data.get('role')).first()
-            if role_obj and role_obj.id != user.role_id and not can_manage_target(request, role_obj.rank_level):
-                return Response(
-                    {'detail': 'لا تملك صلاحية تعيين دور بهذه الرتبة'},
-                    status=status.HTTP_403_FORBIDDEN,
+            if role_obj and role_obj.id != user.role_id:
+                if not can_manage_target(request, role_obj.rank_level):
+                    return Response(
+                        {'detail': 'لا تملك صلاحية تعيين دور بهذه الرتبة'},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+                # الدور يمنح صلاحياته الفعلية: يجب أن تكون كلها قابلة للتفويض للمدير الحالي.
+                denied = validate_permission_delegation(
+                    request, None, extra_permissions=role_obj.get_permissions_dict()
                 )
+                if denied:
+                    return denied
+                # الدور قد يورّث حق تفويض صلاحيات أخرى؛ لا يجوز منحه إن لم يملكه المدير.
+                denied = validate_permission_delegation(
+                    request,
+                    {str(key): True for key in (role_obj.delegatable_permissions or [])},
+                )
+                if denied:
+                    return denied
+                role_changed = True
             if role_obj:
                 user.role = role_obj
                 user.role_title = role_obj.name
             elif data.get('role'):
                 user.role_title = data.get('role')
+
+        if 'delegatable_permissions' in data:
+            granted = effective_permission_keys(user)
+            delegatable, delegatable_error = sanitize_delegatable_list(
+                request,
+                data.get('delegatable_permissions'),
+                {key: True for key in granted},
+                baseline=user.delegatable_permissions,
+            )
+            if delegatable_error:
+                return delegatable_error
+            user.delegatable_permissions = delegatable
+        elif incoming_permissions is not None or role_changed:
+            # تنظيف تلقائي: لا يبقى في قائمة التفويض ما لم يعد الحساب يملكه فعلاً.
+            granted = effective_permission_keys(user)
+            user.delegatable_permissions = [
+                key for key in (user.delegatable_permissions or []) if str(key) in granted
+            ]
 
         # تغيير الرتبة: لا يرفع المستخدم رتبته ولا يعدّل رتبة نفسه.
         if not is_self and data.get('rank_level') not in (None, ''):
@@ -802,8 +1066,19 @@ class UserProfileViewSet(BasePermViewSet):
                 {'detail': 'لا تملك صلاحية حذف مستخدم بهذه الرتبة'},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        cascade = bool(request.data.get('cascade'))
+        deleted_children_count = 0
+        if cascade:
+            for descendant in collect_created_descendants(user, request):
+                descendant.auth_token = None
+                descendant.delete()
+                deleted_children_count += 1
         user.delete()
-        return Response({'status': 'deleted'})
+        return Response({
+            'status': 'deleted',
+            'cascade': cascade,
+            'deleted_children_count': deleted_children_count,
+        })
 
     @action(detail=True, methods=['post'])
     def toggle_active(self, request, pk=None):
@@ -822,7 +1097,19 @@ class UserProfileViewSet(BasePermViewSet):
         if not user.is_active:
             user.auth_token = None
         user.save()
-        return Response(UserProfileSerializer(user).data)
+        cascade = bool(request.data.get('cascade'))
+        affected_user_ids = []
+        if cascade:
+            for descendant in collect_created_descendants(user, request):
+                descendant.is_active = user.is_active
+                if not descendant.is_active:
+                    descendant.auth_token = None
+                descendant.save(update_fields=['is_active', 'auth_token'])
+                affected_user_ids.append(get_ext_id(descendant))
+        payload = UserProfileSerializer(user).data
+        payload['cascade'] = cascade
+        payload['affected_user_ids'] = affected_user_ids
+        return Response(payload)
 
 
 class SizeDefViewSet(BasePermViewSet):
