@@ -452,13 +452,17 @@ export const DEFAULT_PERMISSIONS: RolePermissions = {
   reports_view: false,
   reports_edit: false,
 
-  // Financial & Sensitive Checkboxes
+  // Financial & Sensitive Checkboxes (صلاحية مستقلة لكل قسم)
   view_fabric_prices: false,
   edit_fabric_prices: false,
   view_accessory_prices: false,
   edit_accessory_prices: false,
-  view_printing_costs: false,
-  edit_printing_costs: false,
+  view_printing_prices: false,
+  edit_printing_prices: false,
+  view_sewing_prices: false,
+  edit_sewing_prices: false,
+  view_assembly_prices: false,
+  edit_assembly_prices: false,
   send_whatsapp_requests: false,
   send_internal_messages: false,
 
@@ -648,7 +652,9 @@ export const RoleManagementSection: React.FC = () => {
       // Auto enable view when edit is enabled
       if (newVal && key === 'edit_fabric_prices') next.view_fabric_prices = true;
       if (newVal && key === 'edit_accessory_prices') next.view_accessory_prices = true;
-      if (newVal && key === 'edit_printing_costs') next.view_printing_costs = true;
+      if (newVal && key === 'edit_printing_prices') next.view_printing_prices = true;
+      if (newVal && key === 'edit_sewing_prices') next.view_sewing_prices = true;
+      if (newVal && key === 'edit_assembly_prices') next.view_assembly_prices = true;
       if (newVal && (key === 'edit_header_settings' || key === 'edit_message_templates')) {
         next.view_global_settings = true;
       }
@@ -656,7 +662,9 @@ export const RoleManagementSection: React.FC = () => {
       // Auto disable edit when view is disabled
       if (!newVal && key === 'view_fabric_prices') next.edit_fabric_prices = false;
       if (!newVal && key === 'view_accessory_prices') next.edit_accessory_prices = false;
-      if (!newVal && key === 'view_printing_costs') next.edit_printing_costs = false;
+      if (!newVal && key === 'view_printing_prices') next.edit_printing_prices = false;
+      if (!newVal && key === 'view_sewing_prices') next.edit_sewing_prices = false;
+      if (!newVal && key === 'view_assembly_prices') next.edit_assembly_prices = false;
 
       return next;
     });
@@ -674,8 +682,12 @@ export const RoleManagementSection: React.FC = () => {
         next.edit_fabric_prices = true;
         next.view_accessory_prices = true;
         next.edit_accessory_prices = true;
-        next.view_printing_costs = true;
-        next.edit_printing_costs = true;
+        next.view_printing_prices = true;
+        next.edit_printing_prices = true;
+        next.view_sewing_prices = true;
+        next.edit_sewing_prices = true;
+        next.view_assembly_prices = true;
+        next.edit_assembly_prices = true;
         next.send_whatsapp_requests = true;
         next.send_internal_messages = true;
         next.manage_permissions = true;
@@ -709,8 +721,12 @@ export const RoleManagementSection: React.FC = () => {
         next.edit_fabric_prices = false;
         next.view_accessory_prices = false;
         next.edit_accessory_prices = false;
-        next.view_printing_costs = false;
-        next.edit_printing_costs = false;
+        next.view_printing_prices = false;
+        next.edit_printing_prices = false;
+        next.view_sewing_prices = false;
+        next.edit_sewing_prices = false;
+        next.view_assembly_prices = false;
+        next.edit_assembly_prices = false;
         next.send_whatsapp_requests = false;
         next.manage_permissions = false;
         next.manage_users = false;
@@ -845,7 +861,9 @@ export const RoleManagementSection: React.FC = () => {
           const hasFinancial =
             role.permissions.view_fabric_prices ||
             role.permissions.view_accessory_prices ||
-            role.permissions.view_printing_costs;
+            role.permissions.view_printing_prices ||
+            role.permissions.view_sewing_prices ||
+            role.permissions.view_assembly_prices;
 
           const hasNotesPerms = NOTES_PERMISSIONS_LIST.some((np) => Boolean(role.permissions[np.key]));
           const hasAdminPerms = Boolean(role.permissions.manage_permissions || role.permissions.manage_users);
@@ -1561,50 +1579,148 @@ export const RoleManagementSection: React.FC = () => {
                     />
                   </label>
 
-                  {/* Printing Costs */}
+                  {/* Printing Prices */}
                   <label
-                    style={{ display: isPermissionVisible('view_printing_costs') ? undefined : 'none' }}
+                    style={{ display: isPermissionVisible('view_printing_prices') ? undefined : 'none' }}
                     className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
                   >
                     <input
                       type="checkbox"
-                      checked={permissions.view_printing_costs}
-                      onChange={() => handleToggleBooleanPerm('view_printing_costs')}
+                      checked={permissions.view_printing_prices}
+                      onChange={() => handleToggleBooleanPerm('view_printing_prices')}
                       className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
                     />
                     <div className="text-start flex-1">
-                      <span className="font-bold text-xs text-slate-900 block">رؤية تكاليف المطابع</span>
-                      <span className="text-[10px] text-slate-500">إظهار تكلفة تشغيل وطباعة القطعة والإجمالي</span>
+                      <span className="font-bold text-xs text-slate-900 block">رؤية أسعار المطابع</span>
+                      <span className="text-[10px] text-slate-500">إظهار سعر طباعة القطعة والإجمالي</span>
                     </div>
                     <DelegationBadge
-                      permKey="view_printing_costs"
-                      granted={Boolean(permissions.view_printing_costs)}
-                      isDelegatable={delegatable.includes('view_printing_costs')}
-                      canDelegate={canDelegatePermission('view_printing_costs')}
+                      permKey="view_printing_prices"
+                      granted={Boolean(permissions.view_printing_prices)}
+                      isDelegatable={delegatable.includes('view_printing_prices')}
+                      canDelegate={canDelegatePermission('view_printing_prices')}
                       onToggle={toggleDelegatable}
                       tone="amber"
                     />
                   </label>
 
                   <label
-                    style={{ display: isPermissionVisible('edit_printing_costs') ? undefined : 'none' }}
+                    style={{ display: isPermissionVisible('edit_printing_prices') ? undefined : 'none' }}
                     className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
                   >
                     <input
                       type="checkbox"
-                      checked={permissions.edit_printing_costs}
-                      onChange={() => handleToggleBooleanPerm('edit_printing_costs')}
+                      checked={permissions.edit_printing_prices}
+                      onChange={() => handleToggleBooleanPerm('edit_printing_prices')}
                       className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
                     />
                     <div className="text-start flex-1">
-                      <span className="font-bold text-xs text-slate-900 block">تعديل تكاليف المطابع</span>
-                      <span className="text-[10px] text-slate-500">السماح بتسجيل وتعديل تكلفة التشغيل للمطابع</span>
+                      <span className="font-bold text-xs text-slate-900 block">تعديل أسعار المطابع</span>
+                      <span className="text-[10px] text-slate-500">تسجيل وتعديل سعر تشغيل المطابع</span>
                     </div>
                     <DelegationBadge
-                      permKey="edit_printing_costs"
-                      granted={Boolean(permissions.edit_printing_costs)}
-                      isDelegatable={delegatable.includes('edit_printing_costs')}
-                      canDelegate={canDelegatePermission('edit_printing_costs')}
+                      permKey="edit_printing_prices"
+                      granted={Boolean(permissions.edit_printing_prices)}
+                      isDelegatable={delegatable.includes('edit_printing_prices')}
+                      canDelegate={canDelegatePermission('edit_printing_prices')}
+                      onToggle={toggleDelegatable}
+                      tone="amber"
+                    />
+                  </label>
+
+                  {/* Sewing Prices */}
+                  <label
+                    style={{ display: isPermissionVisible('view_sewing_prices') ? undefined : 'none' }}
+                    className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={permissions.view_sewing_prices}
+                      onChange={() => handleToggleBooleanPerm('view_sewing_prices')}
+                      className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
+                    />
+                    <div className="text-start flex-1">
+                      <span className="font-bold text-xs text-slate-900 block">رؤية أسعار المكن والخياطة</span>
+                      <span className="text-[10px] text-slate-500">إظهار سعر تشغيل القطعة في ورش المكن</span>
+                    </div>
+                    <DelegationBadge
+                      permKey="view_sewing_prices"
+                      granted={Boolean(permissions.view_sewing_prices)}
+                      isDelegatable={delegatable.includes('view_sewing_prices')}
+                      canDelegate={canDelegatePermission('view_sewing_prices')}
+                      onToggle={toggleDelegatable}
+                      tone="amber"
+                    />
+                  </label>
+
+                  <label
+                    style={{ display: isPermissionVisible('edit_sewing_prices') ? undefined : 'none' }}
+                    className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={permissions.edit_sewing_prices}
+                      onChange={() => handleToggleBooleanPerm('edit_sewing_prices')}
+                      className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
+                    />
+                    <div className="text-start flex-1">
+                      <span className="font-bold text-xs text-slate-900 block">تعديل أسعار المكن والخياطة</span>
+                      <span className="text-[10px] text-slate-500">تسجيل وتعديل سعر تشغيل ورش المكن</span>
+                    </div>
+                    <DelegationBadge
+                      permKey="edit_sewing_prices"
+                      granted={Boolean(permissions.edit_sewing_prices)}
+                      isDelegatable={delegatable.includes('edit_sewing_prices')}
+                      canDelegate={canDelegatePermission('edit_sewing_prices')}
+                      onToggle={toggleDelegatable}
+                      tone="amber"
+                    />
+                  </label>
+
+                  {/* Assembly & Packaging Prices (تشطيب/مكواة/تعبئة/خامات) */}
+                  <label
+                    style={{ display: isPermissionVisible('view_assembly_prices') ? undefined : 'none' }}
+                    className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={permissions.view_assembly_prices}
+                      onChange={() => handleToggleBooleanPerm('view_assembly_prices')}
+                      className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
+                    />
+                    <div className="text-start flex-1">
+                      <span className="font-bold text-xs text-slate-900 block">رؤية أسعار الأسمبلي والأمبالاج</span>
+                      <span className="text-[10px] text-slate-500">أسعار التشطيب/المكواة/التعبئة وخامات التشغيل</span>
+                    </div>
+                    <DelegationBadge
+                      permKey="view_assembly_prices"
+                      granted={Boolean(permissions.view_assembly_prices)}
+                      isDelegatable={delegatable.includes('view_assembly_prices')}
+                      canDelegate={canDelegatePermission('view_assembly_prices')}
+                      onToggle={toggleDelegatable}
+                      tone="amber"
+                    />
+                  </label>
+
+                  <label
+                    style={{ display: isPermissionVisible('edit_assembly_prices') ? undefined : 'none' }}
+                    className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-amber-200 hover:border-amber-400 cursor-pointer transition shadow-2xs"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={permissions.edit_assembly_prices}
+                      onChange={() => handleToggleBooleanPerm('edit_assembly_prices')}
+                      className="w-4 h-4 text-amber-600 rounded-sm focus:ring-amber-500"
+                    />
+                    <div className="text-start flex-1">
+                      <span className="font-bold text-xs text-slate-900 block">تعديل أسعار الأسمبلي والأمبالاج</span>
+                      <span className="text-[10px] text-slate-500">تسجيل وتعديل أسعار المراحل وخامات التشغيل</span>
+                    </div>
+                    <DelegationBadge
+                      permKey="edit_assembly_prices"
+                      granted={Boolean(permissions.edit_assembly_prices)}
+                      isDelegatable={delegatable.includes('edit_assembly_prices')}
+                      canDelegate={canDelegatePermission('edit_assembly_prices')}
                       onToggle={toggleDelegatable}
                       tone="amber"
                     />

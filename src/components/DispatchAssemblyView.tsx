@@ -30,7 +30,8 @@ export const DispatchAssemblyView: React.FC = () => {
     workshops,
     openWhatsAppOrder,
     hasPermission,
-    canViewPrintingCosts,
+    canViewPrintingPrices,
+    canEditPrintingPrices,
     canAddPrintingNotes,
     canAddQCBeforePrintNotes
   } = useApp();
@@ -99,6 +100,7 @@ export const DispatchAssemblyView: React.FC = () => {
     return d.toISOString().slice(0, 10);
   });
   const [notes, setNotes] = useState('');
+  const [printCost, setPrintCost] = useState('');
   const [printTarget, setPrintTarget] = useState<PrintDispatch | null>(null);
 
   // ورش المطابع والتطريز فقط (يمكن أن تحمل الورشة أكثر من تخصص).
@@ -143,7 +145,7 @@ export const DispatchAssemblyView: React.FC = () => {
       printLocation: printLocation.trim(),
       printDetails: printDetails.trim(),
       expectedDeliveryDate,
-      costPerPiece: 0,
+      costPerPiece: canEditPrintingPrices() ? Math.max(0, parseFloat(printCost) || 0) : 0,
       notes: allowPrintNotes ? notes.trim() : ''
     });
 
@@ -151,6 +153,7 @@ export const DispatchAssemblyView: React.FC = () => {
     setShopSelection('');
     setCustomShopName('');
     setNotes('');
+    setPrintCost('');
     setPrintDetails('');
   };
 
@@ -382,7 +385,7 @@ export const DispatchAssemblyView: React.FC = () => {
                 <th className="px-6 py-3.5 text-center">القطع المسلمة</th>
                 <th className="px-6 py-3.5 text-center">نوع القطعة</th>
                 <th className="px-6 py-3.5">نوع الطباعة / التشغيل</th>
-                {canViewPrintingCosts() && (
+                {canViewPrintingPrices() && (
                   <>
                     <th className="px-6 py-3.5 text-center">تكلفة القطعة</th>
                     <th className="px-6 py-3.5 text-center">الإجمالي</th>
@@ -438,7 +441,7 @@ export const DispatchAssemblyView: React.FC = () => {
                       </td>
 
                       {/* Printing Cost Columns guarded by permission */}
-                      {canViewPrintingCosts() && (
+                      {canViewPrintingPrices() && (
                         <>
                           <td className="px-6 py-4 text-center font-mono font-bold text-slate-700">
                             {disp.cost_per_piece ? `${disp.cost_per_piece} ج.م` : '-'}
@@ -530,7 +533,7 @@ export const DispatchAssemblyView: React.FC = () => {
                 })
               ) : (
                 <tr>
-                  <td colSpan={canViewPrintingCosts() ? 10 : 8} className="text-center py-8 text-slate-400">
+                  <td colSpan={canViewPrintingPrices() ? 10 : 8} className="text-center py-8 text-slate-400">
                     لا توجد تشغيلات مسجلة للمطابع والتطريز بعد.
                   </td>
                 </tr>
@@ -709,6 +712,24 @@ export const DispatchAssemblyView: React.FC = () => {
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs text-center font-bold focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
                 />
               </div>
+
+              {/* سعر الطباعة للقطعة: يظهر فقط لمن يملك صلاحية تعديل أسعار المطابع */}
+              {canEditPrintingPrices() && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    سعر الطباعة للقطعة (ج.م)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={printCost}
+                    onChange={(e) => setPrintCost(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs text-center font-bold focus:ring-2 focus:ring-teal-700 focus:outline-hidden"
+                  />
+                </div>
+              )}
 
               {/* Expected Delivery Date */}
               <div>

@@ -51,6 +51,7 @@ interface RowDraft {
   supplierId: string;
   minAlertThreshold: number;
   currentStock: number;
+  pricePerUnit: number;
 }
 
 const blankRow = (sizeGroupId = '', sizeGroupName = ''): RowDraft => ({
@@ -60,7 +61,8 @@ const blankRow = (sizeGroupId = '', sizeGroupName = ''): RowDraft => ({
   dimensionsSpec: '',
   supplierId: '',
   minAlertThreshold: 0,
-  currentStock: 0
+  currentStock: 0,
+  pricePerUnit: 0
 });
 
 const rowToDraft = (row: PackagingMaterialSizeRule): RowDraft => ({
@@ -71,7 +73,8 @@ const rowToDraft = (row: PackagingMaterialSizeRule): RowDraft => ({
   dimensionsSpec: row.dimensions_spec || '',
   supplierId: row.supplier_id || '',
   minAlertThreshold: Number(row.min_alert_threshold) || 0,
-  currentStock: Number(row.current_stock) || 0
+  currentStock: Number(row.current_stock) || 0,
+  pricePerUnit: Number(row.price_per_unit) || 0
 });
 
 const OPERATIONS: PackagingMaterialOperation[] = ['add', 'deduct', 'adjust'];
@@ -84,10 +87,18 @@ const MaterialStockRow: React.FC<{
   canSend: boolean;
   onWhatsapp: () => void;
 }> = ({ rule, row, demand, canEdit, canSend, onWhatsapp }) => {
-  const { recordPackagingMaterialTransaction, addFlashMessage } = useApp();
+  const {
+    recordPackagingMaterialTransaction,
+    addFlashMessage,
+    canViewAssemblyPrices,
+    canEditAssemblyPrices
+  } = useApp();
   const [open, setOpen] = useState(false);
   const [operation, setOperation] = useState<PackagingMaterialOperation>('add');
   const [amount, setAmount] = useState('');
+  const [price, setPrice] = useState(
+    row.price_per_unit != null ? String(row.price_per_unit) : ''
+  );
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -102,7 +113,10 @@ const MaterialStockRow: React.FC<{
       sizeRuleId: row.id,
       operation,
       amount: value,
-      notes: notes.trim()
+      notes: notes.trim(),
+      ...(canEditAssemblyPrices() && price !== ''
+        ? { pricePerUnit: Math.max(0, Number(price) || 0) }
+        : {})
     });
     setBusy(false);
     if (result.success) {
@@ -138,6 +152,16 @@ const MaterialStockRow: React.FC<{
               <span className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 text-[9px] font-black">
                 استهلاك/قطعة: {formatNumber(demand.consumptionPerPiece)}
               </span>
+              {row.price_per_unit != null && canViewAssemblyPrices() && (
+                <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[9px] font-black">
+                  سعر الوحدة: {formatNumber(row.price_per_unit)} ج.م
+                </span>
+              )}
+              {row.total_stock_value != null && canViewAssemblyPrices() && (
+                <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[9px] font-black">
+                  قيمة المخزون: {formatNumber(row.total_stock_value)} ج.م
+                </span>
+              )}
             </div>
             <p className="text-[10px] text-slate-500 font-semibold mt-1">
               المورد: <span className="font-black text-slate-700">{row.supplier_name || 'غير محدد'}</span>
@@ -265,6 +289,20 @@ const MaterialStockRow: React.FC<{
                 className="mt-1 block w-full px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-bold focus:outline-none focus:ring-2 focus:ring-orange-300"
               />
             </label>
+            {canEditAssemblyPrices() && (
+              <label className="text-[10px] font-black text-slate-600">
+                سعر الوحدة (ج.م)
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={price}
+                  onChange={(event) => setPrice(event.target.value)}
+                  placeholder="0.00"
+                  className="mt-1 block w-28 px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-bold focus:outline-none focus:ring-2 focus:ring-orange-300"
+                />
+              </label>
+            )}
             <button
               type="button"
               onClick={submit}
@@ -308,7 +346,9 @@ export const PackagingMaterialsView: React.FC = () => {
     openWhatsAppOrder,
     addFlashMessage,
     savePackagingMaterialRule,
-    deletePackagingMaterialRule
+    deletePackagingMaterialRule,
+    canViewAssemblyPrices,
+    canEditAssemblyPrices
   } = useApp();
 
   const canEdit = hasAssemblyPackagingAccess(true);
@@ -456,7 +496,8 @@ export const PackagingMaterialsView: React.FC = () => {
         dimensionsSpec: row.dimensionsSpec,
         supplierId: row.supplierId,
         minAlertThreshold: Number(row.minAlertThreshold) || 0,
-        currentStock: Number(row.currentStock) || 0
+        currentStock: Number(row.currentStock) || 0,
+        pricePerUnit: Number(row.pricePerUnit) || 0
       }))
     });
     setSaving(false);
@@ -844,6 +885,9 @@ export const PackagingMaterialsView: React.FC = () => {
                   <th className="text-start p-2 font-black">المورد</th>
                   <th className="text-start p-2 font-black">حد التنبيه</th>
                   <th className="text-start p-2 font-black">الرصيد الحالي</th>
+                  {(canViewAssemblyPrices() || canEditAssemblyPrices()) && (
+                    <th className="text-start p-2 font-black">سعر الوحدة</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -915,6 +959,21 @@ export const PackagingMaterialsView: React.FC = () => {
                         className="w-24 px-2 py-1.5 rounded-lg border border-slate-200 bg-white font-bold focus:outline-none focus:ring-2 focus:ring-orange-300"
                       />
                     </td>
+                    {(canViewAssemblyPrices() || canEditAssemblyPrices()) && (
+                      <td className="p-2">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          disabled={!canEditAssemblyPrices()}
+                          value={row.pricePerUnit}
+                          onChange={(event) =>
+                            updateRow(index, { pricePerUnit: Number(event.target.value) })
+                          }
+                          className="w-24 px-2 py-1.5 rounded-lg border border-slate-200 bg-white font-bold focus:outline-none focus:ring-2 focus:ring-orange-300 disabled:bg-slate-100 disabled:text-slate-400"
+                        />
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

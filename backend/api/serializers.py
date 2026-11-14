@@ -420,9 +420,21 @@ class ModelTimelineSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         ts = instance.timestamp_str or (instance.timestamp.strftime('%Y-%m-%d %H:%M') if instance.timestamp else '')
         details = dict(instance.details) if isinstance(instance.details, dict) else {}
-        # تكلفة الطباعة بيانات مالية: لا تُكشف في تايم لاين الموديل إلا لمن يملك الصلاحية.
-        if not viewer_can_view(self.context, 'view_printing_costs'):
-            for sensitive_key in ('cost_per_piece', 'total_cost'):
+        # التكاليف بيانات مالية: لا تُكشف في تايم لاين الموديل إلا لمن يملك صلاحية القسم.
+        can_view_printing = viewer_can_view(self.context, 'view_printing_prices', 'view_printing_costs')
+        can_view_sewing = viewer_can_view(self.context, 'view_sewing_prices')
+        can_view_assembly = viewer_can_view(self.context, 'view_assembly_prices')
+        phase = str(details.get('phase_type') or '')
+        if 'print' in phase:
+            cost_allowed = can_view_printing
+        elif 'sewing' in phase:
+            cost_allowed = can_view_sewing
+        elif any(key in phase for key in ('finishing', 'ironing', 'assembly', 'packaging', 'dest', 'material')):
+            cost_allowed = can_view_assembly
+        else:
+            cost_allowed = can_view_printing or can_view_sewing or can_view_assembly
+        if not cost_allowed:
+            for sensitive_key in ('cost_per_piece', 'total_cost', 'price_per_unit', 'print_cost'):
                 details.pop(sensitive_key, None)
         return {
             'id': get_ext_id(instance),
@@ -551,7 +563,7 @@ class PrintDispatchSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         cost = float(instance.cost_per_piece or 0)
         pcs = int(instance.pieces_count or 0)
-        can_view_costs = viewer_can_view(self.context, 'view_printing_costs')
+        can_view_costs = viewer_can_view(self.context, 'view_printing_prices', 'view_printing_costs')
         disp_at = instance.dispatched_at_str or (instance.dispatch_date.isoformat() if instance.dispatch_date else '')
         rec_at = instance.received_at_str or (instance.received_date.isoformat() if instance.received_date else None)
         return {
@@ -586,11 +598,15 @@ class SewingDispatchSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         disp_at = instance.dispatched_at_str or (instance.dispatched_date.isoformat() if instance.dispatched_date else '')
         rec_at = instance.received_at_str or (instance.received_date.isoformat() if instance.received_date else None)
+        can_view_prices = viewer_can_view(self.context, 'view_sewing_prices')
+        pcs = int(instance.pieces_count or 0)
+        cost = float(instance.cost_per_piece or 0)
+        total = float(instance.total_cost or 0) or round(cost * pcs, 2)
         return {
             'id': get_ext_id(instance),
             'model_id': get_ext_id(instance.model),
             'workshop_name': instance.workshop_name,
-            'pieces_count': int(instance.pieces_count or 0),
+            'pieces_count': pcs,
             'dispatched_at': disp_at,
             'expected_delivery_date': to_date_str(instance.expected_delivery_date),
             'status': instance.status,
@@ -599,6 +615,9 @@ class SewingDispatchSerializer(serializers.ModelSerializer):
             'received_at': rec_at,
             'notes': instance.notes or '',
             'is_overdue': instance.is_overdue,
+            # أسعار ورش المكن تُخفى (None) لمن لا يملك صلاحية عرضها.
+            'cost_per_piece': cost if can_view_prices else None,
+            'total_cost': total if can_view_prices else None,
         }
 
 
@@ -673,7 +692,7 @@ class ModelItemSerializer(serializers.ModelSerializer):
             # سعر الطباعة للقطعة يُخفى (None) لمن لا يملك صلاحية عرض تكاليف الطباعة.
             'print_cost': (
                 float(instance.print_cost_per_piece or 0)
-                if viewer_can_view(self.context, 'view_printing_costs')
+                if viewer_can_view(self.context, 'view_printing_prices', 'view_printing_costs')
                 else None
             ),
             'print_expected_date': instance.print_expected_date.isoformat() if instance.print_expected_date else None,
@@ -738,6 +757,7 @@ class FinishingRecordSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def to_representation(self, instance):
+        can_view_prices = viewer_can_view(self.context, 'view_assembly_prices')
         return {
             'id': get_ext_id(instance),
             'model_id': get_ext_id(instance.model),
@@ -752,6 +772,9 @@ class FinishingRecordSerializer(serializers.ModelSerializer):
             'is_received': instance.is_received,
             'is_overdue': instance.is_overdue,
             'notes': instance.notes or '',
+            # أسعار التشطيب تُخفى (None) لمن لا يملك صلاحية عرض أسعار الأسمبلي.
+            'cost_per_piece': float(instance.cost_per_piece or 0) if can_view_prices else None,
+            'total_cost': float(instance.total_cost or 0) if can_view_prices else None,
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
         }
 
@@ -762,6 +785,7 @@ class AssemblyStageRecordSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def to_representation(self, instance):
+        can_view_prices = viewer_can_view(self.context, 'view_assembly_prices')
         return {
             'id': get_ext_id(instance),
             'model_id': get_ext_id(instance.model),
@@ -778,6 +802,9 @@ class AssemblyStageRecordSerializer(serializers.ModelSerializer):
             'is_completed': instance.is_completed,
             'is_overdue': instance.is_overdue,
             'notes': instance.notes or '',
+            # أسعار مراحل الأسمبلي تُخفى (None) لمن لا يملك صلاحية عرضها.
+            'cost_per_piece': float(instance.cost_per_piece or 0) if can_view_prices else None,
+            'total_cost': float(instance.total_cost or 0) if can_view_prices else None,
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
         }
 
@@ -788,6 +815,7 @@ class PackagingMaterialTransactionSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def to_representation(self, instance):
+        can_view_prices = viewer_can_view(self.context, 'view_assembly_prices')
         return {
             'id': get_ext_id(instance),
             'size_rule_id': get_ext_id(instance.size_rule),
@@ -797,6 +825,12 @@ class PackagingMaterialTransactionSerializer(serializers.ModelSerializer):
             'notes': instance.notes or '',
             'timestamp': instance.timestamp or '',
             'created_at': instance.created_at.isoformat() if instance.created_at else '',
+            # سعر الوحدة وإجمالي الحركة يُخفيان (None) لمن لا يملك صلاحية الأسعار.
+            'price_per_unit': float(instance.price_per_unit or 0) if can_view_prices else None,
+            'total_cost': (
+                round(float(instance.price_per_unit or 0) * float(instance.amount or 0), 2)
+                if can_view_prices else None
+            ),
         }
 
 
@@ -807,6 +841,7 @@ class PackagingMaterialSizeRuleSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         supplier = instance.supplier
+        can_view_prices = viewer_can_view(self.context, 'view_assembly_prices')
         return {
             'id': get_ext_id(instance),
             'rule_id': get_ext_id(instance.rule),
@@ -820,8 +855,14 @@ class PackagingMaterialSizeRuleSerializer(serializers.ModelSerializer):
             'supplier_phone': (supplier.phone or '') if supplier else '',
             'min_alert_threshold': instance.min_alert_threshold,
             'current_stock': instance.current_stock,
+            # سعر وحدة خامة التشغيل يُخفى (None) لمن لا يملك صلاحية الأسعار.
+            'price_per_unit': float(instance.price_per_unit or 0) if can_view_prices else None,
+            'total_stock_value': (
+                round(float(instance.price_per_unit or 0) * float(instance.current_stock or 0), 2)
+                if can_view_prices else None
+            ),
             'transactions': PackagingMaterialTransactionSerializer(
-                instance.transactions.all(), many=True
+                instance.transactions.all(), many=True, context=self.context
             ).data,
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
         }
@@ -845,7 +886,9 @@ class PackagingMaterialRuleSerializer(serializers.ModelSerializer):
             'applicable_size_groups': instance.applicable_size_groups or [],
             'is_active': instance.is_active,
             'total_stock': round(total_stock, 3),
-            'size_rules': PackagingMaterialSizeRuleSerializer(size_rules, many=True).data,
+            'size_rules': PackagingMaterialSizeRuleSerializer(
+                size_rules, many=True, context=self.context
+            ).data,
             'created_at': instance.created_at.isoformat() if instance.created_at else '',
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
         }

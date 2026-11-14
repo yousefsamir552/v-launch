@@ -538,7 +538,9 @@ DEFAULT_ROLES_SEED = [
             'reports_view': True, 'reports_edit': True,
             'view_fabric_prices': True, 'edit_fabric_prices': True,
             'view_accessory_prices': True, 'edit_accessory_prices': True,
-            'view_printing_costs': True, 'edit_printing_costs': True,
+            'view_printing_prices': True, 'edit_printing_prices': True,
+            'view_sewing_prices': True, 'edit_sewing_prices': True,
+            'view_assembly_prices': True, 'edit_assembly_prices': True,
             'send_whatsapp_requests': True, 'send_internal_messages': True,
             'manage_permissions': True, 'manage_users': True,
             'manage_suppliers': True, 'manage_sizes': True,
@@ -566,7 +568,9 @@ DEFAULT_ROLES_SEED = [
             'reports_view': True, 'reports_edit': False,
             'view_fabric_prices': False, 'edit_fabric_prices': False,
             'view_accessory_prices': True, 'edit_accessory_prices': True,
-            'view_printing_costs': False, 'edit_printing_costs': False,
+            'view_printing_prices': False, 'edit_printing_prices': False,
+            'view_sewing_prices': False, 'edit_sewing_prices': False,
+            'view_assembly_prices': False, 'edit_assembly_prices': False,
             'send_whatsapp_requests': True, 'send_internal_messages': True,
             'manage_suppliers': True,
         }
@@ -588,7 +592,9 @@ DEFAULT_ROLES_SEED = [
             'reports_view': True, 'reports_edit': False,
             'view_fabric_prices': True, 'edit_fabric_prices': True,
             'view_accessory_prices': False, 'edit_accessory_prices': False,
-            'view_printing_costs': False, 'edit_printing_costs': False,
+            'view_printing_prices': False, 'edit_printing_prices': False,
+            'view_sewing_prices': False, 'edit_sewing_prices': False,
+            'view_assembly_prices': False, 'edit_assembly_prices': False,
             'send_whatsapp_requests': True, 'send_internal_messages': False,
             'manage_suppliers': True,
         }
@@ -610,7 +616,9 @@ DEFAULT_ROLES_SEED = [
             'reports_view': False, 'reports_edit': False,
             'view_fabric_prices': False, 'edit_fabric_prices': False,
             'view_accessory_prices': False, 'edit_accessory_prices': False,
-            'view_printing_costs': False, 'edit_printing_costs': False,
+            'view_printing_prices': False, 'edit_printing_prices': False,
+            'view_sewing_prices': False, 'edit_sewing_prices': False,
+            'view_assembly_prices': False, 'edit_assembly_prices': False,
             'send_whatsapp_requests': False, 'send_internal_messages': True,
             'can_add_design_notes': True,
             'manage_sizes': True,
@@ -633,7 +641,9 @@ DEFAULT_ROLES_SEED = [
             'reports_view': False, 'reports_edit': False,
             'view_fabric_prices': False, 'edit_fabric_prices': False,
             'view_accessory_prices': False, 'edit_accessory_prices': False,
-            'view_printing_costs': False, 'edit_printing_costs': False,
+            'view_printing_prices': False, 'edit_printing_prices': False,
+            'view_sewing_prices': False, 'edit_sewing_prices': False,
+            'view_assembly_prices': False, 'edit_assembly_prices': False,
             'send_whatsapp_requests': False, 'send_internal_messages': False,
             'can_add_cutting_notes': True,
         }
@@ -655,7 +665,9 @@ DEFAULT_ROLES_SEED = [
             'reports_view': True, 'reports_edit': False,
             'view_fabric_prices': False, 'edit_fabric_prices': False,
             'view_accessory_prices': False, 'edit_accessory_prices': False,
-            'view_printing_costs': False, 'edit_printing_costs': False,
+            'view_printing_prices': False, 'edit_printing_prices': False,
+            'view_sewing_prices': False, 'edit_sewing_prices': False,
+            'view_assembly_prices': False, 'edit_assembly_prices': False,
             'send_whatsapp_requests': False, 'send_internal_messages': False,
             'can_add_qc_before_print_notes': True,
             'can_add_qc_after_print_notes': True,
@@ -678,7 +690,9 @@ DEFAULT_ROLES_SEED = [
             'reports_view': True, 'reports_edit': False,
             'view_fabric_prices': False, 'edit_fabric_prices': False,
             'view_accessory_prices': False, 'edit_accessory_prices': False,
-            'view_printing_costs': True, 'edit_printing_costs': True,
+            'view_printing_prices': True, 'edit_printing_prices': True,
+            'view_sewing_prices': True, 'edit_sewing_prices': True,
+            'view_assembly_prices': True, 'edit_assembly_prices': True,
             'send_whatsapp_requests': False, 'send_internal_messages': True,
             'can_add_printing_notes': True,
         }
@@ -700,7 +714,9 @@ DEFAULT_ROLES_SEED = [
             'reports_view': True, 'reports_edit': False,
             'view_fabric_prices': False, 'edit_fabric_prices': False,
             'view_accessory_prices': False, 'edit_accessory_prices': False,
-            'view_printing_costs': False, 'edit_printing_costs': False,
+            'view_printing_prices': False, 'edit_printing_prices': False,
+            'view_sewing_prices': False, 'edit_sewing_prices': False,
+            'view_assembly_prices': False, 'edit_assembly_prices': False,
             'send_whatsapp_requests': False, 'send_internal_messages': True,
             'can_add_sewing_notes': True,
         }
@@ -831,6 +847,43 @@ def ensure_schema_columns():
                 if 'icon' not in cols:
                     cursor.execute("ALTER TABLE api_packagingmaterialrule ADD COLUMN icon varchar(20) NOT NULL DEFAULT '';")
 
+            # ------------------------------------------------------------------
+            # Independent per-department prices/costs (ترحيل ذاتي آمن للإنتاج).
+            # ------------------------------------------------------------------
+            if 'api_role' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_role')]
+                # Rename the legacy printing-costs booleans to the canonical prices names.
+                for legacy_col, new_col in (
+                    ('can_view_printing_costs', 'can_view_printing_prices'),
+                    ('can_edit_printing_costs', 'can_edit_printing_prices'),
+                ):
+                    if legacy_col in cols and new_col not in cols:
+                        cursor.execute(f'ALTER TABLE api_role RENAME COLUMN {legacy_col} TO {new_col};')
+                        cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_role')]
+                for price_col in (
+                    'can_view_printing_prices', 'can_edit_printing_prices',
+                    'can_view_sewing_prices', 'can_edit_sewing_prices',
+                    'can_view_assembly_prices', 'can_edit_assembly_prices',
+                ):
+                    if price_col not in cols:
+                        cursor.execute(f'ALTER TABLE api_role ADD COLUMN {price_col} boolean NOT NULL DEFAULT false;')
+
+            for cost_table in ('api_sewingdispatch', 'api_finishingrecord', 'api_assemblystagerecord'):
+                if cost_table not in table_names:
+                    continue
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, cost_table)]
+                if 'cost_per_piece' not in cols:
+                    cursor.execute(f'ALTER TABLE {cost_table} ADD COLUMN cost_per_piece numeric(12,2) NOT NULL DEFAULT 0;')
+                if 'total_cost' not in cols:
+                    cursor.execute(f'ALTER TABLE {cost_table} ADD COLUMN total_cost numeric(14,2) NOT NULL DEFAULT 0;')
+
+            for price_table in ('api_packagingmaterialsizerule', 'api_packagingmaterialtransaction'):
+                if price_table not in table_names:
+                    continue
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, price_table)]
+                if 'price_per_unit' not in cols:
+                    cursor.execute(f'ALTER TABLE {price_table} ADD COLUMN price_per_unit numeric(12,2) NOT NULL DEFAULT 0;')
+
             if 'api_cuttingspreadlayer' not in table_names:
                 if connection.vendor == 'postgresql':
                     cursor.execute('''
@@ -926,7 +979,34 @@ def ensure_packaging_material_categories():
         rule.save(update_fields=['icon'])
 
 
-def apply_packaging_material_transaction(size_rule, operation, amount, notes='', timestamp=''):
+def resolve_cost_values(cost_per_piece, total_cost=None, pieces_count=None):
+    """
+    يحسم (سعر القطعة، الإجمالي) من مدخلات الواجهة بأمان.
+
+    * ``cost_per_piece`` سالب أو غير رقمي → 0.
+    * إن مُرِّر ``total_cost`` صريحاً يُستخدم كما هو.
+    * وإلا يُحسب الإجمالي = السعر × عدد القطع إن توفّر العدد، أو السعر فقط.
+    """
+    try:
+        cost = max(0.0, float(cost_per_piece or 0))
+    except (TypeError, ValueError):
+        cost = 0.0
+    if total_cost not in (None, ''):
+        try:
+            total = max(0.0, float(total_cost or 0))
+        except (TypeError, ValueError):
+            total = 0.0
+    else:
+        try:
+            count = float(pieces_count or 0)
+        except (TypeError, ValueError):
+            count = 0.0
+        total = round(cost * count, 2) if count > 0 else round(cost, 2)
+    return round(cost, 2), round(total, 2)
+
+
+def apply_packaging_material_transaction(size_rule, operation, amount, notes='', timestamp='',
+                                         price_per_unit=0.0):
     """
     Applies an add / deduct / adjust movement to a packaging-material size row
     and records it in the ledger. Returns the created transaction.
@@ -937,6 +1017,10 @@ def apply_packaging_material_transaction(size_rule, operation, amount, notes='',
         amount = 0.0
     if amount < 0:
         amount = abs(amount)
+    try:
+        unit_price = max(0.0, float(price_per_unit or 0))
+    except (TypeError, ValueError):
+        unit_price = 0.0
 
     current = float(size_rule.current_stock or 0)
     if operation == 'add':
@@ -953,6 +1037,7 @@ def apply_packaging_material_transaction(size_rule, operation, amount, notes='',
         size_rule=size_rule,
         operation=operation,
         amount=amount,
+        price_per_unit=unit_price,
         notes=notes or '',
         timestamp=timestamp or '',
     )
@@ -1414,7 +1499,8 @@ def generate_assembly_delivery_notifications():
 
 def dispatch_model_to_sewing_service(
     model_id, workshop_name, pieces_count, expected_delivery_date,
-    notes=None, user_name='مدير الإنتاج', piece_type='shirt', piece_label=None, client_id=None
+    notes=None, user_name='مدير الإنتاج', piece_type='shirt', piece_label=None, client_id=None,
+    cost_per_piece=0.0, total_cost=None,
 ):
     """
     Records sewing dispatch and moves model into sewing stage with independent piece tracking.
@@ -1423,6 +1509,7 @@ def dispatch_model_to_sewing_service(
     if not model:
         raise ValueError("الموديل غير موجود")
     resolved_label = piece_label or PART_LABELS.get(piece_type, 'قطعة')
+    unit_cost, total_work_cost = resolve_cost_values(cost_per_piece, total_cost, pieces_count)
 
     if piece_type == 'shirt':
         model.sewing_shirt_workshop = workshop_name
@@ -1456,7 +1543,9 @@ def dispatch_model_to_sewing_service(
         expected_delivery_date=expected_delivery_date,
         dispatched_at_str=now_str,
         status='في ورشة المكن',
-        notes=clean_notes
+        notes=clean_notes,
+        cost_per_piece=unit_cost,
+        total_cost=total_work_cost,
     )
 
     tl_notes = f"تم إرسال {pieces_count} قطعة [{resolved_label}] للخياطة إلى ورشة ({workshop_name})، تاريخ الاستلام المتوقع: {expected_delivery_date}"
@@ -1482,6 +1571,8 @@ def dispatch_model_to_sewing_service(
             'status': 'في ورشة المكن',
             'worker_notes': clean_notes,
             'operator_name': user_name,
+            'cost_per_piece': unit_cost,
+            'total_cost': total_work_cost,
         }
     )
 
@@ -1669,7 +1760,8 @@ def set_packaging_step_service(model, step, step_date=None, notes=None,
 
 
 def start_finishing_service(model, parts=None, entry_date=None, expected_exit_date=None,
-                            notes=None, vendor_name=None, user_name='مسؤول التشطيب'):
+                            notes=None, vendor_name=None, user_name='مسؤول التشطيب',
+                            cost_per_piece=0.0, total_cost=None):
     """
     Starts (or updates) the finishing stage for the given model parts.
     Each part gets its own FinishingRecord and its own ``part_stages`` entry;
@@ -1683,6 +1775,7 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
     entry = _parse_date_value(entry_date) or date.today()
     expected = _parse_date_value(expected_exit_date)
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+    unit_cost, total_finish_cost = resolve_cost_values(cost_per_piece, total_cost)
 
     ensure_part_stages(model)
 
@@ -1714,6 +1807,8 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
                 'expected_exit_date': expected,
                 'vendor_name': clean_vendor,
                 'notes': clean_notes or None,
+                'cost_per_piece': unit_cost,
+                'total_cost': total_finish_cost,
             },
         )
         if not created:
@@ -1724,6 +1819,9 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
                 record.notes = clean_notes
             if clean_vendor:
                 record.vendor_name = clean_vendor
+            if unit_cost or total_finish_cost:
+                record.cost_per_piece = unit_cost
+                record.total_cost = total_finish_cost
             record.save()
         # Only the requested parts move into finishing; siblings keep their stage.
         stages[part] = 'finishing'
@@ -1759,6 +1857,8 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
             'vendor_name': clean_vendor,
             'worker_notes': clean_notes,
             'operator_name': user_name,
+            'cost_per_piece': unit_cost,
+            'total_cost': total_finish_cost,
         },
     )
     return records
@@ -1835,7 +1935,7 @@ ASSEMBLY_STAGE_NEXT_STATUS = {
 
 def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
                           expected_exit_date=None, notes=None, vendor_name=None,
-                          user_name='مسؤول المكواة'):
+                          user_name='مسؤول المكواة', cost_per_piece=0.0, total_cost=None):
     """Starts (or updates) the ironing stage for one or more garment parts.
 
     Ironing is tracked per part: each part gets its own AssemblyStageRecord with
@@ -1849,6 +1949,7 @@ def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
     entry = _parse_date_value(entry_date) or date.today()
     expected = _parse_date_value(expected_exit_date)
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+    unit_cost, total_iron_cost = resolve_cost_values(cost_per_piece, total_cost)
 
     ensure_part_stages(model)
     stages = get_part_stages(model)
@@ -1886,6 +1987,8 @@ def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
                 'expected_exit_date': expected,
                 'vendor_name': clean_vendor,
                 'notes': clean_notes or None,
+                'cost_per_piece': unit_cost,
+                'total_cost': total_iron_cost,
             },
         )
         if not created:
@@ -1896,6 +1999,9 @@ def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
                 record.vendor_name = clean_vendor
             if clean_notes:
                 record.notes = clean_notes
+            if unit_cost or total_iron_cost:
+                record.cost_per_piece = unit_cost
+                record.total_cost = total_iron_cost
             record.save()
         stages[part] = 'ironing'
         records.append(record)
@@ -1930,6 +2036,8 @@ def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
             'vendor_name': clean_vendor,
             'worker_notes': clean_notes,
             'operator_name': user_name,
+            'cost_per_piece': unit_cost,
+            'total_cost': total_iron_cost,
         },
     )
     return records
@@ -1985,7 +2093,7 @@ def receive_ironing_service(record_id, actual_exit_date=None, notes=None,
 
 def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_date=None,
                                  notes=None, vendor_name=None, part_type=None,
-                                 user_name='مسؤول الأسمبلي'):
+                                 user_name='مسؤول الأسمبلي', cost_per_piece=0.0, total_cost=None):
     """
     Starts (or updates) one assembly stage (ironing / packaging / dest).
 
@@ -2007,6 +2115,8 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
             notes=notes,
             vendor_name=vendor_name,
             user_name=user_name,
+            cost_per_piece=cost_per_piece,
+            total_cost=total_cost,
         )
 
     if stage == 'packaging':
@@ -2030,6 +2140,7 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
     entry = _parse_date_value(entry_date) or date.today()
     expected = _parse_date_value(expected_exit_date)
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+    unit_cost, total_stage_cost = resolve_cost_values(cost_per_piece, total_cost)
 
     record, created = AssemblyStageRecord.objects.get_or_create(
         model=model,
@@ -2040,6 +2151,8 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
             'expected_exit_date': expected,
             'vendor_name': clean_vendor,
             'notes': clean_notes or None,
+            'cost_per_piece': unit_cost,
+            'total_cost': total_stage_cost,
         },
     )
     if not created:
@@ -2050,6 +2163,9 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
             record.vendor_name = clean_vendor
         if clean_notes:
             record.notes = clean_notes
+        if unit_cost or total_stage_cost:
+            record.cost_per_piece = unit_cost
+            record.total_cost = total_stage_cost
         record.save()
 
     ensure_part_stages(model)
@@ -2081,6 +2197,8 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
             'vendor_name': clean_vendor,
             'worker_notes': clean_notes,
             'operator_name': user_name,
+            'cost_per_piece': unit_cost,
+            'total_cost': total_stage_cost,
         },
     )
     return record

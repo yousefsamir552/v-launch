@@ -226,6 +226,40 @@ def normalize_assembly_permissions(perms: dict) -> dict:
     return perms
 
 
+# ---------------------------------------------------------------------------
+# ترحيل صلاحيات المطابع القديمة (تكاليف) إلى الاسم المعتمد (أسعار) مع الحفاظ
+# على توافقية البيانات المحفوظة في permissions_json / custom_permissions.
+# ---------------------------------------------------------------------------
+FINANCIAL_PERMISSION_ALIASES = {
+    'view_printing_costs': 'view_printing_prices',
+    'edit_printing_costs': 'edit_printing_prices',
+    'can_view_printing_costs': 'view_printing_prices',
+    'can_edit_printing_costs': 'edit_printing_prices',
+}
+
+FINANCIAL_PERMISSION_REVERSE = {
+    'view_printing_prices': ('view_printing_costs',),
+    'edit_printing_prices': ('edit_printing_costs',),
+}
+
+
+def canonical_permission_key(perm_name):
+    """Return the canonical (new) name for a legacy printing-costs permission."""
+    if not isinstance(perm_name, str):
+        return perm_name
+    return FINANCIAL_PERMISSION_ALIASES.get(perm_name, perm_name)
+
+
+def normalize_financial_permissions(perms: dict) -> dict:
+    """Fold legacy ``*_printing_costs`` keys into the canonical ``*_printing_prices``."""
+    if not isinstance(perms, dict):
+        return perms
+    for legacy, canonical in FINANCIAL_PERMISSION_ALIASES.items():
+        if legacy in perms and canonical not in perms:
+            perms[canonical] = perms[legacy]
+    return perms
+
+
 class Role(models.Model):
     """
     Dynamic Role model - completely customizable without hardcoded limitations.
@@ -267,8 +301,12 @@ class Role(models.Model):
     can_edit_fabric_prices = models.BooleanField(default=False, verbose_name="تعديل أسعار القماش")
     can_view_accessory_prices = models.BooleanField(default=False, verbose_name="رؤية أسعار الإكسسوارات")
     can_edit_accessory_prices = models.BooleanField(default=False, verbose_name="تعديل أسعار الإكسسوارات")
-    can_view_printing_costs = models.BooleanField(default=False, verbose_name="رؤية تكاليف المطابع")
-    can_edit_printing_costs = models.BooleanField(default=False, verbose_name="تعديل تكاليف المطابع")
+    can_view_printing_prices = models.BooleanField(default=False, verbose_name="رؤية أسعار المطابع")
+    can_edit_printing_prices = models.BooleanField(default=False, verbose_name="تعديل أسعار المطابع")
+    can_view_sewing_prices = models.BooleanField(default=False, verbose_name="رؤية أسعار المكن والخياطة")
+    can_edit_sewing_prices = models.BooleanField(default=False, verbose_name="تعديل أسعار المكن والخياطة")
+    can_view_assembly_prices = models.BooleanField(default=False, verbose_name="رؤية أسعار الأسمبلي والأمبالاج وخامات التشغيل")
+    can_edit_assembly_prices = models.BooleanField(default=False, verbose_name="تعديل أسعار الأسمبلي والأمبالاج وخامات التشغيل")
 
     # Sensitive & Communication Permissions
     can_send_whatsapp = models.BooleanField(default=False, verbose_name="إرسال طلبات النواقص عبر الواتساب")
@@ -305,8 +343,12 @@ class Role(models.Model):
             'edit_fabric_prices': bool(self.can_edit_fabric_prices),
             'view_accessory_prices': bool(self.can_view_accessory_prices),
             'edit_accessory_prices': bool(self.can_edit_accessory_prices),
-            'view_printing_costs': bool(self.can_view_printing_costs),
-            'edit_printing_costs': bool(self.can_edit_printing_costs),
+            'view_printing_prices': bool(self.can_view_printing_prices),
+            'edit_printing_prices': bool(self.can_edit_printing_prices),
+            'view_sewing_prices': bool(self.can_view_sewing_prices),
+            'edit_sewing_prices': bool(self.can_edit_sewing_prices),
+            'view_assembly_prices': bool(self.can_view_assembly_prices),
+            'edit_assembly_prices': bool(self.can_edit_assembly_prices),
             'send_whatsapp_requests': bool(self.can_send_whatsapp),
             'send_internal_messages': bool(self.can_send_messages),
             # Dynamic administrative permissions (Task 2)
@@ -339,14 +381,14 @@ class Role(models.Model):
         }
         if isinstance(self.permissions_json, dict) and self.permissions_json:
             base.update(self.permissions_json)
-        return normalize_assembly_permissions(base)
+        return normalize_financial_permissions(normalize_assembly_permissions(base))
 
     def sync_booleans_from_permissions(self, perms: dict):
         if not isinstance(perms, dict):
             return
         merged = self.get_permissions_dict()
         merged.update(perms)
-        merged = normalize_assembly_permissions(merged)
+        merged = normalize_financial_permissions(normalize_assembly_permissions(merged))
         self.permissions_json = merged
         self.can_fabric_warehouse = bool(merged.get('fabric_warehouse_view') or merged.get('fabric_warehouse_edit'))
         self.can_accessories_warehouse = bool(merged.get('accessories_warehouse_view') or merged.get('accessories_warehouse_edit'))
@@ -363,8 +405,12 @@ class Role(models.Model):
         self.can_edit_fabric_prices = bool(merged.get('edit_fabric_prices'))
         self.can_view_accessory_prices = bool(merged.get('view_accessory_prices'))
         self.can_edit_accessory_prices = bool(merged.get('edit_accessory_prices'))
-        self.can_view_printing_costs = bool(merged.get('view_printing_costs'))
-        self.can_edit_printing_costs = bool(merged.get('edit_printing_costs'))
+        self.can_view_printing_prices = bool(merged.get('view_printing_prices'))
+        self.can_edit_printing_prices = bool(merged.get('edit_printing_prices'))
+        self.can_view_sewing_prices = bool(merged.get('view_sewing_prices'))
+        self.can_edit_sewing_prices = bool(merged.get('edit_sewing_prices'))
+        self.can_view_assembly_prices = bool(merged.get('view_assembly_prices'))
+        self.can_edit_assembly_prices = bool(merged.get('edit_assembly_prices'))
         self.can_send_whatsapp = bool(merged.get('send_whatsapp_requests'))
         self.can_send_messages = bool(merged.get('send_internal_messages'))
 
@@ -445,11 +491,16 @@ class UserProfile(models.Model):
     def has_perm(self, perm_name: str) -> bool:
         if self.is_sudo or self.username.lower() == 'sudo':
             return True
-        if isinstance(self.custom_permissions, dict) and perm_name in self.custom_permissions:
-            val = self.custom_permissions[perm_name]
-            if isinstance(val, str):
-                return val in ('view', 'edit', 'true', 'True')
-            return bool(val)
+        # ترحيل أسماء صلاحيات المطابع القديمة (تكاليف → أسعار).
+        perm_name = canonical_permission_key(perm_name)
+        legacy_aliases = FINANCIAL_PERMISSION_REVERSE.get(perm_name, ())
+        if isinstance(self.custom_permissions, dict):
+            for key in (perm_name,) + tuple(legacy_aliases):
+                if key in self.custom_permissions:
+                    val = self.custom_permissions[key]
+                    if isinstance(val, str):
+                        return val in ('view', 'edit', 'true', 'True')
+                    return bool(val)
         # "الأسمبلي والأمبالاج": اقبل أيضاً المفاتيح القديمة/الفرعية المخزنة في تخصيص المستخدم
         # (assembly / packaging / finishing / ironing / dest / materials) حتى لا تتعطل الحسابات المحفوظة.
         if perm_name in ('assembly_packaging_view', 'assembly_packaging_edit') and isinstance(self.custom_permissions, dict):
@@ -498,8 +549,14 @@ class UserProfile(models.Model):
                 'can_edit_fabric_prices': 'edit_fabric_prices',
                 'can_view_accessory_prices': 'view_accessory_prices',
                 'can_edit_accessory_prices': 'edit_accessory_prices',
-                'can_view_printing_costs': 'view_printing_costs',
-                'can_edit_printing_costs': 'edit_printing_costs',
+                'can_view_printing_costs': 'view_printing_prices',
+                'can_edit_printing_costs': 'edit_printing_prices',
+                'can_view_printing_prices': 'view_printing_prices',
+                'can_edit_printing_prices': 'edit_printing_prices',
+                'can_view_sewing_prices': 'view_sewing_prices',
+                'can_edit_sewing_prices': 'edit_sewing_prices',
+                'can_view_assembly_prices': 'view_assembly_prices',
+                'can_edit_assembly_prices': 'edit_assembly_prices',
                 'can_send_whatsapp': 'send_whatsapp_requests',
                 'can_send_messages': 'send_internal_messages',
             }
@@ -1211,6 +1268,13 @@ class SewingDispatch(models.Model):
     received_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الاستلام الفعلي")
     received_at_str = models.CharField(max_length=100, blank=True, null=True)
     notes = models.TextField(blank=True, null=True, verbose_name="ملاحظات التشغيل")
+    # سعر تشغيل القطعة في ورشة المكن (بيانات مالية محمية بصلاحية مستقلة).
+    cost_per_piece = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر تشغيل القطعة"
+    )
+    total_cost = models.DecimalField(
+        max_digits=14, decimal_places=2, default=0.0, verbose_name="إجمالي تكلفة التشغيل"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1425,6 +1489,13 @@ class FinishingRecord(models.Model):
     expected_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج المتوقع")
     actual_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الاستلام الفعلي")
     notes = models.TextField(blank=True, null=True, verbose_name="ملاحظات التشطيب")
+    # سعر تشطيب القطعة (بيانات مالية محمية بصلاحية مستقلة).
+    cost_per_piece = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر تشطيب القطعة"
+    )
+    total_cost = models.DecimalField(
+        max_digits=14, decimal_places=2, default=0.0, verbose_name="إجمالي تكلفة التشطيب"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1473,6 +1544,13 @@ class AssemblyStageRecord(models.Model):
     expected_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج المتوقع")
     actual_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج الفعلي")
     notes = models.TextField(blank=True, null=True, verbose_name="ملاحظات المرحلة")
+    # سعر المرحلة/القطعة (بيانات مالية محمية بصلاحية مستقلة).
+    cost_per_piece = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر القطعة في المرحلة"
+    )
+    total_cost = models.DecimalField(
+        max_digits=14, decimal_places=2, default=0.0, verbose_name="إجمالي تكلفة المرحلة"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1617,6 +1695,10 @@ class PackagingMaterialSizeRule(models.Model):
     )
     size_group_name = models.CharField(max_length=150, blank=True, default='', verbose_name="فئة المقاس")
     consumption_per_piece = models.FloatField(default=0.0, verbose_name="معدل الاستهلاك لكل قطعة")
+    # سعر الوحدة لخامة التشغيل (بيانات مالية محمية بصلاحية مستقلة).
+    price_per_unit = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر الوحدة"
+    )
     dimensions_spec = models.CharField(
         max_length=255, blank=True, default='', verbose_name="المقاسات والمواصفات"
     )
@@ -1654,6 +1736,10 @@ class PackagingMaterialTransaction(models.Model):
         max_length=20, choices=PACKAGING_MATERIAL_TRANSACTION_CHOICES, default='add', verbose_name="نوع الحركة"
     )
     amount = models.FloatField(default=0.0, verbose_name="الكمية")
+    # سعر الوحدة وقت الحركة (بيانات مالية محمية بصلاحية مستقلة).
+    price_per_unit = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر الوحدة"
+    )
     notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
     timestamp = models.CharField(max_length=100, blank=True, default='', verbose_name="وقت الحركة")
     created_at = models.DateTimeField(auto_now_add=True)

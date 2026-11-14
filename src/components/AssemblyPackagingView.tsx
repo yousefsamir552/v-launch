@@ -450,7 +450,14 @@ const PartFinishingRow: React.FC<{
   part: GarmentPart;
   canEdit: boolean;
 }> = ({ model, part, canEdit }) => {
-  const { finishingRecords, startFinishing, receiveFinishing, getPartStages } = useApp();
+  const {
+    finishingRecords,
+    startFinishing,
+    receiveFinishing,
+    getPartStages,
+    canEditAssemblyPrices,
+    canViewAssemblyPrices
+  } = useApp();
   const record = finishingRecords.find(
     (item) => item.model_id === model.id && item.part_type === part
   );
@@ -464,6 +471,9 @@ const PartFinishingRow: React.FC<{
   );
   const [vendor, setVendor] = useState(record?.vendor_name || '');
   const [notes, setNotes] = useState('');
+  const [cost, setCost] = useState(
+    record?.cost_per_piece != null ? String(record.cost_per_piece) : ''
+  );
 
   const inFinishing = stageIndex === finishingIndex;
   const completed = Boolean(record?.is_received) || stageIndex >= ironingIndex;
@@ -500,6 +510,12 @@ const PartFinishingRow: React.FC<{
       {record?.vendor_name ? (
         <p className="mt-1 text-[10px] font-bold text-slate-500">الجهة: {record.vendor_name}</p>
       ) : null}
+      {record?.cost_per_piece != null && canViewAssemblyPrices() ? (
+        <p className="mt-1 text-[10px] font-bold text-emerald-700">
+          سعر التشطيب: {record.cost_per_piece} ج.م
+          {record.total_cost ? ` • الإجمالي: ${record.total_cost} ج.م` : ''}
+        </p>
+      ) : null}
 
       {!completed && canEdit && (
         <div className="mt-2 space-y-1.5">
@@ -521,6 +537,20 @@ const PartFinishingRow: React.FC<{
                 placeholder="الجهة / ورشة التشطيب (اختياري)"
                 whatsappMessage={`طلب تشطيب - موديل ${model.model_code} - قطعة ${getPartLabel(part)}`}
               />
+              {canEditAssemblyPrices() && (
+                <div className="flex items-center gap-1.5">
+                  <label className="text-[10px] font-bold text-slate-500">سعر القطعة</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={cost}
+                    onChange={(event) => setCost(event.target.value)}
+                    placeholder="0.00"
+                    className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white text-center"
+                  />
+                </div>
+              )}
             </>
           )}
           {!record ? (
@@ -533,7 +563,10 @@ const PartFinishingRow: React.FC<{
                   parts: [part],
                   expectedExitDate: expectedExit,
                   vendorName: vendor,
-                  notes
+                  notes,
+                  costPerPiece: canEditAssemblyPrices()
+                    ? Math.max(0, parseFloat(cost) || 0)
+                    : undefined
                 })
               }
               className="w-full py-1.5 rounded-xl bg-purple-600 text-white text-[10px] font-black hover:bg-purple-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
@@ -602,7 +635,14 @@ const PartIroningRow: React.FC<{
   part: GarmentPart;
   canEdit: boolean;
 }> = ({ model, part, canEdit }) => {
-  const { assemblyStageRecords, startIroning, receiveIroning, getPartStages } = useApp();
+  const {
+    assemblyStageRecords,
+    startIroning,
+    receiveIroning,
+    getPartStages,
+    canEditAssemblyPrices,
+    canViewAssemblyPrices
+  } = useApp();
   const record = assemblyStageRecords.find(
     (item) => item.model_id === model.id && item.stage === 'ironing' && item.part_type === part
   );
@@ -615,6 +655,9 @@ const PartIroningRow: React.FC<{
   );
   const [vendor, setVendor] = useState(record?.vendor_name || '');
   const [notes, setNotes] = useState('');
+  const [cost, setCost] = useState(
+    record?.cost_per_piece != null ? String(record.cost_per_piece) : ''
+  );
 
   const readyForIroning = stageIndex === ironingIndex;
   const completed = Boolean(record?.is_completed) || stageIndex > ironingIndex;
@@ -652,6 +695,13 @@ const PartIroningRow: React.FC<{
         <p className="mt-1 text-[10px] font-bold text-slate-500">الجهة: {record.vendor_name}</p>
       ) : null}
 
+      {record?.cost_per_piece != null && canViewAssemblyPrices() ? (
+        <p className="mt-1 text-[10px] font-bold text-emerald-700">
+          سعر المكواة: {record.cost_per_piece} ج.م
+          {record.total_cost ? ` • الإجمالي: ${record.total_cost} ج.م` : ''}
+        </p>
+      ) : null}
+
       {waitingFinishing && (
         <p className="mt-2 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-2 py-1.5">
           ⏳ بانتظار استلام هذه القطعة من التشطيب أولاً.
@@ -678,6 +728,20 @@ const PartIroningRow: React.FC<{
                 placeholder="الجهة / ورشة المكواة (اختياري)"
                 whatsappMessage={`طلب مكواة - موديل ${model.model_code} - قطعة ${getPartLabel(part)}`}
               />
+              {canEditAssemblyPrices() && (
+                <div className="flex items-center gap-1.5">
+                  <label className="text-[10px] font-bold text-slate-500">سعر القطعة</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={cost}
+                    onChange={(event) => setCost(event.target.value)}
+                    placeholder="0.00"
+                    className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white text-center"
+                  />
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() =>
@@ -686,7 +750,10 @@ const PartIroningRow: React.FC<{
                     partType: part,
                     expectedExitDate: expectedExit,
                     vendorName: vendor,
-                    notes
+                    notes,
+                    costPerPiece: canEditAssemblyPrices()
+                      ? Math.max(0, parseFloat(cost) || 0)
+                      : undefined
                   })
                 }
                 className="w-full py-1.5 rounded-xl bg-rose-600 text-white text-[10px] font-black hover:bg-rose-700 transition"
@@ -761,7 +828,9 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
     assemblyStageRecords,
     startAssemblyStage,
     receiveAssemblyStage,
-    getPartStages
+    getPartStages,
+    canEditAssemblyPrices,
+    canViewAssemblyPrices
   } = useApp();
   const parts = modelParts(model);
   const stages = getPartStages(model.id);
@@ -781,6 +850,9 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
   const [expectedExit, setExpectedExit] = useState(todayStr());
   const [vendor, setVendor] = useState(record?.vendor_name || '');
   const [notes, setNotes] = useState('');
+  const [cost, setCost] = useState(
+    record?.cost_per_piece != null ? String(record.cost_per_piece) : ''
+  );
 
   return (
     <div
@@ -836,6 +908,12 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
       {record?.vendor_name ? (
         <p className="text-[10px] font-bold text-slate-500">الجهة: {record.vendor_name}</p>
       ) : null}
+      {record?.cost_per_piece != null && canViewAssemblyPrices() ? (
+        <p className="text-[10px] font-bold text-emerald-700">
+          سعر التعبئة: {record.cost_per_piece} ج.م
+          {record.total_cost ? ` • الإجمالي: ${record.total_cost} ج.م` : ''}
+        </p>
+      ) : null}
 
       {canEdit && !completed && (
         <div className="space-y-2 pt-2 border-t border-slate-100">
@@ -857,6 +935,20 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
                 placeholder="الجهة / ورشة التغليف (اختياري)"
                 whatsappMessage={`طلب تعبئة وتغليف - موديل ${model.model_code}`}
               />
+              {canEditAssemblyPrices() && (
+                <div className="flex items-center gap-1.5">
+                  <label className="text-[10px] font-bold text-slate-500">سعر التعبئة</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={cost}
+                    onChange={(event) => setCost(event.target.value)}
+                    placeholder="0.00"
+                    className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white text-center"
+                  />
+                </div>
+              )}
               <button
                 type="button"
                 disabled={!allReady}
@@ -866,7 +958,10 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
                     stage: 'packaging',
                     expectedExitDate: expectedExit,
                     vendorName: vendor,
-                    notes
+                    notes,
+                    costPerPiece: canEditAssemblyPrices()
+                      ? Math.max(0, parseFloat(cost) || 0)
+                      : undefined
                   })
                 }
                 className="w-full py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
@@ -905,7 +1000,9 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
     startAssemblyStage,
     receiveAssemblyStage,
     getPackagingRequirement,
-    getPartStages
+    getPartStages,
+    canEditAssemblyPrices,
+    canViewAssemblyPrices
   } = useApp();
   const record = assemblyStageRecords.find(
     (item) => item.model_id === model.id && item.stage === 'dest'
@@ -921,6 +1018,9 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
   const [expectedExit, setExpectedExit] = useState(todayStr());
   const [vendor, setVendor] = useState(record?.vendor_name || '');
   const [notes, setNotes] = useState('');
+  const [cost, setCost] = useState(
+    record?.cost_per_piece != null ? String(record.cost_per_piece) : ''
+  );
 
   const requirementComplete = Boolean(requirement?.is_complete);
   const allArrived = waitingDest.length === 0;
@@ -953,6 +1053,12 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
 
       {record?.vendor_name ? (
         <p className="text-[10px] font-bold text-slate-500">الجهة: {record.vendor_name}</p>
+      ) : null}
+      {record?.cost_per_piece != null && canViewAssemblyPrices() ? (
+        <p className="text-[10px] font-bold text-emerald-700">
+          سعر الدَست: {record.cost_per_piece} ج.م
+          {record.total_cost ? ` • الإجمالي: ${record.total_cost} ج.م` : ''}
+        </p>
       ) : null}
 
       {blocked && (
@@ -998,6 +1104,20 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
                     placeholder="الجهة / ورشة الدَست (اختياري)"
                     whatsappMessage={`طلب دَست - موديل ${model.model_code}`}
                   />
+                  {canEditAssemblyPrices() && (
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-[10px] font-bold text-slate-500">سعر الدَست</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={cost}
+                        onChange={(event) => setCost(event.target.value)}
+                        placeholder="0.00"
+                        className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white text-center"
+                      />
+                    </div>
+                  )}
                 </>
               )}
               <div className="flex items-center gap-2">
@@ -1010,7 +1130,10 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
                       stage: 'dest',
                       expectedExitDate: expectedExit,
                       vendorName: vendor,
-                      notes
+                      notes,
+                      costPerPiece: canEditAssemblyPrices()
+                        ? Math.max(0, parseFloat(cost) || 0)
+                        : undefined
                     })
                   }
                   className="flex-1 py-2 rounded-xl bg-slate-900 text-white text-[10px] font-black hover:bg-slate-800 transition disabled:opacity-40 disabled:cursor-not-allowed"

@@ -478,8 +478,12 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                   { key: 'edit_fabric_prices', label: 'تعديل أسعار القماش' },
                   { key: 'view_accessory_prices', label: 'رؤية أسعار الإكسسوارات' },
                   { key: 'edit_accessory_prices', label: 'تعديل أسعار الإكسسوارات' },
-                  { key: 'view_printing_costs', label: 'رؤية تكاليف المطابع' },
-                  { key: 'edit_printing_costs', label: 'تعديل تكاليف المطابع' },
+                  { key: 'view_printing_prices', label: 'رؤية أسعار المطابع' },
+                  { key: 'edit_printing_prices', label: 'تعديل أسعار المطابع' },
+                  { key: 'view_sewing_prices', label: 'رؤية أسعار المكن والخياطة' },
+                  { key: 'edit_sewing_prices', label: 'تعديل أسعار المكن والخياطة' },
+                  { key: 'view_assembly_prices', label: 'رؤية أسعار الأسمبلي والأمبالاج' },
+                  { key: 'edit_assembly_prices', label: 'تعديل أسعار الأسمبلي والأمبالاج' },
                   { key: 'send_whatsapp_requests', label: 'إرسال طلبات النواقص عبر الواتساب' },
                   { key: 'send_internal_messages', label: 'إرسال الرسائل والمراسلات الداخلية' }
                 ].filter((fp) => isPermissionVisible(fp.key)).map((fp) => (

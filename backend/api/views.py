@@ -366,6 +366,90 @@ def hidden_employee_error(request, employee):
     return None
 
 
+def can_edit_department_prices(profile, perm_key: str) -> bool:
+    """
+    هل يحق للناظر تعديل/إدخال الأسعار المالية لقسم معيّن؟
+
+    * بلا ملف مستخدم (نداءات داخلية/إدارة) → مسموح (توافقية مع الخدمات القديمة).
+    * sudo أو صلاحية ``manage_permissions`` → مسموح.
+    * غير ذلك: يشترط امتلاك صلاحية التعديل المستقلة للقسم
+      (view_/edit_fabric_prices, edit_printing_prices, edit_sewing_prices,
+       edit_assembly_prices, edit_accessory_prices).
+    """
+    if profile is None:
+        return True
+    if is_sudo_account(profile):
+        return True
+    return bool(profile.has_perm(perm_key) or profile.has_perm('manage_permissions'))
+
+
+def log_price_change(request, section: str, target_name: str, label: str, new_value, old_value=0):
+    """
+    تسجيل تدقيق صريح لتغيير سعر/تكلفة قسم (لأن السجلات المالية تُنشأ عبر خدمات
+    خارج لقطة الموديل، فلا يلتقطها التدقيق التلقائي).
+
+    يتجاهل القيم الصفرية/Sudo بحسب سلوك ``log_action`` المركزي.
+    """
+    try:
+        new_num = float(new_value or 0)
+    except (TypeError, ValueError):
+        new_num = 0.0
+    if new_num <= 0:
+        return
+    try:
+        old_num = float(old_value or 0)
+    except (TypeError, ValueError):
+        old_num = 0.0
+    log_action(
+        request,
+        section=section,
+        action_type='update',
+        target_name=str(target_name or ''),
+        details=f"{label}: {old_num:g} → {new_num:g}",
+        changes=[{
+            'field': 'price',
+            'label': label,
+            'old': old_num,
+            'new': new_num,
+        }],
+    )
+
+
+def can_view_department_prices(profile, *perm_keys: str) -> bool:
+    """نظير ``can_edit_department_prices`` لصلاحيات العرض."""
+    if profile is None:
+        return True
+    if is_sudo_account(profile):
+        return True
+    return any(profile.has_perm(key) for key in perm_keys)
+
+
+def read_department_cost_payload(request, profile, perm_key: str, perm_label: str):
+    """
+    يقرأ سعر القطعة والإجمالي من جسم الطلب مع فرض الحماية على الكتابة.
+
+    * أي محاولة صريحة لإرسال حقل سعر بدون صلاحية تعديل القسم → 403.
+    * غير المصرح لهم ولا يرسلون أسعاراً → (0.0, None) ولا تُكتب أي قيمة.
+    """
+    data = getattr(request, 'data', {}) or {}
+    price_keys = (
+        'cost_per_piece', 'costPerPiece', 'total_cost', 'totalCost',
+        'price_per_unit', 'pricePerUnit',
+    )
+    can_edit = can_edit_department_prices(profile, perm_key)
+    if any(key in data for key in price_keys) and not can_edit:
+        raise PermissionDenied(f'ليس لديك صلاحية تعديل {perm_label}')
+    if not can_edit:
+        return 0.0, None
+    cost = data.get('cost_per_piece')
+    if cost in (None, ''):
+        cost = data.get('costPerPiece') or data.get('price_per_unit') or data.get('pricePerUnit') or 0
+    total = data.get('total_cost')
+    if total in (None, ''):
+        total = data.get('totalCost')
+    return cost, total
+
+
 class BasePermViewSet(AuditedModelViewSetMixin, viewsets.ModelViewSet):
     """
     Base ViewSet supporting lookup by client_id or database pk, and attaching user_profile to request.
@@ -681,17 +765,17 @@ class StateViewSet(viewsets.ViewSet):
             'printDispatches': PrintDispatchSerializer(PrintDispatch.objects.select_related('model').all(), many=True, context=req_ctx).data,
             'sewingDispatches': SewingDispatchSerializer(SewingDispatch.objects.select_related('model').all(), many=True, context=req_ctx).data,
             'packagingRequirements': PackagingRequirementSerializer(PackagingRequirement.objects.select_related('model').all(), many=True).data,
-            'finishingRecords': FinishingRecordSerializer(FinishingRecord.objects.select_related('model').all(), many=True).data,
-            'assemblyStageRecords': AssemblyStageRecordSerializer(AssemblyStageRecord.objects.select_related('model').all(), many=True).data,
+            'finishingRecords': FinishingRecordSerializer(FinishingRecord.objects.select_related('model').all(), many=True, context=req_ctx).data,
+            'assemblyStageRecords': AssemblyStageRecordSerializer(AssemblyStageRecord.objects.select_related('model').all(), many=True, context=req_ctx).data,
             'packagingMaterialRules': PackagingMaterialRuleSerializer(
                 PackagingMaterialRule.objects.prefetch_related(
                     'size_rules', 'size_rules__supplier', 'size_rules__transactions'
                 ).all(),
-                many=True
+                many=True, context=req_ctx
             ).data,
             'packagingMaterialTransactions': PackagingMaterialTransactionSerializer(
                 PackagingMaterialTransaction.objects.select_related('size_rule').all()[:300],
-                many=True
+                many=True, context=req_ctx
             ).data,
             'internalMessages': InternalMessageSerializer(visible_messages, many=True).data,
             'auditLogs': AuditLogSerializer(visible_logs, many=True).data,
@@ -2121,6 +2205,7 @@ class ModelItemViewSet(BasePermViewSet):
         model = self.get_object()
         profile = getattr(request, 'user_profile', None)
         can_sewing_notes = True if not profile else profile.has_perm('can_add_sewing_notes')
+        can_edit_cost = can_edit_department_prices(profile, 'edit_sewing_prices')
 
         workshop_name = request.data.get('workshop_name') or request.data.get('workshopName')
         pieces_count = int(request.data.get('pieces_count') or request.data.get('piecesCount') or 0)
@@ -2133,6 +2218,22 @@ class ModelItemViewSet(BasePermViewSet):
         piece_label = request.data.get('piece_label') or request.data.get('pieceLabel')
         client_id = request.data.get('id') or request.data.get('client_id')
 
+        # حقول السعر: تُتجاهل تماماً على الإنشاء لغير المصرح لهم، ويُرفض التعديل الصريح بـ 403.
+        has_cost_payload = any(
+            key in request.data for key in ('cost_per_piece', 'costPerPiece', 'total_cost', 'totalCost')
+        )
+        if has_cost_payload and not can_edit_cost:
+            raise PermissionDenied('ليس لديك صلاحية تعديل أسعار ورش المكن والخياطة')
+        cost_per_piece = 0.0
+        total_cost = None
+        if can_edit_cost:
+            cost_per_piece = request.data.get('cost_per_piece')
+            if cost_per_piece in (None, ''):
+                cost_per_piece = request.data.get('costPerPiece') or 0
+            total_cost = request.data.get('total_cost')
+            if total_cost in (None, ''):
+                total_cost = request.data.get('totalCost')
+
         if not workshop_name or not expected_date or pieces_count <= 0:
             return Response(
                 {'error': 'اسم الورشة وتاريخ الاستلام المتوقع والقطع المسلمة مطلوبة'},
@@ -2140,7 +2241,13 @@ class ModelItemViewSet(BasePermViewSet):
             )
 
         disp = dispatch_model_to_sewing_service(
-            get_ext_id(model), workshop_name, pieces_count, expected_date, notes, user, piece_type, piece_label, client_id=client_id
+            get_ext_id(model), workshop_name, pieces_count, expected_date, notes, user, piece_type,
+            piece_label, client_id=client_id, cost_per_piece=cost_per_piece, total_cost=total_cost,
+        )
+        log_price_change(
+            request, 'قسم المكن والخياطة',
+            f'{model.model_code} - {disp.workshop_name}',
+            'سعر تشغيل القطعة', disp.cost_per_piece,
         )
         return Response(SewingDispatchSerializer(disp, context={'request': request}).data)
 
@@ -2502,6 +2609,10 @@ class ModelItemViewSet(BasePermViewSet):
         """Starts the finishing stage for the requested model parts."""
         model = self.get_object()
         data = request.data or {}
+        profile = getattr(request, 'user_profile', None)
+        finishing_cost, finishing_total = read_department_cost_payload(
+            request, profile, 'edit_assembly_prices', 'أسعار التشطيب'
+        )
         parts = data.get('parts')
         if isinstance(parts, str):
             parts = [parts]
@@ -2516,13 +2627,19 @@ class ModelItemViewSet(BasePermViewSet):
                 notes=data.get('notes') or '',
                 vendor_name=data.get('vendor_name') or data.get('vendorName') or '',
                 user_name=data.get('user_name') or data.get('user') or 'مسؤول التشطيب',
+                cost_per_piece=finishing_cost,
+                total_cost=finishing_total,
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         model.refresh_from_db()
+        log_price_change(
+            request, 'الأسمبلي والأمبالاج', model.model_code,
+            'سعر التشطيب للقطعة', finishing_cost,
+        )
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
-            'finishingRecords': FinishingRecordSerializer(records, many=True).data,
+            'finishingRecords': FinishingRecordSerializer(records, many=True, context={'request': request}).data,
             'partStages': part_stages_payload(model),
         }, status=status.HTTP_201_CREATED)
 
@@ -2546,9 +2663,10 @@ class ModelItemViewSet(BasePermViewSet):
         model.refresh_from_db()
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
-            'finishingRecord': FinishingRecordSerializer(record).data,
+            'finishingRecord': FinishingRecordSerializer(record, context={'request': request}).data,
             'finishingRecords': FinishingRecordSerializer(
-                FinishingRecord.objects.filter(model=model).order_by('part_type'), many=True
+                FinishingRecord.objects.filter(model=model).order_by('part_type'), many=True,
+                context={'request': request}
             ).data,
             'partStages': part_stages_payload(model),
             'packagingReadiness': packaging_readiness(model),
@@ -2559,6 +2677,10 @@ class ModelItemViewSet(BasePermViewSet):
         """Starts (or updates) the ironing stage for one or more garment parts."""
         model = self.get_object()
         data = request.data or {}
+        profile = getattr(request, 'user_profile', None)
+        ironing_cost, ironing_total = read_department_cost_payload(
+            request, profile, 'edit_assembly_prices', 'أسعار المكواة'
+        )
         parts = data.get('parts')
         if isinstance(parts, str):
             parts = [parts]
@@ -2574,13 +2696,21 @@ class ModelItemViewSet(BasePermViewSet):
                 notes=data.get('notes') or '',
                 vendor_name=data.get('vendor_name') or data.get('vendorName') or '',
                 user_name=data.get('user_name') or data.get('user') or 'مسؤول المكواة',
+                cost_per_piece=ironing_cost,
+                total_cost=ironing_total,
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         model.refresh_from_db()
+        log_price_change(
+            request, 'الأسمبلي والأمبالاج', model.model_code,
+            'سعر المكواة للقطعة', ironing_cost,
+        )
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
-            'assemblyStageRecords': AssemblyStageRecordSerializer(records, many=True).data,
+            'assemblyStageRecords': AssemblyStageRecordSerializer(
+                records, many=True, context={'request': request}
+            ).data,
             'partStages': part_stages_payload(model),
             'packagingReadiness': packaging_readiness(model),
         }, status=status.HTTP_201_CREATED)
@@ -2605,9 +2735,12 @@ class ModelItemViewSet(BasePermViewSet):
         model.refresh_from_db()
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
-            'assemblyStageRecord': AssemblyStageRecordSerializer(record).data,
+            'assemblyStageRecord': AssemblyStageRecordSerializer(
+                record, context={'request': request}
+            ).data,
             'assemblyStageRecords': AssemblyStageRecordSerializer(
-                AssemblyStageRecord.objects.filter(model=model).order_by('stage', 'part_type'), many=True
+                AssemblyStageRecord.objects.filter(model=model).order_by('stage', 'part_type'),
+                many=True, context={'request': request}
             ).data,
             'partStages': part_stages_payload(model),
             'packagingReadiness': packaging_readiness(model),
@@ -2620,6 +2753,10 @@ class ModelItemViewSet(BasePermViewSet):
         """Starts one assembly stage: ironing / packaging / dest."""
         model = self.get_object()
         data = request.data or {}
+        profile = getattr(request, 'user_profile', None)
+        assembly_cost, assembly_total = read_department_cost_payload(
+            request, profile, 'edit_assembly_prices', 'أسعار الأسمبلي والأمبالاج'
+        )
         stage = str(data.get('stage') or '').strip()
         if stage not in ASSEMBLY_STAGE_KEYS:
             return Response(
@@ -2636,13 +2773,21 @@ class ModelItemViewSet(BasePermViewSet):
                 vendor_name=data.get('vendor_name') or data.get('vendorName') or '',
                 part_type=data.get('part_type') or data.get('partType'),
                 user_name=data.get('user_name') or data.get('user') or 'مسؤول الأسمبلي',
+                cost_per_piece=assembly_cost,
+                total_cost=assembly_total,
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         model.refresh_from_db()
+        log_price_change(
+            request, 'الأسمبلي والأمبالاج', model.model_code,
+            f'سعر مرحلة {stage}', assembly_cost,
+        )
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
-            'assemblyStageRecord': AssemblyStageRecordSerializer(record).data,
+            'assemblyStageRecord': AssemblyStageRecordSerializer(
+                record, context={'request': request}
+            ).data,
             'partStages': part_stages_payload(model),
             'readiness': packaging_requirement_summary(model),
             'packagingReadiness': packaging_readiness(model),
@@ -2668,9 +2813,12 @@ class ModelItemViewSet(BasePermViewSet):
         model.refresh_from_db()
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
-            'assemblyStageRecord': AssemblyStageRecordSerializer(record).data,
+            'assemblyStageRecord': AssemblyStageRecordSerializer(
+                record, context={'request': request}
+            ).data,
             'assemblyStageRecords': AssemblyStageRecordSerializer(
-                AssemblyStageRecord.objects.filter(model=model).order_by('stage', 'part_type'), many=True
+                AssemblyStageRecord.objects.filter(model=model).order_by('stage', 'part_type'),
+                many=True, context={'request': request}
             ).data,
             'partStages': part_stages_payload(model),
             'packagingReadiness': packaging_readiness(model),
@@ -3098,11 +3246,12 @@ class PrintDispatchViewSet(BasePermViewSet):
 
         profile = getattr(request, 'user_profile', None)
         can_printing_notes = True if not profile else (profile.has_perm('can_add_printing_notes') or profile.has_perm('can_add_qc_before_print_notes'))
-        can_edit_cost = is_sudo_account(profile) or (
-            profile is not None and (
-                profile.has_perm('edit_printing_costs') or profile.has_perm('manage_permissions')
-            )
-        )
+        can_edit_cost = can_edit_department_prices(profile, 'edit_printing_prices')
+        if (
+            any(key in data for key in ('cost_per_piece', 'costPerPiece', 'total_cost', 'totalCost'))
+            and not can_edit_cost
+        ):
+            raise PermissionDenied('ليس لديك صلاحية تعديل أسعار المطابع')
 
         shop_name = (data.get('shop_name') or data.get('shopName') or data.get('print_house') or '').strip()
         pieces = max(0, int(data.get('pieces_count') or data.get('piecesCount') or 0))
@@ -3142,7 +3291,8 @@ class PrintDispatchViewSet(BasePermViewSet):
         advance_parts_to_stage(model, 'printing', [piece_type])
         derive_pipeline_status(model)
         model.print_house = shop_name
-        model.print_cost_per_piece = cost
+        if can_edit_cost:
+            model.print_cost_per_piece = cost
         if exp_date:
             model.print_expected_date = exp_date
         model._skip_timeline_signal = True
@@ -3270,6 +3420,21 @@ class SewingDispatchViewSet(BasePermViewSet):
     required_section = 'sewing'
     queryset = SewingDispatch.objects.select_related('model').all()
     serializer_class = SewingDispatchSerializer
+    # الإنشاء يتم عبر إجراء الموديل dispatch_to_sewing، والتعديل عبر receive فقط.
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def create(self, request, *args, **kwargs):
+        """يمنع إنشاء إرسالية مكن مباشرة (تتجاوز حماية الأسعار) — استخدم إجراء الموديل."""
+        return Response(
+            {'detail': 'أنشئ إرسالية المكن من خلال الموديل (dispatch_to_sewing) لضمان حماية الأسعار.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def update(self, request, *args, **kwargs):
+        return Response(
+            {'detail': 'تعديل إرسالية المكن متاح عبر إجراءات الاستلام فقط.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
     @action(detail=True, methods=['post'])
     def receive(self, request, pk=None):
@@ -3298,7 +3463,7 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
         except (TypeError, ValueError):
             return default
 
-    def _apply_size_rows(self, rule, rows):
+    def _apply_size_rows(self, rule, rows, can_edit_prices=False):
         """Upserts the size-level rows of a rule and drops the removed ones."""
         keep_ids = []
         for row in rows:
@@ -3314,6 +3479,9 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
             supplier_val = row.get('supplier_id') or row.get('supplier')
             size_row.supplier = resolve_by_id(Supplier, supplier_val) if supplier_val else None
             size_row.min_alert_threshold = self._as_float(row.get('min_alert_threshold'))
+            # سعر الوحدة يُكتب فقط لمن يملك صلاحية تعديل أسعار الأسمبلي/الخامات.
+            if can_edit_prices and row.get('price_per_unit') is not None:
+                size_row.price_per_unit = max(0.0, self._as_float(row.get('price_per_unit')))
             if row.get('current_stock') is not None:
                 size_row.current_stock = self._as_float(row.get('current_stock'))
             size_row.save()
@@ -3326,6 +3494,13 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
 
     def _save_rule(self, request, instance=None):
         data = request.data
+        profile = getattr(request, 'user_profile', None)
+        can_edit_prices = can_edit_department_prices(profile, 'edit_assembly_prices')
+        rows = data.get('size_rules')
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get('price_per_unit') not in (None, '') and not can_edit_prices:
+                    raise PermissionDenied('ليس لديك صلاحية تعديل أسعار خامات التشغيل')
         if instance is not None:
             rule = instance
         else:
@@ -3359,7 +3534,17 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
 
         rows = data.get('size_rules')
         if isinstance(rows, list):
-            self._apply_size_rows(rule, rows)
+            self._apply_size_rows(rule, rows, can_edit_prices=can_edit_prices)
+            if can_edit_prices:
+                prices = [
+                    self._as_float(row.get('price_per_unit'))
+                    for row in rows if isinstance(row, dict)
+                ]
+                if prices:
+                    log_price_change(
+                        request, 'خامات التشغيل', rule.label,
+                        'سعر وحدة الخامة', max(prices),
+                    )
 
         return Response(
             PackagingMaterialRuleSerializer(rule, context={'request': request}).data,
@@ -3393,12 +3578,25 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
         operation = data.get('operation') or 'add'
         if operation not in ('add', 'deduct', 'adjust'):
             return Response({'detail': 'نوع الحركة غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
+        price_per_unit, _total = read_department_cost_payload(
+            request, getattr(request, 'user_profile', None),
+            'edit_assembly_prices', 'أسعار خامات التشغيل',
+        )
         txn = apply_packaging_material_transaction(
-            size_rule, operation, data.get('amount'), data.get('notes') or '', data.get('timestamp') or ''
+            size_rule, operation, data.get('amount'), data.get('notes') or '',
+            data.get('timestamp') or '', price_per_unit=price_per_unit,
+        )
+        log_price_change(
+            request, 'خامات التشغيل', str(size_rule),
+            'سعر وحدة الخامة', price_per_unit,
         )
         return Response({
-            'sizeRule': PackagingMaterialSizeRuleSerializer(size_rule).data,
-            'transaction': PackagingMaterialTransactionSerializer(txn).data,
+            'sizeRule': PackagingMaterialSizeRuleSerializer(
+                size_rule, context={'request': request}
+            ).data,
+            'transaction': PackagingMaterialTransactionSerializer(
+                txn, context={'request': request}
+            ).data,
         }, status=status.HTTP_201_CREATED)
 
 
@@ -3408,6 +3606,8 @@ class PackagingMaterialTransactionViewSet(BasePermViewSet):
     required_section = 'assembly_packaging'
     queryset = PackagingMaterialTransaction.objects.select_related('size_rule').all()
     serializer_class = PackagingMaterialTransactionSerializer
+    # الحركات تُسجَّل فقط؛ لا تعديل/حذف لسجلات المخزون التاريخية.
+    http_method_names = ['get', 'post', 'head', 'options']
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -3419,12 +3619,25 @@ class PackagingMaterialTransactionViewSet(BasePermViewSet):
         operation = data.get('operation') or 'add'
         if operation not in ('add', 'deduct', 'adjust'):
             return Response({'detail': 'نوع الحركة غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
+        price_per_unit, _total = read_department_cost_payload(
+            request, getattr(request, 'user_profile', None),
+            'edit_assembly_prices', 'أسعار خامات التشغيل',
+        )
         txn = apply_packaging_material_transaction(
-            size_rule, operation, data.get('amount'), data.get('notes') or '', data.get('timestamp') or ''
+            size_rule, operation, data.get('amount'), data.get('notes') or '',
+            data.get('timestamp') or '', price_per_unit=price_per_unit,
+        )
+        log_price_change(
+            request, 'خامات التشغيل', str(size_rule),
+            'سعر وحدة الخامة', price_per_unit,
         )
         return Response({
-            'sizeRule': PackagingMaterialSizeRuleSerializer(size_rule).data,
-            'transaction': PackagingMaterialTransactionSerializer(txn).data,
+            'sizeRule': PackagingMaterialSizeRuleSerializer(
+                size_rule, context={'request': request}
+            ).data,
+            'transaction': PackagingMaterialTransactionSerializer(
+                txn, context={'request': request}
+            ).data,
         }, status=status.HTTP_201_CREATED)
 
 

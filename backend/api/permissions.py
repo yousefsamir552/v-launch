@@ -150,7 +150,25 @@ class CanViewPrintingCosts(permissions.BasePermission):
         if not profile:
             return False
         request.user_profile = profile
-        return profile.has_perm('can_view_printing_costs')
+        return profile.has_perm('view_printing_prices')
+
+
+class CanViewSewingPrices(permissions.BasePermission):
+    def has_permission(self, request, view):
+        profile = resolve_profile_from_request(request)
+        if not profile:
+            return False
+        request.user_profile = profile
+        return profile.has_perm('view_sewing_prices')
+
+
+class CanViewAssemblyPrices(permissions.BasePermission):
+    def has_permission(self, request, view):
+        profile = resolve_profile_from_request(request)
+        if not profile:
+            return False
+        request.user_profile = profile
+        return profile.has_perm('view_assembly_prices')
 
 
 class CanSendWhatsApp(permissions.BasePermission):

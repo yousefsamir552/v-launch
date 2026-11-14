@@ -242,6 +242,8 @@ interface AppContextType {
       supplierId?: string;
       minAlertThreshold: number;
       currentStock?: number;
+      /** سعر الوحدة (يُرسل فقط لمن يملك edit_assembly_prices). */
+      pricePerUnit?: number;
     }>;
   }) => Promise<{ success: boolean; message: string }>;
   recordPackagingMaterialTransaction: (data: {
@@ -249,6 +251,8 @@ interface AppContextType {
     operation: PackagingMaterialOperation;
     amount: number;
     notes?: string;
+    /** سعر الوحدة (يُرسل فقط لمن يملك edit_assembly_prices). */
+    pricePerUnit?: number;
   }) => Promise<{ success: boolean; message: string }>;
   deletePackagingMaterialRule: (ruleId: string) => Promise<{ success: boolean; message: string }>;
   appNotifications: AppNotification[];
@@ -321,13 +325,21 @@ interface AppContextType {
   sendInternalMessage: (receiverId: string, content: string) => { success: boolean; message: string };
   markMessageRead: (messageId: string) => void;
 
-  // Financial & Sensitive Permissions Checkers
+  // Financial & Sensitive Permissions Checkers (صلاحية مستقلة لكل قسم)
   canViewFabricPrices: () => boolean;
   canEditFabricPrices: () => boolean;
   canViewAccessoryPrices: () => boolean;
   canEditAccessoryPrices: () => boolean;
+  canViewPrintingPrices: () => boolean;
+  canEditPrintingPrices: () => boolean;
+  /** @deprecated استخدم canViewPrintingPrices */
   canViewPrintingCosts: () => boolean;
+  /** @deprecated استخدم canEditPrintingPrices */
   canEditPrintingCosts: () => boolean;
+  canViewSewingPrices: () => boolean;
+  canEditSewingPrices: () => boolean;
+  canViewAssemblyPrices: () => boolean;
+  canEditAssemblyPrices: () => boolean;
   canSendWhatsApp: () => boolean;
   canSendMessages: () => boolean;
 
@@ -525,6 +537,9 @@ interface AppContextType {
     expectedDeliveryDate: string;
     pieceType?: GarmentPart;
     pieceLabel?: string;
+    /** سعر تشغيل القطعة (يُرسل فقط لمن يملك edit_sewing_prices). */
+    costPerPiece?: number;
+    totalCost?: number;
     notes?: string;
   }) => void;
   receiveModelFromSewing: (dispatchId: string, modelId?: string, notes?: string) => void;
@@ -547,6 +562,9 @@ interface AppContextType {
     expectedExitDate?: string;
     vendorName?: string;
     notes?: string;
+    /** سعر تشطيب القطعة (يُرسل فقط لمن يملك edit_assembly_prices). */
+    costPerPiece?: number;
+    totalCost?: number;
   }) => void;
   receiveFinishing: (recordId: string, actualExitDate?: string, notes?: string) => void;
   startAssemblyStage: (data: {
@@ -557,6 +575,9 @@ interface AppContextType {
     vendorName?: string;
     partType?: GarmentPart;
     notes?: string;
+    /** سعر المرحلة (يُرسل فقط لمن يملك edit_assembly_prices). */
+    costPerPiece?: number;
+    totalCost?: number;
   }) => void;
   receiveAssemblyStage: (recordId: string, actualExitDate?: string, notes?: string) => void;
   startIroning: (data: {
@@ -567,6 +588,9 @@ interface AppContextType {
     expectedExitDate?: string;
     vendorName?: string;
     notes?: string;
+    /** سعر المكواة للقطعة (يُرسل فقط لمن يملك edit_assembly_prices). */
+    costPerPiece?: number;
+    totalCost?: number;
   }) => void;
   receiveIroning: (recordId: string, actualExitDate?: string, notes?: string) => void;
   /** Independent stage of each garment part (falls back to the model status). */
@@ -1174,8 +1198,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         edit_fabric_prices: true,
         view_accessory_prices: true,
         edit_accessory_prices: true,
-        view_printing_costs: true,
-        edit_printing_costs: true,
+        view_printing_prices: true,
+        edit_printing_prices: true,
+        view_sewing_prices: true,
+        edit_sewing_prices: true,
+        view_assembly_prices: true,
+        edit_assembly_prices: true,
         send_whatsapp_requests: true,
         send_internal_messages: true,
         manage_permissions: true,
@@ -1224,18 +1252,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!currentUser) return false;
     if (currentUser.username?.toLowerCase() === 'sudo' || currentUser.is_sudo) return true;
 
+    // توافقية مع الأسماء القديمة المحفوظة في كاش المتصفح (تكاليف → أسعار).
+    const LEGACY_PERM_ALIASES: Record<string, string> = {
+      view_printing_costs: 'view_printing_prices',
+      edit_printing_costs: 'edit_printing_prices'
+    };
+    const canonicalKey = LEGACY_PERM_ALIASES[String(permKey)] || String(permKey);
+    const legacyKeys = Object.keys(LEGACY_PERM_ALIASES).filter(
+      (legacy) => LEGACY_PERM_ALIASES[legacy] === canonicalKey
+    );
+
     // 1. Check user-level custom_permissions first
     const userCustom = currentUser.permissions as Record<string, any> | undefined;
-    if (userCustom && permKey in userCustom && userCustom[permKey] !== undefined) {
-      const val = userCustom[permKey];
-      if (typeof val === 'string') return val === 'edit' || val === 'view' || val === 'true';
-      return Boolean(val);
+    if (userCustom) {
+      for (const key of [canonicalKey, ...legacyKeys]) {
+        if (key in userCustom && userCustom[key] !== undefined) {
+          const val = userCustom[key];
+          if (typeof val === 'string') return val === 'edit' || val === 'view' || val === 'true';
+          return Boolean(val);
+        }
+      }
     }
 
     // 2. Check role permissions
     const rolePerms = getUserPermissionsObject();
-    if (rolePerms && permKey in rolePerms) {
-      return Boolean((rolePerms as any)[permKey]);
+    if (rolePerms) {
+      for (const key of [canonicalKey, ...legacyKeys]) {
+        if (key in rolePerms) {
+          return Boolean((rolePerms as any)[key]);
+        }
+      }
     }
 
     return false;
@@ -1558,13 +1604,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const canAddSewingNotes = (): boolean => hasSpecificPermission('can_add_sewing_notes');
   const canAddPrintingNotes = (): boolean => hasSpecificPermission('can_add_printing_notes');
 
-  // Financial & Communication Permission Checkers
+  // Financial & Communication Permission Checkers (صلاحية مستقلة لكل قسم)
   const canViewFabricPrices = (): boolean => hasSpecificPermission('view_fabric_prices');
   const canEditFabricPrices = (): boolean => hasSpecificPermission('edit_fabric_prices');
   const canViewAccessoryPrices = (): boolean => hasSpecificPermission('view_accessory_prices');
   const canEditAccessoryPrices = (): boolean => hasSpecificPermission('edit_accessory_prices');
-  const canViewPrintingCosts = (): boolean => hasSpecificPermission('view_printing_costs');
-  const canEditPrintingCosts = (): boolean => hasSpecificPermission('edit_printing_costs');
+  const canViewPrintingPrices = (): boolean => hasSpecificPermission('view_printing_prices');
+  const canEditPrintingPrices = (): boolean => hasSpecificPermission('edit_printing_prices');
+  // أسماء قديمة محفوظة للتوافق مع المكونات السابقة.
+  const canViewPrintingCosts = canViewPrintingPrices;
+  const canEditPrintingCosts = canEditPrintingPrices;
+  const canViewSewingPrices = (): boolean => hasSpecificPermission('view_sewing_prices');
+  const canEditSewingPrices = (): boolean => hasSpecificPermission('edit_sewing_prices');
+  const canViewAssemblyPrices = (): boolean => hasSpecificPermission('view_assembly_prices');
+  const canEditAssemblyPrices = (): boolean => hasSpecificPermission('edit_assembly_prices');
   const canSendWhatsApp = (): boolean => hasSpecificPermission('send_whatsapp_requests');
   const canSendMessages = (): boolean => hasSpecificPermission('send_internal_messages');
 
@@ -1934,11 +1987,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateAccessoryItem = (id: string, updates: Partial<AccessoryItem>) => {
+    // لا يُرسل سعر الوحدة للباك إند إلا لمن يملك صلاحية تعديل أسعار الإكسسوارات،
+    // حتى لا تُرفض تعديلات المخزون العادية بخطأ 403.
+    const safeUpdates: Partial<AccessoryItem> = { ...updates };
+    if (!canEditAccessoryPrices()) {
+      delete (safeUpdates as any).price_per_unit;
+    }
     setAccessoryItems((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, ...updates } : item))
+      prev.map((item) => (item.id === id ? { ...item, ...safeUpdates } : item))
     );
     api
-      .updateAccessory(id, updates)
+      .updateAccessory(id, safeUpdates)
       .then((saved) => {
         setAccessoryItems((prev) => prev.map((item) => (item.id === id ? saved : item)));
         logAction('مخزن الإكسسوارات', `تعديل بيانات الصنف: ${updates.name || id}`);
@@ -3395,6 +3454,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const pieceLabel = (data.pieceLabel || '').trim() || getPartLabel(pieceType);
     const printLocation = (data.printLocation || '').trim();
     const printDetails = (data.printDetails || '').trim();
+    // سعر الطباعة يُرسل فقط لمن يملك edit_printing_prices (الباك إند يرفض غير المصرح بـ 403).
+    const canSetPrintPrice = canEditPrintingPrices();
+    const printCost = canSetPrintPrice ? Math.max(0, Number(data.costPerPiece) || 0) : 0;
+    const printTotal = canSetPrintPrice
+      ? Math.max(0, Number(data.totalCost) || printCost * Math.max(0, data.piecesCount))
+      : 0;
 
     const newDisp: PrintDispatch = {
       id: dispId,
@@ -3408,9 +3473,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       expected_delivery_date: data.expectedDeliveryDate,
       pieces_count: Math.max(0, data.piecesCount),
       print_type: data.printType.trim(),
-      cost_per_piece: data.costPerPiece,
-      total_cost:
-        data.totalCost || (data.costPerPiece ? data.costPerPiece * data.piecesCount : undefined),
+      ...(canSetPrintPrice ? { cost_per_piece: printCost, total_cost: printTotal } : {}),
       notes: cleanNotes,
       status: 'مرسل للمطبعة'
     };
@@ -3423,7 +3486,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...m,
           print_house_name: data.shopName.trim(),
           print_house: data.shopName.trim(),
-          print_cost: data.costPerPiece,
+          ...(canSetPrintPrice ? { print_cost: printCost } : {}),
           print_expected_date: data.expectedDeliveryDate
         };
         // Only the dispatched part is at the printing stage.
@@ -3442,7 +3505,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         print_details: printDetails,
         pieces_count: Math.max(0, data.piecesCount),
         print_type: data.printType.trim(),
-        cost_per_piece: data.costPerPiece || 0,
+        ...(canSetPrintPrice ? { cost_per_piece: printCost } : {}),
         expected_delivery_date: data.expectedDeliveryDate || null,
         dispatched_at: dispatchedAt,
         notes: cleanNotes,
@@ -3541,6 +3604,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     expectedDeliveryDate: string;
     pieceType?: GarmentPart;
     pieceLabel?: string;
+    costPerPiece?: number;
+    totalCost?: number;
     notes?: string;
   }) => {
     const targetModel = models.find((m) => m.id === data.modelId);
@@ -3548,6 +3613,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const resolvedLabel = data.pieceLabel || getPartLabel(resolvedType);
     const dispId = 'sew-disp-' + Date.now();
     const cleanNotes = canAddSewingNotes() ? (data.notes?.trim() || '') : '';
+    // السعر يُرسل فقط لمن يملك صلاحية تعديل أسعار المكن.
+    const canSetPrice = canEditSewingPrices();
+    const piecePrice = canSetPrice ? Math.max(0, Number(data.costPerPiece) || 0) : 0;
+    const totalPrice = canSetPrice
+      ? Math.max(
+          0,
+          Number(data.totalCost) || piecePrice * Math.max(0, data.piecesCount)
+        )
+      : 0;
 
     const newDisp: SewingDispatch = {
       id: dispId,
@@ -3559,7 +3633,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       dispatched_at: new Date().toLocaleString('ar-EG', { hour12: false }),
       expected_delivery_date: data.expectedDeliveryDate,
       status: 'في ورشة المكن',
-      notes: cleanNotes
+      notes: cleanNotes,
+      ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
     };
     setSewingDispatches((prev) => [newDisp, ...prev]);
 
@@ -3596,7 +3671,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         piece_type: resolvedType,
         piece_label: resolvedLabel,
         notes: cleanNotes,
-        user_name: currentUser?.real_name || 'مسؤول خطوط الخياطة'
+        user_name: currentUser?.real_name || 'مسؤول خطوط الخياطة',
+        // حقول السعر تُرسل فقط عند امتلاك edit_sewing_prices (الباك إند يرفض غير المصرح).
+        ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
       })
       .then((saved) => {
         setSewingDispatches((prev) => prev.map((d) => (d.id === dispId ? saved : d)));
@@ -3855,11 +3932,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     expectedExitDate?: string;
     vendorName?: string;
     notes?: string;
+    costPerPiece?: number;
+    totalCost?: number;
   }) => {
     const targetModel = models.find((m) => m.id === data.modelId);
     const parts = data.parts && data.parts.length ? data.parts : getModelParts(data.modelId);
     const cleanNotes = data.notes?.trim() || '';
     const cleanVendor = data.vendorName?.trim() || '';
+    // السعر يُرسل فقط لمن يملك صلاحية تعديل أسعار الأسمبلي/التشطيب.
+    const canSetPrice = canEditAssemblyPrices();
+    const piecePrice = canSetPrice ? Math.max(0, Number(data.costPerPiece) || 0) : 0;
+    const totalPrice = canSetPrice ? Math.max(0, Number(data.totalCost) || 0) : 0;
 
     setModels((prev) =>
       prev.map((m) => {
@@ -3883,7 +3966,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       actual_exit_date: null,
       status: 'في التشطيب',
       is_received: false,
-      notes: cleanNotes
+      notes: cleanNotes,
+      ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
     }));
     setFinishingRecords((prev) => [
       ...optimistic,
@@ -3897,7 +3981,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         expected_exit_date: data.expectedExitDate,
         vendor_name: cleanVendor,
         notes: cleanNotes,
-        user_name: currentUser?.real_name || 'مسؤول التشطيب'
+        user_name: currentUser?.real_name || 'مسؤول التشطيب',
+        ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
       })
       .then((res) => {
         const saved: FinishingRecord[] = Array.isArray(res?.finishingRecords)
@@ -4009,11 +4094,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     expectedExitDate?: string;
     vendorName?: string;
     notes?: string;
+    costPerPiece?: number;
+    totalCost?: number;
   }) => {
     const targetModel = models.find((m) => m.id === data.modelId);
     const cleanNotes = data.notes?.trim() || '';
     const cleanVendor = data.vendorName?.trim() || '';
     const resolvedEntry = data.entryDate || new Date().toISOString().slice(0, 10);
+    // السعر يُرسل فقط لمن يملك صلاحية تعديل أسعار الأسمبلي/المكواة.
+    const canSetPrice = canEditAssemblyPrices();
+    const piecePrice = canSetPrice ? Math.max(0, Number(data.costPerPiece) || 0) : 0;
+    const totalPrice = canSetPrice ? Math.max(0, Number(data.totalCost) || 0) : 0;
     const parts: GarmentPart[] =
       data.parts && data.parts.length
         ? data.parts
@@ -4050,7 +4141,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         actual_exit_date: null,
         status: 'جارية الآن',
         is_completed: false,
-        notes: cleanNotes
+        notes: cleanNotes,
+        ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
       }));
       return [...optimistic, ...others];
     });
@@ -4062,7 +4154,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         expected_exit_date: data.expectedExitDate,
         vendor_name: cleanVendor,
         notes: cleanNotes,
-        user_name: currentUser?.real_name || 'مسؤول المكواة'
+        user_name: currentUser?.real_name || 'مسؤول المكواة',
+        ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
       })
       .then((res) => {
         const saved: AssemblyStageRecord[] = Array.isArray(res?.assemblyStageRecords)
@@ -4175,6 +4268,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     vendorName?: string;
     partType?: GarmentPart;
     notes?: string;
+    costPerPiece?: number;
+    totalCost?: number;
   }) => {
     // Ironing is per part, so it has its own dedicated flow.
     if (data.stage === 'ironing') {
@@ -4186,6 +4281,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const cleanNotes = data.notes?.trim() || '';
     const cleanVendor = data.vendorName?.trim() || '';
     const resolvedEntry = data.entryDate || new Date().toISOString().slice(0, 10);
+    // السعر يُرسل فقط لمن يملك صلاحية تعديل أسعار الأسمبلي/الأمبالاج.
+    const canSetPrice = canEditAssemblyPrices();
+    const piecePrice = canSetPrice ? Math.max(0, Number(data.costPerPiece) || 0) : 0;
+    const totalPrice = canSetPrice ? Math.max(0, Number(data.totalCost) || 0) : 0;
 
     setModels((prev) =>
       prev.map((m) =>
@@ -4209,7 +4308,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           actual_exit_date: null,
           status: 'جارية الآن' as const,
           is_completed: false,
-          notes: cleanNotes
+          notes: cleanNotes,
+          ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
         },
         ...others
       ];
@@ -4222,7 +4322,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         expected_exit_date: data.expectedExitDate,
         vendor_name: cleanVendor,
         notes: cleanNotes,
-        user_name: currentUser?.real_name || 'مسؤول الأسمبلي'
+        user_name: currentUser?.real_name || 'مسؤول الأسمبلي',
+        ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
       })
       .then((res) => {
         const saved: AssemblyStageRecord | undefined = res?.assemblyStageRecord;
@@ -4343,8 +4444,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       supplierId?: string;
       minAlertThreshold: number;
       currentStock?: number;
+      pricePerUnit?: number;
     }>;
   }): Promise<{ success: boolean; message: string }> => {
+    // السعر يُرسل فقط لمن يملك صلاحية تعديل أسعار الأسمبلي/الخامات.
+    const canSetPrice = canEditAssemblyPrices();
     const payload = {
       material_key: data.materialKey,
       name: data.name,
@@ -4360,7 +4464,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         dimensions_spec: row.dimensionsSpec || '',
         supplier_id: row.supplierId || '',
         min_alert_threshold: row.minAlertThreshold,
-        current_stock: row.currentStock
+        current_stock: row.currentStock,
+        ...(canSetPrice ? { price_per_unit: Math.max(0, Number(row.pricePerUnit) || 0) } : {})
       }))
     };
 
@@ -4418,6 +4523,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     operation: PackagingMaterialOperation;
     amount: number;
     notes?: string;
+    pricePerUnit?: number;
   }): Promise<{ success: boolean; message: string }> => {
     const sizeRule = packagingMaterialRules
       .flatMap((rule) => rule.size_rules || [])
@@ -4433,7 +4539,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         operation: data.operation,
         amount: data.amount,
         notes: data.notes || '',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        // سعر الوحدة يُرسل فقط عند إدخاله صريحاً من واجهة مصرح لها (حتى لا نمسح السعر المحفوظ).
+        ...(canEditAssemblyPrices() && data.pricePerUnit !== undefined
+          ? { price_per_unit: Math.max(0, Number(data.pricePerUnit) || 0) }
+          : {})
       });
       const saved: PackagingMaterialSizeRule | undefined = res?.sizeRule;
       if (saved && saved.id) {
@@ -5322,8 +5432,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         canEditFabricPrices,
         canViewAccessoryPrices,
         canEditAccessoryPrices,
+        canViewPrintingPrices,
+        canEditPrintingPrices,
         canViewPrintingCosts,
         canEditPrintingCosts,
+        canViewSewingPrices,
+        canEditSewingPrices,
+        canViewAssemblyPrices,
+        canEditAssemblyPrices,
         canSendWhatsApp,
         canSendMessages,
         internalMessages,

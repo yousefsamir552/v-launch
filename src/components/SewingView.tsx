@@ -55,7 +55,9 @@ export const SewingView: React.FC = () => {
     openWhatsAppOrder,
     logAction,
     globalSettings,
-    canAddSewingNotes
+    canAddSewingNotes,
+    canViewSewingPrices,
+    canEditSewingPrices
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -76,6 +78,7 @@ export const SewingView: React.FC = () => {
   const [customWorkshopName, setCustomWorkshopName] = useState('');
   const [piecesCount, setPiecesCount] = useState<number>(0);
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState('');
+  const [sewingCost, setSewingCost] = useState('');
   const [dispatchNotes, setDispatchNotes] = useState('');
 
   // Modal State for Receiving from Sewing Workshop (with optional notes)
@@ -210,6 +213,8 @@ export const SewingView: React.FC = () => {
       expectedDeliveryDate: expectedDeliveryDate,
       pieceType: dispatchPieceType,
       pieceLabel: dispatchPieceLabel,
+      // يظهر ويُرسل فقط لمن يملك صلاحية تعديل أسعار المكن.
+      costPerPiece: canEditSewingPrices() ? Math.max(0, parseFloat(sewingCost) || 0) : undefined,
       notes: allowSewingNotes ? dispatchNotes.trim() : ''
     });
 
@@ -219,6 +224,7 @@ export const SewingView: React.FC = () => {
     setCustomWorkshopName('');
     setPiecesCount(0);
     setExpectedDeliveryDate('');
+    setSewingCost('');
     setDispatchNotes('');
   };
 
@@ -704,6 +710,12 @@ export const SewingView: React.FC = () => {
                 <th className="px-6 py-3.5 text-center">القطعة المستهدفة</th>
                 <th className="px-6 py-3.5">اسم ورشة المكن / الخياطة</th>
                 <th className="px-6 py-3.5 text-center">القطع المرسلة</th>
+                {canViewSewingPrices() && (
+                  <>
+                    <th className="px-6 py-3.5 text-center">سعر القطعة</th>
+                    <th className="px-6 py-3.5 text-center">إجمالي التشغيل</th>
+                  </>
+                )}
                 <th className="px-6 py-3.5 text-center">تاريخ الإرسال</th>
                 <th className="px-6 py-3.5 text-center">تاريخ الاستلام المتوقع</th>
                 <th className="px-6 py-3.5 text-center">الحالة والتنبيه</th>
@@ -766,6 +778,19 @@ export const SewingView: React.FC = () => {
                         {disp.pieces_count.toLocaleString('ar-EG')} ق
                       </td>
 
+                      {canViewSewingPrices() && (
+                        <>
+                          <td className="px-6 py-4 text-center font-mono font-bold text-slate-700">
+                            {disp.cost_per_piece ? `${disp.cost_per_piece} ج.م` : '—'}
+                          </td>
+                          <td className="px-6 py-4 text-center font-mono font-black text-emerald-800">
+                            {disp.total_cost
+                              ? `${Number(disp.total_cost).toLocaleString('ar-EG')} ج.م`
+                              : '—'}
+                          </td>
+                        </>
+                      )}
+
                       <td className="px-6 py-4 text-center text-slate-500 font-mono text-[11px]">
                         {disp.dispatched_at}
                       </td>
@@ -814,7 +839,7 @@ export const SewingView: React.FC = () => {
                 })
               ) : (
                 <tr>
-                  <td colSpan={8} className="px-6 py-8 text-center text-slate-400">
+                  <td colSpan={canViewSewingPrices() ? 10 : 8} className="px-6 py-8 text-center text-slate-400">
                     لا توجد تشغيلات مسجلة تطابق البحث المحدد.
                   </td>
                 </tr>
@@ -978,6 +1003,27 @@ export const SewingView: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {/* سعر تشغيل القطعة: يظهر فقط لمن يملك صلاحية تعديل أسعار المكن */}
+              {canEditSewingPrices() && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    سعر تشغيل القطعة (ج.م)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={sewingCost}
+                    onChange={(e) => setSewingCost(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs text-center font-bold focus:ring-2 focus:ring-emerald-700 focus:outline-hidden"
+                  />
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    يُحسب الإجمالي تلقائياً = السعر × عدد القطع المسلمة.
+                  </p>
+                </div>
+              )}
 
               {/* Optional Sewing Notes gated by can_add_sewing_notes */}
               <div>

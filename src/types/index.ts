@@ -79,13 +79,17 @@ export interface RolePermissions {
   reports_view: boolean;
   reports_edit: boolean;
 
-  // Fine-grained financial permissions
+  // Fine-grained financial permissions (صلاحية مستقلة لكل قسم)
   view_fabric_prices: boolean;
   edit_fabric_prices: boolean;
   view_accessory_prices: boolean;
   edit_accessory_prices: boolean;
-  view_printing_costs: boolean;
-  edit_printing_costs: boolean;
+  view_printing_prices: boolean;
+  edit_printing_prices: boolean;
+  view_sewing_prices: boolean;
+  edit_sewing_prices: boolean;
+  view_assembly_prices: boolean;
+  edit_assembly_prices: boolean;
 
   // Warehouse WhatsApp dispatch permissions
   send_whatsapp_requests: boolean;
@@ -176,8 +180,12 @@ export interface UserPermissions {
   edit_fabric_prices?: boolean;
   view_accessory_prices?: boolean;
   edit_accessory_prices?: boolean;
-  view_printing_costs?: boolean;
-  edit_printing_costs?: boolean;
+  view_printing_prices?: boolean;
+  edit_printing_prices?: boolean;
+  view_sewing_prices?: boolean;
+  edit_sewing_prices?: boolean;
+  view_assembly_prices?: boolean;
+  edit_assembly_prices?: boolean;
   send_whatsapp_requests?: boolean;
   send_internal_messages?: boolean;
 
@@ -662,6 +670,9 @@ export interface SewingDispatch {
   piece_label?: string; // "تيشرت" / "بنطلون" / "جاكيت"
   received_at?: string;
   notes?: string;
+  /** يُعاد null لمن لا يملك صلاحية عرض أسعار المكن. */
+  cost_per_piece?: number | null;
+  total_cost?: number | null;
 }
 
 /**
@@ -738,6 +749,9 @@ export interface FinishingRecord {
   is_received: boolean;
   is_overdue?: boolean;
   notes?: string;
+  /** تُعاد null لمن لا يملك صلاحية عرض أسعار الأسمبلي/التشطيب. */
+  cost_per_piece?: number | null;
+  total_cost?: number | null;
   updated_at?: string;
 }
 
@@ -816,6 +830,9 @@ export interface PackagingMaterialTransaction {
   notes?: string;
   timestamp?: string;
   created_at?: string;
+  /** يُعاد null لمن لا يملك صلاحية عرض أسعار خامات التشغيل. */
+  price_per_unit?: number | null;
+  total_cost?: number | null;
 }
 
 export interface PackagingMaterialSizeRule {
@@ -831,6 +848,9 @@ export interface PackagingMaterialSizeRule {
   supplier_phone?: string;
   min_alert_threshold: number;
   current_stock: number;
+  /** يُعاد null لمن لا يملك صلاحية عرض أسعار خامات التشغيل. */
+  price_per_unit?: number | null;
+  total_stock_value?: number | null;
   transactions?: PackagingMaterialTransaction[];
   updated_at?: string;
 }
@@ -1011,6 +1031,9 @@ export interface AssemblyStageRecord {
   is_completed: boolean;
   is_overdue?: boolean;
   notes?: string;
+  /** تُعاد null لمن لا يملك صلاحية عرض أسعار الأسمبلي. */
+  cost_per_piece?: number | null;
+  total_cost?: number | null;
   updated_at?: string;
 }
 

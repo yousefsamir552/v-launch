@@ -14,11 +14,15 @@ from rest_framework.test import APIRequestFactory
 from .models import (
     Role, UserProfile, Fabric, FabricColor, Accessory,
     ModelItem, ModelTimeline, PrintDispatch, InternalMessage,
-    HRJobTitle, HREmployee,
+    SewingDispatch, FinishingRecord, AssemblyStageRecord,
+    PackagingMaterialRule, PackagingMaterialSizeRule,
+    HRJobTitle, HREmployee, AuditLog,
     RANK_LEVEL_ONE, RANK_LEVEL_THREE,
 )
 from .serializers import (
     FabricColorSerializer, AccessorySerializer, PrintDispatchSerializer,
+    SewingDispatchSerializer, FinishingRecordSerializer, AssemblyStageRecordSerializer,
+    PackagingMaterialSizeRuleSerializer, PackagingMaterialRuleSerializer,
     ModelItemSerializer, HREmployeeSerializer,
 )
 from .views import (
@@ -130,6 +134,155 @@ class FinancialFieldGatingTests(PermissionTestBase):
         self.assertNotIn('cost_per_piece', details)
         self.assertNotIn('total_cost', details)
         self.assertEqual(details['pieces_count'], 10)
+
+
+class DepartmentPriceIsolationTests(PermissionTestBase):
+    """كل قسم له صلاحية سعر مستقلة: العرض يُخفى والكتابة تُرفض بدون صلاحية القسم."""
+
+    def setUp(self):
+        super().setUp()
+        self.sewing_dispatch = SewingDispatch.objects.create(
+            model=self.model, workshop_name='ورشة النور', pieces_count=10,
+            expected_delivery_date=timezone.now().date(), cost_per_piece=4, total_cost=40,
+        )
+        self.finishing = FinishingRecord.objects.create(
+            model=self.model, part_type='shirt', cost_per_piece=2, total_cost=20,
+        )
+        self.assembly = AssemblyStageRecord.objects.create(
+            model=self.model, stage='packaging', part_type='',
+            cost_per_piece=1.5, total_cost=15,
+        )
+        self.material_rule = PackagingMaterialRule.objects.create(
+            material_key='bags', name='أكياس', unit='قطعة',
+        )
+        self.size_rule = PackagingMaterialSizeRule.objects.create(
+            rule=self.material_rule, size_group_id='g1', size_group_name='كبير',
+            consumption_per_piece=1, price_per_unit=0.75, current_stock=100,
+        )
+
+    def test_sewing_price_hidden_without_permission(self):
+        data = SewingDispatchSerializer(
+            self.sewing_dispatch, context={'request': self._request(self.sewing_user)}
+        ).data
+        self.assertIsNone(data['cost_per_piece'])
+        self.assertIsNone(data['total_cost'])
+        self.assertEqual(data['pieces_count'], 10)
+
+    def test_sewing_price_visible_with_sewing_permission(self):
+        role = make_role('sewing-prices', sewing_view=True, view_sewing_prices=True)
+        user = make_user('sewing-prices-user', role)
+        data = SewingDispatchSerializer(
+            self.sewing_dispatch, context={'request': self._request(user)}
+        ).data
+        self.assertEqual(data['cost_per_piece'], 4.0)
+        self.assertEqual(data['total_cost'], 40.0)
+
+    def test_finishing_and_assembly_prices_hidden_without_permission(self):
+        ctx = {'request': self._request(self.sewing_user)}
+        finishing = FinishingRecordSerializer(self.finishing, context=ctx).data
+        assembly = AssemblyStageRecordSerializer(self.assembly, context=ctx).data
+        self.assertIsNone(finishing['cost_per_piece'])
+        self.assertIsNone(finishing['total_cost'])
+        self.assertIsNone(assembly['cost_per_piece'])
+        self.assertIsNone(assembly['total_cost'])
+
+    def test_assembly_prices_visible_with_assembly_permission(self):
+        role = make_role('assembly-prices', assembly_packaging_view=True, view_assembly_prices=True)
+        user = make_user('assembly-prices-user', role)
+        ctx = {'request': self._request(user)}
+        finishing = FinishingRecordSerializer(self.finishing, context=ctx).data
+        assembly = AssemblyStageRecordSerializer(self.assembly, context=ctx).data
+        self.assertEqual(finishing['cost_per_piece'], 2.0)
+        self.assertEqual(assembly['total_cost'], 15.0)
+
+    def test_packaging_material_price_hidden_without_permission(self):
+        ctx = {'request': self._request(self.sewing_user)}
+        size_rule = PackagingMaterialSizeRuleSerializer(self.size_rule, context=ctx).data
+        rule = PackagingMaterialRuleSerializer(self.material_rule, context=ctx).data
+        self.assertIsNone(size_rule['price_per_unit'])
+        self.assertIsNone(size_rule['total_stock_value'])
+        self.assertIsNone(rule['size_rules'][0]['price_per_unit'])
+
+    def test_packaging_material_price_visible_with_assembly_permission(self):
+        role = make_role('materials-prices', assembly_packaging_view=True, view_assembly_prices=True)
+        user = make_user('materials-prices-user', role)
+        size_rule = PackagingMaterialSizeRuleSerializer(
+            self.size_rule, context={'request': self._request(user)}
+        ).data
+        self.assertEqual(size_rule['price_per_unit'], 0.75)
+        self.assertEqual(size_rule['total_stock_value'], 75.0)
+
+    def test_sewing_cost_write_requires_sewing_edit_permission(self):
+        view = ModelItemViewSet()
+        view.format_kwarg = None
+        request = self._request(
+            self.sewing_user, 'post',
+            {
+                'workshop_name': 'ورشة جديدة', 'pieces_count': 5,
+                'expected_delivery_date': timezone.now().date().isoformat(),
+                'piece_type': 'shirt', 'cost_per_piece': 7,
+            },
+        )
+        view.request = request
+        view.kwargs = {'pk': str(self.model.pk)}
+        with self.assertRaises(PermissionDenied):
+            view.dispatch_to_sewing(request, pk=str(self.model.pk))
+        self.assertFalse(SewingDispatch.objects.filter(workshop_name='ورشة جديدة').exists())
+
+    def test_finishing_cost_write_requires_assembly_edit_permission(self):
+        view = ModelItemViewSet()
+        view.format_kwarg = None
+        request = self._request(
+            self.sewing_user, 'post',
+            {'parts': ['shirt'], 'cost_per_piece': 3},
+        )
+        view.request = request
+        view.kwargs = {'pk': str(self.model.pk)}
+        with self.assertRaises(PermissionDenied):
+            view.start_finishing(request, pk=str(self.model.pk))
+
+    def test_sewing_cost_write_allowed_with_sewing_edit_permission(self):
+        role = make_role(
+            'sewing-editor', sewing_view=True, sewing_edit=True, edit_sewing_prices=True,
+        )
+        user = make_user('sewing-editor-user', role)
+        view = ModelItemViewSet()
+        view.format_kwarg = None
+        request = self._request(
+            user, 'post',
+            {
+                'workshop_name': 'ورشة جديدة', 'pieces_count': 5,
+                'expected_delivery_date': timezone.now().date().isoformat(),
+                'piece_type': 'shirt', 'cost_per_piece': 7,
+            },
+        )
+        view.request = request
+        view.kwargs = {'pk': str(self.model.pk)}
+        response = view.dispatch_to_sewing(request, pk=str(self.model.pk))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        saved = SewingDispatch.objects.get(workshop_name='ورشة جديدة')
+        self.assertEqual(float(saved.cost_per_piece), 7.0)
+        self.assertEqual(float(saved.total_cost), 35.0)
+        # التدقيق المالي: يُسجَّل تغيير سعر المكن صريحاً في سجل المراقبة.
+        audit = AuditLog.objects.filter(details__contains='سعر تشغيل القطعة').first()
+        self.assertIsNotNone(audit)
+        self.assertEqual(float(audit.changes[0]['new']), 7.0)
+
+    def test_timeline_scrubs_costs_per_department(self):
+        ModelTimeline.objects.create(
+            model=self.model, stage='قسم المكن والخياطة', title='إرسال للخياطة',
+            details={'phase_type': 'sewing_dispatch', 'cost_per_piece': 4, 'pieces_count': 10},
+        )
+        ModelTimeline.objects.create(
+            model=self.model, stage='قسم التشطيب', title='دخول التشطيب',
+            details={'phase_type': 'finishing_start', 'cost_per_piece': 2, 'parts': ['shirt']},
+        )
+        payload = ModelItemSerializer(
+            self.model, context={'request': self._request(self.sewing_user)}
+        ).data
+        for row in payload['timeline']:
+            self.assertNotIn('cost_per_piece', row['details'])
+            self.assertNotIn('total_cost', row['details'])
 
 
 class StateFilteringTests(PermissionTestBase):
