@@ -166,6 +166,13 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
       icon: Wallet,
       color: 'text-purple-600',
       isVisible: canAccessHRSection('payroll')
+    },
+    {
+      id: 'hr_reports',
+      label: 'تقارير الموارد البشرية',
+      icon: BarChart3,
+      color: 'text-purple-600',
+      isVisible: canAccessHRSection('reports') || canAccessHRSection('payroll')
     }
   ].filter((item) => item.isVisible);
 

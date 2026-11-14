@@ -1222,6 +1222,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         hr_loans: true,
         hr_penalties: true,
         hr_payroll: true,
+        hr_reports: true,
         can_add_design_notes: true,
         can_add_cutting_notes: true,
         can_add_qc_before_print_notes: true,
@@ -1445,7 +1446,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return hasSpecificPermission(HR_SECTION_PERM_MAP[section]);
   };
 
-  // أي صلاحية من صلاحيات HR السبعة تفتح القسم العام.
+  // أي صلاحية من صلاحيات HR المستقلة تفتح القسم العام.
   const canManageHR = (): boolean => HR_SECTION_KEYS.some((section) => canAccessHRSection(section));
 
   // -------------------------------------------------------------------------

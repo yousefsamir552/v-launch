@@ -482,5 +482,13 @@ export const api = {
   updateHRLoan: (id: string, data: any) =>
     request<any>(`/hr-loans/${encodeURIComponent(id)}/`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteHRLoan: (id: string) =>
-    request<any>(`/hr-loans/${encodeURIComponent(id)}/`, { method: 'DELETE' })
+    request<any>(`/hr-loans/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  getHRReports: (params?: { year?: number; from?: string; to?: string }) => {
+    const search = new URLSearchParams();
+    if (params?.year) search.set('year', String(params.year));
+    if (params?.from) search.set('from', params.from);
+    if (params?.to) search.set('to', params.to);
+    const suffix = search.toString();
+    return request<any>(`/hr-reports/${suffix ? `?${suffix}` : ''}`);
+  }
 };

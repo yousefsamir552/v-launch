@@ -53,6 +53,7 @@ HR_SECTION_PERM_MAP = {
     'loans': 'hr_loans',
     'penalties': 'hr_penalties',
     'payroll': 'hr_payroll',
+    'reports': 'hr_reports',
 }
 
 class HasDynamicSectionPermission(permissions.BasePermission):

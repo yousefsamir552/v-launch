@@ -36,7 +36,7 @@ RANK_LEVEL_CHOICES = [
 ]
 RANK_LEVEL_KEYS = [RANK_SUDO, RANK_LEVEL_ONE, RANK_LEVEL_TWO, RANK_LEVEL_THREE]
 
-# مفاتيح صلاحيات الموارد البشرية السبعة المستقلة.
+# مفاتيح صلاحيات الموارد البشرية المستقلة.
 HR_PERM_KEYS = (
     'hr_jobs',
     'hr_employees',
@@ -45,6 +45,7 @@ HR_PERM_KEYS = (
     'hr_loans',
     'hr_penalties',
     'hr_payroll',
+    'hr_reports',
 )
 
 
@@ -367,6 +368,7 @@ class Role(models.Model):
             'hr_loans': False,
             'hr_penalties': False,
             'hr_payroll': False,
+            'hr_reports': False,
             # Global site settings permissions (Task 3)
             'view_global_settings': False,
             'edit_header_settings': False,

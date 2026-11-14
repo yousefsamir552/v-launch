@@ -208,6 +208,7 @@ PERMISSION_LABELS = {
     'hr_loans': 'السلف',
     'hr_penalties': 'الجزاءات',
     'hr_payroll': 'المرتبات',
+    'hr_reports': 'تقارير وتحليلات الموارد البشرية',
     'view_global_settings': 'عرض الإعدادات العامة',
     'edit_header_settings': 'تعديل إعدادات الموقع',
     'edit_message_templates': 'تعديل قوالب الرسائل',

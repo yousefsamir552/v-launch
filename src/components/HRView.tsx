@@ -28,9 +28,11 @@ import {
   UsersRound,
   LayoutList,
   History,
-  Printer
+  Printer,
+  BarChart3
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { HRReportsView } from './HRReportsView';
 import { renderLogoHtml } from '../utils/printShared';
 import { api } from '../api/client';
 import {
@@ -59,7 +61,7 @@ import {
   HROvertimeRewardType
 } from '../types';
 
-type HRSection = 'staff' | 'attendance' | 'loans_penalties' | 'payroll';
+type HRSection = 'staff' | 'attendance' | 'loans_penalties' | 'payroll' | 'reports';
 type HRSubTab = 'employees' | 'jobs' | 'records' | 'rules' | 'loans' | 'penalties';
 
 interface HRViewProps {
@@ -458,13 +460,15 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
     rules: canAccessHRSection('rules'),
     loans: canAccessHRSection('loans'),
     penalties: canAccessHRSection('penalties'),
-    payroll: canAccessHRSection('payroll')
+    payroll: canAccessHRSection('payroll'),
+    reports: canAccessHRSection('reports')
   };
   const sectionAccess: Record<HRSection, boolean> = {
     staff: hrPerm.employees || hrPerm.jobs,
     attendance: hrPerm.attendance || hrPerm.rules,
     loans_penalties: hrPerm.loans || hrPerm.penalties,
-    payroll: hrPerm.payroll
+    payroll: hrPerm.payroll,
+    reports: hrPerm.reports || hrPerm.payroll
   };
 
   const [jobTitles, setJobTitles] = useState<HRJobTitle[]>([]);
@@ -530,6 +534,11 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
       title: 'المرتبات',
       subtitle: 'احتساب المرتبات الشهرية بعد الخصومات',
       icon: Wallet
+    },
+    reports: {
+      title: 'تقارير وإحصائيات الموارد البشرية',
+      subtitle: 'تحليل السُلف والمرتبات والانتظام الشهري والسنوي',
+      icon: BarChart3
     }
   };
 
@@ -561,12 +570,12 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
         ? attendanceTab
         : section === 'loans_penalties'
           ? loansTab
-          : 'payroll';
+          : section;
 
   // حماية إضافية: لو التبويب الحالي غير مصرح به، انتقل لأول تبويب متاح.
   const activeTab =
-    section === 'payroll'
-      ? 'payroll'
+    section === 'payroll' || section === 'reports'
+      ? section
       : tabs.some((tab) => tab.id === rawActiveTab)
         ? rawActiveTab
         : tabs[0]?.id || '';
@@ -692,6 +701,8 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
       )}
 
       {section === 'payroll' && <PayrollPanel employees={rankSafeEmployees} />}
+
+      {section === 'reports' && <HRReportsView />}
     </div>
   );
 };

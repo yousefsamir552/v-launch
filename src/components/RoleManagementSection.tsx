@@ -377,7 +377,7 @@ export const ADMIN_AND_SETTINGS_PERMISSIONS_LIST: {
   }
 ];
 
-/** التبويبات السبعة المستقلة للموارد البشرية مع مفتاح الصلاحية الخاص بكل تبويب. */
+/** التبويبات المستقلة للموارد البشرية مع مفتاح الصلاحية الخاص بكل تبويب. */
 export const HR_PERMISSIONS_LIST: {
   key: HRSectionKey;
   permKey: keyof RolePermissions;
@@ -425,6 +425,12 @@ export const HR_PERMISSIONS_LIST: {
     permKey: 'hr_payroll',
     label: 'المرتبات',
     description: 'احتساب وصرف المرتبات بعد الخصومات'
+  },
+  {
+    key: 'reports',
+    permKey: 'hr_reports',
+    label: 'التقارير والتحليلات',
+    description: 'عرض التقارير والتحليلات المجمعة للموارد البشرية'
   }
 ];
 
@@ -480,6 +486,7 @@ export const DEFAULT_PERMISSIONS: RolePermissions = {
   hr_loans: false,
   hr_penalties: false,
   hr_payroll: false,
+  hr_reports: false,
   view_global_settings: false,
   edit_header_settings: false,
   edit_message_templates: false,
@@ -703,6 +710,7 @@ export const RoleManagementSection: React.FC = () => {
         next.hr_loans = true;
         next.hr_penalties = true;
         next.hr_payroll = true;
+        next.hr_reports = true;
         next.view_global_settings = true;
         next.edit_header_settings = true;
         next.edit_message_templates = true;
@@ -738,6 +746,7 @@ export const RoleManagementSection: React.FC = () => {
         next.hr_loans = false;
         next.hr_penalties = false;
         next.hr_payroll = false;
+        next.hr_reports = false;
         next.edit_header_settings = false;
         next.edit_message_templates = false;
         next.can_add_design_notes = false;
@@ -1324,7 +1333,7 @@ export const RoleManagementSection: React.FC = () => {
                       </h4>
                       <p className="text-[11px] text-rose-800">
                         كل تبويب له صلاحية مستقلة. منح «إدارة الموارد البشرية» العامة يفتح كل
-                        التبويبات السبعة تلقائياً.
+                        التبويبات تلقائياً.
                       </p>
                     </div>
                   </div>
@@ -1342,7 +1351,7 @@ export const RoleManagementSection: React.FC = () => {
                         صلاحية إدارة الموارد البشرية كاملة (Master)
                       </span>
                       <span className="text-[10px] text-slate-500">
-                        تمنح كل تبويبات الموارد البشرية السبعة دفعة واحدة
+                        تمنح كل تبويبات الموارد البشرية دفعة واحدة
                       </span>
                     </div>
                     <DelegationBadge

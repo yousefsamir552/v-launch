@@ -52,7 +52,8 @@ export const App: React.FC = () => {
     hr_rules: 'rules',
     hr_loans: 'loans',
     hr_penalties: 'penalties',
-    hr_payroll: 'payroll'
+    hr_payroll: 'payroll',
+    hr_reports: 'reports'
   };
 
   const isHrTab = (tab: string): boolean => tab in HR_TAB_SECTIONS;
@@ -63,7 +64,8 @@ export const App: React.FC = () => {
     hr_employees: ['employees', 'jobs'],
     hr_attendance: ['attendance', 'rules'],
     hr_loans: ['loans', 'penalties'],
-    hr_payroll: ['payroll']
+    hr_payroll: ['payroll'],
+    hr_reports: ['reports', 'payroll']
   };
 
   const canAccessHrTab = (tab: string): boolean => {
@@ -252,6 +254,7 @@ export const App: React.FC = () => {
                 <HRView initialSection="loans_penalties" initialSubTab="penalties" />
               )}
               {currentTab === 'hr_payroll' && <HRView initialSection="payroll" />}
+              {currentTab === 'hr_reports' && <HRView initialSection="reports" />}
             </>
           ) : (
             <div className="p-4 lg:p-8">

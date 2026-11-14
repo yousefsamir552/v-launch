@@ -11,7 +11,7 @@ export type SystemSectionKey =
   | 'models_tracking'
   | 'reports';
 
-/** التبويبات السبعة المستقلة لقسم الموارد البشرية. */
+/** التبويبات المستقلة لقسم الموارد البشرية. */
 export type HRSectionKey =
   | 'jobs'
   | 'employees'
@@ -19,7 +19,8 @@ export type HRSectionKey =
   | 'rules'
   | 'loans'
   | 'penalties'
-  | 'payroll';
+  | 'payroll'
+  | 'reports';
 
 export const HR_SECTION_KEYS: HRSectionKey[] = [
   'jobs',
@@ -28,7 +29,8 @@ export const HR_SECTION_KEYS: HRSectionKey[] = [
   'rules',
   'loans',
   'penalties',
-  'payroll'
+  'payroll',
+  'reports'
 ];
 
 /** ربط كل تبويب HR بمفتاح الصلاحية الخاص به. */
@@ -39,7 +41,8 @@ export const HR_SECTION_PERM_MAP: Record<HRSectionKey, string> = {
   rules: 'hr_rules',
   loans: 'hr_loans',
   penalties: 'hr_penalties',
-  payroll: 'hr_payroll'
+  payroll: 'hr_payroll',
+  reports: 'hr_reports'
 };
 
 /**
@@ -115,6 +118,7 @@ export interface RolePermissions {
   hr_loans?: boolean;
   hr_penalties?: boolean;
   hr_payroll?: boolean;
+  hr_reports?: boolean;
 
   // Global Site Settings permissions (Task 3)
   view_global_settings?: boolean;
@@ -1387,4 +1391,122 @@ export interface HRLoan {
   amount: number;
   notes?: string;
   created_at?: string;
+}
+
+// ---------------------------------------------------------------------------
+// تقارير وتحليلات الموارد البشرية — شكل استجابة /api/hr-reports/
+// ---------------------------------------------------------------------------
+export interface HRReportLoanItem {
+  id: string;
+  employee_id: string;
+  employee_code: string;
+  employee_name: string;
+  department: string;
+  department_label: string;
+  amount: number;
+  notes: string;
+}
+
+export interface HRReportLoanDay {
+  date: string;
+  total: number;
+  count: number;
+  items: HRReportLoanItem[];
+}
+
+export interface HRReportLoansSummary {
+  week_total: number;
+  week_count: number;
+  week_from: string;
+  week_to: string;
+  month_total: number;
+  month_count: number;
+  month_key: string;
+  top_day: { date: string; total: number; count: number } | null;
+}
+
+export interface HRReportAnnualKpis {
+  net_salary_total: number;
+  loans_total: number;
+  overtime_bonus_total: number;
+  deductions_total: number;
+  avg_monthly_labor_cost: number;
+  active_workers: number;
+}
+
+export interface HRReportMonthRow {
+  month: string;
+  label: string;
+  active_workers: number;
+  earned_salary: number;
+  overtime_bonus: number;
+  loans: number;
+  deductions: number;
+  net_paid: number;
+}
+
+export interface HRReportDepartmentRow {
+  department: string;
+  label: string;
+  workers: number;
+  earned: number;
+  overtime: number;
+  loans: number;
+  deductions: number;
+  net: number;
+  percent: number;
+}
+
+export interface HRReportComparisonRow {
+  month: string;
+  label: string;
+  net: number;
+  loans: number;
+  deductions: number;
+  overtime: number;
+  net_change_pct: number | null;
+}
+
+export interface HRReportDisciplineEmployee {
+  employee_id: string;
+  employee_code: string;
+  name: string;
+  department: string;
+  department_label: string;
+  present_days: number;
+  absent_days: number;
+  late_minutes: number;
+}
+
+export interface HRReportDiscipline {
+  most_committed: HRReportDisciplineEmployee[];
+  most_absent: HRReportDisciplineEmployee[];
+  worst_department: {
+    department: string;
+    label: string;
+    absent_count: number;
+    late_minutes: number;
+  } | null;
+}
+
+export interface HRReportsPayload {
+  available_years: number[];
+  year: number;
+  active_workers: number;
+  range_from: string;
+  range_to: string;
+  loans_by_day: Record<string, HRReportLoanDay>;
+  loans_summary: HRReportLoansSummary;
+  annual: {
+    kpis: HRReportAnnualKpis;
+    months: HRReportMonthRow[];
+    monthly_departments: Record<string, HRReportDepartmentRow[]>;
+  };
+  range: {
+    from: string;
+    to: string;
+    comparison: HRReportComparisonRow[];
+    department_breakdown: HRReportDepartmentRow[];
+    discipline: HRReportDiscipline;
+  };
 }
