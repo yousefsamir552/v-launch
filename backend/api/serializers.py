@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.utils import timezone
 from .models import (
     SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier, Workshop,
     WORKSHOP_TYPE_KEYS, WORKSHOP_TYPE_LABELS,
@@ -827,13 +828,27 @@ class AuditLogSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def to_representation(self, instance):
-        ts = instance.timestamp or (instance.created_at.strftime('%Y-%m-%d %H:%M') if instance.created_at else '')
+        if instance.timestamp:
+            ts = instance.timestamp
+        elif instance.created_at:
+            created = instance.created_at
+            if timezone.is_aware(created):
+                created = timezone.localtime(created)
+            ts = created.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            ts = ''
+        changes = instance.changes if isinstance(instance.changes, list) else []
         return {
             'id': get_ext_id(instance),
             'userId': instance.user_id_ref or '',
             'userName': instance.user_name,
+            'userFullName': instance.user_full_name or instance.user_name,
+            'section': instance.section or '',
+            'actionType': instance.action_type or '',
             'action': instance.action,
+            'targetName': instance.target_name or '',
             'details': instance.details,
+            'changes': changes,
             'ip_address': instance.ip_address or '127.0.0.1',
             'timestamp': ts,
         }

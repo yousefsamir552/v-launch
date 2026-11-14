@@ -1290,16 +1290,25 @@ class InternalMessage(models.Model):
 
 class AuditLog(models.Model):
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
-    user_id_ref = models.CharField(max_length=100, blank=True, null=True, verbose_name="معرف المستخدم")
-    user_name = models.CharField(max_length=200, verbose_name="اسم المستخدم")
+    user_id_ref = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="معرف المستخدم")
+    user_name = models.CharField(max_length=200, db_index=True, verbose_name="اسم المستخدم")
+    user_full_name = models.CharField(max_length=200, blank=True, default='', verbose_name="الاسم الكامل للمستخدم")
+    section = models.CharField(max_length=120, blank=True, default='', db_index=True, verbose_name="القسم")
+    action_type = models.CharField(max_length=40, blank=True, default='', db_index=True, verbose_name="نوع الإجراء")
     action = models.CharField(max_length=150, verbose_name="الإجراء")
+    target_name = models.CharField(max_length=255, blank=True, default='', verbose_name="العنصر المتأثر")
     details = models.TextField(verbose_name="التفاصيل")
+    changes = models.JSONField(default=list, blank=True, verbose_name="التغييرات التفصيلية")
     ip_address = models.CharField(max_length=60, default='127.0.0.1', verbose_name="عنوان IP")
     timestamp = models.CharField(max_length=100, blank=True, default='', verbose_name="التاريخ والوقت")
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         ordering = ['-created_at', '-id']
+        indexes = [
+            models.Index(fields=['section', 'action_type'], name='audit_section_action_idx'),
+            models.Index(fields=['timestamp'], name='audit_timestamp_idx'),
+        ]
 
     def save(self, *args, **kwargs):
         if not self.client_id:

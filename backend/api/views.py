@@ -1,10 +1,12 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
-from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError as DRFValidationError
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import models, transaction
+from django.db.models import Q
 from django.http import Http404, HttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_time
@@ -84,6 +86,14 @@ from .permissions import (
     CanManageHR,
     HasDynamicSectionPermission,
     IsAuthenticatedProfile,
+)
+from .audit_utils import (
+    ACTION_TYPE_LABELS,
+    AuditedModelViewSetMixin,
+    build_field_changes,
+    is_sudo_account,
+    log_action,
+    snapshot_instance,
 )
 from .throttles import LoginRateThrottle, ProfileRateThrottle, SyncRateThrottle
 from .storage_r2 import normalize_image_field, upload_image_file
@@ -345,10 +355,12 @@ def hidden_employee_error(request, employee):
     return None
 
 
-class BasePermViewSet(viewsets.ModelViewSet):
+class BasePermViewSet(AuditedModelViewSetMixin, viewsets.ModelViewSet):
     """
     Base ViewSet supporting lookup by client_id or database pk, and attaching user_profile to request.
     Every business endpoint requires a valid session token (fails closed).
+    Inherits AuditedModelViewSetMixin: every create/update/destroy (and every non-GET
+    @action) is written to the enterprise audit log automatically.
     """
     permission_classes = [IsAuthenticatedProfile]
 
@@ -430,14 +442,14 @@ class AuthViewSet(viewsets.ViewSet):
         user.save(update_fields=['auth_token', 'last_active', 'last_seen'])
 
         # Do not log sudo emergency account into public audit logs so regular users never know of its existence
-        if not user.is_sudo and user.username.lower() != 'sudo':
-            AuditLog.objects.create(
-                user_id_ref=get_ext_id(user),
-                user_name=user.real_name or user.username,
-                action='تسجيل دخول',
+        if not is_sudo_account(user):
+            log_action(
+                request,
+                section='تسجيل الدخول والخروج',
+                action_type='login',
+                target_name=user.real_name or user.username,
                 details=f"تسجيل دخول ناجح للمستخدم @{user.username}",
-                ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
-                timestamp=timezone.now().strftime('%Y-%m-%d %H:%M')
+                user=user,
             )
 
         request.user_profile = user
@@ -489,14 +501,14 @@ class AuthViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['post'])
     def logout(self, request):
         user = resolve_request_user_profile(request)
-        if user and not user.is_sudo and user.username.lower() != 'sudo':
-            AuditLog.objects.create(
-                user_id_ref=get_ext_id(user),
-                user_name=user.real_name or user.username,
-                action='تسجيل خروج',
+        if user and not is_sudo_account(user):
+            log_action(
+                request,
+                section='تسجيل الدخول والخروج',
+                action_type='logout',
+                target_name=user.real_name or user.username,
                 details=f"تسجيل خروج للمستخدم @{user.username}",
-                ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
-                timestamp=timezone.now().strftime('%Y-%m-%d %H:%M')
+                user=user,
             )
         return Response({'status': 'logged_out'})
 
@@ -535,6 +547,16 @@ class StateViewSet(viewsets.ViewSet):
         online_since = timezone.now() - timedelta(minutes=5)
         online_users = visible_users.filter(last_seen__gte=online_since)
         visible_logs = AuditLog.objects.exclude(user_id_ref='user-sudo').exclude(user_name__icontains='sudo')[:200]
+        can_view_logs = bool(
+            current_profile is not None
+            and (
+                is_sudo_profile(current_profile)
+                or current_profile.has_perm('view_audit_logs')
+                or current_profile.has_perm('manage_permissions')
+            )
+        )
+        if not can_view_logs:
+            visible_logs = AuditLog.objects.none()
         visible_messages = InternalMessage.objects.select_related('sender', 'receiver').exclude(
             sender__username__iexact='sudo'
         ).exclude(receiver__username__iexact='sudo')
@@ -612,6 +634,13 @@ class ImageUploadViewSet(viewsets.ViewSet):
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+        log_action(
+            request,
+            section='الملفات والصور',
+            action_type='upload',
+            target_name=uploaded.name,
+            details=f"رفع صورة إلى مجلد {folder}: {uploaded.name}",
+        )
         return Response(result, status=status.HTTP_201_CREATED)
 
 
@@ -640,6 +669,7 @@ class GlobalSettingsViewSet(viewsets.ViewSet):
         ensure_initial_seed()
         profile = resolve_request_user_profile(request)
         obj = GlobalSettings.get_solo()
+        before = snapshot_instance(obj)
         data = request.data
 
         can_edit_header = True
@@ -684,6 +714,16 @@ class GlobalSettingsViewSet(viewsets.ViewSet):
             obj.updated_by = str(data['updated_by'])
 
         obj.save()
+        changes = build_field_changes(before, snapshot_instance(obj), model=GlobalSettings)
+        log_action(
+            request,
+            section='الإعدادات',
+            action_type='settings',
+            target_name='الإعدادات العامة للموقع',
+            details='حدّث إعدادات الموقع العامة وقوالب الرسائل',
+            changes=changes,
+            user=profile,
+        )
         return Response(GlobalSettingsSerializer(obj).data)
 
 
@@ -3213,32 +3253,202 @@ class InternalMessageViewSet(BasePermViewSet):
         return Response(InternalMessageSerializer(msg).data)
 
 
+class AuditLogPagination(PageNumberPagination):
+    """ترقيم صفحات سجل المراقبة (افتراضي 50، بحد أقصى 200)."""
+    page_size = 50
+    page_size_query_param = 'page_size'
+    max_page_size = 200
+
+
 class AuditLogViewSet(BasePermViewSet):
+    """
+    سجل المراقبة الشامل: فلاتر قابلة للتركيب (تاريخ/ساعة/مستخدم/قسم/نوع/آي بي/بحث)
+    مع ترقيم صفحات، وبيانات فلاتر ديناميكية، مع استبعاد حساب sudo دائماً.
+    """
     queryset = AuditLog.objects.exclude(user_id_ref='user-sudo').exclude(user_name__icontains='sudo')
     serializer_class = AuditLogSerializer
+    pagination_class = AuditLogPagination
+    audit_enabled = False
+
+    def initial(self, request, *args, **kwargs):
+        """لا يسمح بعرض سجل المراقبة إلا لمن يملك view_audit_logs أو manage_permissions."""
+        super().initial(request, *args, **kwargs)
+        profile = getattr(request, 'user_profile', None)
+        if is_sudo_account(profile):
+            return
+        if not (
+            profile is not None
+            and (profile.has_perm('view_audit_logs') or profile.has_perm('manage_permissions'))
+        ):
+            raise PermissionDenied('ليس لديك صلاحية عرض سجل المراقبة')
+
+    def _base_queryset(self):
+        return AuditLog.objects.exclude(user_id_ref='user-sudo').exclude(user_name__icontains='sudo')
+
+    def _parse_hour(self, name):
+        raw = (self.request.query_params.get(name) or '').strip()
+        if raw == '':
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if 0 <= value <= 23 else None
+
+    def get_queryset(self):
+        qs = self._base_queryset()
+        params = self.request.query_params
+
+        date_val = (params.get('date') or '').strip()
+        if date_val:
+            parsed = parse_date(date_val)
+            if parsed:
+                qs = qs.filter(Q(timestamp__startswith=date_val) | Q(created_at__date=parsed))
+            else:
+                qs = qs.filter(timestamp__startswith=date_val)
+
+        date_from = (params.get('date_from') or params.get('from') or '').strip()
+        date_to = (params.get('date_to') or params.get('to') or '').strip()
+        if date_from:
+            parsed_from = parse_date(date_from)
+            if parsed_from:
+                qs = qs.filter(Q(timestamp__gte=date_from) | Q(created_at__date__gte=parsed_from))
+            else:
+                qs = qs.filter(timestamp__gte=date_from)
+        if date_to:
+            parsed_to = parse_date(date_to)
+            if parsed_to:
+                qs = qs.filter(
+                    Q(timestamp__lte=f"{date_to} 23:59:59") | Q(created_at__date__lte=parsed_to)
+                )
+            else:
+                qs = qs.filter(timestamp__lte=f"{date_to} 23:59:59")
+
+        hour_from = self._parse_hour('hour_from')
+        hour_to = self._parse_hour('hour_to')
+        if hour_from is not None:
+            qs = qs.filter(created_at__hour__gte=hour_from)
+        if hour_to is not None:
+            qs = qs.filter(created_at__hour__lte=hour_to)
+
+        user = (params.get('user') or params.get('userId') or params.get('user_id') or '').strip()
+        if user:
+            qs = qs.filter(
+                Q(user_id_ref=user)
+                | Q(user_name__icontains=user)
+                | Q(user_full_name__icontains=user)
+            )
+
+        section = (params.get('section') or '').strip()
+        if section:
+            qs = qs.filter(section=section)
+
+        action_type = (params.get('action_type') or params.get('actionType') or '').strip()
+        if action_type:
+            qs = qs.filter(action_type=action_type)
+
+        ip_address = (
+            params.get('ip_address') or params.get('ipAddress') or params.get('ip') or ''
+        ).strip()
+        if ip_address:
+            qs = qs.filter(ip_address__icontains=ip_address)
+
+        search = (params.get('search') or params.get('q') or '').strip()
+        if search:
+            qs = qs.filter(
+                Q(details__icontains=search)
+                | Q(target_name__icontains=search)
+                | Q(user_name__icontains=search)
+                | Q(user_full_name__icontains=search)
+                | Q(ip_address__icontains=search)
+                | Q(section__icontains=search)
+                | Q(action__icontains=search)
+            )
+
+        return qs.order_by('-created_at', '-id')
+
+
+
+    @action(detail=False, methods=['get'])
+    def filters(self, request):
+        """بيانات الفلاتر الديناميكية (المستخدمون/الأقسام/الأنواع/عناوين IP)."""
+        base = self._base_queryset()
+        users_rows = list(
+            base.exclude(user_name='')
+            .values('user_id_ref', 'user_name', 'user_full_name')
+            .distinct()
+            .order_by('user_full_name', 'user_name')
+        )
+        users = []
+        seen = set()
+        for row in users_rows:
+            uid = row.get('user_id_ref') or ''
+            name = row.get('user_full_name') or row.get('user_name') or ''
+            key = uid or name
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            users.append({
+                'id': uid,
+                'name': name,
+                'username': row.get('user_name') or '',
+            })
+
+        sections = list(
+            base.exclude(section='').values_list('section', flat=True).distinct().order_by('section')
+        )
+        action_types = list(
+            base.exclude(action_type='')
+            .values_list('action_type', flat=True)
+            .distinct()
+            .order_by('action_type')
+        )
+        ip_addresses = list(
+            base.exclude(ip_address='')
+            .values_list('ip_address', flat=True)
+            .distinct()
+            .order_by('ip_address')
+        )
+        return Response({
+            'users': users,
+            'sections': sections,
+            'actionTypes': [
+                {'key': key, 'label': ACTION_TYPE_LABELS.get(key, key)}
+                for key in action_types
+            ],
+            'ipAddresses': ip_addresses,
+        })
 
     def create(self, request, *args, **kwargs):
+        """توافق خلفي: الواجهة لم تعد ترسل السجلات، لكن نقبلها بأمان."""
         data = request.data
-        profile = getattr(request, 'user_profile', None)
-        if profile and (profile.is_sudo or profile.username.lower() == 'sudo'):
-            # Sudo actions remain invisible in audit logs so ordinary users never know sudo exists
+        profile = resolve_request_user_profile(request)
+        if is_sudo_account(profile):
             return Response({'status': 'ignored_for_sudo'}, status=status.HTTP_200_OK)
 
         user_id_ref = data.get('userId') or ''
-        user_name = data.get('userName') or 'مستخدم'
+        user_name = data.get('userName') or (
+            getattr(profile, 'real_name', '') or getattr(profile, 'username', '') or 'مستخدم'
+        )
         if str(user_id_ref).lower() == 'user-sudo' or 'sudo' in str(user_name).lower():
             return Response({'status': 'ignored_for_sudo'}, status=status.HTTP_200_OK)
 
-        log = AuditLog.objects.create(
-            client_id=data.get('id') or data.get('client_id'),
-            user_id_ref=user_id_ref,
-            user_name=user_name,
-            action=data.get('action') or 'إجراء',
+        log = log_action(
+            request,
+            section=data.get('section') or 'عام',
+            action_type=data.get('actionType') or 'custom',
+            target_name=data.get('targetName') or '',
             details=data.get('details') or '',
-            ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
-            timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
+            changes=data.get('changes') if isinstance(data.get('changes'), list) else [],
+            user=profile,
         )
+        if log is None:
+            return Response({'status': 'ignored_for_sudo'}, status=status.HTTP_200_OK)
+        if data.get('action'):
+            log.action = str(data.get('action'))[:150]
+            log.save(update_fields=['action'])
         return Response(AuditLogSerializer(log).data, status=status.HTTP_201_CREATED)
+
 
 
 class ReportsViewSet(viewsets.ViewSet):
@@ -3475,6 +3685,7 @@ class HRAttendanceSettingsViewSet(viewsets.ViewSet):
 
     def _update_settings(self, request):
         obj = HRAttendanceSettings.get_solo()
+        before = snapshot_instance(obj)
         data = request.data
 
         start_time = parse_time_value(data.get('official_start_time'))
@@ -3494,6 +3705,16 @@ class HRAttendanceSettingsViewSet(viewsets.ViewSet):
         # الشهر الحسابي ثابت دائماً 30 يوماً
         obj.month_calculation_days = 30
         obj.save()
+        changes = build_field_changes(before, snapshot_instance(obj), model=HRAttendanceSettings)
+        log_action(
+            request,
+            section='الموارد البشرية',
+            action_type='settings',
+            target_name='إعدادات الحضور والانصراف',
+            details='حدّث إعدادات الحضور والانصراف وقواعد التأخير والخصم',
+            changes=changes,
+            user=resolve_request_user_profile(request),
+        )
         return Response(HRAttendanceSettingsSerializer(obj).data)
 
 

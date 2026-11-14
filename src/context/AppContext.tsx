@@ -942,8 +942,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ip_address: '127.0.0.1',
       timestamp: new Date().toLocaleString('ar-EG', { hour12: false })
     };
+    // السجل المركزي أصبح مصدر الحقيقة (Backend Audit Engine)؛ نحتفظ بالتحديث المحلي فقط.
     setAuditLogs((prev) => [newLog, ...prev.slice(0, 200)]);
-    api.createAuditLog(newLog).catch((err) => console.error('AuditLog error:', err));
   };
 
   const updateGlobalSettings = async (updates: Partial<GlobalSiteSettings>): Promise<boolean> => {

@@ -226,14 +226,66 @@ export interface User {
   rank_label?: string;
 }
 
+export interface AuditLogChange {
+  field: string;
+  label: string;
+  old: string;
+  new: string;
+}
+
 export interface AuditLog {
   id: string;
   userId?: string;
   userName: string;
+  userFullName?: string;
+  section?: string;
+  actionType?: string;
   action: string;
+  targetName?: string;
   details: string;
+  changes?: AuditLogChange[];
   ip_address: string;
   timestamp: string;
+}
+
+export interface AuditLogFilters {
+  search?: string;
+  date?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  hourFrom?: string;
+  hourTo?: string;
+  user?: string;
+  section?: string;
+  actionType?: string;
+  ipAddress?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface AuditLogFilterUser {
+  id: string;
+  name: string;
+  username?: string;
+}
+
+export interface AuditLogFilterActionType {
+  key: string;
+  label: string;
+}
+
+export interface AuditLogFiltersMeta {
+  users: AuditLogFilterUser[];
+  sections: string[];
+  actionTypes: AuditLogFilterActionType[];
+  ipAddresses: string[];
+}
+
+export interface AuditLogListResponse {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: AuditLog[];
 }
 
 export interface SizeDef {

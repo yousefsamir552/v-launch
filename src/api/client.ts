@@ -393,9 +393,17 @@ export const api = {
     request<any>('/internal-messages/', { method: 'POST', body: JSON.stringify(data) }),
   markMessageRead: (id: string) =>
     request<any>(`/internal-messages/${encodeURIComponent(id)}/mark_read/`, { method: 'POST' }),
-  getAuditLogs: () => request<any[]>('/audit-logs/'),
-  createAuditLog: (data: any) =>
-    request<any>('/audit-logs/', { method: 'POST', body: JSON.stringify(data) }),
+  getAuditLogs: (params: Record<string, string | number | undefined> = {}) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && String(value).trim() !== '') {
+        query.append(key, String(value));
+      }
+    });
+    const qs = query.toString();
+    return request<any>(`/audit-logs/${qs ? `?${qs}` : ''}`);
+  },
+  getAuditLogFilters: () => request<any>('/audit-logs/filters/'),
 
   // الموارد البشرية (HR)
   getHRJobTitles: () => request<any[]>('/hr-job-titles/'),
