@@ -77,6 +77,36 @@ def to_time_str(value, fallback: str = '') -> str:
     return text[:5] if len(text) >= 5 else text
 
 
+def _viewer_profile(context):
+    """Resolve the profile bound to the current request (None when unavailable)."""
+    request = (context or {}).get('request') if context else None
+    if request is None:
+        return None
+    profile = getattr(request, 'user_profile', None)
+    if profile is None:
+        # Imported lazily to avoid importing permissions at module load time.
+        from .permissions import resolve_profile_from_request
+
+        profile = resolve_profile_from_request(request)
+    return profile
+
+
+def viewer_can_view(context, *permission_keys) -> bool:
+    """
+    True when the request-bound viewer may see a sensitive field.
+
+    Serializers instantiated without an HTTP request (management commands,
+    seeds, nested internal serialization) keep the full representation because
+    no untrusted viewer is involved. Sudo always sees everything.
+    """
+    profile = _viewer_profile(context)
+    if profile is None:
+        return True
+    if profile.is_sudo or (profile.username or '').lower() == 'sudo':
+        return True
+    return any(profile.has_perm(key) for key in permission_keys)
+
+
 class GlobalSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = GlobalSettings
@@ -247,7 +277,8 @@ class FabricColorSerializer(serializers.ModelSerializer):
             'color_code': instance.color_code,
             'color_name': instance.color_name or '',
             'hex_code': instance.hex_code or '#64748b',
-            'price_per_unit': price,
+            # السعر يُخفى (None) لمن لا يملك صلاحية عرض أسعار الأقمشة.
+            'price_per_unit': price if viewer_can_view(self.context, 'view_fabric_prices') else None,
             'quantity': float(instance.quantity or 0),
             'reserved_quantity': float(instance.reserved_quantity or 0),
         }
@@ -306,7 +337,12 @@ class AccessorySerializer(serializers.ModelSerializer):
             'unit': instance.unit or 'قطعة',
             'quantity': float(instance.current_stock or 0),
             'reserved_quantity': float(instance.reserved_quantity or 0),
-            'price_per_unit': float(instance.price_per_unit or 0),
+            # السعر يُخفى (None) لمن لا يملك صلاحية عرض أسعار الإكسسوارات.
+            'price_per_unit': (
+                float(instance.price_per_unit or 0)
+                if viewer_can_view(self.context, 'view_accessory_prices')
+                else None
+            ),
             'supplier_id': instance.supplier_id_ref or '',
             'min_threshold': int(instance.min_threshold or 0),
             'created_at': instance.created_at_str or '',
@@ -383,6 +419,11 @@ class ModelTimelineSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         ts = instance.timestamp_str or (instance.timestamp.strftime('%Y-%m-%d %H:%M') if instance.timestamp else '')
+        details = dict(instance.details) if isinstance(instance.details, dict) else {}
+        # تكلفة الطباعة بيانات مالية: لا تُكشف في تايم لاين الموديل إلا لمن يملك الصلاحية.
+        if not viewer_can_view(self.context, 'view_printing_costs'):
+            for sensitive_key in ('cost_per_piece', 'total_cost'):
+                details.pop(sensitive_key, None)
         return {
             'id': get_ext_id(instance),
             'stage': instance.stage,
@@ -392,7 +433,7 @@ class ModelTimelineSerializer(serializers.ModelSerializer):
             'user_name': instance.user or 'النظام',
             'user': instance.user or 'النظام',
             'timestamp': ts,
-            'details': instance.details if isinstance(instance.details, dict) else {},
+            'details': details,
         }
 
 
@@ -510,6 +551,7 @@ class PrintDispatchSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         cost = float(instance.cost_per_piece or 0)
         pcs = int(instance.pieces_count or 0)
+        can_view_costs = viewer_can_view(self.context, 'view_printing_costs')
         disp_at = instance.dispatched_at_str or (instance.dispatch_date.isoformat() if instance.dispatch_date else '')
         rec_at = instance.received_at_str or (instance.received_date.isoformat() if instance.received_date else None)
         return {
@@ -524,8 +566,9 @@ class PrintDispatchSerializer(serializers.ModelSerializer):
             'expected_delivery_date': to_date_str(instance.expected_delivery_date),
             'pieces_count': pcs,
             'print_type': instance.print_type or 'سلك سكرين مائي',
-            'cost_per_piece': cost,
-            'total_cost': round(cost * pcs, 2),
+            # تكاليف الطباعة تُخفى (None) لمن لا يملك صلاحية عرضها.
+            'cost_per_piece': cost if can_view_costs else None,
+            'total_cost': round(cost * pcs, 2) if can_view_costs else None,
             'notes': instance.notes or '',
             'status': instance.status,
             'received_at': rec_at,
@@ -627,7 +670,12 @@ class ModelItemSerializer(serializers.ModelSerializer):
             'count_after_sewing': instance.count_after_sewing,
             'print_house_name': instance.print_house or '',
             'print_house': instance.print_house or '',
-            'print_cost': float(instance.print_cost_per_piece or 0),
+            # سعر الطباعة للقطعة يُخفى (None) لمن لا يملك صلاحية عرض تكاليف الطباعة.
+            'print_cost': (
+                float(instance.print_cost_per_piece or 0)
+                if viewer_can_view(self.context, 'view_printing_costs')
+                else None
+            ),
             'print_expected_date': instance.print_expected_date.isoformat() if instance.print_expected_date else None,
             'sewing_workshop': instance.sewing_workshop or '',
             'sewing_expected_date': instance.sewing_expected_date.isoformat() if instance.sewing_expected_date else None,
@@ -647,8 +695,8 @@ class ModelItemSerializer(serializers.ModelSerializer):
             'cut_at': instance.cut_at or None,
             'created_at': instance.created_at.isoformat() if instance.created_at else '',
             'is_deleted': bool(instance.is_deleted),
-            'timeline': ModelTimelineSerializer(instance.timeline.all(), many=True).data,
-            'accessories': ModelAccessorySerializer(instance.accessories.all(), many=True).data,
+            'timeline': ModelTimelineSerializer(instance.timeline.all(), many=True, context=self.context).data,
+            'accessories': ModelAccessorySerializer(instance.accessories.all(), many=True, context=self.context).data,
         }
 
 
@@ -892,7 +940,12 @@ class HREmployeeSerializer(serializers.ModelSerializer):
             'job_title': job.title if job else '',
             'department': instance.department,
             'department_label': instance.department_label,
-            'monthly_salary': float(instance.monthly_salary or 0),
+            # المرتب يُخفى (None) لمن لا يملك صلاحية الرواتب.
+            'monthly_salary': (
+                float(instance.monthly_salary or 0)
+                if viewer_can_view(self.context, 'hr_payroll')
+                else None
+            ),
             'rule_application_mode': instance.rule_application_mode,
             'rule_application_mode_label': instance.get_rule_application_mode_display(),
             'national_id': instance.national_id or '',

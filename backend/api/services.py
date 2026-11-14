@@ -1,3 +1,4 @@
+import os
 from datetime import date, timedelta
 from django.db.models import Sum
 from django.utils import timezone
@@ -981,6 +982,7 @@ def ensure_initial_seed():
         sudo_role.save()
 
     sudo_user = UserProfile.objects.filter(username__iexact='sudo').first()
+    sudo_initial_password = os.environ.get('SUDO_INITIAL_PASSWORD', '').strip()
     if not sudo_user:
         sudo_user = UserProfile(
             client_id='user-sudo',
@@ -994,12 +996,16 @@ def ensure_initial_seed():
             custom_permissions={},
             last_active=timezone.now(),
         )
-        sudo_user.set_password('14596357')
+        # لا تُخزَّن كلمة مرور ثابتة داخل الكود: تُقرأ من متغير البيئة
+        # SUDO_INITIAL_PASSWORD، وإن لم يُضبط يبقى الحساب بلا كلمة مرور (لا يمكن
+        # تسجيل الدخول به) حتى يضبطها المسؤول عبر متغير البيئة ثم إعادة التشغيل.
+        if sudo_initial_password:
+            sudo_user.set_password(sudo_initial_password)
         sudo_user.save()
     else:
         changed = False
-        if not sudo_user.password_hash:
-            sudo_user.set_password('14596357')
+        if not sudo_user.password_hash and sudo_initial_password:
+            sudo_user.set_password(sudo_initial_password)
             changed = True
         if not sudo_user.is_sudo or not sudo_user.is_active or sudo_user.client_id != 'user-sudo':
             sudo_user.is_sudo = True

@@ -86,13 +86,44 @@ class HasDynamicSectionPermission(permissions.BasePermission):
         if not required_section:
             return True
 
-        # Reads stay open to any authenticated user (cross-section screens rely on
-        # warehouse lookups); every write requires the matching section permission.
+        # Both reads and writes require the matching section permission. All
+        # cross-section data the UI needs is delivered by /state/ (which applies
+        # its own per-section filtering), so a section endpoint must never leak
+        # its data to users who cannot open that section.
+        perm_field = self.section_perm_map.get(required_section, required_section)
+        # صلاحية التعديل تمنح قراءة القسم أيضاً (نفس منطق الواجهة).
+        return profile.has_perm(perm_field) or profile.has_perm(
+            perm_field.replace('_view', '_edit')
+        )
+
+
+class CanManageCatalog(permissions.BasePermission):
+    """
+    Shared catalog data (sizes / suppliers / workshops).
+
+    Reads are available to every authenticated user because several screens
+    (packaging, warehouses, sewing, print orders) display these lists. Writes
+    require the management permission declared by the view in
+    ``required_manage_perm`` (or the master 'manage_permissions' permission).
+    """
+
+    message = 'ليس لديك صلاحية تعديل بيانات الإعدادات الأساسية.'
+
+    def has_permission(self, request, view):
+        profile = resolve_profile_from_request(request)
+        if profile is None:
+            return False
+        request.user_profile = profile
+
+        if profile.is_sudo or profile.username.lower() == 'sudo':
+            return True
         if request.method in permissions.SAFE_METHODS:
             return True
 
-        perm_field = self.section_perm_map.get(required_section, required_section)
-        return profile.has_perm(perm_field)
+        manage_perm = getattr(view, 'required_manage_perm', None)
+        if not manage_perm:
+            return False
+        return profile.has_perm(manage_perm) or profile.has_perm('manage_permissions')
 
 
 class CanViewFabricPrices(permissions.BasePermission):

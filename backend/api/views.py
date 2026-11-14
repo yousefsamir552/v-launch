@@ -1,4 +1,4 @@
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -83,6 +83,7 @@ from .services import (
 )
 from .reports import get_production_report
 from .permissions import (
+    CanManageCatalog,
     CanManageHR,
     HasDynamicSectionPermission,
     IsAuthenticatedProfile,
@@ -205,6 +206,16 @@ def resolve_rank_for_grant(request, requested=None, default=DEFAULT_RANK_LEVEL):
 
 def can_manage_target(request, target_rank) -> bool:
     return can_manage_rank(get_viewer_rank(request), target_rank)
+
+
+def can_edit_employee_salary(request) -> bool:
+    """المرتب الشهري لا يُقرأ ولا يُعدَّل إلا بصلاحية الرواتب (أو تصريح عام)."""
+    profile = get_viewer_profile(request)
+    if profile is None:
+        return False
+    if is_sudo_profile(profile) or profile.has_perm('manage_permissions'):
+        return True
+    return profile.has_perm('hr_payroll')
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +506,9 @@ class AuthViewSet(viewsets.ViewSet):
         online_since = timezone.now() - timedelta(minutes=5)
         online_users = visible_users.filter(last_seen__gte=online_since)
         return Response({
-            'onlineUsers': UserProfileSerializer(online_users, many=True).data
+            'onlineUsers': UserProfileSerializer(
+                online_users, many=True, context={'request': request}
+            ).data
         })
 
     @action(detail=False, methods=['post'])
@@ -510,7 +523,69 @@ class AuthViewSet(viewsets.ViewSet):
                 details=f"تسجيل خروج للمستخدم @{user.username}",
                 user=user,
             )
+        if user:
+            # إبطال الرمز فعلياً حتى لا يبقى صالحاً بعد تسجيل الخروج.
+            UserProfile.objects.filter(pk=user.pk).update(auth_token=None)
         return Response({'status': 'logged_out'})
+
+
+# ---------------------------------------------------------------------------
+# /state/ per-section filtering
+# The single sync endpoint used to return every table to every authenticated
+# user. Each business section is now gated: users only receive the lists their
+# role can open in the UI, and forbidden lists are returned as empty arrays so
+# the frontend keeps its shape (no crash on `undefined.map`).
+# ---------------------------------------------------------------------------
+STATE_SECTION_KEYS = {
+    'models': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'requirements': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'accessories': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'cuttingRecords': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'qcRecords': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'printDispatches': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'sewingDispatches': ('printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'packagingRequirements': ('assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'finishingRecords': ('assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'assemblyStageRecords': ('assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'packagingMaterialRules': ('assembly_packaging', 'production_wh', 'reports'),
+    'packagingMaterialTransactions': ('assembly_packaging', 'production_wh', 'reports'),
+    'fabrics': ('fabric', 'design', 'cutting', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'fabricColors': ('fabric', 'design', 'cutting', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'fabricTransactions': ('fabric', 'design', 'cutting', 'tracking', 'reports', 'production_wh'),
+    'accessoryTypes': ('accessories', 'design', 'cutting', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'accessoryItems': ('accessories', 'design', 'cutting', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'accessoryTransactions': ('accessories', 'design', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+}
+
+
+def visible_sections_for(profile):
+    """
+    Returns the set of section keys the profile may read, or ``None`` when the
+    viewer is unrestricted (sudo).
+    """
+    if profile is None:
+        return set()
+    if is_sudo_profile(profile) or (profile.username or '').lower() == 'sudo':
+        return None
+    allowed = {
+        section
+        for section, perm_field in HasDynamicSectionPermission.section_perm_map.items()
+        if profile.has_perm(perm_field)
+        or profile.has_perm(perm_field.replace('_view', '_edit'))
+    }
+    if profile.has_perm('reports_view') or profile.has_perm('can_reports'):
+        allowed.add('reports')
+    return allowed
+
+
+def filter_state_by_sections(payload, allowed_sections):
+    """Empties every gated list the viewer's sections do not cover."""
+    if allowed_sections is None:
+        return payload
+    for key, sections in STATE_SECTION_KEYS.items():
+        if key in payload and not (allowed_sections & set(sections)):
+            payload[key] = []
+    return payload
 
 
 class StateViewSet(viewsets.ViewSet):
@@ -560,8 +635,15 @@ class StateViewSet(viewsets.ViewSet):
         visible_messages = InternalMessage.objects.select_related('sender', 'receiver').exclude(
             sender__username__iexact='sudo'
         ).exclude(receiver__username__iexact='sudo')
+        if current_profile is None:
+            visible_messages = InternalMessage.objects.none()
+        elif not (is_sudo_profile(current_profile) or (current_profile.username or '').lower() == 'sudo'):
+            # كل مستخدم يرى محادثاته فقط (المرسل أو المستلم) — لا تُسرَّب محادثات الآخرين.
+            visible_messages = visible_messages.filter(
+                Q(sender=current_profile) | Q(receiver=current_profile)
+            )
 
-        return Response({
+        payload = {
             'globalSettings': GlobalSettingsSerializer(GlobalSettings.get_solo()).data,
             'roles': RoleSerializer(visible_roles, many=True, context=req_ctx).data,
             'users': UserProfileSerializer(visible_users, many=True, context=req_ctx).data,
@@ -602,7 +684,9 @@ class StateViewSet(viewsets.ViewSet):
             ).data,
             'internalMessages': InternalMessageSerializer(visible_messages, many=True).data,
             'auditLogs': AuditLogSerializer(visible_logs, many=True).data,
-        })
+        }
+        # كل قسم لا يملك المستخدم صلاحية عرضه يُعاد كقائمة فارغة (نفس الشكل، بلا بيانات).
+        return Response(filter_state_by_sections(payload, visible_sections_for(current_profile)))
 
 
 class ImageUploadViewSet(viewsets.ViewSet):
@@ -964,7 +1048,10 @@ class UserProfileViewSet(BasePermViewSet):
         )
         user.set_password(password)
         user.save()
-        return Response(UserProfileSerializer(user).data, status=status.HTTP_201_CREATED)
+        return Response(
+            UserProfileSerializer(user, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     def update(self, request, *args, **kwargs):
         lookup_val = self.kwargs.get(self.lookup_url_kwarg or self.lookup_field)
@@ -1084,9 +1171,12 @@ class UserProfileViewSet(BasePermViewSet):
         new_password = data.get('password')
         if new_password:
             user.set_password(new_password)
+            # عند تغيير كلمة مرور مستخدم آخر تُبطَل جلساته الحالية فوراً.
+            if not is_self:
+                user.auth_token = None
 
         user.save()
-        return Response(UserProfileSerializer(user).data)
+        return Response(UserProfileSerializer(user, context={'request': request}).data)
 
     def destroy(self, request, *args, **kwargs):
         lookup_val = self.kwargs.get(self.lookup_url_kwarg or self.lookup_field)
@@ -1146,7 +1236,7 @@ class UserProfileViewSet(BasePermViewSet):
                     descendant.auth_token = None
                 descendant.save(update_fields=['is_active', 'auth_token'])
                 affected_user_ids.append(get_ext_id(descendant))
-        payload = UserProfileSerializer(user).data
+        payload = UserProfileSerializer(user, context={'request': request}).data
         payload['cascade'] = cascade
         payload['affected_user_ids'] = affected_user_ids
         return Response(payload)
@@ -1155,6 +1245,8 @@ class UserProfileViewSet(BasePermViewSet):
 class SizeDefViewSet(BasePermViewSet):
     queryset = SizeDef.objects.all()
     serializer_class = SizeDefSerializer
+    permission_classes = [CanManageCatalog]
+    required_manage_perm = 'manage_sizes'
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -1179,6 +1271,8 @@ class SizeDefViewSet(BasePermViewSet):
 class SupplierViewSet(BasePermViewSet):
     queryset = Supplier.objects.all()
     serializer_class = SupplierSerializer
+    permission_classes = [CanManageCatalog]
+    required_manage_perm = 'manage_suppliers'
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -1219,6 +1313,8 @@ def normalize_workshop_types(value):
 class WorkshopViewSet(BasePermViewSet):
     queryset = Workshop.objects.all()
     serializer_class = WorkshopSerializer
+    permission_classes = [CanManageCatalog]
+    required_manage_perm = 'manage_suppliers'
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -1288,6 +1384,15 @@ class FabricViewSet(BasePermViewSet):
 
         clean_code = (data.get('colorCode') or data.get('color_code') or '').strip().upper()
         qty = float(data.get('quantity') or 0)
+        profile = getattr(request, 'user_profile', None)
+        can_edit_price = is_sudo_account(profile) or (
+            profile is not None and (
+                profile.has_perm('edit_fabric_prices') or profile.has_perm('manage_permissions')
+            )
+        )
+        price_per_unit = 0.0
+        if can_edit_price:
+            price_per_unit = max(0.0, float(data.get('pricePerUnit') or 0))
         existing_color = FabricColor.objects.filter(fabric=fab, color_code__iexact=clean_code).first()
 
         if existing_color:
@@ -1301,14 +1406,14 @@ class FabricViewSet(BasePermViewSet):
                 color_code=clean_code,
                 color_name=data.get('colorName') or '',
                 hex_code=data.get('hexCode') or '#64748b',
-                price_per_unit=float(data.get('pricePerUnit') or 0),
+                price_per_unit=price_per_unit,
                 quantity=max(0.0, qty),
                 reserved_quantity=0.0,
             )
 
         return Response({
             'fabric': FabricSerializer(fab).data,
-            'color': FabricColorSerializer(color_obj).data,
+            'color': FabricColorSerializer(color_obj, context={'request': request}).data,
         })
 
 
@@ -1321,10 +1426,18 @@ class FabricColorViewSet(BasePermViewSet):
     def update(self, request, *args, **kwargs):
         target = self.get_object()
         data = request.data
+        profile = getattr(request, 'user_profile', None)
+        can_edit_price = is_sudo_account(profile) or (
+            profile is not None and (
+                profile.has_perm('edit_fabric_prices') or profile.has_perm('manage_permissions')
+            )
+        )
+        if 'price_per_unit' in data and not can_edit_price:
+            raise PermissionDenied('ليس لديك صلاحية تعديل أسعار الخامات')
         # Lock the row so two concurrent stock adjustments cannot overwrite each other.
         with transaction.atomic():
             col = FabricColor.objects.select_for_update().select_related('fabric').get(pk=target.pk)
-            if 'price_per_unit' in data:
+            if 'price_per_unit' in data and can_edit_price:
                 col.price_per_unit = max(0.0, float(data['price_per_unit'] or 0))
             if 'quantity' in data:
                 col.quantity = max(0.0, float(data['quantity'] or 0))
@@ -1335,7 +1448,7 @@ class FabricColorViewSet(BasePermViewSet):
             if 'hex_code' in data:
                 col.hex_code = data['hex_code']
             col.save()
-            response_data = FabricColorSerializer(col).data
+            response_data = FabricColorSerializer(col, context={'request': request}).data
         return Response(response_data)
 
     @action(detail=False, methods=['post'])
@@ -1374,7 +1487,7 @@ class FabricColorViewSet(BasePermViewSet):
                 timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
             )
             payload = {
-                'color': FabricColorSerializer(col).data,
+                'color': FabricColorSerializer(col, context={'request': request}).data,
                 'transaction': FabricTransactionSerializer(tr).data,
             }
         return Response(payload)
@@ -1421,6 +1534,13 @@ class AccessoryViewSet(BasePermViewSet):
         min_thresh = int(float(data.get('min_threshold', 10) or 0))
         target_qty = int(float(data.get('target_quantity', min_thresh) or 0))
         delivered_qty = int(float(data.get('delivered_quantity', qty) or 0))
+        profile = getattr(request, 'user_profile', None)
+        can_edit_price = is_sudo_account(profile) or (
+            profile is not None and (
+                profile.has_perm('edit_accessory_prices') or profile.has_perm('manage_permissions')
+            )
+        )
+        price = max(0.0, float(data.get('price_per_unit') or 0)) if can_edit_price else 0.0
 
         acc = Accessory.objects.create(
             client_id=data.get('id') or data.get('client_id'),
@@ -1432,7 +1552,7 @@ class AccessoryViewSet(BasePermViewSet):
             unit=data.get('unit') or 'قطعة',
             current_stock=max(0, qty),
             reserved_quantity=float(data.get('reserved_quantity') or 0),
-            price_per_unit=max(0.0, float(data.get('price_per_unit') or 0)),
+            price_per_unit=price,
             supplier_id_ref=data.get('supplier_id') or '',
             min_threshold=max(0, min_thresh),
             usage_type=usage_type,
@@ -1442,11 +1562,22 @@ class AccessoryViewSet(BasePermViewSet):
             withdrawn_for_model=bool(data.get('withdrawn_for_model', False)),
             created_at_str=data.get('created_at') or date.today().isoformat(),
         )
-        return Response(AccessorySerializer(acc).data, status=status.HTTP_201_CREATED)
+        return Response(
+            AccessorySerializer(acc, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     def update(self, request, *args, **kwargs):
         target = self.get_object()
         data = request.data
+        profile = getattr(request, 'user_profile', None)
+        can_edit_price = is_sudo_account(profile) or (
+            profile is not None and (
+                profile.has_perm('edit_accessory_prices') or profile.has_perm('manage_permissions')
+            )
+        )
+        if 'price_per_unit' in data and not can_edit_price:
+            raise PermissionDenied('ليس لديك صلاحية تعديل أسعار الإكسسوارات')
         # ارفع الصورة (إن وُجدت) قبل فتح المعاملة حتى لا نمسك قفل الصف أثناء الشبكة.
         new_image = None
         if 'image' in data:
@@ -1469,7 +1600,7 @@ class AccessoryViewSet(BasePermViewSet):
                 acc.current_stock = max(0, int(float(data['current_stock'] or 0)))
             if 'reserved_quantity' in data:
                 acc.reserved_quantity = max(0.0, float(data['reserved_quantity'] or 0))
-            if 'price_per_unit' in data:
+            if 'price_per_unit' in data and can_edit_price:
                 acc.price_per_unit = max(0.0, float(data['price_per_unit'] or 0))
             if 'min_threshold' in data:
                 acc.min_threshold = max(0, int(float(data['min_threshold'] or 0)))
@@ -1480,7 +1611,7 @@ class AccessoryViewSet(BasePermViewSet):
             if 'withdrawn_for_model' in data:
                 acc.withdrawn_for_model = bool(data['withdrawn_for_model'])
             acc.save()
-            response_data = AccessorySerializer(acc).data
+            response_data = AccessorySerializer(acc, context={'request': request}).data
         return Response(response_data)
 
     @action(detail=False, methods=['post'])
@@ -1522,7 +1653,7 @@ class AccessoryViewSet(BasePermViewSet):
                 timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
             )
             payload = {
-                'accessory': AccessorySerializer(acc).data,
+                'accessory': AccessorySerializer(acc, context={'request': request}).data,
                 'transaction': AccessoryTransactionSerializer(tr).data,
             }
         return Response(payload)
@@ -1537,7 +1668,7 @@ class AccessoryViewSet(BasePermViewSet):
         accessory = self.get_object()
         accessory.withdrawn_for_model = True
         accessory.save()
-        return Response(AccessorySerializer(accessory).data)
+        return Response(AccessorySerializer(accessory, context={'request': request}).data)
 
 
 class AccessoryTransactionViewSet(BasePermViewSet):
@@ -1550,6 +1681,71 @@ class AccessoryTransactionViewSet(BasePermViewSet):
 class ModelItemViewSet(BasePermViewSet):
     queryset = ModelItem.objects.filter(is_deleted=False).prefetch_related('timeline', 'accessories')
     serializer_class = ModelItemSerializer
+
+    # أقسام يُسمح لها بقراءة الموديلات (كل قسم تشغيلي يعرض الموديلات في واجهته).
+    MODEL_READ_SECTIONS = (
+        'design', 'cutting', 'printing', 'qc', 'sewing',
+        'assembly_packaging', 'tracking', 'production_wh',
+    )
+    # كل @action مرتبط بالقسم الذي ينفّذه فعلياً في الواجهة.
+    MODEL_ACTION_SECTIONS = {
+        'update_plan': 'design',
+        'issue_fabric_to_cutting': 'design',
+        'finish_cutting': 'cutting',
+        'record_qc_count': 'qc',
+        'finish_qc_approval': 'qc',
+        'finish_qc_to_production': 'qc',
+        'dispatch_to_sewing': 'sewing',
+        'finish_sewing': 'sewing',
+        'receive_from_print': 'printing',
+        'packaging_requirement': 'assembly_packaging',
+        'set_packaging_step': 'assembly_packaging',
+        'start_finishing': 'assembly_packaging',
+        'receive_finishing': 'assembly_packaging',
+        'start_ironing': 'assembly_packaging',
+        'receive_ironing': 'assembly_packaging',
+        'start_assembly_stage': 'assembly_packaging',
+        'receive_assembly_stage': 'assembly_packaging',
+        'part_stages': 'assembly_packaging',
+        'create': 'design',
+        'destroy': 'design',
+    }
+    MODEL_WRITE_PERMS = (
+        'design_edit', 'cutting_edit', 'printing_edit', 'qc_edit',
+        'sewing_edit', 'assembly_packaging_edit',
+    )
+
+    def _section_allowed(self, profile, section) -> bool:
+        perm_field = HasDynamicSectionPermission.section_perm_map.get(section)
+        if not perm_field:
+            return False
+        return profile.has_perm(perm_field) or profile.has_perm(perm_field.replace('_view', '_edit'))
+
+    def initial(self, request, *args, **kwargs):
+        """يمنع الوصول الكامل للموديلات لمن لا يملك أي قسم تشغيلي، ويمنع تنفيذ
+        إجراءات قسم آخر (مثلاً: مندوب المكن لا يستطيع إنشاء موديل أو حذفه)."""
+        super().initial(request, *args, **kwargs)
+        profile = getattr(request, 'user_profile', None)
+        if is_sudo_account(profile):
+            return
+        if profile is None:
+            raise PermissionDenied('مطلوب تسجيل الدخول')
+
+        if request.method in permissions.SAFE_METHODS:
+            if not any(self._section_allowed(profile, s) for s in self.MODEL_READ_SECTIONS):
+                raise PermissionDenied('ليس لديك صلاحية عرض الموديلات')
+            return
+
+        action_name = getattr(self, 'action', None)
+        section = self.MODEL_ACTION_SECTIONS.get(action_name)
+        if section:
+            if not self._section_allowed(profile, section):
+                raise PermissionDenied('ليس لديك صلاحية تنفيذ هذا الإجراء في هذا القسم')
+            return
+
+        # update / add_timeline / أي إجراء غير مصنّف: يتطلب صلاحية تعديل تشغيلية عامة.
+        if not any(profile.has_perm(perm) for perm in self.MODEL_WRITE_PERMS):
+            raise PermissionDenied('ليس لديك صلاحية تعديل الموديلات')
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -1627,13 +1823,36 @@ class ModelItemViewSet(BasePermViewSet):
         model = self.get_object()
         data = request.data
         profile = getattr(request, 'user_profile', None)
-        can_design_notes = True if not profile else profile.has_perm('can_add_design_notes')
+        is_sudo = is_sudo_account(profile)
+        can_design = is_sudo or (profile is not None and profile.has_perm('design_edit'))
+        can_design_notes = is_sudo or (profile is not None and profile.has_perm('can_add_design_notes'))
+        can_cut = is_sudo or (profile is not None and profile.has_perm('cutting_edit'))
+
+        # التعديل المباشر مخصص لبيانات التصميم فقط؛ باقي المراحل تُحدَّث عبر
+        # إجراءات القسم المخصصة (finish_cutting / record_qc_count / ...).
+        allowed_fields = set()
+        if can_design:
+            allowed_fields.update({
+                'model_type', 'size_category_id', 'main_marker_url', 'print_marker_url',
+                'target_cut_quantity', 'image', 'garment_composition', 'garmentComposition',
+            })
+        if can_design_notes:
+            allowed_fields.update({'design_notes', 'notes_shirt', 'notes_pants', 'target_cut_quantity'})
+        if can_cut:
+            allowed_fields.add('actual_cut_count')
+
+        if not allowed_fields:
+            raise PermissionDenied('ليس لديك صلاحية تعديل بيانات الموديل')
+
+        forbidden = [key for key in data.keys() if key not in allowed_fields]
+        if forbidden:
+            raise PermissionDenied(
+                'لا يمكن تعديل الحقول التالية من هذه الشاشة: ' + ', '.join(sorted(forbidden))
+            )
 
         for field in [
-            'model_type', 'status', 'size_category_id', 'main_marker_url', 'print_marker_url',
-            'target_cut_quantity', 'total_cut_pieces', 'cutter_name', 'spreader_name',
-            'count_before_print', 'count_after_print', 'count_after_sewing',
-            'print_house', 'is_deleted', 'colored_at', 'cut_at', 'garment_parts'
+            'model_type', 'size_category_id', 'main_marker_url', 'print_marker_url',
+            'target_cut_quantity',
         ]:
             if field in data:
                 setattr(model, field, data[field])
@@ -1641,10 +1860,9 @@ class ModelItemViewSet(BasePermViewSet):
         if 'image' in data:
             model.image = clean_image_value(data.get('image') or '', 'models', 'صورة الموديل')
 
-        if can_design_notes:
-            for note_field in ['design_notes', 'notes_shirt', 'notes_pants']:
-                if note_field in data:
-                    setattr(model, note_field, data[note_field])
+        for note_field in ['design_notes', 'notes_shirt', 'notes_pants']:
+            if note_field in data:
+                setattr(model, note_field, data[note_field])
 
         composition_value = data.get('garment_composition', data.get('garmentComposition'))
         if composition_value in COMPOSITION_TO_PARTS:
@@ -1913,7 +2131,7 @@ class ModelItemViewSet(BasePermViewSet):
         disp = dispatch_model_to_sewing_service(
             get_ext_id(model), workshop_name, pieces_count, expected_date, notes, user, piece_type, piece_label, client_id=client_id
         )
-        return Response(SewingDispatchSerializer(disp).data)
+        return Response(SewingDispatchSerializer(disp, context={'request': request}).data)
 
     @action(detail=True, methods=['post'])
     def record_qc_count(self, request, pk=None):
@@ -2225,7 +2443,10 @@ class ModelItemViewSet(BasePermViewSet):
             timestamp_str=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
             details=data.get('details') if isinstance(data.get('details'), dict) else {},
         )
-        return Response(ModelTimelineSerializer(tl).data, status=status.HTTP_201_CREATED)
+        return Response(
+            ModelTimelineSerializer(tl, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     # ------------------------------------------------------------------
     # Assembly & Packaging (الأسمبلي والأمبالاج)
@@ -2855,6 +3076,8 @@ class PrintDispatchViewSet(BasePermViewSet):
     required_section = 'printing'
     queryset = PrintDispatch.objects.select_related('model').all()
     serializer_class = PrintDispatchSerializer
+    # التعديل يتم فقط عبر الإجراءات المخصصة (update_status/receive/skip_print).
+    http_method_names = ['get', 'post', 'head', 'options']
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -2864,6 +3087,11 @@ class PrintDispatchViewSet(BasePermViewSet):
 
         profile = getattr(request, 'user_profile', None)
         can_printing_notes = True if not profile else (profile.has_perm('can_add_printing_notes') or profile.has_perm('can_add_qc_before_print_notes'))
+        can_edit_cost = is_sudo_account(profile) or (
+            profile is not None and (
+                profile.has_perm('edit_printing_costs') or profile.has_perm('manage_permissions')
+            )
+        )
 
         shop_name = (data.get('shop_name') or data.get('shopName') or data.get('print_house') or '').strip()
         pieces = max(0, int(data.get('pieces_count') or data.get('piecesCount') or 0))
@@ -2874,7 +3102,7 @@ class PrintDispatchViewSet(BasePermViewSet):
         piece_label = (data.get('piece_label') or data.get('pieceLabel') or '').strip() or dict(PART_TYPE_CHOICES).get(piece_type, '')
         print_location = (data.get('print_location') or data.get('printLocation') or '').strip()
         print_details = (data.get('print_details') or data.get('printDetails') or '').strip()
-        cost = float(data.get('cost_per_piece') or data.get('costPerPiece') or 0)
+        cost = max(0.0, float(data.get('cost_per_piece') or data.get('costPerPiece') or 0)) if can_edit_cost else 0.0
         exp_date = data.get('expected_delivery_date') or data.get('expectedDeliveryDate') or None
         if exp_date and not isinstance(exp_date, date):
             exp_date = parse_date(str(exp_date)[:10])
@@ -3218,14 +3446,29 @@ class InternalMessageViewSet(BasePermViewSet):
         sender__username__iexact='sudo'
     ).exclude(receiver__username__iexact='sudo')
     serializer_class = InternalMessageSerializer
+    # لا حاجة لتعديل/حذف الرسائل من الواجهة؛ القراءة والإرسال وتعليم "مقروءة" فقط.
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_queryset(self):
+        """كل مستخدم يرى رسائله فقط (مرسلة أو مستلمة) — إلا sudo فيرى الكل."""
+        qs = super().get_queryset()
+        profile = getattr(self.request, 'user_profile', None)
+        if is_sudo_account(profile):
+            return qs
+        if profile is None:
+            return qs.none()
+        return qs.filter(Q(sender=profile) | Q(receiver=profile))
 
     def create(self, request, *args, **kwargs):
         data = request.data
         sender = getattr(request, 'user_profile', None)
         if not sender:
-            sender = resolve_by_id(UserProfile, data.get('sender_id') or data.get('sender'))
-        if not sender:
-            sender = UserProfile.objects.filter(username='sudo').first()
+            return Response({'detail': 'مطلوب تسجيل الدخول'}, status=status.HTTP_401_UNAUTHORIZED)
+        if not sender.has_perm('send_internal_messages'):
+            return Response(
+                {'detail': 'ليس لديك صلاحية إرسال الرسائل والمراسلات الداخلية'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         receiver_key = data.get('receiver_id') or data.get('receiver')
         receiver = resolve_by_id(UserProfile, receiver_key)
@@ -3248,6 +3491,13 @@ class InternalMessageViewSet(BasePermViewSet):
     @action(detail=True, methods=['post'])
     def mark_read(self, request, pk=None):
         msg = self.get_object()
+        profile = getattr(request, 'user_profile', None)
+        if not is_sudo_account(profile) and (profile is None or msg.receiver_id != profile.pk):
+            # منع IDOR: لا يعلّم الرسالة كمقروءة إلا مستلمها.
+            return Response(
+                {'detail': 'لا يمكنك تعديل حالة قراءة رسالة ليست لك'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         msg.is_read = True
         msg.save()
         return Response(InternalMessageSerializer(msg).data)
@@ -3269,6 +3519,8 @@ class AuditLogViewSet(BasePermViewSet):
     serializer_class = AuditLogSerializer
     pagination_class = AuditLogPagination
     audit_enabled = False
+    # سجل المراقبة للقراءة فقط — لا إنشاء/تعديل/حذف من الـ API.
+    http_method_names = ['get', 'head', 'options']
 
     def initial(self, request, *args, **kwargs):
         """لا يسمح بعرض سجل المراقبة إلا لمن يملك view_audit_logs أو manage_permissions."""
@@ -3559,6 +3811,12 @@ class HREmployeeViewSet(BasePermViewSet):
         job = resolve_by_id(HRJobTitle, data.get('job_id') or data.get('job'))
         if not job:
             return Response({'detail': 'يرجى اختيار وظيفة صحيحة للموظف'}, status=status.HTTP_400_BAD_REQUEST)
+        if not can_edit_employee_salary(request):
+            # تحديد مرتب الموظف يتطلب صلاحية الرواتب حتى لا يصبح تجاوزاً للصلاحيات.
+            return Response(
+                {'detail': 'لا تملك صلاحية تحديد مرتب الموظف (صلاحية الرواتب مطلوبة).'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         try:
             salary = float(data.get('monthly_salary') or 0)
         except (TypeError, ValueError):
@@ -3595,7 +3853,10 @@ class HREmployeeViewSet(BasePermViewSet):
         if birth_date:
             obj.birth_date = parse_date(str(birth_date))
         obj.save()
-        return Response(HREmployeeSerializer(obj).data, status=status.HTTP_201_CREATED)
+        return Response(
+            HREmployeeSerializer(obj, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     def update(self, request, *args, **kwargs):
         obj = self.get_object()
@@ -3604,7 +3865,10 @@ class HREmployeeViewSet(BasePermViewSet):
                 {'detail': 'لا تملك صلاحية تعديل موظف بهذه الرتبة'},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        data = request.data
+        data = request.data.copy()
+        if not can_edit_employee_salary(request):
+            # من لا يملك صلاحية الرواتب لا يستطيع تغيير المرتب (الحقل مخفي عنه أصلاً).
+            data.pop('monthly_salary', None)
 
         if data.get('name') is not None:
             name = str(data.get('name') or '').strip()
