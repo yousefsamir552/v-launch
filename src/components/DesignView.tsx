@@ -21,6 +21,8 @@ import {
   GARMENT_COMPOSITION_LABELS,
   DEFAULT_GARMENT_COMPOSITION
 } from '../types';
+import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
+import { currentStageLabel } from '../utils/completedModels';
 
 interface DesignViewProps {
   onOpenModelDetails: (modelId: string) => void;
@@ -33,6 +35,7 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
 
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [showCompleted, setShowCompleted] = useState(false);
   const itemsPerPage = 12;
 
   // Add Model Modal State
@@ -53,6 +56,18 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
   // Filter models (Only display models in design stage)
   const filteredModels = models
     .filter((m) => !m.is_deleted && (m.status === 'مرحلة التصميم' || m.status === 'تصميم'))
+    .filter((m) => {
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase().trim();
+      return (
+        m.model_code.toLowerCase().includes(q) ||
+        (m.model_type && m.model_type.toLowerCase().includes(q))
+      );
+    });
+
+  // الموديلات التي تجاوزت قسم التصميم (منتهية من هذا القسم).
+  const endedModels = models
+    .filter((m) => !m.is_deleted && m.status !== 'مرحلة التصميم' && m.status !== 'تصميم')
     .filter((m) => {
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase().trim();
@@ -145,6 +160,12 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          <CompletedModelsToggle
+            enabled={showCompleted}
+            count={endedModels.length}
+            onChange={setShowCompleted}
+            tone="slate"
+          />
           {canEdit && (
             <button
               onClick={() => setShowAddModal(true)}
@@ -254,6 +275,69 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
           </div>
         )}
       </div>
+
+      {/* Ended models in this section */}
+      {showCompleted && (
+        <div className="space-y-4 pt-2">
+          <div className="flex items-center gap-3">
+            <span className="h-px flex-grow bg-slate-200" />
+            <h3 className="text-sm font-black text-slate-700 whitespace-nowrap">
+              الموديلات المنتهية في هذا القسم ({endedModels.length})
+            </h3>
+            <span className="h-px flex-grow bg-slate-200" />
+          </div>
+
+          {endedModels.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+              {endedModels.map((model) => (
+                <div
+                  key={model.id}
+                  className="bg-slate-50/90 rounded-3xl border-2 border-dashed border-slate-300 shadow-xs overflow-hidden flex flex-col justify-between"
+                >
+                  <div className="h-44 w-full overflow-hidden bg-slate-100 relative">
+                    {model.image ? (
+                      <img
+                        src={model.image}
+                        alt={model.model_code}
+                        className="w-full h-full object-contain bg-white grayscale-[55%] opacity-90"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src =
+                            'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60';
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">
+                        <ImageIcon className="w-8 h-8 mb-1 stroke-1" />
+                        <span className="text-xs">بدون صورة</span>
+                      </div>
+                    )}
+                    <span className="absolute top-3 start-3 px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-700 text-white">
+                      {model.status}
+                    </span>
+                  </div>
+                  <div className="p-4 space-y-2">
+                    <EndedModelBadge currentStage={currentStageLabel(model)} />
+                    <h3 className="text-lg font-extrabold text-slate-800">{model.model_code}</h3>
+                    <p className="text-xs text-slate-500 font-semibold">
+                      النوع: {model.model_type || 'غير محدد'}
+                    </p>
+                    <button
+                      onClick={() => onOpenModelDetails(model.id)}
+                      className="w-full py-2 px-4 rounded-full border border-slate-400 text-slate-700 hover:bg-slate-700 hover:text-white font-bold text-xs transition cursor-pointer"
+                    >
+                      التفاصيل والتعديل
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-8 text-center bg-white rounded-3xl border border-dashed border-slate-300 text-slate-400 text-sm font-bold">
+              لا توجد موديلات منتهية من قسم التصميم حالياً.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Pagination */}
       {totalPages > 1 && (

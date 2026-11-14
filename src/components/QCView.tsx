@@ -17,6 +17,8 @@ import {
 import { QCStageType, Model, QCMatrixCellInput, GarmentPart, PART_EMOJI, getPartLabel } from '../types';
 import { printManualCountSheet } from '../utils/printManualCountSheet';
 import { isImageLogo } from '../utils/printShared';
+import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
+import { currentStageLabel, stageRank } from '../utils/completedModels';
 
 type QCPartCard = { model: Model; part: GarmentPart };
 
@@ -47,6 +49,7 @@ export const QCView: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<QCStageType>('before_print');
   const [searchTerm, setSearchTerm] = useState('');
+  const [showCompleted, setShowCompleted] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [countingModel, setCountingModel] = useState<Model | null>(null);
   const [modalPart, setModalPart] = useState<GarmentPart>('shirt');
@@ -87,6 +90,28 @@ export const QCView: React.FC = () => {
   };
 
   const currentTabCards = getPartCardsForStage(activeTab).filter(
+    ({ model }) =>
+      model.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (model.model_type && model.model_type.toLowerCase().includes(searchTerm.toLowerCase()))
+  );
+
+  // القطع التي تجاوزت مرحلة هذا التبويب (منتهية من هذا القسم).
+  const getEndedPartCards = (stage: QCStageType): QCPartCard[] => {
+    const targetRank = stageRank(QC_STAGE_TO_PART_STAGE[stage]);
+    const cards: QCPartCard[] = [];
+    models.forEach((model) => {
+      if (model.is_deleted) return;
+      const stages = getPartStages(model.id);
+      getModelParts(model.id).forEach((part) => {
+        if (stageRank(stages[part] || 'cutting') > targetRank) {
+          cards.push({ model, part });
+        }
+      });
+    });
+    return cards;
+  };
+
+  const endedTabCards = getEndedPartCards(activeTab).filter(
     ({ model }) =>
       model.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (model.model_type && model.model_type.toLowerCase().includes(searchTerm.toLowerCase()))
@@ -432,15 +457,23 @@ export const QCView: React.FC = () => {
           </button>
         </div>
 
-        {/* Search */}
-        <div className="relative w-full sm:w-72">
-          <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            placeholder="بحث برقم الموديل أو النوع..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition"
+        {/* Search + Completed models toggle */}
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <div className="relative flex-grow sm:flex-none sm:w-72">
+            <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="بحث برقم الموديل أو النوع..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition"
+            />
+          </div>
+          <CompletedModelsToggle
+            enabled={showCompleted}
+            count={endedTabCards.length}
+            onChange={setShowCompleted}
+            tone="purple"
           />
         </div>
       </div>
@@ -616,6 +649,78 @@ export const QCView: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Ended parts in this QC stage */}
+      {showCompleted && (
+        <div className="space-y-4 pt-2">
+          <div className="flex items-center gap-3">
+            <span className="h-px flex-grow bg-slate-200" />
+            <h3 className="text-sm font-black text-slate-700 whitespace-nowrap">
+              موديلات منتهية من "{getStageTitle(activeTab)}" ({endedTabCards.length})
+            </h3>
+            <span className="h-px flex-grow bg-slate-200" />
+          </div>
+
+          {endedTabCards.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+              {endedTabCards.map(({ model, part }) => (
+                <div
+                  key={`${model.id}-${part}`}
+                  className="bg-slate-50/90 rounded-3xl border-2 border-dashed border-slate-300 shadow-xs overflow-hidden flex flex-col justify-between"
+                >
+                  <div className="h-40 w-full overflow-hidden bg-slate-100 relative">
+                    {model.image ? (
+                      <img
+                        src={model.image}
+                        alt={model.model_code}
+                        className="w-full h-full object-contain bg-white grayscale-[55%] opacity-90"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src =
+                            'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60';
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-slate-400">
+                        <Shirt className="w-8 h-8 opacity-40" />
+                      </div>
+                    )}
+                    <span className="absolute top-3 end-3 px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-600 text-white">
+                      {PART_EMOJI[part]} {getPartLabel(part)}
+                    </span>
+                    <span className="absolute bottom-3 start-3 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-800/70 text-white">
+                      {model.status}
+                    </span>
+                  </div>
+
+                  <div className="p-4 space-y-2">
+                    <EndedModelBadge currentStage={currentStageLabel(model)} />
+                    <h3 className="text-lg font-extrabold text-slate-800">{model.model_code}</h3>
+                    <p className="text-[11px] text-slate-500 font-semibold">
+                      تجاوزت هذه القطعة مرحلة {getStageTitle(activeTab)} بالفعل.
+                    </p>
+                    <div className="space-y-1.5 pt-1">
+                      <div className="w-full py-2 rounded-full bg-slate-200 text-slate-500 font-bold text-xs text-center cursor-not-allowed">
+                        تم تحويله مسبقاً — لا يمكن إعادة العد
+                      </div>
+                      <button
+                        onClick={() => handlePrintManualSheet(model, part)}
+                        className="w-full py-2 px-4 rounded-full bg-white hover:bg-slate-100 text-slate-600 border border-slate-300 font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Printer className="w-4 h-4" />
+                        <span>طباعة ورقة جرد يدوي (فارغة)</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-8 text-center bg-white rounded-3xl border border-dashed border-slate-300 text-slate-400 text-sm font-bold">
+              لا توجد قطع منتهية من مرحلة "{getStageTitle(activeTab)}" حالياً.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* MODAL 1: Dynamic Matrix (Color x Size) for Good & Defect Counts */}
       {countingModel && (

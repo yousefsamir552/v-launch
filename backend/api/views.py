@@ -375,6 +375,17 @@ class BasePermViewSet(AuditedModelViewSetMixin, viewsets.ModelViewSet):
     """
     permission_classes = [IsAuthenticatedProfile]
 
+    def get_audit_section(self):
+        """
+        يفضّل القسم المرسل من الواجهة عبر ترويسة X-Audit-Section حتى يظهر
+        تعديل الموديل المنتهي في القسم الذي جرت منه العملية (تصميم/قص/مطابع/...).
+        """
+        try:
+            header_section = (self.request.headers.get('X-Audit-Section') or '').strip()
+        except Exception:
+            header_section = ''
+        return header_section or super().get_audit_section()
+
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
         # Schema/seed self-healing used to run on EVERY request (expensive). It now

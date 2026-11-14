@@ -14,8 +14,10 @@ import {
   Clock,
   Lock
 } from 'lucide-react';
-import { Model, SewingDispatch, GarmentPart, PART_EMOJI, getPartLabel } from '../types';
+import { Model, SewingDispatch, GarmentPart, PART_EMOJI, getPartLabel, PART_STAGE_LABELS, PartStage } from '../types';
 import { SewingPrintModal } from './SewingPrintModal';
+import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
+import { stageBeyond } from '../utils/completedModels';
 
 // Per-part card styling (kept independent so every part has its own colour identity).
 const PART_CARD_STYLES: Record<string, { accentColor: string; badgeColor: string; button: string }> = {
@@ -63,6 +65,7 @@ export const SewingView: React.FC = () => {
     tab: 'both' | GarmentPart;
   } | null>(null);
   const [pieceFilter, setPieceFilter] = useState<'all' | GarmentPart>('all');
+  const [showCompleted, setShowCompleted] = useState(false);
 
   // Modal State for Dispatching to Sewing Workshop
   const [showDispatchModal, setShowDispatchModal] = useState(false);
@@ -115,6 +118,15 @@ export const SewingView: React.FC = () => {
   const readyModels = models.filter(
     (m) => !m.is_deleted && readyPartCards.some((card) => card.model.id === m.id)
   );
+
+  // القطع التي تجاوزت مرحلة المكن (منتهية من هذا القسم).
+  const endedPartCards = models.flatMap((m) => {
+    if (m.is_deleted) return [] as { model: Model; part: GarmentPart }[];
+    const stages = getPartStages(m.id);
+    return getModelParts(m.id)
+      .filter((part) => stageBeyond(stages[part], 'sewing'))
+      .map((part) => ({ model: m, part }));
+  });
 
   const filteredDispatches = sewingDispatches.filter((disp) => {
     const m = models.find((mod) => mod.id === disp.model_id);
@@ -302,7 +314,7 @@ export const SewingView: React.FC = () => {
         </div>
 
         {/* Search & Piece Filter */}
-        <div className="flex items-center gap-2 w-full md:w-auto">
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
           <div className="relative w-full md:w-64">
             <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
             <input
@@ -340,6 +352,13 @@ export const SewingView: React.FC = () => {
               بنطلون
             </button>
           </div>
+
+          <CompletedModelsToggle
+            enabled={showCompleted}
+            count={endedPartCards.length}
+            onChange={setShowCompleted}
+            tone="emerald"
+          />
         </div>
       </div>
 
@@ -583,6 +602,85 @@ export const SewingView: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* SECTION 1.b: Ended parts (already beyond sewing) */}
+      {showCompleted && (
+        <div className="bg-slate-50/70 rounded-3xl p-6 border-2 border-dashed border-slate-300 shadow-xs space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="font-extrabold text-slate-800 text-sm flex items-center gap-2">
+              <Layers className="w-4 h-4 text-slate-500" />
+              <span>موديلات منتهية من قسم المكن ({endedPartCards.length}):</span>
+            </h3>
+            <span className="text-[11px] text-slate-500 font-normal">
+              (تم تحويلها مسبقاً — إعادة الإرسال معطلة)
+            </span>
+          </div>
+
+          {endedPartCards.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {endedPartCards
+                .filter((card) => pieceFilter === 'all' || card.part === pieceFilter)
+                .map(({ model: m, part }) => {
+                  const stage = getPartStages(m.id)[part] || 'cutting';
+                  return (
+                    <div
+                      key={`${m.id}-${part}`}
+                      className="bg-white rounded-2xl border-2 border-dashed border-slate-300 p-4 flex flex-col gap-3 shadow-2xs"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-slate-600 text-white">
+                          {PART_EMOJI[part]} {getPartLabel(part)}
+                        </span>
+                        <button
+                          onClick={() => setPrintTarget({ modelId: m.id, tab: part })}
+                          className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 transition cursor-pointer"
+                          title="طباعة ورقة التشغيل الفردية لهذه القطعة"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="w-12 h-12 rounded-xl border border-slate-200 bg-white p-1 shrink-0 overflow-hidden flex items-center justify-center">
+                          <img
+                            src={m.image}
+                            alt={m.model_code}
+                            className="w-full h-full object-contain grayscale-[55%] opacity-90"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).src =
+                                'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
+                            }}
+                          />
+                        </div>
+                        <div className="min-w-0 flex-grow">
+                          <h4 className="font-black text-sm text-slate-700 truncate">
+                            موديل: {m.model_code}
+                          </h4>
+                          <p className="text-[11px] text-slate-500">
+                            المرحلة الحالية:{' '}
+                            <strong className="text-slate-700">
+                              {PART_STAGE_LABELS[stage as PartStage]}
+                            </strong>
+                          </p>
+                        </div>
+                      </div>
+
+                      <EndedModelBadge currentStage={PART_STAGE_LABELS[stage as PartStage]} />
+
+                      <div className="w-full py-2 rounded-xl bg-slate-200 text-slate-500 font-bold text-[11px] text-center cursor-not-allowed">
+                        تم تحويله مسبقاً
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          ) : (
+            <p className="text-center text-slate-500 text-xs py-4">
+              لا توجد قطع منتهية من قسم المكن حالياً.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* SECTION 2: Active Sewing Dispatches Table */}
       <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">

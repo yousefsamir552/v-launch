@@ -12,8 +12,10 @@ import {
   Activity,
   Globe,
   AlertCircle,
+  History,
 } from 'lucide-react';
 import { api } from '../api/client';
+import { COMPLETED_MODEL_MARKER, isCompletedModelAudit } from '../utils/completedModels';
 import type { AuditLog, AuditLogFiltersMeta, AuditLogListResponse } from '../types';
 
 interface AuditLogsViewProps {
@@ -451,9 +453,15 @@ export const AuditLogsView: React.FC<AuditLogsViewProps> = ({ onBack }) => {
                   </td>
                 </tr>
               ) : (
-                logs.map((log) => (
-
-                  <tr key={log.id} className="hover:bg-slate-50/70 transition align-top">
+                logs.map((log) => {
+                  const isCompletedEdit = isCompletedModelAudit(log.details);
+                  return (
+                  <tr
+                    key={log.id}
+                    className={`hover:bg-slate-50/70 transition align-top ${
+                      isCompletedEdit ? 'bg-amber-50/50' : ''
+                    }`}
+                  >
                     <td dir="ltr" className="px-4 py-3.5 text-slate-500 font-mono whitespace-nowrap">
                       {log.timestamp || '—'}
                     </td>
@@ -490,8 +498,18 @@ export const AuditLogsView: React.FC<AuditLogsViewProps> = ({ onBack }) => {
                       )}
                     </td>
                     <td className="px-4 py-3.5 text-start max-w-xl">
-                      <div className="text-slate-700 font-medium leading-6">
-                        {log.details || '—'}
+                      {isCompletedEdit && (
+                        <span className="mb-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-black">
+                          <History className="w-3 h-3" />
+                          موديل منتهي
+                        </span>
+                      )}
+                      <div
+                        className={`leading-6 font-medium ${
+                          isCompletedEdit ? 'text-amber-900' : 'text-slate-700'
+                        }`}
+                      >
+                        {(log.details || '—').split(COMPLETED_MODEL_MARKER).join('').trim() || '—'}
                       </div>
                       {log.changes && log.changes.length > 0 && (
                         <ul className="mt-2 space-y-1.5">
@@ -517,7 +535,8 @@ export const AuditLogsView: React.FC<AuditLogsViewProps> = ({ onBack }) => {
                       {log.ip_address || '—'}
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

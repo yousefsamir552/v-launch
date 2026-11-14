@@ -25,6 +25,8 @@ import {
   PART_STAGE_LABELS,
   WorkshopType
 } from '../types';
+import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
+import { currentStageLabel } from '../utils/completedModels';
 
 const CUSTOM_WORKSHOP_OPTION = '__custom__';
 
@@ -1068,6 +1070,7 @@ export const AssemblyPackagingView: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabKey>('requirements');
   const [activeSection, setActiveSection] = useState<'pipeline' | 'materials'>(activeSectionDefault);
   const [searchTerm, setSearchTerm] = useState('');
+  const [showCompleted, setShowCompleted] = useState(false);
 
   // تنبيهات خامات التشغيل في شريط الإشعارات تفتح هذا القسم مباشرة.
   useEffect(() => {
@@ -1158,6 +1161,7 @@ export const AssemblyPackagingView: React.FC = () => {
   const sortedModels = useMemo(() => {
     return visibleModels
       .filter((model) => modelInTab(model, activeTab))
+      .filter((model) => showCompleted || !isDoneForTab(model, activeTab))
       .sort((a, b) => {
         const aDone = isDoneForTab(a, activeTab) ? 1 : 0;
         const bDone = isDoneForTab(b, activeTab) ? 1 : 0;
@@ -1168,6 +1172,7 @@ export const AssemblyPackagingView: React.FC = () => {
   }, [
     visibleModels,
     activeTab,
+    showCompleted,
     requirementCompleteMap,
     finishingRecords,
     assemblyStageRecords,
@@ -1237,14 +1242,26 @@ export const AssemblyPackagingView: React.FC = () => {
         <>
       {/* Search + Tabs */}
       <div className="bg-white rounded-3xl border border-slate-200/80 p-4 shadow-xs space-y-3">
-        <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3" />
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="بحث بكود الموديل أو النوع..."
-            className="w-full ps-9 pe-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-orange-300"
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative flex-grow min-w-[200px]">
+            <Search className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3" />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="بحث بكود الموديل أو النوع..."
+              className="w-full ps-9 pe-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-orange-300"
+            />
+          </div>
+          <CompletedModelsToggle
+            enabled={showCompleted}
+            count={
+              visibleModels.filter(
+                (model) => modelInTab(model, activeTab) && isDoneForTab(model, activeTab)
+              ).length
+            }
+            onChange={setShowCompleted}
+            tone="orange"
           />
         </div>
 
@@ -1292,19 +1309,39 @@ export const AssemblyPackagingView: React.FC = () => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {sortedModels.map((model) => {
-            if (activeTab === 'requirements') {
-              return <RequirementsCard key={model.id} model={model} canEdit={canEdit} />;
-            }
-            if (activeTab === 'finishing') {
-              return <FinishingCard key={model.id} model={model} canEdit={canEdit} />;
-            }
-            if (activeTab === 'ironing') {
-              return <IroningCard key={model.id} model={model} canEdit={canEdit} />;
-            }
-            if (activeTab === 'packaging') {
-              return <PackagingCard key={model.id} model={model} canEdit={canEdit} />;
-            }
-            return <DestCard key={model.id} model={model} canEdit={canEdit} />;
+            const ended = isDoneForTab(model, activeTab);
+            // منع أي إجراء تحويل مسبق على موديل منتهٍ من هذا التبويب.
+            const effectiveCanEdit = canEdit && !ended;
+            const card =
+              activeTab === 'requirements' ? (
+                <RequirementsCard model={model} canEdit={effectiveCanEdit} />
+              ) : activeTab === 'finishing' ? (
+                <FinishingCard model={model} canEdit={effectiveCanEdit} />
+              ) : activeTab === 'ironing' ? (
+                <IroningCard model={model} canEdit={effectiveCanEdit} />
+              ) : activeTab === 'packaging' ? (
+                <PackagingCard model={model} canEdit={effectiveCanEdit} />
+              ) : (
+                <DestCard model={model} canEdit={effectiveCanEdit} />
+              );
+
+            return (
+              <div
+                key={model.id}
+                className={
+                  ended
+                    ? 'rounded-[28px] border-2 border-dashed border-slate-300 bg-slate-50/70 p-1.5'
+                    : ''
+                }
+              >
+                {ended && (
+                  <div className="px-1 pb-1.5">
+                    <EndedModelBadge currentStage={currentStageLabel(model)} />
+                  </div>
+                )}
+                {card}
+              </div>
+            );
           })}
         </div>
       )}

@@ -1,4 +1,4 @@
-import { api } from '../api/client';
+import { api, auditContextHeaders } from '../api/client';
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import {
   User,
@@ -166,6 +166,18 @@ const DEFAULT_GLOBAL_SETTINGS: GlobalSiteSettings = {
 };
 
 const DESIGN_STAGES = new Set(['مرحلة التصميم', 'تصميم']);
+
+// مراحل ما قبل الإنتاج: تعديل الموديل فيها لا يُعد تعديلاً على "موديل منتهٍ".
+const PRE_PRODUCTION_STAGES = new Set(['مرحلة التصميم', 'تصميم', 'في القص', 'جاري القص']);
+
+/**
+ * ترويسات تدقيق تُمرَّر عند تعديل موديل تجاوز قسم التصميم/القص،
+ * ليقوم الباك إند بتسجيل السجل بعلامة "[تعديل على موديل منتهي]".
+ */
+const auditHeadersForModel = (model?: DesignModel | null) => {
+  if (!model) return undefined;
+  return PRE_PRODUCTION_STAGES.has(model.status) ? undefined : auditContextHeaders('التصميم');
+};
 
 interface AppContextType {
   currentUser: User | null;
@@ -2297,7 +2309,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               notesShirt: model.notes_shirt,
               notesPants: model.notes_pants
             })
-      })
+      }, auditHeadersForModel(model))
       .then((savedModel) => {
         setModels((prev) => prev.map((m) => (m.id === data.modelId ? savedModel : m)));
         logAction('التصميم', `تحديث خطة وخامات الموديل ${model.model_code} (حجز من المتاح للتصميم)`);
@@ -2340,7 +2352,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
     );
     api
-      .updateModel(modelId, filteredData)
+      .updateModel(modelId, filteredData, auditHeadersForModel(models.find((m) => m.id === modelId)))
       .then((saved) => {
         setModels((prev) => prev.map((m) => (m.id === modelId ? saved : m)));
         addFlashMessage('تم تحديث بيانات وملاحظات التشغيل بنجاح');

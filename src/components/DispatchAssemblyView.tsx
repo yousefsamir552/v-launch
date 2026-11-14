@@ -9,8 +9,10 @@ import {
   X,
   Lock
 } from 'lucide-react';
-import { DispatchStatus, GarmentPart, PART_EMOJI, getPartLabel, PrintDispatch } from '../types';
+import { DispatchStatus, GarmentPart, PART_EMOJI, getPartLabel, PrintDispatch, PART_STAGE_LABELS, PartStage } from '../types';
 import { PrintShopOrderModal } from './PrintShopOrderModal';
+import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
+import { stageBeyond } from '../utils/completedModels';
 
 /** نوع تشغيل افتراضي يُرسل للباك إند بعد إخفاء حقل "نوع التشغيل" من الواجهة. */
 const DEFAULT_PRINT_TYPE = 'سلك سكرين مائي';
@@ -59,6 +61,17 @@ export const DispatchAssemblyView: React.FC = () => {
   const readyModels = models.filter(
     (m) => !m.is_deleted && readyPartCards.some((card) => card.model.id === m.id)
   );
+
+  // الموديلات/القطع التي تجاوزت مرحلة المطابع (منتهية من هذا القسم).
+  const endedPartCards = models.flatMap((m) => {
+    if (m.is_deleted) return [] as { model: typeof m; part: GarmentPart }[];
+    const stages = getPartStages(m.id);
+    return getModelParts(m.id)
+      .filter((part) => stageBeyond(stages[part], 'printing'))
+      .map((part) => ({ model: m, part }));
+  });
+
+  const [showCompleted, setShowCompleted] = useState(false);
 
   const [showModal, setShowModal] = useState(false);
   const [modelId, setModelId] = useState(readyModels[0]?.id || '');
@@ -168,20 +181,28 @@ export const DispatchAssemblyView: React.FC = () => {
           </p>
         </div>
 
-        {canEdit && readyModels.length > 0 && (
-          <button
-            onClick={() => {
-              if (readyModels.length > 0) {
-                setModelId(readyModels[0].id);
-              }
-              setShowModal(true);
-            }}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs shadow-md shadow-teal-700/20 transition shrink-0 cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>+ إرسال تشغيلة للمطبعة / التطريز</span>
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <CompletedModelsToggle
+            enabled={showCompleted}
+            count={endedPartCards.length}
+            onChange={setShowCompleted}
+            tone="teal"
+          />
+          {canEdit && readyModels.length > 0 && (
+            <button
+              onClick={() => {
+                if (readyModels.length > 0) {
+                  setModelId(readyModels[0].id);
+                }
+                setShowModal(true);
+              }}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs shadow-md shadow-teal-700/20 transition shrink-0 cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>+ إرسال تشغيلة للمطبعة / التطريز</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Ready Parts — every garment part is its own card */}
@@ -272,6 +293,71 @@ export const DispatchAssemblyView: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Ended parts in this section (already beyond printing) */}
+      {showCompleted && (
+        <div className="bg-slate-50/70 rounded-3xl p-6 border-2 border-dashed border-slate-300 shadow-xs space-y-4">
+          <h3 className="font-extrabold text-slate-800 text-sm flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-slate-500" />
+              <span>موديلات منتهية من المطابع والتطريز ({endedPartCards.length}):</span>
+            </span>
+            <span className="text-[11px] text-slate-500 font-normal">
+              (تم تحويلها مسبقاً — إعادة الإرسال معطلة)
+            </span>
+          </h3>
+
+          {endedPartCards.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {endedPartCards.map(({ model: m, part }) => {
+                const stage = getPartStages(m.id)[part] || 'cutting';
+                return (
+                  <div
+                    key={`${m.id}-${part}`}
+                    className="p-4 rounded-2xl border-2 border-dashed border-slate-300 bg-white/70 flex flex-col gap-3 shadow-2xs"
+                  >
+                    <div className="flex items-center gap-3">
+                      <img
+                        src={m.image}
+                        alt={m.model_code}
+                        className="w-12 h-12 rounded-xl object-contain bg-white border shrink-0 p-0.5 grayscale-[55%] opacity-90"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src =
+                            'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
+                        }}
+                      />
+                      <div className="flex-grow min-w-0">
+                        <h4 className="font-black text-sm text-slate-700 truncate">
+                          {m.model_code}
+                        </h4>
+                        <span className="inline-flex items-center gap-1 mt-0.5 px-2 py-0.5 rounded-md bg-slate-500 text-white text-[10px] font-bold">
+                          {PART_EMOJI[part]} {getPartLabel(part)}
+                        </span>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          المرحلة الحالية:{' '}
+                          <strong className="text-slate-700">
+                            {PART_STAGE_LABELS[stage as PartStage]}
+                          </strong>
+                        </p>
+                      </div>
+                    </div>
+
+                    <EndedModelBadge currentStage={PART_STAGE_LABELS[stage as PartStage]} />
+
+                    <div className="w-full py-2 rounded-xl bg-slate-200 text-slate-500 font-bold text-[11px] text-center cursor-not-allowed">
+                      تم تحويله مسبقاً
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-center text-slate-500 text-xs py-4">
+              لا توجد قطع منتهية من المطابع والتطريز حالياً.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Dispatches Tracking Table */}
       <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">

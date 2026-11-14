@@ -36,6 +36,19 @@ ACTION_TYPE_LABELS = {
     'custom': 'إجراء',
 }
 
+# علامة تُضاف لبداية تفاصيل أي سجل تدقيق ناتج عن تعديل على موديل/قطعة منتهية.
+COMPLETED_MODEL_MARKER = '[تعديل على موديل منتهي]'
+
+# قيم الحالات التي تعني أن السجل/القطعة قد انتهى فعلياً من مرحلته.
+COMPLETED_MODEL_STATUSES = {
+    'تم الاستلام بالمصنع',
+    'تم الاستلام',
+    'مكتملة',
+    'مكتمل',
+    'مكتمل الإنتاج',
+    'مخزن الإنتاج التام',
+}
+
 # اسم القسم العربي لكل موديل (يُستخدم تلقائياً في الـ ViewSets)
 SECTION_BY_MODEL = {
     'UserProfile': 'الموظفين والصلاحيات',
@@ -720,6 +733,79 @@ def log_action(
 
 
 # ---------------------------------------------------------------------------
+# سياق "الموديلات المنتهية" (Completed-models audit context)
+# ---------------------------------------------------------------------------
+def _header_value(request, name: str) -> str:
+    """قراءة ترويسة HTTP بأمان (DRF Request أو WSGIRequest) دون رفع استثناء."""
+    if request is None:
+        return ''
+    try:
+        headers = getattr(request, 'headers', None)
+        if headers is not None:
+            value = headers.get(name)
+            if value:
+                return str(value).strip()
+    except Exception:
+        pass
+    try:
+        meta_key = 'HTTP_' + str(name).upper().replace('-', '_')
+        return str(request.META.get(meta_key) or '').strip()
+    except Exception:
+        return ''
+
+
+def _object_looks_completed(obj) -> bool:
+    """هل يحمل الكائن إشارة صريحة إلى اكتمال/استلام المرحلة؟"""
+    if obj is None:
+        return False
+    for attr in ('is_completed', 'is_received'):
+        try:
+            if bool(getattr(obj, attr)):
+                return True
+        except Exception:
+            continue
+    status = getattr(obj, 'status', None)
+    if status is not None and str(status).strip() in COMPLETED_MODEL_STATUSES:
+        return True
+    return False
+
+
+def _detect_completed_model_edit(action_type: str, before_obj, after_obj) -> bool:
+    """
+    كشف تلقائي (احتياطي) عند تعديل/حذف سجل ينتمي لموديل/قطعة تجاوزت مرحلتها،
+    حتى لو لم تُرسل ترويسة X-Audit-Context من الواجهة.
+    """
+    if action_type not in ('update', 'delete'):
+        return False
+    obj = after_obj if after_obj is not None else before_obj
+    if obj is None:
+        return False
+    if _object_looks_completed(obj):
+        return True
+    # الموديل الأساسي: أي حالة خارج مرحلتي التصميم/القص تعني أنه تجاوز قسم التصميم.
+    if obj.__class__.__name__ == 'ModelItem':
+        status = str(getattr(obj, 'status', '') or '').strip()
+        if status and status not in {'مرحلة التصميم', 'تصميم', 'في القص', 'جاري القص'}:
+            return True
+    return False
+
+
+def _completed_model_marker(request, action_type, before_obj, after_obj, target, section) -> str:
+    """يبني بادئة تفاصيل سجل التدقيق عند تعديل موديل منتهٍ، أو '' إن لم ينطبق."""
+    explicit = _header_value(request, 'X-Audit-Context').lower() == 'completed_model'
+    if not explicit and not _detect_completed_model_edit(action_type, before_obj, after_obj):
+        return ''
+    marker_section = _header_value(request, 'X-Audit-Section') or str(section or '').strip()
+    code = str(target or '').strip()
+    parts = [COMPLETED_MODEL_MARKER]
+    if marker_section:
+        parts.append(f'[{marker_section}]')
+    if code:
+        parts.append(f'الموديل: {code}')
+    return ' '.join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Mixin: تدقيق تلقائي لكل الـ ViewSets
 # ---------------------------------------------------------------------------
 def _wrap_audit_callable(method_name, fn):
@@ -859,6 +945,7 @@ class AuditedModelViewSetMixin:
         action_type = 'update'
         changes = []
         target = target_before
+        after_obj = None
 
         is_create = method_name == 'create'
         is_update = method_name in ('update', 'partial_update')
@@ -911,6 +998,13 @@ class AuditedModelViewSetMixin:
             if not target:
                 target = _target_from_payload(getattr(response, 'data', None))
             details = f"{phrase}: {target}" if target else phrase
+
+        # تمييز أي تعديل/حذف يقع على موديل/قطعة منتهية (من الترويسات أو بالكشف التلقائي).
+        completed_marker = _completed_model_marker(
+            request, action_type, before_obj, after_obj, target, section,
+        )
+        if completed_marker:
+            details = f"{completed_marker} — {details}" if details else completed_marker
 
         log_action(
             request,
