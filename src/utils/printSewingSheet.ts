@@ -10,7 +10,7 @@
  */
 
 import type { ImageCropRegion, ModelAccessory } from '../types';
-import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml } from './printShared';
+import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml, safeImageSrc } from './printShared';
 
 export interface SewingSheetOptions {
   siteName?: string;
@@ -48,13 +48,14 @@ const DEFAULT_PIECE_LABELS: Record<SewingSheetOptions['pieceType'], string> = {
 
 /** يبني الصورة داخل الصندوق مع دعم القص المؤقت بإحداثيات بيكسل دقيقة. */
 const renderImage = (options: SewingSheetOptions): string => {
-  if (!options.imageUrl) {
+  const imageSrc = safeImageSrc(options.imageUrl);
+  if (!imageSrc) {
     return '<div class="muted noimg">لا توجد صورة</div>';
   }
 
   const crop = options.imageCrop;
   if (!crop || crop.natW <= 0 || crop.natH <= 0 || crop.w <= 0 || crop.h <= 0) {
-    return `<img src="${escapeHtml(options.imageUrl)}" alt="${escapeHtml(
+    return `<img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(
       options.modelCode
     )}" onerror="this.style.display='none'" />`;
   }
@@ -65,7 +66,7 @@ const renderImage = (options: SewingSheetOptions): string => {
   const boxH = Math.max(1, Math.round(crop.h * scale));
 
   return `<div class="cropbox" style="width:${boxW}px;height:${boxH}px;">
-      <img src="${escapeHtml(options.imageUrl)}" alt="${escapeHtml(options.modelCode)}"
+      <img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(options.modelCode)}"
         style="position:absolute;width:${Math.round(crop.natW * scale)}px;height:${Math.round(
     crop.natH * scale
   )}px;left:${Math.round(-crop.x * scale)}px;top:${Math.round(-crop.y * scale)}px;max-width:none;max-height:none;" />

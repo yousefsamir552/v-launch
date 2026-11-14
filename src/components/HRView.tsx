@@ -1040,8 +1040,10 @@ const EmployeesPanel: React.FC<{
   isLoading: boolean;
   onRefresh: () => void | Promise<void>;
 }> = ({ employees, jobTitles, isLoading, onRefresh }) => {
-  const { addFlashMessage, logAction, visibleRankOptions, rankLabelFor, currentUserRank } = useApp();
+  const { addFlashMessage, logAction, visibleRankOptions, rankLabelFor, currentUserRank, canAccessHRSection } = useApp();
   const rankOptions = visibleRankOptions();
+  // المرتب الشهري مخفي كلياً عمّن لا يملك صلاحية تبويب المرتبات (يحجبها الباك إند أيضاً).
+  const canViewSalary = canAccessHRSection('payroll');
   // إخفاء مفهوم الرتب تماماً عمّن لا يملك إلا خياراً واحداً (رتبة 3، ورتبة 2 المفروضة على العام).
   const canChooseRank = currentUserRank !== 3 && rankOptions.length > 1;
   const forcedRankLevel = Number(rankOptions[rankOptions.length - 1]?.value ?? 3);
@@ -1154,7 +1156,7 @@ const EmployeesPanel: React.FC<{
       return;
     }
     const salary = Number(form.monthly_salary);
-    if (!Number.isFinite(salary) || salary <= 0) {
+    if (canViewSalary && (!Number.isFinite(salary) || salary <= 0)) {
       setFormError('المرتب الشهري يجب أن يكون أكبر من صفر');
       return;
     }
@@ -1165,7 +1167,6 @@ const EmployeesPanel: React.FC<{
       name,
       employee_code: form.employee_code.trim(),
       job_id: form.job_id,
-      monthly_salary: salary,
       rule_application_mode: form.rule_application_mode,
       national_id: form.national_id.trim(),
       birth_date: form.birth_date || null,
@@ -1175,6 +1176,8 @@ const EmployeesPanel: React.FC<{
       is_active: form.is_active,
       rank_level: canChooseRank ? form.rank_level : forcedRankLevel
     };
+    // يُرسل المرتب فقط لمن يملك صلاحية الرواتب حتى لا يُصفَّر مرتب الموظف بالخطأ.
+    if (canViewSalary) payload.monthly_salary = salary;
 
     try {
       if (editing) {
@@ -1221,14 +1224,16 @@ const EmployeesPanel: React.FC<{
             الوظيفة تحدد القسم والمرتب، وكود الموظف هو نفس الـ ID المسجل على ماكينة البصمة.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={openCreate}
-          className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-purple-600 text-white text-[11px] font-black hover:bg-purple-700 transition cursor-pointer shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          إضافة موظف
-        </button>
+        {canViewSalary && (
+          <button
+            type="button"
+            onClick={openCreate}
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-purple-600 text-white text-[11px] font-black hover:bg-purple-700 transition cursor-pointer shrink-0"
+          >
+            <Plus className="w-4 h-4" />
+            إضافة موظف
+          </button>
+        )}
       </div>
 
       <div className="p-4 bg-slate-50/60 border-b border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-2">
@@ -1289,7 +1294,9 @@ const EmployeesPanel: React.FC<{
                 <th className="px-3 py-2.5 text-start">اسم الموظف</th>
                 <th className="px-3 py-2.5 text-start">الوظيفة</th>
                 <th className="px-3 py-2.5 text-start">القسم</th>
-                <th className="px-3 py-2.5 text-start">المرتب الشهري</th>
+                {canViewSalary && (
+                  <th className="px-3 py-2.5 text-start">المرتب الشهري</th>
+                )}
                 <th className="px-3 py-2.5 text-start">تطبيق القواعد</th>
                 <th className="px-3 py-2.5 text-start">الحالة</th>
                 <th className="px-3 py-2.5 text-center">إجراءات</th>
@@ -1323,9 +1330,11 @@ const EmployeesPanel: React.FC<{
                         '-'}
                     </span>
                   </td>
-                  <td className="px-3 py-2.5 font-mono font-black text-emerald-700 whitespace-nowrap">
-                    {formatMoney(emp.monthly_salary || 0)}
-                  </td>
+                  {canViewSalary && (
+                    <td className="px-3 py-2.5 font-mono font-black text-emerald-700 whitespace-nowrap">
+                      {formatMoney(emp.monthly_salary || 0)}
+                    </td>
+                  )}
                   <td className="px-3 py-2.5">
                     <span
                       className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap ${
@@ -1428,18 +1437,27 @@ const EmployeesPanel: React.FC<{
                   ))}
                 </select>
               </div>
-              <div>
-                <label className={labelClass}>المرتب الشهري (ج.م) *</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={form.monthly_salary}
-                  onChange={(event) => updateForm({ monthly_salary: event.target.value })}
-                  placeholder="0.00"
-                  className={`${inputClass} font-mono`}
-                />
-              </div>
+              {canViewSalary ? (
+                <div>
+                  <label className={labelClass}>المرتب الشهري (ج.م) *</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.monthly_salary}
+                    onChange={(event) => updateForm({ monthly_salary: event.target.value })}
+                    placeholder="0.00"
+                    className={`${inputClass} font-mono`}
+                  />
+                </div>
+              ) : (
+                <div className="flex items-end">
+                  <p className="text-[10px] font-bold text-slate-400 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 w-full">
+                    المرتب الشهري مخفي — يتطلب صلاحية تبويب المرتبات. لن يتم تغيير مرتب
+                    الموظف عند حفظ باقي البيانات.
+                  </p>
+                </div>
+              )}
             </div>
 
             {canChooseRank && (

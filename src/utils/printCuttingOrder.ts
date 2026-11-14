@@ -6,7 +6,7 @@
  * تتبع نفس نمط `printManualCountSheet` في المشروع (نافذة مستقلة + document.write + window.print).
  */
 
-import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml } from './printShared';
+import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml, safeImageSrc } from './printShared';
 
 export interface CuttingOrderOptions {
   siteName?: string;
@@ -39,8 +39,9 @@ export const printCuttingOrder = (options: CuttingOrderOptions): void => {
       ? sizes.map((s) => `<span class="chip">${escapeHtml(s)}</span>`).join('')
       : '<span class="muted">غير محددة</span>';
 
-  const imageBlock = options.imageUrl
-    ? `<img src="${escapeHtml(options.imageUrl)}" alt="${escapeHtml(
+  const imageSrc = safeImageSrc(options.imageUrl);
+  const imageBlock = imageSrc
+    ? `<img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(
         options.modelCode
       )}" onerror="this.style.display='none'" />`
     : '<div class="muted" style="display:flex;align-items:center;justify-content:center;height:100%;">لا توجد صورة</div>';

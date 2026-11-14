@@ -9,7 +9,7 @@
  */
 
 import type { ImageCropRegion } from '../types';
-import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml } from './printShared';
+import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml, safeHttpUrl, safeImageSrc } from './printShared';
 
 export interface PrintShopOrderOptions {
   siteName?: string;
@@ -43,13 +43,14 @@ const fmtInt = (value: number): string =>
  * بإحداثيات البيكسل الطبيعية لضمان وضوح تفاصيل الرسمة في ملف الـ PDF.
  */
 const renderLargeImage = (options: PrintShopOrderOptions): string => {
-  if (!options.imageUrl) {
+  const imageSrc = safeImageSrc(options.imageUrl);
+  if (!imageSrc) {
     return '<div class="muted noimg">لا توجد صورة مسجلة لهذا الموديل</div>';
   }
 
   const crop = options.imageCrop;
   if (!crop || crop.natW <= 0 || crop.natH <= 0 || crop.w <= 0 || crop.h <= 0) {
-    return `<img src="${escapeHtml(options.imageUrl)}" alt="${escapeHtml(
+    return `<img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(
       options.modelCode
     )}" onerror="this.style.display='none'" />`;
   }
@@ -61,7 +62,7 @@ const renderLargeImage = (options: PrintShopOrderOptions): string => {
   const boxH = Math.max(1, Math.round(crop.h * scale));
 
   return `<div class="cropbox" style="width:${boxW}px;height:${boxH}px;">
-      <img src="${escapeHtml(options.imageUrl)}" alt="${escapeHtml(options.modelCode)}"
+      <img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(options.modelCode)}"
         style="position:absolute;width:${Math.round(crop.natW * scale)}px;height:${Math.round(
     crop.natH * scale
   )}px;left:${Math.round(-crop.x * scale)}px;top:${Math.round(-crop.y * scale)}px;max-width:none;max-height:none;" />
@@ -70,9 +71,9 @@ const renderLargeImage = (options: PrintShopOrderOptions): string => {
 
 /** رابط الماركر النشط داخل الـ PDF (قابل للضغط لفتح باترون الطباعة مباشرة). */
 const renderMarker = (url?: string): string => {
-  const value = String(url ?? '').trim();
+  const value = safeHttpUrl(url);
   if (!value) {
-    return '<span class="muted">لم يتم تسجيل ماركر طباعة لهذا الموديل.</span>';
+    return '<span class="muted">لم يتم تسجيل ماركر طباعة صالح لهذا الموديل.</span>';
   }
   return `<a class="marker-link" href="${escapeHtml(value)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
     value

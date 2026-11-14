@@ -349,7 +349,8 @@ export interface FabricColor {
   color_code: string;
   color_name: string;
   hex_code: string;
-  price_per_unit: number;
+  // يُعاد null لمن لا يملك صلاحية عرض أسعار الأقمشة.
+  price_per_unit: number | null;
   quantity: number;
   reserved_quantity: number;
 }
@@ -437,7 +438,7 @@ export interface DesignModel {
   qc_jacket_pieces?: number;
   print_house_name?: string;
   print_house?: string;
-  print_cost?: number;
+  print_cost?: number | null;
   withdrawn_fabric_qty?: number;
   marker_length?: number;
   marker_shirt_length?: number;
@@ -640,8 +641,8 @@ export interface PrintDispatch {
   expected_delivery_date?: string;
   pieces_count: number;
   print_type: string;
-  cost_per_piece?: number;
-  total_cost?: number;
+  cost_per_piece?: number | null;
+  total_cost?: number | null;
   notes?: string;
   status: DispatchStatus;
   received_at?: string;
@@ -1090,7 +1091,8 @@ export interface AccessoryItem {
   unit: AccessoryUnit;
   quantity: number;
   reserved_quantity: number;
-  price_per_unit: number;
+  // يُعاد null لمن لا يملك صلاحية عرض أسعار الإكسسوارات.
+  price_per_unit: number | null;
   supplier_id?: string;
   min_threshold: number;
   created_at?: string;
@@ -1235,7 +1237,8 @@ export interface HREmployee {
   job_title?: string;
   department?: HRDepartmentKey;
   department_label?: string;
-  monthly_salary: number;
+  // يُعاد null لمن لا يملك صلاحية الرواتب.
+  monthly_salary: number | null;
   rule_application_mode: HRRuleApplicationMode;
   rule_application_mode_label?: string;
   national_id?: string;

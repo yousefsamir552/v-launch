@@ -1,5 +1,5 @@
 import { GarmentPart, getPartLabel } from '../types';
-import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml } from './printShared';
+import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml, safeImageSrc } from './printShared';
 
 export interface ManualCountSheetPart {
   key: GarmentPart;
@@ -65,10 +65,11 @@ export const printManualCountSheet = (options: ManualCountSheetOptions): void =>
     })
     .join('');
 
-  const imageBlock = options.imageUrl
+  const imageSrc = safeImageSrc(options.imageUrl);
+  const imageBlock = imageSrc
     ? `<div class="thumb">
         <span class="muted">لا توجد صورة</span>
-        <img src="${escapeHtml(options.imageUrl)}" alt="${escapeHtml(
+        <img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(
         options.modelCode
       )}" onerror="this.style.display='none'" />
       </div>`
