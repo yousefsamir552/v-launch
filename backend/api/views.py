@@ -81,7 +81,15 @@ from .services import (
     derive_pipeline_status,
     seed_part_stages_from_status,
 )
-from .reports import get_production_report
+from .reports import (
+    get_production_report,
+    get_models_report,
+    get_production_departments_report,
+    get_quality_shortage_report,
+    get_model_stage_waterfall,
+    get_department_targets,
+    save_department_targets,
+)
 from .permissions import (
     CanManageCatalog,
     CanManageHR,
@@ -3954,6 +3962,118 @@ class ReportsViewSet(viewsets.ViewSet):
             date_to=date_to
         )
         return Response(report_data)
+
+    # ------------------------------------------------------------------
+    # Reports & Statistics v2 — ثلاث تبويبات (الموديلات / الإنتاج / العجز)
+    # كل النتائج مجمّعة على السيرفر ولا تتضمن أي أسعار أو تكاليف.
+    # ------------------------------------------------------------------
+    def _reports_guard(self, request, require_edit=False):
+        ensure_initial_seed()
+        profile = resolve_request_user_profile(request)
+        if profile is None or getattr(profile, 'is_sudo', False):
+            return profile, None
+        can_view = profile.has_perm('can_reports') or profile.has_perm('reports_view')
+        if not can_view:
+            return profile, Response(
+                {'error': 'ليس لديك صلاحية الاطلاع على التقارير والإحصائيات. يرجى مراجعة إدارة النظام.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if require_edit:
+            can_edit = profile.has_perm('reports_edit') or profile.has_perm('can_reports')
+            if not can_edit:
+                return profile, Response(
+                    {'error': 'ليس لديك صلاحية تعديل تارجتات الأقسام.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        return profile, None
+
+    @action(detail=False, methods=['get'], url_path='models')
+    def models_report(self, request):
+        _profile, denied = self._reports_guard(request)
+        if denied:
+            return denied
+        data = get_models_report(
+            metric=request.query_params.get('metric', 'models'),
+            date_from=request.query_params.get('date_from'),
+            date_to=request.query_params.get('date_to'),
+            composition=request.query_params.get('composition'),
+            model_type=request.query_params.get('model_type'),
+        )
+        return Response(data)
+
+    @action(detail=False, methods=['get'], url_path='production')
+    def production_report(self, request):
+        _profile, denied = self._reports_guard(request)
+        if denied:
+            return denied
+        data = get_production_departments_report(
+            period=request.query_params.get('period', 'today'),
+            date_from=request.query_params.get('date_from'),
+            date_to=request.query_params.get('date_to'),
+        )
+        return Response(data)
+
+    @action(detail=False, methods=['get'], url_path='quality')
+    def quality_report(self, request):
+        _profile, denied = self._reports_guard(request)
+        if denied:
+            return denied
+        data = get_quality_shortage_report(
+            search=request.query_params.get('search'),
+            sort=request.query_params.get('sort', 'shortage'),
+            date_from=request.query_params.get('date_from'),
+            date_to=request.query_params.get('date_to'),
+        )
+        return Response(data)
+
+    @action(detail=False, methods=['get'], url_path='quality/stages')
+    def quality_stages(self, request):
+        _profile, denied = self._reports_guard(request)
+        if denied:
+            return denied
+        try:
+            model_id = int(request.query_params.get('model_id'))
+        except (TypeError, ValueError):
+            return Response(
+                {'error': 'معرّف الموديل مطلوب.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        data = get_model_stage_waterfall(model_id)
+        if data is None:
+            return Response({'error': 'الموديل غير موجود.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(data)
+
+    @action(detail=False, methods=['get', 'post'], url_path='targets')
+    def targets(self, request):
+        if request.method.lower() == 'post':
+            profile, denied = self._reports_guard(request, require_edit=True)
+            if denied:
+                return denied
+            payload = request.data if isinstance(request.data, dict) else {}
+            inner = payload.get('targets') if isinstance(payload.get('targets'), dict) else payload
+            targets = save_department_targets(inner)
+            log_action(
+                request,
+                section='reports',
+                action_type='update',
+                target_name='تارجتات الأقسام',
+                details='تحديث التارجت اليومي / الشهري لأقسام الإنتاج',
+            )
+            return Response({'targets': targets, 'can_edit': True})
+
+        profile, denied = self._reports_guard(request)
+        if denied:
+            return denied
+        can_edit = (
+            profile is None
+            or getattr(profile, 'is_sudo', False)
+            or profile.has_perm('reports_edit')
+            or profile.has_perm('can_reports')
+        )
+        return Response({
+            'targets': get_department_targets(),
+            'can_edit': bool(can_edit),
+        })
 
 
 # ---------------------------------------------------------------------------

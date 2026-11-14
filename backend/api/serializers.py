@@ -132,6 +132,7 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
                 and isinstance(SystemSetting.objects.filter(key='favorite_accessory_ids').first().value, dict)
                 else []
             ),
+            'department_targets': instance.department_targets if isinstance(instance.department_targets, dict) else {},
             'updated_by': instance.updated_by or '',
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
         }

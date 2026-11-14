@@ -169,6 +169,13 @@ class GlobalSettings(models.Model):
         blank=True,
         verbose_name="نصوص الرسائل الداخلية الجاهزة"
     )
+    # تارجتات الأقسام المستخدمة في تقرير الإنتاج والسرعة.
+    # الشكل: {"cutting": {"daily": 1200, "monthly": 26000}, "printing": {...}, ...}
+    department_targets = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name="تارجتات الأقسام (يومي / شهري)"
+    )
     updated_by = models.CharField(
         max_length=150,
         blank=True,
