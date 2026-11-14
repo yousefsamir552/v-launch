@@ -1,4 +1,12 @@
 import { auditContextHeaders } from '../utils/completedModels';
+import type {
+  ModelsReportResponse,
+  ProductionDepartmentsResponse,
+  QualityShortageResponse,
+  ModelStageWaterfallResponse,
+  DepartmentTargetsResponse,
+  DepartmentTargetsMap
+} from '../types';
 
 /**
  * يُعيد ترويسات سياق التدقيق (X-Audit-Context / X-Audit-Section) لكي تُمرَّر
@@ -97,6 +105,18 @@ async function requestForm<T>(endpoint: string, form: FormData): Promise<T> {
     return {} as T;
   }
   return (await res.json()) as T;
+}
+
+/** يبني Query String من قيم اختيارية مع تجاهل القيم الفارغة. */
+function buildQuery(params: Record<string, string | number | undefined | null>): string {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value) !== '') {
+      search.set(key, String(value));
+    }
+  });
+  const suffix = search.toString();
+  return suffix ? `?${suffix}` : '';
 }
 
 export const api = {
@@ -490,5 +510,55 @@ export const api = {
     if (params?.to) search.set('to', params.to);
     const suffix = search.toString();
     return request<any>(`/hr-reports/${suffix ? `?${suffix}` : ''}`);
-  }
+  },
+
+  // التقارير والإحصائيات (Reports & Statistics v2)
+  getModelsReport: (params?: {
+    metric?: 'models' | 'pieces';
+    date_from?: string;
+    date_to?: string;
+    composition?: string;
+    model_type?: string;
+  }) =>
+    request<ModelsReportResponse>(
+      `/reports/models/${buildQuery({
+        metric: params?.metric,
+        date_from: params?.date_from,
+        date_to: params?.date_to,
+        composition: params?.composition,
+        model_type: params?.model_type
+      })}`
+    ),
+  getProductionReport: (params?: { period?: string; date_from?: string; date_to?: string }) =>
+    request<ProductionDepartmentsResponse>(
+      `/reports/production/${buildQuery({
+        period: params?.period,
+        date_from: params?.date_from,
+        date_to: params?.date_to
+      })}`
+    ),
+  getQualityReport: (params?: {
+    search?: string;
+    sort?: string;
+    date_from?: string;
+    date_to?: string;
+  }) =>
+    request<QualityShortageResponse>(
+      `/reports/quality/${buildQuery({
+        search: params?.search,
+        sort: params?.sort,
+        date_from: params?.date_from,
+        date_to: params?.date_to
+      })}`
+    ),
+  getModelStageWaterfall: (modelId: number | string) =>
+    request<ModelStageWaterfallResponse>(
+      `/reports/quality/stages/${buildQuery({ model_id: modelId })}`
+    ),
+  getDepartmentTargets: () => request<DepartmentTargetsResponse>('/reports/targets/'),
+  saveDepartmentTargets: (targets: DepartmentTargetsMap) =>
+    request<DepartmentTargetsResponse>('/reports/targets/', {
+      method: 'POST',
+      body: JSON.stringify({ targets })
+    })
 };

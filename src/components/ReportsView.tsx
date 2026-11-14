@@ -1,2767 +1,1507 @@
-import React, { useState, useMemo } from 'react';
-import { useApp } from '../context/AppContext';
-import { isImageLogo } from '../utils/printShared';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   BarChart3,
-  Printer,
-  Download,
-  Calendar,
-  Layers,
-  Scissors,
-  CheckCircle,
-  Shirt,
-  Filter,
+  Boxes,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
-  FileSpreadsheet,
-  Search,
-  Sparkles,
-  TrendingUp,
-  AlertCircle,
-  AlertTriangle,
-  ClipboardList,
-  Gauge,
-  Timer,
-  Percent,
   Factory,
-  Boxes,
-  ListChecks,
-  Target
+  Flame,
+  Gauge,
+  Layers,
+  Loader2,
+  Minus,
+  Package,
+  Printer,
+  RefreshCw,
+  Scissors,
+  Search,
+  Settings2,
+  Shirt,
+  Sparkles,
+  Target,
+  TrendingDown,
+  TrendingUp,
+  X
 } from 'lucide-react';
 import {
-  Model,
-  GarmentPart,
-  GARMENT_COMPOSITION_LABELS,
-  GARMENT_COMPOSITION_ORDER,
-  getPartLabel,
-  partsForComposition
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from 'recharts';
+import { api } from '../api/client';
+import { useApp } from '../context/AppContext';
+import { PRINT_LOGO_CSS, escapeHtml, renderLogoHtml } from '../utils/printShared';
+import type {
+  DepartmentReportCard,
+  DepartmentTargetsMap,
+  ModelsReportResponse,
+  ModelStageWaterfallResponse,
+  ProductionDepartmentsResponse,
+  QualityShortageResponse
 } from '../types';
 
 /* ------------------------------------------------------------------ */
-/* Types & shared constants                                           */
+/* Types & constants                                                   */
 /* ------------------------------------------------------------------ */
 
-type MainTab = 'models' | 'production' | 'quality';
-type ProductionSection = 'cutting' | 'printing' | 'sewing';
-type AggregationSection = 'cutting' | 'printing' | 'qc' | 'sewing';
-type QualityStageFilter = 'all' | 'before_print' | 'after_print' | 'after_sewing';
-type ReportPeriod = 'daily' | 'weekly' | 'monthly';
+type ReportTab = 'models' | 'production' | 'quality';
+type MetricMode = 'models' | 'pieces';
+type PeriodKey = 'today' | 'week' | 'month' | 'custom';
+type SortKey = 'shortage' | 'percent' | 'cut' | 'code';
 
-/** المراحل الست الرئيسية المستخدمة في تقرير الموديلات */
-type ReportStageKey = 'design' | 'cutting' | 'qc' | 'printing' | 'sewing' | 'completed';
+const BOYS_COLOR = '#3B82F6';
+const GIRLS_COLOR = '#EC4899';
 
-const REPORT_STAGE_ORDER: ReportStageKey[] = [
-  'design',
-  'cutting',
-  'qc',
-  'printing',
-  'sewing',
-  'completed'
+const TAB_META: Array<{
+  key: ReportTab;
+  label: string;
+  description: string;
+  icon: React.ComponentType<{ className?: string }>;
+}> = [
+  {
+    key: 'models',
+    label: 'الموديلات حسب المقاس',
+    description: 'توزيع الموديلات والقطع ولادي / بناتي',
+    icon: Boxes
+  },
+  {
+    key: 'production',
+    label: 'الإنتاج والسرعة',
+    description: 'أرقام كل قسم ومقارنتها بالتارجت',
+    icon: Gauge
+  },
+  {
+    key: 'quality',
+    label: 'المشاكل والعجز',
+    description: 'الفاقد والعجز بين مراحل الإنتاج',
+    icon: AlertTriangle
+  }
 ];
 
-const REPORT_STAGE_META: Record<
-  ReportStageKey,
-  { label: string; short: string; badge: string; dot: string; text: string }
-> = {
-  design: {
-    label: 'مرحلة التصميم',
-    short: 'التصميم',
-    badge: 'bg-amber-50 text-amber-800 border-amber-200',
-    dot: 'bg-amber-500',
-    text: 'text-amber-700'
-  },
-  cutting: {
-    label: 'مرحلة القص',
-    short: 'القص',
-    badge: 'bg-blue-50 text-blue-800 border-blue-200',
-    dot: 'bg-blue-600',
-    text: 'text-blue-700'
-  },
-  qc: {
-    label: 'الفرز والكنترول',
-    short: 'الفرز',
-    badge: 'bg-purple-50 text-purple-800 border-purple-200',
-    dot: 'bg-purple-600',
-    text: 'text-purple-700'
-  },
-  printing: {
-    label: 'مرحلة المطابع',
-    short: 'المطابع',
-    badge: 'bg-indigo-50 text-indigo-800 border-indigo-200',
-    dot: 'bg-indigo-600',
-    text: 'text-indigo-700'
-  },
-  sewing: {
-    label: 'مرحلة المكن',
-    short: 'المكن',
-    badge: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-    dot: 'bg-emerald-600',
-    text: 'text-emerald-700'
-  },
-  completed: {
-    label: 'مكتمل الإنتاج',
-    short: 'مكتمل',
-    badge: 'bg-teal-50 text-teal-800 border-teal-200',
-    dot: 'bg-teal-600',
-    text: 'text-teal-700'
-  }
+const PERIOD_OPTIONS: Array<{ key: PeriodKey; label: string }> = [
+  { key: 'today', label: 'اليوم' },
+  { key: 'week', label: 'الأسبوع' },
+  { key: 'month', label: 'الشهر' },
+  { key: 'custom', label: 'فترة مخصصة' }
+];
+
+const DEPARTMENT_ORDER = ['cutting', 'printing', 'qc', 'sewing', 'finishing', 'ironing', 'packaging'];
+
+const DEPARTMENT_META: Record<string, { label: string; icon: React.ReactNode }> = {
+  cutting: { label: 'القص', icon: <Scissors className="h-4 w-4" /> },
+  printing: { label: 'المطابع والتطريز', icon: <Printer className="h-4 w-4" /> },
+  qc: { label: 'الفرز والجودة', icon: <CheckCircle2 className="h-4 w-4" /> },
+  sewing: { label: 'المكن', icon: <Shirt className="h-4 w-4" /> },
+  finishing: { label: 'التشطيب', icon: <Sparkles className="h-4 w-4" /> },
+  ironing: { label: 'المكواة', icon: <Flame className="h-4 w-4" /> },
+  packaging: { label: 'التعبئة والدَست', icon: <Package className="h-4 w-4" /> }
 };
 
-const QC_STAGE_LABELS: Record<QualityStageFilter, string> = {
-  all: 'كل مراحل الفرز',
-  before_print: 'فحص قبل الطباعة',
-  after_print: 'فحص بعد الطباعة',
-  after_sewing: 'الفحص النهائي بعد المكن'
+const EMPTY_TOTALS = {
+  models: 0,
+  boys_models: 0,
+  girls_models: 0,
+  pieces: 0,
+  boys_pieces: 0,
+  girls_pieces: 0,
+  size_categories: 0
 };
 
-const toNum = (value?: number | string | null): number => {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
+const numberFormatter = new Intl.NumberFormat('en-US');
+const fmt = (value: number | null | undefined): string => numberFormatter.format(Number(value || 0));
+const pct = (value: number | null | undefined): string => `${Number(value || 0).toFixed(1)}%`;
+
+const toneClasses: Record<string, { wrap: string; text: string }> = {
+  slate: { wrap: 'bg-slate-100 text-slate-600', text: 'text-slate-900' },
+  blue: { wrap: 'bg-blue-50 text-blue-600', text: 'text-blue-700' },
+  pink: { wrap: 'bg-pink-50 text-pink-600', text: 'text-pink-700' },
+  emerald: { wrap: 'bg-emerald-50 text-emerald-600', text: 'text-emerald-700' },
+  amber: { wrap: 'bg-amber-50 text-amber-600', text: 'text-amber-700' },
+  rose: { wrap: 'bg-rose-50 text-rose-600', text: 'text-rose-700' },
+  indigo: { wrap: 'bg-indigo-50 text-indigo-600', text: 'text-indigo-700' }
 };
 
-const fmtNum = (value: number): string => Math.round(toNum(value)).toLocaleString('ar-EG');
-
-/** نسبة مئوية بمنزلة عشرية واحدة */
-const pctOf = (part: number, total: number, cap = false): number => {
-  if (!total || total <= 0) return 0;
-  const raw = (toNum(part) / toNum(total)) * 100;
-  const val = Math.round(raw * 10) / 10;
-  return cap ? Math.min(100, val) : val;
-};
-
-const formatDuration = (ms: number): string => {
-  if (!ms || ms <= 0) return '—';
-  const hours = ms / 3_600_000;
-  if (hours < 1) return `${Math.round(hours * 60)} دقيقة`;
-  if (hours < 24) return `${Math.round(hours * 10) / 10} ساعة`;
-  return `${Math.round((hours / 24) * 10) / 10} يوم`;
-};
-
-/** تحويل حالة الموديل النصية إلى واحدة من المراحل الست (بأولوية تمنع التداخل) */
-const resolveReportStage = (status?: string): ReportStageKey => {
-  const s = status || '';
-  if (s.includes('مكتمل') || s.includes('الإنتاج التام') || s.includes('مخزن')) return 'completed';
-  if (
-    s.includes('بعد المكن') ||
-    s.includes('بعد الطباعة') ||
-    s.includes('قبل الطباعة') ||
-    s.includes('فرز')
-  )
-    return 'qc';
-  if (s.includes('المكن') || s.includes('خياطة')) return 'sewing';
-  if (s.includes('المطبعة') || s.includes('طباعة') || s.includes('تجميع') || s.includes('جاهز'))
-    return 'printing';
-  if (s.includes('قص')) return 'cutting';
-  return 'design';
-};
+const inputClass =
+  'w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100';
 
 /* ------------------------------------------------------------------ */
-/* Aggregation shapes                                                 */
+/* Small presentational components                                     */
 /* ------------------------------------------------------------------ */
 
-interface AggregatedBucket {
-  periodKey: string;
-  periodLabel: string;
-  modelsCount: number;
-  modelCodes: string[];
-  totalPieces: number;
-  secondaryLabel: string;
-  secondaryValue: string | number;
-  operationsCount: number;
-  operators: string[];
-  details: {
-    id: string;
-    modelCode: string;
-    detail1: string;
-    detail2: string;
-    pieces: number;
-    notes?: string;
-    timestamp?: string;
-  }[];
-}
-
-/** صف شامل لكل موديل داخل تقرير الموديلات */
-interface ModelReportRow {
-  model: Model;
-  stage: ReportStageKey;
-  compositionLabel: string;
-  parts: GarmentPart[];
-  sizes: string[];
-  target: number;
-  cutQty: number;
-  printQty: number;
-  sewingQty: number;
-  qcGood: number;
-  qcDefect: number;
-  completedSets: number;
-  progress: number;
-  cutByPart: Record<string, number>;
-  qcByPart: Record<string, number>;
-  hasData: boolean;
-}
-
-/** صف تجميع نسب العيوب (موديل / قطعة / مطبعة / ورشة) */
-interface DefectAggRow {
-  key: string;
+const StatCard: React.FC<{
   label: string;
-  sublabel?: string;
-  inspected: number;
-  good: number;
-  defect: number;
-  ratio: number;
-  modelsCount: number;
-}
-
-/* ------------------------------------------------------------------ */
-/* Reusable aggregated period table (production + QC)                 */
-/* ------------------------------------------------------------------ */
-
-interface AggregationTableProps {
-  buckets: AggregatedBucket[];
-  summary: {
-    totalPieces: number;
-    totalModels: number;
-    totalOperations: number;
-    avgPerBucket: number;
-    bucketsCount: number;
-  };
-  title: string;
-  periodLabel: string;
-  secondaryFallback: string;
-  emptyTitle: string;
-}
-
-const AggregationTable: React.FC<AggregationTableProps> = ({
-  buckets,
-  summary,
-  title,
-  periodLabel,
-  secondaryFallback,
-  emptyTitle
-}) => {
-  const [expandedKey, setExpandedKey] = useState<string | null>(null);
-
+  value: string;
+  hint?: string;
+  icon: React.ReactNode;
+  tone?: keyof typeof toneClasses;
+}> = ({ label, value, hint, icon, tone = 'slate' }) => {
+  const cls = toneClasses[tone] || toneClasses.slate;
   return (
-    <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden print:border-none print:shadow-none">
-      <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/60 print:bg-white print:border-b-2 print:border-slate-800">
-        <div className="flex items-center gap-2">
-          <FileSpreadsheet className="w-5 h-5 text-amber-600" />
-          <h3 className="font-black text-slate-900 text-base">
-            {title} ({periodLabel})
-          </h3>
-        </div>
-        <span className="text-xs text-slate-500 font-bold">
-          عدد السجلات المجمعة: {buckets.length}
-        </span>
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-slate-500">{label}</span>
+        <span className={`flex h-8 w-8 items-center justify-center rounded-xl ${cls.wrap}`}>{icon}</span>
       </div>
-
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs text-start">
-          <thead className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200 print:bg-slate-200 print:text-black">
-            <tr>
-              <th className="px-6 py-3.5">الفترة الزمنية (التاريخ / الأسبوع / الشهر)</th>
-              <th className="px-6 py-3.5 text-center">عدد الموديلات</th>
-              <th className="px-6 py-3.5">أكواد الموديلات المنفذة</th>
-              <th className="px-6 py-3.5 text-center">إجمالي عدد القطع</th>
-              <th className="px-6 py-3.5 text-center">
-                {buckets[0]?.secondaryLabel || secondaryFallback}
-              </th>
-              <th className="px-6 py-3.5">المشرفون / الورش المعنية</th>
-              <th className="px-6 py-3.5 text-center print:hidden">التفاصيل</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {buckets.length > 0 ? (
-              buckets.map((bucket) => {
-                const isExpanded = expandedKey === bucket.periodKey;
-
-                return (
-                  <React.Fragment key={bucket.periodKey}>
-                    <tr className="hover:bg-amber-50/40 transition">
-                      <td className="px-6 py-4 font-black text-slate-900 whitespace-nowrap">
-                        <div className="flex items-center gap-2">
-                          <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0 print:hidden"></span>
-                          <span className="text-sm font-extrabold">{bucket.periodLabel}</span>
-                        </div>
-                      </td>
-
-                      <td className="px-6 py-4 text-center">
-                        <span className="inline-flex items-center justify-center min-w-[28px] h-7 px-2 bg-indigo-50 text-indigo-700 rounded-full font-black text-xs border border-indigo-100">
-                          {bucket.modelsCount}
-                        </span>
-                      </td>
-
-                      <td className="px-6 py-4 font-bold text-slate-700 max-w-xs">
-                        <div className="flex flex-wrap gap-1">
-                          {bucket.modelCodes.map((code) => (
-                            <span
-                              key={code}
-                              className="px-2 py-0.5 rounded-lg bg-slate-100 text-slate-800 text-[11px] font-extrabold border border-slate-200"
-                            >
-                              {code}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-
-                      <td className="px-6 py-4 text-center font-black text-slate-900 text-sm">
-                        <span className="text-emerald-700 font-mono text-base font-black">
-                          {fmtNum(bucket.totalPieces)}
-                        </span>{' '}
-                        <span className="text-[11px] text-slate-500 font-semibold">قطعة</span>
-                      </td>
-
-                      <td className="px-6 py-4 text-center font-bold text-slate-700">
-                        <span className="px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-xs">
-                          {bucket.secondaryValue}
-                        </span>
-                      </td>
-
-                      <td className="px-6 py-4 text-xs font-semibold text-slate-600 max-w-xs">
-                        {bucket.operators.length > 0 ? (
-                          <div className="truncate" title={bucket.operators.join('، ')}>
-                            {bucket.operators.join('، ')}
-                          </div>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
-                      </td>
-
-                      <td className="px-6 py-4 text-center print:hidden">
-                        <button
-                          type="button"
-                          onClick={() => setExpandedKey(isExpanded ? null : bucket.periodKey)}
-                          className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold transition flex items-center justify-center gap-1 cursor-pointer mx-auto"
-                          title="عرض الحركات التفصيلية لهذه الفترة"
-                        >
-                          <span className="text-[11px]">({bucket.details.length})</span>
-                          {isExpanded ? (
-                            <ChevronUp className="w-3.5 h-3.5" />
-                          ) : (
-                            <ChevronDown className="w-3.5 h-3.5" />
-                          )}
-                        </button>
-                      </td>
-                    </tr>
-
-                    {isExpanded && (
-                      <tr className="bg-slate-50/80 print:hidden">
-                        <td colSpan={7} className="px-6 py-4">
-                          <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-2">
-                            <h5 className="font-black text-xs text-slate-800 flex items-center gap-1.5">
-                              <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                              <span>تفاصيل الحركات الفردية المندرجة تحت ({bucket.periodLabel}):</span>
-                            </h5>
-                            <div className="overflow-x-auto">
-                              <table className="w-full text-[11px] text-start border border-slate-100 rounded-xl overflow-hidden">
-                                <thead className="bg-slate-100 text-slate-600 font-bold">
-                                  <tr>
-                                    <th className="py-2 px-3">كود الموديل</th>
-                                    <th className="py-2 px-3">البيان الأساسي</th>
-                                    <th className="py-2 px-3">التفاصيل والجهة</th>
-                                    <th className="py-2 px-3 text-center">القطع</th>
-                                    <th className="py-2 px-3">ملاحظات</th>
-                                    <th className="py-2 px-3 text-center">التوقيت</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                  {bucket.details.map((d) => (
-                                    <tr key={d.id} className="hover:bg-slate-50">
-                                      <td className="py-2 px-3 font-extrabold text-slate-900">{d.modelCode}</td>
-                                      <td className="py-2 px-3 font-semibold text-slate-800">{d.detail1}</td>
-                                      <td className="py-2 px-3 text-slate-600">{d.detail2}</td>
-                                      <td className="py-2 px-3 text-center font-black text-emerald-700 font-mono">
-                                        {fmtNum(d.pieces)} ق
-                                      </td>
-                                      <td className="py-2 px-3 text-slate-500">{d.notes || '—'}</td>
-                                      <td className="py-2 px-3 text-center font-mono text-slate-400">
-                                        {d.timestamp ? d.timestamp.slice(11, 16) || d.timestamp : '—'}
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })
-            ) : (
-              <tr>
-                <td colSpan={7} className="px-6 py-12 text-center text-slate-400">
-                  <div className="flex flex-col items-center justify-center gap-2">
-                    <AlertCircle className="w-8 h-8 text-slate-300 stroke-1" />
-                    <p className="font-bold text-xs text-slate-600">{emptyTitle}</p>
-                    <p className="text-[11px] text-slate-400">
-                      جرب تغيير نطاق التاريخ أو اختيار فترة تجميع أخرى.
-                    </p>
-                  </div>
-                </td>
-              </tr>
-            )}
-          </tbody>
-
-          {buckets.length > 0 && (
-            <tfoot className="bg-slate-100/90 font-black text-slate-900 border-t-2 border-slate-300 print:bg-slate-200">
-              <tr>
-                <td className="px-6 py-4 text-sm font-black">
-                  الإجمالي الكلي العام ({buckets.length} فترة)
-                </td>
-                <td className="px-6 py-4 text-center font-black text-indigo-800 text-sm">
-                  {summary.totalModels} موديل
-                </td>
-                <td className="px-6 py-4 text-xs text-slate-600">كافة الموديلات النشطة</td>
-                <td className="px-6 py-4 text-center font-mono font-black text-emerald-800 text-base">
-                  {fmtNum(summary.totalPieces)} قطعة
-                </td>
-                <td className="px-6 py-4 text-center text-xs text-slate-700">
-                  {summary.totalOperations} عملية تشغيل
-                </td>
-                <td className="px-6 py-4 text-xs text-slate-600">—</td>
-                <td className="px-6 py-4 print:hidden"></td>
-              </tr>
-            </tfoot>
-          )}
-        </table>
-      </div>
+      <p className={`mt-2 text-2xl font-bold tabular-nums ${cls.text}`}>{value}</p>
+      {hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
     </div>
   );
 };
 
+const SectionCard: React.FC<{
+  title: string;
+  subtitle?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}> = ({ title, subtitle, action, children, className = '' }) => (
+  <section className={`rounded-2xl border border-slate-200 bg-white shadow-sm ${className}`}>
+    <header className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 pb-3 pt-4">
+      <div>
+        <h2 className="text-sm font-bold text-slate-800">{title}</h2>
+        {subtitle ? <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p> : null}
+      </div>
+      {action}
+    </header>
+    <div className="p-5">{children}</div>
+  </section>
+);
+
+const LoadingBlock: React.FC<{ label?: string }> = ({ label = 'جارٍ تحميل البيانات...' }) => (
+  <div className="flex items-center justify-center gap-2 py-12 text-sm text-slate-500">
+    <Loader2 className="h-4 w-4 animate-spin" />
+    <span>{label}</span>
+  </div>
+);
+
+const EmptyState: React.FC<{ title: string; hint?: string; icon?: React.ReactNode }> = ({
+  title,
+  hint,
+  icon
+}) => (
+  <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
+    <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
+      {icon || <BarChart3 className="h-5 w-5" />}
+    </span>
+    <p className="text-sm font-semibold text-slate-700">{title}</p>
+    {hint ? <p className="max-w-sm text-xs text-slate-500">{hint}</p> : null}
+  </div>
+);
+
+const ErrorBanner: React.FC<{ message: string; onRetry: () => void }> = ({ message, onRetry }) => (
+  <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+    <span className="flex items-center gap-2">
+      <AlertTriangle className="h-4 w-4" />
+      {message}
+    </span>
+    <button
+      type="button"
+      onClick={onRetry}
+      className="rounded-lg border border-rose-300 bg-white px-3 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+    >
+      إعادة المحاولة
+    </button>
+  </div>
+);
+
+const ProgressBar: React.FC<{ value: number; color: string }> = ({ value, color }) => (
+  <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+    <div
+      className="h-full rounded-full transition-all"
+      style={{ width: `${Math.min(100, Math.max(0, value))}%`, backgroundColor: color }}
+    />
+  </div>
+);
+
+const DeltaBadge: React.FC<{ delta: number; percent: number }> = ({ delta, percent }) => {
+  const positive = delta > 0;
+  const negative = delta < 0;
+  const Icon = positive ? TrendingUp : negative ? TrendingDown : Minus;
+  const cls = positive
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    : negative
+      ? 'border-rose-200 bg-rose-50 text-rose-700'
+      : 'border-slate-200 bg-slate-50 text-slate-600';
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-semibold ${cls}`}>
+      <Icon className="h-3.5 w-3.5" />
+      {positive ? '+' : ''}
+      {fmt(delta)} ({Math.abs(percent)}%)
+    </span>
+  );
+};
+
+const WaterfallPanel: React.FC<{ data: ModelStageWaterfallResponse }> = ({ data }) => (
+  <div className="space-y-4">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600">
+      <span className="font-bold text-slate-800">{data.model.model_code}</span>
+      <span className="rounded-md bg-slate-100 px-2 py-0.5">{data.model.stage_label}</span>
+      <span>{data.model.composition_label}</span>
+      <span>
+        العجز الإجمالي:{' '}
+        <b className={data.summary.shortage_total > 0 ? 'text-rose-600' : 'text-emerald-600'}>
+          {fmt(data.summary.shortage_total)}
+        </b>{' '}
+        ({pct(data.summary.shortage_percent)})
+      </span>
+      <span>المستهدف: {fmt(data.model.target_cut_quantity)}</span>
+    </div>
+
+    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      {data.parts.map((part) => (
+        <div key={part.part} className="rounded-xl border border-slate-200 bg-white p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-sm font-bold text-slate-800">{part.label}</p>
+            <span className="text-[11px] text-slate-500">
+              مقصوص {fmt(part.cut_pieces)} • سليم {fmt(part.good_pieces)}
+            </span>
+          </div>
+          <div className="space-y-2">
+            {part.stages.map((stage) => {
+              const outWidth = stage.in_qty > 0 ? (stage.out_qty / stage.in_qty) * 100 : 0;
+              const lossWidth = stage.in_qty > 0 ? (stage.loss / stage.in_qty) * 100 : 0;
+              return (
+                <div key={stage.key}>
+                  <div className="flex items-center justify-between text-[11px] text-slate-600">
+                    <span>{stage.label}</span>
+                    <span className="tabular-nums">
+                      {fmt(stage.out_qty)} / {fmt(stage.in_qty)}
+                      {stage.loss > 0 ? ` • فقد ${fmt(stage.loss)}` : ''}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                    <div className="h-full bg-emerald-500" style={{ width: `${outWidth}%` }} />
+                    <div className="h-full bg-rose-400" style={{ width: `${lossWidth}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+      {data.model_stages.map((stage) => {
+        const badge =
+          stage.status === 'completed'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+            : stage.status === 'in_progress'
+              ? 'border-amber-200 bg-amber-50 text-amber-700'
+              : 'border-slate-200 bg-slate-50 text-slate-600';
+        return (
+          <div
+            key={stage.key}
+            className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white p-3"
+          >
+            <div>
+              <p className="text-sm font-semibold text-slate-800">{stage.label}</p>
+              <p className="text-[11px] text-slate-500">
+                {stage.completed_count}/{stage.records_count} سجل مكتمل • {fmt(stage.in_qty)} قطعة
+              </p>
+            </div>
+            <span className={`rounded-lg border px-2 py-1 text-[11px] font-semibold ${badge}`}>
+              {stage.status_label}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+);
+
 /* ------------------------------------------------------------------ */
-/* Main component                                                     */
+/* Main component                                                      */
 /* ------------------------------------------------------------------ */
 
 export const ReportsView: React.FC = () => {
-  const {
-    currentUser,
-    models,
-    cuttingRecords,
-    qcRecords,
-    printDispatches,
-    sewingDispatches,
-    getModelSizeList,
-    sizeDefs,
-    logAction,
-    addFlashMessage,
-    globalSettings
-  } = useApp();
+  const { hasPermission, addFlashMessage, globalSettings } = useApp();
 
-  /* ----------------------------- tab state ---------------------------- */
-  const [activeTab, setActiveTab] = useState<MainTab>('models');
+  const canViewReports = hasPermission('reports');
+  const canEditTargets = hasPermission('reports', true);
 
-  /* ------------------- tab 1: model report filters -------------------- */
-  const [modelSearch, setModelSearch] = useState('');
-  const [typeFilter, setTypeFilter] = useState('all');
-  const [sizeFilter, setSizeFilter] = useState('all');
-  const [compositionFilter, setCompositionFilter] = useState('all');
-  const [stageFilter, setStageFilter] = useState<'all' | ReportStageKey>('all');
+  const [activeTab, setActiveTab] = useState<ReportTab>('models');
 
-  /* ------------- tabs 2 & 3: shared period / date filters ------------- */
-  const [selectedSection, setSelectedSection] = useState<ProductionSection>('cutting');
-  const [selectedPeriod, setSelectedPeriod] = useState<ReportPeriod>('daily');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  /* ---------- tab 1: الموديلات حسب المقاس ---------- */
+  const [metric, setMetric] = useState<MetricMode>('models');
+  const [composition, setComposition] = useState('all');
+  const [modelType, setModelType] = useState('all');
+  const [modelsFrom, setModelsFrom] = useState('');
+  const [modelsTo, setModelsTo] = useState('');
+  const [modelsReport, setModelsReport] = useState<ModelsReportResponse | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState('');
 
-  /* ------------------ tab 3: quality stage filter --------------------- */
-  const [qualityStage, setQualityStage] = useState<QualityStageFilter>('all');
+  /* ---------- tab 2: الإنتاج والسرعة ---------- */
+  const [period, setPeriod] = useState<PeriodKey>('today');
+  const [periodFrom, setPeriodFrom] = useState('');
+  const [periodTo, setPeriodTo] = useState('');
+  const [productionReport, setProductionReport] = useState<ProductionDepartmentsResponse | null>(null);
+  const [productionLoading, setProductionLoading] = useState(false);
+  const [productionError, setProductionError] = useState('');
+  const [targetsOpen, setTargetsOpen] = useState(false);
+  const [targetsDraft, setTargetsDraft] = useState<DepartmentTargetsMap>({});
+  const [targetsSaving, setTargetsSaving] = useState(false);
 
-  const aggSection: AggregationSection = activeTab === 'quality' ? 'qc' : selectedSection;
+  /* ---------- tab 3: المشاكل والعجز ---------- */
+  const [qualitySearch, setQualitySearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [qualitySort, setQualitySort] = useState<SortKey>('shortage');
+  const [qualityFrom, setQualityFrom] = useState('');
+  const [qualityTo, setQualityTo] = useState('');
+  const [qualityReport, setQualityReport] = useState<QualityShortageResponse | null>(null);
+  const [qualityLoading, setQualityLoading] = useState(false);
+  const [qualityError, setQualityError] = useState('');
+  const [expandedModelId, setExpandedModelId] = useState<number | null>(null);
+  const [waterfalls, setWaterfalls] = useState<Record<number, ModelStageWaterfallResponse>>({});
+  const [waterfallLoading, setWaterfallLoading] = useState<number | null>(null);
 
-  const activeModels = useMemo(() => models.filter((m) => !m.is_deleted), [models]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(qualitySearch.trim()), 350);
+    return () => window.clearTimeout(timer);
+  }, [qualitySearch]);
 
-  /* ------------------------- date helpers ----------------------------- */
-
-  const arabicMonths = [
-    'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
-    'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
-  ];
-  const arabicDays = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-
-  const formatPeriodLabel = (dStr: string, period: ReportPeriod): string => {
+  const loadModels = useCallback(async () => {
+    setModelsLoading(true);
+    setModelsError('');
     try {
-      const d = new Date(dStr);
-      if (isNaN(d.getTime())) return dStr;
+      const data = await api.getModelsReport({
+        metric,
+        composition: composition === 'all' ? undefined : composition,
+        model_type: modelType === 'all' ? undefined : modelType,
+        date_from: modelsFrom || undefined,
+        date_to: modelsTo || undefined
+      });
+      setModelsReport(data);
+    } catch (error) {
+      setModelsError(error instanceof Error ? error.message : 'تعذّر تحميل تقرير الموديلات.');
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [composition, metric, modelType, modelsFrom, modelsTo]);
 
-      if (period === 'daily') {
-        return `${arabicDays[d.getDay()]}، ${d.getDate()} ${arabicMonths[d.getMonth()]} ${d.getFullYear()}`;
-      }
-      if (period === 'weekly') {
-        const startOfWeek = new Date(d);
-        startOfWeek.setDate(d.getDate() - d.getDay());
-        const endOfWeek = new Date(startOfWeek);
-        endOfWeek.setDate(startOfWeek.getDate() + 6);
-        return `أسبوع (${startOfWeek.getDate()} ${arabicMonths[startOfWeek.getMonth()]} — ${endOfWeek.getDate()} ${arabicMonths[endOfWeek.getMonth()]} ${endOfWeek.getFullYear()})`;
-      }
-      return `${arabicMonths[d.getMonth()]} ${d.getFullYear()}`;
-    } catch {
-      return dStr;
+  const loadProduction = useCallback(async () => {
+    setProductionLoading(true);
+    setProductionError('');
+    try {
+      const data = await api.getProductionReport({
+        period,
+        date_from: period === 'custom' ? periodFrom || undefined : undefined,
+        date_to: period === 'custom' ? periodTo || undefined : undefined
+      });
+      setProductionReport(data);
+    } catch (error) {
+      setProductionError(error instanceof Error ? error.message : 'تعذّر تحميل تقرير الإنتاج.');
+    } finally {
+      setProductionLoading(false);
+    }
+  }, [period, periodFrom, periodTo]);
+
+  const loadQuality = useCallback(async () => {
+    setQualityLoading(true);
+    setQualityError('');
+    try {
+      const data = await api.getQualityReport({
+        search: debouncedSearch || undefined,
+        sort: qualitySort,
+        date_from: qualityFrom || undefined,
+        date_to: qualityTo || undefined
+      });
+      setQualityReport(data);
+    } catch (error) {
+      setQualityError(error instanceof Error ? error.message : 'تعذّر تحميل تقرير العجز.');
+    } finally {
+      setQualityLoading(false);
+    }
+  }, [debouncedSearch, qualityFrom, qualitySort, qualityTo]);
+
+  useEffect(() => {
+    if (!canViewReports || activeTab !== 'models') return;
+    void loadModels();
+  }, [activeTab, canViewReports, loadModels]);
+
+  useEffect(() => {
+    if (!canViewReports || activeTab !== 'production') return;
+    void loadProduction();
+  }, [activeTab, canViewReports, loadProduction]);
+
+  useEffect(() => {
+    if (!canViewReports || activeTab !== 'quality') return;
+    void loadQuality();
+  }, [activeTab, canViewReports, loadQuality]);
+
+  const selectPeriod = (key: PeriodKey) => {
+    if (key === 'custom' && (!periodFrom || !periodTo)) {
+      const pad = (value: number) => String(value).padStart(2, '0');
+      const toIso = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+      const today = new Date();
+      const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+      setPeriodFrom(periodFrom || toIso(monthStart));
+      setPeriodTo(periodTo || toIso(today));
+    }
+    setPeriod(key);
+  };
+
+  const refreshActiveTab = () => {
+    if (activeTab === 'models') void loadModels();
+    else if (activeTab === 'production') void loadProduction();
+    else void loadQuality();
+  };
+
+  const toggleModelDetails = async (modelId: number) => {
+    if (expandedModelId === modelId) {
+      setExpandedModelId(null);
+      return;
+    }
+    setExpandedModelId(modelId);
+    if (waterfalls[modelId]) return;
+    setWaterfallLoading(modelId);
+    try {
+      const data = await api.getModelStageWaterfall(modelId);
+      setWaterfalls((prev) => ({ ...prev, [modelId]: data }));
+    } catch (error) {
+      addFlashMessage(error instanceof Error ? error.message : 'تعذّر تحميل تفصيل المراحل.', 'danger');
+    } finally {
+      setWaterfallLoading(null);
     }
   };
 
-  const getBucketKey = (dateVal: string | undefined, period: ReportPeriod): string => {
-    if (!dateVal) return 'غير محدد';
-    const d = new Date(dateVal);
-    if (isNaN(d.getTime())) return dateVal.slice(0, 10);
-
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-
-    if (period === 'daily') return `${year}-${month}-${day}`;
-    if (period === 'weekly') {
-      const startOfWeek = new Date(d);
-      startOfWeek.setDate(d.getDate() - d.getDay());
-      const sY = startOfWeek.getFullYear();
-      const sM = String(startOfWeek.getMonth() + 1).padStart(2, '0');
-      const sD = String(startOfWeek.getDate()).padStart(2, '0');
-      return `week-${sY}-${sM}-${sD}`;
-    }
-    return `${year}-${month}`;
-  };
-
-  const inDateRange = (dateStr?: string): boolean => {
-    if (!dateStr) return true;
-    const d = dateStr.slice(0, 10);
-    if (dateFrom && d < dateFrom) return false;
-    if (dateTo && d > dateTo) return false;
-    return true;
-  };
-
-  /* ------------------------------------------------------------------ */
-  /* Period aggregation engine (production + QC)                        */
-  /* ------------------------------------------------------------------ */
-
-  const aggregatedData = useMemo<AggregatedBucket[]>(() => {
-    const bucketsMap = new Map<string, AggregatedBucket>();
-
-    const createBucket = (
-      periodKey: string,
-      periodLabel: string,
-      secondaryLabel: string,
-      secondaryValue: string | number
-    ): AggregatedBucket => ({
-      periodKey,
-      periodLabel,
-      modelsCount: 0,
-      modelCodes: [],
-      totalPieces: 0,
-      secondaryLabel,
-      secondaryValue,
-      operationsCount: 0,
-      operators: [],
-      details: []
-    });
-
-    if (aggSection === 'cutting') {
-      cuttingRecords.forEach((rec) => {
-        if (!inDateRange(rec.created_at)) return;
-        const bucketKey = getBucketKey(rec.created_at, selectedPeriod);
-        const modelCode = models.find((mod) => mod.id === rec.model_id)?.model_code || 'موديل';
-
-        if (!bucketsMap.has(bucketKey)) {
-          bucketsMap.set(
-            bucketKey,
-            createBucket(
-              bucketKey,
-              formatPeriodLabel(rec.created_at || bucketKey, selectedPeriod),
-              'عدد الراقات',
-              0
-            )
-          );
-        }
-
-        const bucket = bucketsMap.get(bucketKey)!;
-        bucket.totalPieces += toNum(rec.pieces_count ?? rec.piecesCount);
-        bucket.secondaryValue = toNum(bucket.secondaryValue) + toNum(rec.layers_count ?? rec.layersCount);
-        bucket.operationsCount += 1;
-        if (!bucket.modelCodes.includes(modelCode)) bucket.modelCodes.push(modelCode);
-        if (rec.cutter_name && !bucket.operators.includes(rec.cutter_name)) {
-          bucket.operators.push(rec.cutter_name);
-        }
-        if (rec.spreader_name && !bucket.operators.includes(rec.spreader_name)) {
-          bucket.operators.push(rec.spreader_name);
-        }
-        bucket.details.push({
-          id: rec.id,
-          modelCode,
-          detail1: `فرشة #${rec.spread_number || rec.spreadNumber || 1} (${rec.color_name || rec.colorName || '—'})`,
-          detail2: `الفراش: ${rec.spreader_name || rec.spreaderName || '—'} • المقصدار: ${rec.cutter_name || rec.cutterName || '—'} (راقات: ${rec.layers_count || rec.layersCount || 0})`,
-          pieces: toNum(rec.pieces_count ?? rec.piecesCount),
-          notes: rec.notes || rec.shade_degree || rec.shadeDegree || '',
-          timestamp: rec.created_at
-        });
-      });
-    } else if (aggSection === 'printing') {
-      printDispatches.forEach((disp) => {
-        const dateRef = disp.dispatched_at || disp.expected_delivery_date || '2026-11-01';
-        if (!inDateRange(dateRef)) return;
-        const bucketKey = getBucketKey(dateRef, selectedPeriod);
-        const modelCode = models.find((mod) => mod.id === disp.model_id)?.model_code || 'موديل';
-
-        if (!bucketsMap.has(bucketKey)) {
-          bucketsMap.set(
-            bucketKey,
-            createBucket(
-              bucketKey,
-              formatPeriodLabel(dateRef, selectedPeriod),
-              'حالة الاستلام بالمصنع',
-              ''
-            )
-          );
-        }
-
-        const bucket = bucketsMap.get(bucketKey)!;
-        bucket.totalPieces += toNum(disp.pieces_count);
-        bucket.operationsCount += 1;
-        if (!bucket.modelCodes.includes(modelCode)) bucket.modelCodes.push(modelCode);
-        if (disp.shop_name && !bucket.operators.includes(disp.shop_name)) {
-          bucket.operators.push(disp.shop_name);
-        }
-        bucket.details.push({
-          id: disp.id,
-          modelCode,
-          detail1: `المطبعة: ${disp.shop_name}`,
-          detail2: `النوع: ${disp.print_type} • الحالة: ${disp.status}`,
-          pieces: toNum(disp.pieces_count),
-          notes: disp.notes || '',
-          timestamp: disp.dispatched_at
-        });
-      });
-
-      bucketsMap.forEach((bucket) => {
-        const receivedCount = bucket.details.filter((d) => d.detail2.includes('تم الاستلام')).length;
-        bucket.secondaryValue = `${receivedCount} من ${bucket.operationsCount} مستلم`;
-      });
-    } else if (aggSection === 'qc') {
-      qcRecords.forEach((rec) => {
-        if (!inDateRange(rec.created_at)) return;
-        const bucketKey = getBucketKey(rec.created_at, selectedPeriod);
-        const modelCode = models.find((mod) => mod.id === rec.model_id)?.model_code || 'موديل';
-
-        if (!bucketsMap.has(bucketKey)) {
-          bucketsMap.set(
-            bucketKey,
-            createBucket(
-              bucketKey,
-              formatPeriodLabel(rec.created_at || bucketKey, selectedPeriod),
-              'الهوالك والعيوب',
-              0
-            )
-          );
-        }
-
-        const bucket = bucketsMap.get(bucketKey)!;
-        const counted = toNum(rec.counted_pieces ?? rec.good_qty);
-        const defects = toNum(rec.defect_pieces ?? rec.defect_qty);
-
-        bucket.totalPieces += counted;
-        bucket.secondaryValue = toNum(bucket.secondaryValue) + defects;
-        bucket.operationsCount += 1;
-        if (!bucket.modelCodes.includes(modelCode)) bucket.modelCodes.push(modelCode);
-        if (rec.inspector_name && !bucket.operators.includes(rec.inspector_name)) {
-          bucket.operators.push(rec.inspector_name);
-        }
-        bucket.details.push({
-          id: rec.id,
-          modelCode,
-          detail1: `مرحلة: ${QC_STAGE_LABELS[(rec.stage || 'after_sewing') as QualityStageFilter] || 'فرز'} (${rec.color_name || 'لون'} - مقاس ${rec.size || '—'})`,
-          detail2: `مسؤول الجودة: ${rec.inspector_name || '—'} (تالف: ${defects})`,
-          pieces: counted,
-          notes: rec.notes || rec.defect_notes || '',
-          timestamp: rec.created_at
-        });
-      });
-    } else {
-      sewingDispatches.forEach((disp) => {
-        const dateRef = disp.dispatched_at || disp.expected_delivery_date || '2026-11-01';
-        if (!inDateRange(dateRef)) return;
-        const bucketKey = getBucketKey(dateRef, selectedPeriod);
-        const modelCode = models.find((mod) => mod.id === disp.model_id)?.model_code || 'موديل';
-        const label = disp.piece_label || getPartLabel(disp.piece_type);
-
-        if (!bucketsMap.has(bucketKey)) {
-          bucketsMap.set(
-            bucketKey,
-            createBucket(
-              bucketKey,
-              formatPeriodLabel(dateRef, selectedPeriod),
-              'توزيع القطع (تيشرت / بنطلون)',
-              ''
-            )
-          );
-        }
-
-        const bucket = bucketsMap.get(bucketKey)!;
-        bucket.totalPieces += toNum(disp.pieces_count);
-        bucket.operationsCount += 1;
-        if (!bucket.modelCodes.includes(modelCode)) bucket.modelCodes.push(modelCode);
-        if (disp.workshop_name && !bucket.operators.includes(disp.workshop_name)) {
-          bucket.operators.push(disp.workshop_name);
-        }
-        bucket.details.push({
-          id: disp.id,
-          modelCode,
-          detail1: `القطعة: [${label}] • ورشة: ${disp.workshop_name}`,
-          detail2: `تاريخ الاستلام: ${disp.expected_delivery_date || '—'} (${disp.status})`,
-          pieces: toNum(disp.pieces_count),
-          notes: disp.notes || '',
-          timestamp: disp.dispatched_at
-        });
-      });
-
-      bucketsMap.forEach((bucket) => {
-        const shirtPieces = bucket.details
-          .filter((d) => d.detail1.includes('تيشرت'))
-          .reduce((acc, d) => acc + d.pieces, 0);
-        const pantsPieces = bucket.details
-          .filter((d) => d.detail1.includes('بنطلون'))
-          .reduce((acc, d) => acc + d.pieces, 0);
-        bucket.secondaryValue = `تيشرت: ${fmtNum(shirtPieces)} • بنطلون: ${fmtNum(pantsPieces)}`;
-      });
-    }
-
-    return Array.from(bucketsMap.values())
-      .map((b) => ({ ...b, modelsCount: b.modelCodes.length }))
-      .sort((a, b) => b.periodKey.localeCompare(a.periodKey));
-  }, [
-    aggSection,
-    selectedPeriod,
-    dateFrom,
-    dateTo,
-    cuttingRecords,
-    qcRecords,
-    printDispatches,
-    sewingDispatches,
-    models
-  ]);
-
-  const overallSummary = useMemo(() => {
-    const totalPieces = aggregatedData.reduce((acc, b) => acc + b.totalPieces, 0);
-    const allModelsSet = new Set<string>();
-    aggregatedData.forEach((b) => b.modelCodes.forEach((code) => allModelsSet.add(code)));
-    const totalOperations = aggregatedData.reduce((acc, b) => acc + b.operationsCount, 0);
-    const avgPerBucket =
-      aggregatedData.length > 0 ? Math.round(totalPieces / aggregatedData.length) : 0;
-
-    return {
-      totalPieces,
-      totalModels: allModelsSet.size,
-      totalOperations,
-      avgPerBucket,
-      bucketsCount: aggregatedData.length
-    };
-  }, [aggregatedData]);
-
-  /* ------------------------------------------------------------------ */
-  /* Tab 1 – comprehensive per-model report                             */
-  /* ------------------------------------------------------------------ */
-
-  const modelPartsOf = (model: Model): GarmentPart[] => {
-    const declared =
-      (model.garment_parts && model.garment_parts.length > 0 ? model.garment_parts : model.parts) ||
-      [];
-    if (declared.length > 0) return declared;
-    return partsForComposition(model.garment_composition);
-  };
-
-  const sumPartSummary = (
-    summary: Partial<Record<GarmentPart, number>> | undefined,
-    parts: GarmentPart[]
-  ): number => parts.reduce((acc, p) => acc + toNum(summary?.[p]), 0);
-
-  const modelReportRows = useMemo<ModelReportRow[]>(() => {
-    return activeModels.map((model) => {
-      const parts = modelPartsOf(model);
-      const cutByPart: Record<string, number> = {};
-      const qcByPart: Record<string, number> = {};
-      parts.forEach((p) => {
-        cutByPart[p] = 0;
-        qcByPart[p] = 0;
-      });
-
-      let cutQty = 0;
-      let qcGood = 0;
-      let qcDefect = 0;
-      let printQty = 0;
-      let sewingQty = 0;
-
-      cuttingRecords.forEach((rec) => {
-        if (rec.model_id !== model.id) return;
-        const part = String(rec.part_type || rec.partType || rec.part || 'shirt');
-        const qty = toNum(rec.pieces_count ?? rec.piecesCount ?? rec.cut_pieces);
-        cutByPart[part] = (cutByPart[part] || 0) + qty;
-        cutQty += qty;
-      });
-
-      qcRecords.forEach((rec) => {
-        if (rec.model_id !== model.id) return;
-        const part = String(rec.part_type || rec.partType || 'shirt');
-        const good = toNum(rec.good_qty ?? rec.counted_pieces);
-        const defect = toNum(rec.defect_qty ?? rec.defect_pieces);
-        qcByPart[part] = (qcByPart[part] || 0) + good;
-        qcGood += good;
-        qcDefect += defect;
-      });
-
-      printDispatches.forEach((d) => {
-        if (d.model_id === model.id) printQty += toNum(d.pieces_count);
-      });
-      sewingDispatches.forEach((d) => {
-        if (d.model_id === model.id) sewingQty += toNum(d.pieces_count);
-      });
-
-      /* الرجوع للملخصات المخزنة على الموديل عند عدم وجود حركات مسجلة */
-      if (cutQty === 0) cutQty = sumPartSummary(model.cut_summary, parts);
-      if (qcGood === 0) qcGood = sumPartSummary(model.qc_summary, parts);
-
-      const target = toNum(model.target_cut_quantity);
-      const partsWithQc = parts.filter((p) => toNum(qcByPart[p]) > 0);
-      const completedSets =
-        toNum(model.completed_sets) ||
-        (partsWithQc.length > 0 ? Math.min(...partsWithQc.map((p) => toNum(qcByPart[p]))) : qcGood);
-
-      return {
-        model,
-        stage: resolveReportStage(model.status),
-        compositionLabel:
-          GARMENT_COMPOSITION_LABELS[
-            (model.garment_composition || 'two_pieces') as keyof typeof GARMENT_COMPOSITION_LABELS
-          ] || 'غير محدد',
-        parts,
-        sizes: getModelSizeList(model.id),
-        target,
-        cutQty,
-        printQty,
-        sewingQty,
-        qcGood,
-        qcDefect,
-        completedSets,
-        progress: target > 0 ? pctOf(cutQty, target, true) : cutQty > 0 ? 100 : 0,
-        cutByPart,
-        qcByPart,
-        hasData: cutQty > 0 || qcGood > 0 || printQty > 0 || sewingQty > 0
+  const openTargetsEditor = () => {
+    const current: DepartmentTargetsMap =
+      productionReport?.targets || globalSettings.department_targets || {};
+    const draft: DepartmentTargetsMap = {};
+    DEPARTMENT_ORDER.forEach((key) => {
+      draft[key] = {
+        daily: Number(current[key]?.daily || 0),
+        monthly: Number(current[key]?.monthly || 0)
       };
     });
-  }, [
-    activeModels,
-    cuttingRecords,
-    qcRecords,
-    printDispatches,
-    sewingDispatches,
-    getModelSizeList
-  ]);
-
-  const modelTypeOptions = useMemo(
-    () =>
-      Array.from(new Set(activeModels.map((m) => m.model_type).filter(Boolean))).sort((a, b) =>
-        String(a).localeCompare(String(b), 'ar')
-      ),
-    [activeModels]
-  );
-
-  // فلتر المقاسات: نعرض فئات المقاسات المُجمّعة (وسط / صغار / كبار ...) بدلاً من
-  // تفنيط الأرقام الفردية الصغيرة، ليكون التقرير منظماً ومقروءاً بسرعة.
-  const modelSizeCategoryOptions = useMemo(() => {
-    const map = new Map<string, string>();
-    activeModels.forEach((m) => {
-      if (!m.size_category_id) return;
-      const def = sizeDefs.find((s) => s.id === m.size_category_id);
-      if (def && !map.has(def.id)) map.set(def.id, def.name);
-    });
-    return Array.from(map.entries())
-      .map(([id, name]) => ({ id, name }))
-      .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ar'));
-  }, [activeModels, sizeDefs]);
-
-  const filteredModelRows = useMemo(() => {
-    const q = modelSearch.trim().toLowerCase();
-    return modelReportRows.filter((row) => {
-      if (q) {
-        const haystack = `${row.model.model_code} ${row.model.model_type || ''} ${row.model.print_house || ''} ${
-          row.model.print_house_name || ''
-        }`.toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
-      if (typeFilter !== 'all' && (row.model.model_type || '') !== typeFilter) return false;
-      if (sizeFilter !== 'all' && (row.model.size_category_id || '') !== sizeFilter) return false;
-      if (
-        compositionFilter !== 'all' &&
-        (row.model.garment_composition || 'two_pieces') !== compositionFilter
-      )
-        return false;
-      if (stageFilter !== 'all' && row.stage !== stageFilter) return false;
-      return true;
-    });
-  }, [modelReportRows, modelSearch, typeFilter, sizeFilter, compositionFilter, stageFilter]);
-
-  const modelSummary = useMemo(() => {
-    const stageCounts = REPORT_STAGE_ORDER.reduce(
-      (acc, key) => ({ ...acc, [key]: 0 }),
-      {} as Record<ReportStageKey, number>
-    );
-
-    const totals = filteredModelRows.reduce(
-      (acc, row) => {
-        acc.target += row.target;
-        acc.cut += row.cutQty;
-        acc.qcGood += row.qcGood;
-        acc.qcDefect += row.qcDefect;
-        acc.print += row.printQty;
-        acc.sewing += row.sewingQty;
-        acc.sets += row.completedSets;
-        acc.modelsWithData += row.hasData ? 1 : 0;
-        stageCounts[row.stage] += 1;
-        return acc;
-      },
-      {
-        target: 0,
-        cut: 0,
-        qcGood: 0,
-        qcDefect: 0,
-        print: 0,
-        sewing: 0,
-        sets: 0,
-        modelsWithData: 0
-      }
-    );
-
-    return { ...totals, stageCounts };
-  }, [filteredModelRows]);
-
-  /* ------------------------------------------------------------------ */
-  /* Tab 2 – production speed & efficiency                              */
-  /* ------------------------------------------------------------------ */
-
-  const rangeDays = useMemo(() => {
-    if (dateFrom && dateTo) {
-      const a = new Date(dateFrom).getTime();
-      const b = new Date(dateTo).getTime();
-      if (!isNaN(a) && !isNaN(b) && b >= a) {
-        return Math.max(1, Math.round((b - a) / 86_400_000) + 1);
-      }
-    }
-
-    const stamps: string[] = [];
-    cuttingRecords.forEach((r) => {
-      if (r.created_at && inDateRange(r.created_at)) stamps.push(r.created_at);
-    });
-    printDispatches.forEach((d) => {
-      const ref = d.dispatched_at || d.expected_delivery_date;
-      if (ref && inDateRange(ref)) stamps.push(ref);
-    });
-    sewingDispatches.forEach((d) => {
-      const ref = d.dispatched_at || d.expected_delivery_date;
-      if (ref && inDateRange(ref)) stamps.push(ref);
-    });
-
-    const times = stamps.map((s) => new Date(s).getTime()).filter((t) => !isNaN(t));
-    if (times.length < 2) return 1;
-    return Math.max(1, Math.round((Math.max(...times) - Math.min(...times)) / 86_400_000) + 1);
-  }, [dateFrom, dateTo, cuttingRecords, printDispatches, sewingDispatches]);
-
-  const productionSpeed = useMemo(() => {
-    const build = (pieces: number, operations: number) => ({
-      pieces,
-      operations,
-      perDay: Math.round(pieces / rangeDays),
-      perOperation: operations > 0 ? Math.round(pieces / operations) : 0
-    });
-
-    let cutPieces = 0;
-    let cutOps = 0;
-    cuttingRecords.forEach((r) => {
-      if (!inDateRange(r.created_at)) return;
-      cutPieces += toNum(r.pieces_count ?? r.piecesCount ?? r.cut_pieces);
-      cutOps += 1;
-    });
-
-    let printPieces = 0;
-    let printOps = 0;
-    printDispatches.forEach((d) => {
-      const ref = d.dispatched_at || d.expected_delivery_date;
-      if (!inDateRange(ref)) return;
-      printPieces += toNum(d.pieces_count);
-      printOps += 1;
-    });
-
-    let sewingPieces = 0;
-    let sewingOps = 0;
-    sewingDispatches.forEach((d) => {
-      const ref = d.dispatched_at || d.expected_delivery_date;
-      if (!inDateRange(ref)) return;
-      sewingPieces += toNum(d.pieces_count);
-      sewingOps += 1;
-    });
-
-    return {
-      cutting: build(cutPieces, cutOps),
-      printing: build(printPieces, printOps),
-      sewing: build(sewingPieces, sewingOps),
-      totalPieces: cutPieces + printPieces + sewingPieces
-    };
-  }, [cuttingRecords, printDispatches, sewingDispatches, dateFrom, dateTo, rangeDays]);
-
-  const stageDurations = useMemo(() => {
-    const samples: Record<'cutting' | 'printing' | 'sewing' | 'final', number[]> = {
-      cutting: [],
-      printing: [],
-      sewing: [],
-      final: []
-    };
-
-    const phaseTime = (model: Model, phaseTypes: string[]): number | null => {
-      const event = (model.timeline || []).find((e) =>
-        phaseTypes.includes(String((e.details as Record<string, unknown> | undefined)?.phase_type || ''))
-      );
-      if (!event?.timestamp) return null;
-      const time = new Date(event.timestamp).getTime();
-      return isNaN(time) ? null : time;
-    };
-
-    activeModels.forEach((model) => {
-      const created = new Date(model.created_at).getTime();
-      const t0 = isNaN(created) ? null : created;
-      const t1 = phaseTime(model, ['cutting_finished', 'cutting_done', 'design_to_cutting', 'cutting']);
-      const t2 = phaseTime(model, ['printing_dispatch', 'printing_sent', 'printing_received']);
-      const t3 = phaseTime(model, [
-        'sewing_dispatch',
-        'sewing_sent',
-        'sewing_receive',
-        'sewing_finished'
-      ]);
-      const t4 = phaseTime(model, ['qc_after_sewing']);
-
-      if (t0 && t1 && t1 > t0) samples.cutting.push(t1 - t0);
-      if (t1 && t2 && t2 > t1) samples.printing.push(t2 - t1);
-      if (t2 && t3 && t3 > t2) samples.sewing.push(t3 - t2);
-      if (t3 && t4 && t4 > t3) samples.final.push(t4 - t3);
-    });
-
-    const average = (values: number[]) =>
-      values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0;
-
-    return {
-      cutting: { avg: average(samples.cutting), count: samples.cutting.length },
-      printing: { avg: average(samples.printing), count: samples.printing.length },
-      sewing: { avg: average(samples.sewing), count: samples.sewing.length },
-      final: { avg: average(samples.final), count: samples.final.length }
-    };
-  }, [activeModels]);
-
-  /* ------------------------------------------------------------------ */
-  /* Tab 3 – quality & defect ratio analytics                           */
-  /* ------------------------------------------------------------------ */
-
-  const qualityRecords = useMemo(
-    () =>
-      qcRecords.filter(
-        (rec) => (qualityStage === 'all' || rec.stage === qualityStage) && inDateRange(rec.created_at)
-      ),
-    [qcRecords, qualityStage, dateFrom, dateTo]
-  );
-
-  const qualityRecordValues = (rec: (typeof qcRecords)[number]) => {
-    const good = toNum(rec.good_qty ?? rec.counted_pieces);
-    const defect = toNum(rec.defect_qty ?? rec.defect_pieces);
-    return { good, defect, inspected: good + defect };
+    setTargetsDraft(draft);
+    setTargetsOpen(true);
   };
 
-  const buildDefectRows = (
-    records: typeof qcRecords,
-    keyOf: (rec: (typeof qcRecords)[number]) => string,
-    labelOf: (rec: (typeof qcRecords)[number], key: string) => string,
-    sublabelOf?: (key: string) => string | undefined
-  ): DefectAggRow[] => {
-    const map = new Map<string, DefectAggRow>();
-
-    records.forEach((rec) => {
-      const key = keyOf(rec) || 'غير محدد';
-      const { good, defect, inspected } = qualityRecordValues(rec);
-      const current =
-        map.get(key) ||
-        ({
-          key,
-          label: labelOf(rec, key),
-          sublabel: sublabelOf ? sublabelOf(key) : undefined,
-          inspected: 0,
-          good: 0,
-          defect: 0,
-          ratio: 0,
-          modelsCount: 0
-        } as DefectAggRow);
-
-      current.inspected += inspected;
-      current.good += good;
-      current.defect += defect;
-      map.set(key, current);
-    });
-
-    return Array.from(map.values())
-      .map((row) => ({
-        ...row,
-        ratio: pctOf(row.defect, row.inspected),
-        modelsCount: new Set(
-          records.filter((rec) => (keyOf(rec) || 'غير محدد') === row.key).map((rec) => rec.model_id)
-        ).size
-      }))
-      .sort((a, b) => b.defect - a.defect || b.ratio - a.ratio);
+  const updateTargetValue = (key: string, field: 'daily' | 'monthly', raw: string) => {
+    const value = Math.max(0, Math.floor(Number(raw) || 0));
+    setTargetsDraft((prev) => ({
+      ...prev,
+      [key]: { ...(prev[key] || { daily: 0, monthly: 0 }), [field]: value }
+    }));
   };
 
-  const qualitySummary = useMemo(() => {
-    const totals = qualityRecords.reduce(
-      (acc, rec) => {
-        const { good, defect, inspected } = qualityRecordValues(rec);
-        acc.good += good;
-        acc.defect += defect;
-        acc.inspected += inspected;
-        return acc;
-      },
-      { good: 0, defect: 0, inspected: 0 }
-    );
-
-    return {
-      ...totals,
-      ratio: pctOf(totals.defect, totals.inspected),
-      records: qualityRecords.length
-    };
-  }, [qualityRecords]);
-
-  const qualityByModel = useMemo(
-    () =>
-      buildDefectRows(
-        qualityRecords,
-        (rec) => rec.model_id,
-        (rec) => models.find((m) => m.id === rec.model_id)?.model_code || 'موديل',
-        (key) => models.find((m) => m.id === key)?.model_type
-      ),
-    [qualityRecords, models]
-  );
-
-  const qualityByPart = useMemo(
-    () =>
-      buildDefectRows(
-        qualityRecords,
-        (rec) => String(rec.part_type || rec.partType || 'shirt'),
-        (rec) => getPartLabel(rec.part_type || rec.partType),
-        (key) =>
-          `${qualityRecords.filter((r) => String(r.part_type || r.partType || 'shirt') === key).length} حركة فحص`
-      ),
-    [qualityRecords]
-  );
-
-  const printHouseOfRecord = (rec: (typeof qcRecords)[number]): string => {
-    const part = String(rec.part_type || rec.partType || 'shirt');
-    const dispatch = printDispatches.find(
-      (d) => d.model_id === rec.model_id && String(d.piece_type || 'shirt') === part
-    );
-    if (dispatch?.shop_name) return dispatch.shop_name;
-    const model = models.find((m) => m.id === rec.model_id);
-    return model?.print_house || model?.print_house_name || 'غير محدد';
-  };
-
-  const workshopOfRecord = (rec: (typeof qcRecords)[number]): string => {
-    const part = String(rec.part_type || rec.partType || 'shirt');
-    const dispatch = sewingDispatches.find(
-      (d) => d.model_id === rec.model_id && String(d.piece_type || 'shirt') === part
-    );
-    if (dispatch?.workshop_name) return dispatch.workshop_name;
-    const model = models.find((m) => m.id === rec.model_id);
-    return model?.sewing_workshop || 'غير محدد';
-  };
-
-  const qualityByPrintHouse = useMemo(
-    () => buildDefectRows(qualityRecords, printHouseOfRecord, (_rec, key) => key),
-    [qualityRecords, printDispatches, models]
-  );
-
-  const qualityByWorkshop = useMemo(
-    () => buildDefectRows(qualityRecords, workshopOfRecord, (_rec, key) => key),
-    [qualityRecords, sewingDispatches, models]
-  );
-
-  /* ------------------------------------------------------------------ */
-  /* Section metadata & actions                                         */
-  /* ------------------------------------------------------------------ */
-
-  const productionSectionMeta: Record<
-    ProductionSection,
-    { title: string; subtitle: string; icon: React.ElementType; iconClass: string; accent: string }
-  > = {
-    cutting: {
-      title: 'تقرير قسم القص وخطوط الفرش',
-      subtitle: 'متابعة سرعة القص والفرش ومعدلات الإنتاج اليومية لكل موديل.',
-      icon: Scissors,
-      iconClass: 'text-rose-600 bg-rose-50 border-rose-200',
-      accent: 'bg-rose-600'
-    },
-    printing: {
-      title: 'تقرير المطابع والتطريز',
-      subtitle: 'متابعة كميات الإرسال للمطابع وحالات الاستلام وسرعة التشغيل.',
-      icon: Printer,
-      iconClass: 'text-indigo-600 bg-indigo-50 border-indigo-200',
-      accent: 'bg-indigo-600'
-    },
-    sewing: {
-      title: 'تقرير قسم المكن وخطوط الخياطة',
-      subtitle: 'متابعة توزيع القطع على ورش المكن وسرعة الاستلام والتشغيل.',
-      icon: Shirt,
-      iconClass: 'text-emerald-600 bg-emerald-50 border-emerald-200',
-      accent: 'bg-emerald-600'
+  const saveTargets = async () => {
+    setTargetsSaving(true);
+    try {
+      const result = await api.saveDepartmentTargets(targetsDraft);
+      setProductionReport((prev) => (prev ? { ...prev, targets: result.targets } : prev));
+      setTargetsOpen(false);
+      addFlashMessage('تم حفظ تارجتات الأقسام بنجاح.', 'success');
+      void loadProduction();
+    } catch (error) {
+      addFlashMessage(error instanceof Error ? error.message : 'تعذّر حفظ التارجتات.', 'danger');
+    } finally {
+      setTargetsSaving(false);
     }
   };
 
-  const sectionMeta = productionSectionMeta[selectedSection];
-
-  const currentReportTitle =
-    activeTab === 'models'
-      ? 'تقرير الموديلات الشامل'
-      : activeTab === 'production'
-        ? sectionMeta.title
-        : 'تقرير الفرز ونسب العيوب';
-
-  const currentReportSubtitle =
-    activeTab === 'models'
-      ? 'بيانات مجمعة لكل موديل: التركيبة، المقاسات، المرحلة الحالية، كميات القص والفرز والمطابع والمكن ونسبة الإنجاز.'
-      : activeTab === 'production'
-        ? 'مؤشرات سرعة الإنتاج مع التجميع اليومي والأسبوعي والشهري وتحليل زمن المراحل.'
-        : 'نسب الهالك والعيوب والدرجة الثانية لكل موديل وقطعة ومطبعة وورشة مكن مع سجل الفحص الزمني.';
-
-  const periodLabelAr =
-    selectedPeriod === 'daily'
-      ? 'تجميع يومي'
-      : selectedPeriod === 'weekly'
-        ? 'تجميع أسبوعي'
-        : 'تجميع شهري';
-
-  const resetTimeFilters = () => {
-    setDateFrom('');
-    setDateTo('');
-  };
-
-  const resetModelFilters = () => {
-    setModelSearch('');
-    setTypeFilter('all');
-    setSizeFilter('all');
-    setCompositionFilter('all');
-    setStageFilter('all');
-  };
-
-  const downloadCsv = (filename: string, headers: string[], rows: (string | number)[][]) => {
-    const escapeCell = (cell: string | number) => {
-      const text = String(cell ?? '');
-      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-    };
-
-    const csvContent =
-      '\uFEFF' +
-      [headers.map(escapeCell).join(','), ...rows.map((r) => r.map(escapeCell).join(','))].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  const handlePrint = () => {
-    logAction('طباعة تقرير', `${currentReportTitle} - ${currentUser?.real_name || 'مستخدم'}`);
-    window.print();
-  };
-
-  const handleExportCsv = () => {
-    if (activeTab === 'models') {
-      if (filteredModelRows.length === 0) {
-        addFlashMessage('لا توجد بيانات موديلات للتصدير بالمعايير الحالية', 'warning');
-        return;
-      }
-
-      downloadCsv(
-        `model-report-${new Date().toISOString().slice(0, 10)}.csv`,
-        [
-          'كود الموديل',
-          'نوع الموديل',
-          'التركيبة',
-          'المقاسات',
-          'المرحلة الحالية',
-          'المستهدف',
-          'القص الفعلي',
-          'تفاصيل القص بالقطعة',
-          'الفرز السليم',
-          'الهالك',
-          'المطابع',
-          'المكن',
-          'أطقم مكتملة',
-          'نسبة الإنجاز %'
-        ],
-        filteredModelRows.map((row) => [
-          row.model.model_code,
-          row.model.model_type || '—',
-          row.compositionLabel,
-          row.sizes.join(' / ') || '—',
-          REPORT_STAGE_META[row.stage].label,
-          row.target,
-          row.cutQty,
-          row.parts.map((p) => `${getPartLabel(p)}: ${row.cutByPart[p] || 0}`).join(' | '),
-          row.qcGood,
-          row.qcDefect,
-          row.printQty,
-          row.sewingQty,
-          row.completedSets,
-          row.progress
-        ])
-      );
-    } else if (activeTab === 'production') {
-      if (aggregatedData.length === 0) {
-        addFlashMessage('لا توجد حركات إنتاج للتصدير في النطاق الزمني المحدد', 'warning');
-        return;
-      }
-
-      downloadCsv(
-        `${selectedSection}-report-${selectedPeriod}-${new Date().toISOString().slice(0, 10)}.csv`,
-        [
-          'الفترة',
-          'عدد الموديلات',
-          'أكواد الموديلات',
-          'إجمالي القطع',
-          aggregatedData[0]?.secondaryLabel || 'مؤشر إضافي',
-          'عدد العمليات',
-          'المشرفون / الورش'
-        ],
-        aggregatedData.map((b) => [
-          b.periodLabel,
-          b.modelsCount,
-          b.modelCodes.join(' / '),
-          b.totalPieces,
-          b.secondaryValue,
-          b.operationsCount,
-          b.operators.join(' / ')
-        ])
-      );
-    } else {
-      if (qualityByModel.length === 0) {
-        addFlashMessage('لا توجد سجلات فرز للتصدير في النطاق الزمني المحدد', 'warning');
-        return;
-      }
-
-      downloadCsv(
-        `quality-report-${qualityStage}-${new Date().toISOString().slice(0, 10)}.csv`,
-        [
-          'كود الموديل',
-          'نوع الموديل',
-          'عدد حركات الفحص',
-          'إجمالي المفحوص',
-          'السليم',
-          'الهالك والدرجة الثانية',
-          'نسبة العيوب %'
-        ],
-        qualityByModel.map((row) => [
-          row.label,
-          row.sublabel || '—',
-          row.modelsCount,
-          row.inspected,
-          row.good,
-          row.defect,
-          row.ratio
-        ])
-      );
+  /* ----------------------------- printing ---------------------------- */
+  const openPrintWindow = (title: string, bodyHtml: string) => {
+    const siteName = globalSettings?.site_name || 'نظام إدارة المصنع';
+    const logoHtml = renderLogoHtml(globalSettings?.logo, siteName, 48);
+    const win = window.open('', '_blank', 'width=1200,height=800');
+    if (!win) {
+      addFlashMessage('يرجى السماح بالنوافذ المنبثقة لإتمام الطباعة.', 'warning');
+      return;
     }
-
-    addFlashMessage('تم تصدير التقرير بصيغة CSV بنجاح', 'success');
-    logAction('تصدير تقرير', currentReportTitle);
-  };
-
-  const mainTabs: { key: MainTab; label: string; hint: string; icon: React.ElementType }[] = [
-    { key: 'models', label: 'تقارير الموديلات', hint: 'المقاسات • المراحل • الإنجاز', icon: Boxes },
-    { key: 'production', label: 'تقارير الإنتاج والسرعة', hint: 'قص • مطابع • مكن', icon: Factory },
-    { key: 'quality', label: 'تقارير الفرز والعيوب', hint: 'الهالك • العيوب • الجودة', icon: ListChecks }
-  ];
-
-  const comparisonColor = (ratio: number) =>
-    ratio >= 60 ? 'bg-emerald-500' : ratio >= 30 ? 'bg-amber-500' : 'bg-rose-500';
-
-  /** جدول نسب العيوب القابل لإعادة الاستخدام (موديل / قطعة / مطبعة / ورشة) */
-  const renderDefectTable = (
-    title: string,
-    subtitle: string,
-    rows: DefectAggRow[],
-    emptyLabel: string,
-    accentClass: string
-  ) => {
-    const maxRatio = Math.max(...rows.map((r) => r.ratio), 1);
-
-    return (
-      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
-        <div className="p-4 border-b border-slate-100 bg-slate-50/60 print:bg-white print:border-b-2 print:border-slate-800">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <span className={`w-2.5 h-8 rounded-full ${accentClass}`}></span>
-              <div>
-                <h3 className="font-black text-slate-900 text-sm">{title}</h3>
-                <p className="text-[11px] font-bold text-slate-500">{subtitle}</p>
-              </div>
-            </div>
-            <span className="text-[11px] font-black text-slate-600 px-2 py-1 rounded-lg bg-white border border-slate-200">
-              {rows.length} بند
-            </span>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs text-start min-w-[620px]">
-            <thead className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200 print:bg-slate-200 print:text-black">
-              <tr>
-                <th className="px-4 py-3">البند</th>
-                <th className="px-4 py-3 text-center">موديلات</th>
-                <th className="px-4 py-3 text-center">مفحوص</th>
-                <th className="px-4 py-3 text-center">سليم</th>
-                <th className="px-4 py-3 text-center">تالف</th>
-                <th className="px-4 py-3 text-center min-w-[160px]">نسبة العيوب</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {rows.length > 0 ? (
-                rows.map((row) => (
-                  <tr key={row.key} className="hover:bg-amber-50/30 transition">
-                    <td className="px-4 py-3">
-                      <div className="font-black text-slate-900">{row.label}</div>
-                      {row.sublabel && (
-                        <div className="text-[10px] font-bold text-slate-400">{row.sublabel}</div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-center font-black font-mono text-slate-700">
-                      {fmtNum(row.modelsCount)}
-                    </td>
-                    <td className="px-4 py-3 text-center font-black font-mono text-slate-900">
-                      {fmtNum(row.inspected)}
-                    </td>
-                    <td className="px-4 py-3 text-center font-black font-mono text-emerald-700">
-                      {fmtNum(row.good)}
-                    </td>
-                    <td className="px-4 py-3 text-center font-black font-mono text-rose-700">
-                      {fmtNum(row.defect)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full ${accentClass}`}
-                            style={{
-                              width: `${Math.min(100, Math.round((row.ratio / maxRatio) * 100))}%`
-                            }}
-                          ></div>
-                        </div>
-                        <span
-                          className={`font-black font-mono text-[11px] w-12 text-end ${
-                            row.ratio >= 5
-                              ? 'text-rose-700'
-                              : row.ratio >= 2
-                                ? 'text-amber-700'
-                                : 'text-emerald-700'
-                          }`}
-                        >
-                          {row.ratio}%
-                        </span>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={6} className="px-6 py-10 text-center">
-                    <div className="flex flex-col items-center gap-1.5">
-                      <ListChecks className="w-7 h-7 text-slate-300 stroke-1" />
-                      <p className="text-[11px] font-black text-slate-600">{emptyLabel}</p>
-                      <p className="text-[10px] font-bold text-slate-400">
-                        لا توجد سجلات فرز مطابقة للمرحلة أو الفترة المحددة.
-                      </p>
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-
-            {rows.length > 0 && (
-              <tfoot className="bg-slate-100/90 font-black text-slate-900 border-t-2 border-slate-300 print:bg-slate-200">
-                <tr>
-                  <td className="px-4 py-3">الإجمالي</td>
-                  <td className="px-4 py-3 text-center font-mono">{fmtNum(rows.length)}</td>
-                  <td className="px-4 py-3 text-center font-mono">
-                    {fmtNum(rows.reduce((acc, r) => acc + r.inspected, 0))}
-                  </td>
-                  <td className="px-4 py-3 text-center font-mono text-emerald-800">
-                    {fmtNum(rows.reduce((acc, r) => acc + r.good, 0))}
-                  </td>
-                  <td className="px-4 py-3 text-center font-mono text-rose-800">
-                    {fmtNum(rows.reduce((acc, r) => acc + r.defect, 0))}
-                  </td>
-                  <td className="px-4 py-3 text-center font-mono">
-                    {pctOf(
-                      rows.reduce((acc, r) => acc + r.defect, 0),
-                      rows.reduce((acc, r) => acc + r.inspected, 0)
-                    )}
-                    %
-                  </td>
-                </tr>
-              </tfoot>
-            )}
-          </table>
-        </div>
+    win.document.open();
+    win.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8" /><title>${escapeHtml(title)}</title>
+      <style>
+        @page { size: A4 landscape; margin: 12mm; }
+        body { font-family: 'Cairo', Tahoma, Arial, sans-serif; color: #0f172a; margin: 0; }
+        .header { text-align: center; margin-bottom: 14px; }
+        h1 { font-size: 20px; margin: 4px 0; }
+        .meta { color: #64748b; font-size: 11px; }
+        table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+        th, td { border: 1px solid #cbd5e1; padding: 6px 7px; text-align: right; }
+        th { background: #f1f5f9; }
+        tr:nth-child(even) td { background: #f8fafc; }
+        .num { font-variant-numeric: tabular-nums; }
+        .total td { font-weight: 700; background: #e2e8f0 !important; }
+        ${PRINT_LOGO_CSS}
+      </style></head><body>
+      <div class="header">
+        <div class="brand">${logoHtml}</div>
+        <h1>${escapeHtml(title)}</h1>
+        <div class="meta">${escapeHtml(siteName)} • ${escapeHtml(new Date().toLocaleString('ar-EG'))}</div>
       </div>
+      ${bodyHtml}
+      </body></html>`);
+    win.document.close();
+    win.focus();
+    window.setTimeout(() => win.print(), 400);
+  };
+
+  const printModelsReport = () => {
+    if (!modelsReport) return;
+    const rows = modelsReport.size_categories
+      .map(
+        (row) => `<tr>
+          <td>${escapeHtml(row.size_name)}</td>
+          <td class="num">${fmt(row.boys_value)}</td>
+          <td class="num">${fmt(row.girls_value)}</td>
+          <td class="num">${fmt(row.boys_pieces)}</td>
+          <td class="num">${fmt(row.girls_pieces)}</td>
+          <td class="num">${fmt(row.total_models)}</td>
+        </tr>`
+      )
+      .join('');
+    const metricLabel = modelsReport.metric === 'pieces' ? 'عدد القطع' : 'عدد الموديلات';
+    const boysTotal =
+      modelsReport.metric === 'pieces' ? modelsReport.totals.boys_pieces : modelsReport.totals.boys_models;
+    const girlsTotal =
+      modelsReport.metric === 'pieces' ? modelsReport.totals.girls_pieces : modelsReport.totals.girls_models;
+    openPrintWindow(
+      'تقرير الموديلات حسب المقاس',
+      `<table>
+        <thead><tr>
+          <th>فئة المقاس</th><th>ولادي (${metricLabel})</th><th>بناتي (${metricLabel})</th>
+          <th>قطع ولادي</th><th>قطع بناتي</th><th>إجمالي الموديلات</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="6">لا توجد بيانات</td></tr>'}</tbody>
+        <tfoot><tr class="total">
+          <td>الإجمالي</td>
+          <td class="num">${fmt(boysTotal)}</td>
+          <td class="num">${fmt(girlsTotal)}</td>
+          <td class="num">${fmt(modelsReport.totals.boys_pieces)}</td>
+          <td class="num">${fmt(modelsReport.totals.girls_pieces)}</td>
+          <td class="num">${fmt(modelsReport.totals.models)}</td>
+        </tr></tfoot>
+      </table>`
     );
   };
+
+  const printProductionReport = () => {
+    if (!productionReport) return;
+    const rows = productionReport.departments
+      .map(
+        (dep) => `<tr>
+          <td>${escapeHtml(dep.label)}</td>
+          <td class="num">${fmt(dep.models_count)}</td>
+          <td class="num">${fmt(dep.pieces_count)}</td>
+          <td class="num">${fmt(dep.avg_daily)}</td>
+          <td class="num">${fmt(dep.target)}</td>
+          <td class="num">${dep.progress_percent}%</td>
+          <td class="num">${dep.delta > 0 ? '+' : ''}${fmt(dep.delta)}</td>
+        </tr>`
+      )
+      .join('');
+    openPrintWindow(
+      `تقرير الإنتاج والسرعة — ${productionReport.period_label}`,
+      `<table>
+        <thead><tr>
+          <th>القسم</th><th>الموديلات</th><th>القطع</th><th>السرعة اليومية</th>
+          <th>التارجت</th><th>نسبة الإنجاز</th><th>الفرق عن السابق</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="7">لا توجد بيانات</td></tr>'}</tbody>
+      </table>`
+    );
+  };
+
+  const printQualityReport = () => {
+    if (!qualityReport) return;
+    const rows = qualityReport.models
+      .map(
+        (row) => `<tr>
+          <td>${escapeHtml(row.model_code)}</td>
+          <td>${escapeHtml(row.model_type || '—')}</td>
+          <td>${escapeHtml(row.stage_label || '—')}</td>
+          <td class="num">${fmt(row.cut_pieces)}</td>
+          <td class="num">${fmt(row.current_pieces)}</td>
+          <td class="num">${fmt(row.shortage)}</td>
+          <td class="num">${row.shortage_percent}%</td>
+        </tr>`
+      )
+      .join('');
+    openPrintWindow(
+      'تقرير المشاكل والعجز',
+      `<table>
+        <thead><tr>
+          <th>الموديل</th><th>النوع</th><th>المرحلة</th><th>المقصوص</th>
+          <th>السليم الحالي</th><th>العجز</th><th>نسبة العجز</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="7">لا توجد بيانات</td></tr>'}</tbody>
+        <tfoot><tr class="total">
+          <td colspan="3">الإجمالي</td>
+          <td class="num">${fmt(qualityReport.summary.total_cut_pieces)}</td>
+          <td class="num">${fmt(qualityReport.summary.total_current_pieces)}</td>
+          <td class="num">${fmt(qualityReport.summary.total_shortage)}</td>
+          <td class="num">${pct(qualityReport.summary.total_shortage_percent)}</td>
+        </tr></tfoot>
+      </table>`
+    );
+  };
+
+  const printActiveTab = () => {
+    if (activeTab === 'models') printModelsReport();
+    else if (activeTab === 'production') printProductionReport();
+    else printQualityReport();
+  };
+
+  /* --------------------------- derived data -------------------------- */
+  const modelTotals = modelsReport?.totals || EMPTY_TOTALS;
+  const sizeRows = modelsReport?.size_categories || [];
+  const chartData = sizeRows.map((row) => ({
+    name: row.size_name,
+    boys: row.boys_value,
+    girls: row.girls_value
+  }));
+  const departments = productionReport?.departments || [];
+  const qualitySummary = qualityReport?.summary;
+  const qualityRows = qualityReport?.models || [];
+  const compositionRows = (modelsReport?.composition_breakdown || []).filter(
+    (item) => item.models_count > 0 || item.pieces_count > 0
+  );
+  const compositionMax = Math.max(
+    ...compositionRows.map((item) => (metric === 'pieces' ? item.pieces_count : item.models_count)),
+    1
+  );
+  const defectRows = qualityReport?.defects_by_stage || [];
+  const defectsMax = Math.max(...defectRows.map((item) => item.defects), 1);
+
+  const productionTotals = useMemo(() => {
+    const list = productionReport?.departments || [];
+    const pieces = list.reduce((sum, dep) => sum + dep.pieces_count, 0);
+    const target = list.reduce((sum, dep) => sum + dep.target, 0);
+    const best = list.reduce<DepartmentReportCard | null>(
+      (winner, dep) => (!winner || dep.pieces_count > winner.pieces_count ? dep : winner),
+      null
+    );
+    return {
+      pieces,
+      target,
+      best,
+      activeCount: list.filter((dep) => dep.pieces_count > 0).length,
+      progress: target > 0 ? Math.round((pieces / target) * 100) : 0
+    };
+  }, [productionReport]);
 
   return (
-    <div className="p-6 space-y-6" dir="rtl">
-      <style>{`
-        @media print {
-          body { background: white !important; }
-        }
-      `}</style>
-
-      {/* ------------------------- رأس الصفحة ------------------------- */}
-      <div className="hidden print:block text-center border-b-[3px] border-double border-slate-900 pb-3">
-        <div className="flex items-center justify-center mb-1">
-          {isImageLogo(globalSettings?.logo) ? (
-            <img
-              src={globalSettings?.logo}
-              alt={globalSettings?.site_name || 'شعار المصنع'}
-              className="h-12 w-auto max-w-[170px] object-contain"
-              onError={(e) => {
-                (e.target as HTMLImageElement).style.display = 'none';
-              }}
-            />
-          ) : (
-            <span className="text-3xl leading-none">{globalSettings?.logo || '🏭'}</span>
-          )}
-        </div>
-        <h1 className="text-xl font-black text-slate-900">
-          {globalSettings?.site_name || 'مصنع الملابس الجاهزة'}
-        </h1>
-        <h2 className="text-base font-bold text-slate-800 mt-1">{currentReportTitle}</h2>
-        <p className="text-xs text-slate-600 mt-1 font-bold">
-          {currentReportSubtitle} — تاريخ التقرير:{' '}
-          {new Date().toLocaleDateString('ar-EG')}
-        </p>
-      </div>
-
-      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden print:hidden">
-        <div className="bg-gradient-to-l from-slate-900 via-slate-800 to-slate-900 p-6 text-white relative overflow-hidden">
-          <div className="absolute -left-10 -top-10 w-40 h-40 rounded-full bg-amber-500/10 blur-2xl"></div>
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 relative z-10">
-            <div className="flex items-start gap-4">
-              <div className="w-14 h-14 rounded-2xl bg-white/10 border border-white/15 flex items-center justify-center shrink-0">
-                <BarChart3 className="w-7 h-7 text-amber-400" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h1 className="text-2xl font-black tracking-tight">{currentReportTitle}</h1>
-                  <span className="px-2 py-0.5 rounded-full bg-amber-400/20 text-amber-200 text-[10px] font-black border border-amber-400/30">
-                    Reports Center
-                  </span>
-                </div>
-                <p className="text-sm text-slate-300 font-medium mt-1 max-w-2xl">
-                  {currentReportSubtitle}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 print:hidden">
-              <button
-                type="button"
-                onClick={handlePrint}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white font-bold text-sm transition cursor-pointer"
-              >
-                <Printer className="w-4 h-4" />
-                طباعة
-              </button>
-              <button
-                type="button"
-                onClick={handleExportCsv}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-sm shadow-sm transition cursor-pointer"
-              >
-                <Download className="w-4 h-4" />
-                تصدير CSV
-              </button>
-            </div>
+    <div className="space-y-6" dir="rtl">
+      {/* Header */}
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-600/20">
+            <BarChart3 className="h-6 w-6" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">التقارير والإحصائيات</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              قراءة سريعة لأداء المصنع: الموديلات، سرعة الأقسام، والعجز بين المراحل.
+            </p>
           </div>
         </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={refreshActiveTab}
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+          >
+            <RefreshCw className="h-4 w-4" />
+            تحديث
+          </button>
+          <button
+            type="button"
+            onClick={printActiveTab}
+            className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+          >
+            <Printer className="h-4 w-4" />
+            طباعة
+          </button>
+        </div>
+      </div>
 
-        {/* التبويبات الرئيسية */}
-        <div className="p-3 bg-slate-50/70 border-t border-slate-100 print:hidden">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            {mainTabs.map((tab) => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.key;
-
-              return (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => {
-                    setActiveTab(tab.key);
-                    setDateFrom('');
-                    setDateTo('');
-                  }}
-                  className={`flex items-center gap-3 p-3 rounded-2xl border text-start transition cursor-pointer ${
-                    isActive
-                      ? 'bg-slate-900 border-slate-900 text-white shadow-sm'
-                      : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-slate-50'
-                  }`}
-                >
-                  <span
-                    className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
-                      isActive
-                        ? 'bg-white/10 border-white/20 text-amber-300'
-                        : 'bg-slate-100 border-slate-200 text-slate-600'
+      {!canViewReports ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-800">
+          <div className="flex items-center gap-2 font-semibold">
+            <AlertTriangle className="h-5 w-5" />
+            لا تملك صلاحية عرض التقارير والإحصائيات.
+          </div>
+          <p className="mt-1 text-amber-700">يرجى مراجعة إدارة النظام لمنحك صلاحية عرض التقارير.</p>
+        </div>
+      ) : (
+        <>
+          {/* Tabs */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm">
+            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+              {TAB_META.map((tab) => {
+                const Icon = tab.icon;
+                const active = activeTab === tab.key;
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`flex items-center gap-3 rounded-xl px-4 py-3 text-right transition ${
+                      active ? 'bg-slate-900 text-white shadow' : 'text-slate-600 hover:bg-slate-50'
                     }`}
                   >
-                    <Icon className="w-5 h-5" />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block font-black text-sm truncate">{tab.label}</span>
                     <span
-                      className={`block text-[11px] font-semibold truncate ${
-                        isActive ? 'text-slate-300' : 'text-slate-500'
+                      className={`flex h-9 w-9 items-center justify-center rounded-lg ${
+                        active ? 'bg-white/15' : 'bg-slate-100'
                       }`}
                     >
-                      {tab.hint}
+                      <Icon className="h-4 w-4" />
                     </span>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* --------------------- تبويب 1: تقارير الموديلات --------------------- */}
-      {activeTab === 'models' && (
-        <>
-          <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs space-y-3 print:hidden">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-2">
-                <Filter className="w-4 h-4 text-slate-500" />
-                <h3 className="font-black text-slate-900 text-sm">تصفية تقارير الموديلات</h3>
-                <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-black border border-slate-200">
-                  {filteredModelRows.length} من {activeModels.length}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={resetModelFilters}
-                className="text-[11px] font-black text-slate-500 hover:text-slate-900 px-2.5 py-1 rounded-lg hover:bg-slate-100 transition cursor-pointer"
-              >
-                إعادة تعيين الفلاتر
-              </button>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold">{tab.label}</span>
+                      <span
+                        className={`block truncate text-xs ${active ? 'text-white/70' : 'text-slate-400'}`}
+                      >
+                        {tab.description}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
+          </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
-                <input
-                  value={modelSearch}
-                  onChange={(e) => setModelSearch(e.target.value)}
-                  placeholder="بحث بكود الموديل أو النوع..."
-                  className="w-full pr-9 pl-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50/60 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-white"
+          {activeTab === 'models' && (
+            <div className="space-y-5">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                  <div>
+                    <span className="mb-1 block text-xs font-medium text-slate-500">المؤشر</span>
+                    <div className="flex rounded-xl bg-slate-100 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setMetric('models')}
+                        className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
+                          metric === 'models' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
+                        }`}
+                      >
+                        عدد الموديلات
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMetric('pieces')}
+                        className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
+                          metric === 'pieces' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
+                        }`}
+                      >
+                        عدد القطع
+                      </button>
+                    </div>
+                  </div>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">التكوين</span>
+                    <select
+                      value={composition}
+                      onChange={(event) => setComposition(event.target.value)}
+                      className={inputClass}
+                    >
+                      <option value="all">كل التكوينات</option>
+                      <option value="one_piece">قطعة واحدة</option>
+                      <option value="two_pieces">قطعتان</option>
+                      <option value="three_pieces">ثلاث قطع</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">نوع الموديل</span>
+                    <select
+                      value={modelType}
+                      onChange={(event) => setModelType(event.target.value)}
+                      className={inputClass}
+                    >
+                      <option value="all">كل الأنواع</option>
+                      {(modelsReport?.model_types || []).map((type) => (
+                        <option key={type} value={type}>
+                          {type}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">من تاريخ</span>
+                    <input
+                      type="date"
+                      value={modelsFrom}
+                      onChange={(event) => setModelsFrom(event.target.value)}
+                      className={inputClass}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">إلى تاريخ</span>
+                    <input
+                      type="date"
+                      value={modelsTo}
+                      onChange={(event) => setModelsTo(event.target.value)}
+                      className={inputClass}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <StatCard
+                  label="إجمالي الموديلات"
+                  value={fmt(modelTotals.models)}
+                  hint={`${fmt(modelTotals.size_categories)} فئة مقاس`}
+                  icon={<Boxes className="h-4 w-4" />}
+                  tone="slate"
+                />
+                <StatCard
+                  label="موديلات ولادي"
+                  value={fmt(modelTotals.boys_models)}
+                  hint={`${fmt(modelTotals.boys_pieces)} قطعة`}
+                  icon={<Shirt className="h-4 w-4" />}
+                  tone="blue"
+                />
+                <StatCard
+                  label="موديلات بناتي"
+                  value={fmt(modelTotals.girls_models)}
+                  hint={`${fmt(modelTotals.girls_pieces)} قطعة`}
+                  icon={<Sparkles className="h-4 w-4" />}
+                  tone="pink"
+                />
+                <StatCard
+                  label="إجمالي القطع"
+                  value={fmt(modelTotals.pieces)}
+                  hint="مجموع القطع المقصوصة"
+                  icon={<Layers className="h-4 w-4" />}
+                  tone="indigo"
                 />
               </div>
 
-              <select
-                value={typeFilter}
-                onChange={(e) => setTypeFilter(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50/60 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-white cursor-pointer"
-              >
-                <option value="all">كل أنواع الموديلات</option>
-                {modelTypeOptions.map((t) => (
-                  <option key={String(t)} value={String(t)}>
-                    {String(t)}
-                  </option>
-                ))}
-              </select>
+              {modelsError ? <ErrorBanner message={modelsError} onRetry={() => void loadModels()} /> : null}
 
-              <select
-                value={compositionFilter}
-                onChange={(e) => setCompositionFilter(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50/60 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-white cursor-pointer"
-              >
-                <option value="all">كل التركيبات</option>
-                {GARMENT_COMPOSITION_ORDER.map((c) => (
-                  <option key={c} value={c}>
-                    {GARMENT_COMPOSITION_LABELS[c]}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={sizeFilter}
-                onChange={(e) => setSizeFilter(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50/60 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-white cursor-pointer"
-              >
-                <option value="all">كل فئات المقاسات</option>
-                {modelSizeCategoryOptions.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={stageFilter}
-                onChange={(e) => setStageFilter(e.target.value as 'all' | ReportStageKey)}
-                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50/60 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-white cursor-pointer"
-              >
-                <option value="all">كل المراحل الحالية</option>
-                {REPORT_STAGE_ORDER.map((k) => (
-                  <option key={k} value={k}>
-                    {REPORT_STAGE_META[k].label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* مؤشرات عامة */}
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">موديلات في التقرير</span>
-                <span className="w-9 h-9 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center">
-                  <Boxes className="w-4 h-4 text-slate-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-slate-900 font-mono">
-                {fmtNum(filteredModelRows.length)}
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                منها {fmtNum(modelSummary.modelsWithData)} موديل بها حركات إنتاج
-              </p>
-            </div>
-
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">إجمالي المستهدف</span>
-                <span className="w-9 h-9 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center">
-                  <Target className="w-4 h-4 text-amber-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-slate-900 font-mono">
-                {fmtNum(modelSummary.target)}
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                نسبة القص {pctOf(modelSummary.cut, modelSummary.target, true)}% من المستهدف
-              </p>
-            </div>
-
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">إجمالي القص الفعلي</span>
-                <span className="w-9 h-9 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-center">
-                  <Scissors className="w-4 h-4 text-rose-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-rose-700 font-mono">
-                {fmtNum(modelSummary.cut)}
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                مطابع {fmtNum(modelSummary.print)} • مكن {fmtNum(modelSummary.sewing)}
-              </p>
-            </div>
-
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">أطقم مكتملة</span>
-                <span className="w-9 h-9 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center">
-                  <CheckCircle className="w-4 h-4 text-emerald-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-emerald-700 font-mono">
-                {fmtNum(modelSummary.sets)}
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                فرز سليم: {fmtNum(modelSummary.qcGood)} • هالك: {fmtNum(modelSummary.qcDefect)}
-              </p>
-            </div>
-          </div>
-
-          {/* توزيع المراحل */}
-          <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs space-y-3 print:hidden">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-2">
-                <Layers className="w-4 h-4 text-slate-500" />
-                <h3 className="font-black text-slate-900 text-sm">
-                  توزيع الموديلات على مراحل التشغيل
-                </h3>
-              </div>
-              {stageFilter !== 'all' && (
-                <button
-                  type="button"
-                  onClick={() => setStageFilter('all')}
-                  className="text-[11px] font-black text-amber-700 hover:text-amber-900 px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 transition cursor-pointer"
+              <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
+                <SectionCard
+                  className="xl:col-span-2"
+                  title="الموديلات حسب فئة المقاس"
+                  subtitle="مقارنة ولادي / بناتي داخل كل فئة"
                 >
-                  إلغاء تصفية المرحلة
-                </button>
-              )}
-            </div>
+                  {modelsLoading && !modelsReport ? (
+                    <LoadingBlock />
+                  ) : sizeRows.length === 0 ? (
+                    <EmptyState
+                      title="لا توجد موديلات مطابقة"
+                      hint="جرّب تغيير الفلاتر أو الفترة الزمنية."
+                      icon={<Boxes className="h-5 w-5" />}
+                    />
+                  ) : (
+                    <>
+                      <div className="mb-3 flex flex-wrap items-center gap-4 text-xs text-slate-600">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: BOYS_COLOR }} />
+                          ولادي
+                        </span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: GIRLS_COLOR }} />
+                          بناتي
+                        </span>
+                        <span className="ms-auto text-slate-400">{modelsReport?.generated_at}</span>
+                      </div>
+                      <div className="h-[340px] w-full" dir="ltr">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={chartData}
+                            margin={{ top: 8, right: 8, left: -16, bottom: 0 }}
+                            barGap={6}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                            <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#64748b' }} interval={0} />
+                            <YAxis tick={{ fontSize: 12, fill: '#64748b' }} allowDecimals={false} />
+                            <Tooltip contentStyle={{ borderRadius: 12, borderColor: '#e2e8f0', fontSize: 12 }} />
+                            <Legend wrapperStyle={{ fontSize: 12 }} />
+                            <Bar dataKey="boys" name="ولادي" fill={BOYS_COLOR} radius={[6, 6, 0, 0]} maxBarSize={38} />
+                            <Bar dataKey="girls" name="بناتي" fill={GIRLS_COLOR} radius={[6, 6, 0, 0]} maxBarSize={38} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </>
+                  )}
+                </SectionCard>
 
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setStageFilter('all')}
-                className={`flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-black transition cursor-pointer ${
-                  stageFilter === 'all'
-                    ? 'bg-slate-900 text-white border-slate-900'
-                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                <div className="space-y-5">
+                  <SectionCard
+                    title="التكوين"
+                    subtitle={metric === 'pieces' ? 'عدد القطع لكل تكوين' : 'عدد الموديلات لكل تكوين'}
+                  >
+                    {compositionRows.length === 0 ? (
+                      <EmptyState title="لا توجد بيانات" icon={<Scissors className="h-5 w-5" />} />
+                    ) : (
+                      <div className="space-y-3">
+                        {compositionRows.map((item) => {
+                          const value = metric === 'pieces' ? item.pieces_count : item.models_count;
+                          return (
+                            <div key={item.key}>
+                              <div className="mb-1 flex items-center justify-between text-xs">
+                                <span className="text-slate-600">{item.label}</span>
+                                <span className="font-semibold text-slate-800">{fmt(value)}</span>
+                              </div>
+                              <ProgressBar value={(value / compositionMax) * 100} color="#6366F1" />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </SectionCard>
+
+                  <SectionCard title="المراحل" subtitle="توزيع الموديلات على مراحل الإنتاج">
+                    {(modelsReport?.stage_breakdown || []).length === 0 ? (
+                      <EmptyState title="لا توجد بيانات" icon={<Gauge className="h-5 w-5" />} />
+                    ) : (
+                      <div className="space-y-2">
+                        {(modelsReport?.stage_breakdown || []).map((item) => (
+                          <div
+                            key={item.key}
+                            className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs"
+                          >
+                            <span className="text-slate-600">{item.label}</span>
+                            <span className="font-semibold text-slate-800">{fmt(item.models_count)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </SectionCard>
+                </div>
+              </div>
+
+              <SectionCard
+                title="تفصيل فئات المقاسات"
+                subtitle={`الأرقام المفصلة لكل فئة حسب مؤشر: ${
+                  metric === 'models' ? 'عدد الموديلات' : 'عدد القطع'
                 }`}
               >
-                كل المراحل
-                <span
-                  className={`px-1.5 py-0.5 rounded-lg text-[10px] font-black ${
-                    stageFilter === 'all' ? 'bg-white/15 text-white' : 'bg-white text-slate-700'
-                  }`}
-                >
-                  {filteredModelRows.length}
-                </span>
-              </button>
-
-              {REPORT_STAGE_ORDER.map((key) => {
-                const meta = REPORT_STAGE_META[key];
-                const count = modelSummary.stageCounts[key];
-                const isActive = stageFilter === key;
-
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setStageFilter(isActive ? 'all' : key)}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs font-black transition cursor-pointer ${
-                      isActive ? 'bg-slate-900 text-white border-slate-900' : `${meta.badge} hover:opacity-80`
-                    }`}
-                  >
-                    <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-white' : meta.dot}`}></span>
-                    {meta.short}
-                    <span
-                      className={`px-1.5 py-0.5 rounded-lg text-[10px] font-black ${
-                        isActive ? 'bg-white/15 text-white' : 'bg-white/70 text-slate-700'
-                      }`}
-                    >
-                      {count}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* جدول تقارير الموديلات */}
-          <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between gap-2 flex-wrap bg-slate-50/60 print:bg-white print:border-b-2 print:border-slate-800">
-              <div className="flex items-center gap-2">
-                <BarChart3 className="w-5 h-5 text-slate-700" />
-                <div>
-                  <h3 className="font-black text-slate-900 text-base">تفاصيل تقرير الموديلات</h3>
-                  <p className="text-[11px] font-bold text-slate-500">
-                    المستهدف • القص • الفرز • المطابع • المكن • الإنجاز لكل موديل بالقطعة
-                  </p>
-                </div>
-              </div>
-              <span className="text-[11px] font-black text-slate-600 px-2.5 py-1 rounded-lg bg-white border border-slate-200">
-                {filteredModelRows.length} موديل
-              </span>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-start min-w-[1150px]">
-                <thead className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200 print:bg-slate-200 print:text-black">
-                  <tr>
-                    <th className="px-4 py-3.5">الموديل</th>
-                    <th className="px-4 py-3.5">التركيبة</th>
-                    <th className="px-4 py-3.5">المقاسات</th>
-                    <th className="px-4 py-3.5 text-center">المرحلة الحالية</th>
-                    <th className="px-4 py-3.5 text-center">المستهدف</th>
-                    <th className="px-4 py-3.5 text-center">القص الفعلي</th>
-                    <th className="px-4 py-3.5 text-center">الفرز السليم</th>
-                    <th className="px-4 py-3.5 text-center">الهالك</th>
-                    <th className="px-4 py-3.5 text-center">المطابع</th>
-                    <th className="px-4 py-3.5 text-center">المكن</th>
-                    <th className="px-4 py-3.5 text-center">أطقم مكتملة</th>
-                    <th className="px-4 py-3.5 text-center">نسبة الإنجاز</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredModelRows.length > 0 ? (
-                    filteredModelRows.map((row) => (
-                      <tr key={row.model.id} className="hover:bg-amber-50/30 transition align-top">
-                        <td className="px-4 py-3.5">
-                          <div className="flex items-center gap-2">
-                            <div className="w-9 h-9 rounded-xl bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center shrink-0">
-                              {row.model.image ? (
-                                <img
-                                  src={row.model.image}
-                                  alt={row.model.model_code}
-                                  className="w-full h-full object-cover"
-                                />
-                              ) : (
-                                <Shirt className="w-4 h-4 text-slate-400" />
-                              )}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="font-black text-slate-900 text-sm">
-                                {row.model.model_code}
-                              </div>
-                              <div className="text-[11px] font-bold text-slate-500 truncate max-w-[130px]">
-                                {row.model.model_type || '—'}
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-
-                        <td className="px-4 py-3.5">
-                          <div className="font-bold text-slate-700 text-[11px] max-w-[150px]">
-                            {row.compositionLabel}
-                          </div>
-                          <div className="flex flex-wrap gap-1 mt-1">
-                            {row.parts.map((p) => (
-                              <span
-                                key={p}
-                                className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 text-[10px] font-black"
-                              >
-                                {getPartLabel(p)}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-
-                        <td className="px-4 py-3.5">
-                          {row.sizes.length > 0 ? (
-                            <div className="flex flex-wrap gap-1 max-w-[150px]">
-                              {row.sizes.map((size) => (
-                                <span
-                                  key={size}
-                                  className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-black"
-                                >
-                                  {size}
-                                </span>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-slate-400 font-bold text-[11px]">غير محددة</span>
-                          )}
-                        </td>
-
-                        <td className="px-4 py-3.5 text-center">
-                          <span
-                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-black ${
-                              REPORT_STAGE_META[row.stage].badge
-                            }`}
-                            title={row.model.status}
-                          >
-                            <span
-                              className={`w-1.5 h-1.5 rounded-full ${REPORT_STAGE_META[row.stage].dot}`}
-                            ></span>
-                            {REPORT_STAGE_META[row.stage].short}
-                          </span>
-                        </td>
-
-                        <td className="px-4 py-3.5 text-center">
-                          <div className="font-black font-mono text-slate-900">
-                            {fmtNum(row.target)}
-                          </div>
-                          <div className="text-[10px] font-bold text-slate-400">قطعة</div>
-                        </td>
-
-                        <td className="px-4 py-3.5 text-center">
-                          <div className="font-black font-mono text-rose-700 text-sm">
-                            {fmtNum(row.cutQty)}
-                          </div>
-                          <div className="flex flex-wrap gap-1 justify-center mt-1">
-                            {row.parts.map((p) => (
-                              <span
-                                key={p}
-                                className="px-1.5 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-100 text-[10px] font-black"
-                                title={`${getPartLabel(p)}: ${fmtNum(row.cutByPart[p] || 0)}`}
-                              >
-                                {getPartLabel(p)}: {fmtNum(row.cutByPart[p] || 0)}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-
-                        <td className="px-4 py-3.5 text-center">
-                          <div className="font-black font-mono text-emerald-700 text-sm">
-                            {fmtNum(row.qcGood)}
-                          </div>
-                          <div className="flex flex-wrap gap-1 justify-center mt-1">
-                            {row.parts.map((p) => (
-                              <span
-                                key={p}
-                                className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-100 text-[10px] font-black"
-                              >
-                                {getPartLabel(p)}: {fmtNum(row.qcByPart[p] || 0)}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-
-                        <td className="px-4 py-3.5 text-center">
-                          <span
-                            className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-black ${
-                              row.qcDefect > 0
-                                ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                : 'bg-slate-50 text-slate-500 border-slate-200'
-                            }`}
-                          >
-                            {fmtNum(row.qcDefect)}
-                          </span>
-                        </td>
-
-                        <td className="px-4 py-3.5 text-center">
-                          <div className="font-black font-mono text-indigo-700">
-                            {fmtNum(row.printQty)}
-                          </div>
-                          <div className="text-[10px] font-bold text-slate-400">قطعة</div>
-                        </td>
-
-                        <td className="px-4 py-3.5 text-center">
-                          <div className="font-black font-mono text-emerald-700">
-                            {fmtNum(row.sewingQty)}
-                          </div>
-                          <div className="text-[10px] font-bold text-slate-400">قطعة</div>
-                        </td>
-
-                        <td className="px-4 py-3.5 text-center">
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-teal-50 text-teal-800 border border-teal-200 text-[11px] font-black">
-                            <CheckCircle className="w-3 h-3" />
-                            {fmtNum(row.completedSets)}
-                          </span>
-                        </td>
-
-                        <td className="px-4 py-3.5">
-                          <div className="flex items-center gap-2 min-w-[110px]">
-                            <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
-                              <div
-                                className={`h-full rounded-full ${comparisonColor(row.progress)}`}
-                                style={{ width: `${Math.min(100, Math.max(0, row.progress))}%` }}
-                              ></div>
-                            </div>
-                            <span className="font-black font-mono text-[11px] text-slate-700 w-10 text-end">
-                              {row.progress}%
-                            </span>
-                          </div>
-                          <div className="text-[10px] font-bold text-slate-400 mt-1">
-                            من المستهدف ({fmtNum(row.target)})
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={12} className="px-6 py-14 text-center">
-                        <div className="flex flex-col items-center justify-center gap-2">
-                          <Search className="w-8 h-8 text-slate-300 stroke-1" />
-                          <p className="font-black text-slate-700 text-sm">
-                            لا توجد موديلات مطابقة لمعايير التصفية
-                          </p>
-                          <p className="text-[11px] font-bold text-slate-400">
-                            جرب إزالة بعض الفلاتر أو البحث بكود موديل آخر.
-                          </p>
-                          <button
-                            type="button"
-                            onClick={resetModelFilters}
-                            className="mt-1 px-3 py-1.5 rounded-xl bg-slate-900 text-white text-[11px] font-black hover:bg-slate-800 transition cursor-pointer print:hidden"
-                          >
-                            إعادة تعيين الفلاتر
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-
-                {filteredModelRows.length > 0 && (
-                  <tfoot className="bg-slate-100/90 font-black text-slate-900 border-t-2 border-slate-300 print:bg-slate-200">
-                    <tr>
-                      <td className="px-4 py-4 text-sm font-black" colSpan={3}>
-                        الإجمالي ({filteredModelRows.length} موديل)
-                      </td>
-                      <td className="px-4 py-4 text-center text-[11px] text-slate-600">
-                        {modelSummary.stageCounts.completed} مكتمل
-                      </td>
-                      <td className="px-4 py-4 text-center font-mono text-sm">
-                        {fmtNum(modelSummary.target)}
-                      </td>
-                      <td className="px-4 py-4 text-center font-mono text-sm text-rose-800">
-                        {fmtNum(modelSummary.cut)}
-                      </td>
-                      <td className="px-4 py-4 text-center font-mono text-sm text-emerald-800">
-                        {fmtNum(modelSummary.qcGood)}
-                      </td>
-                      <td className="px-4 py-4 text-center font-mono text-sm text-rose-800">
-                        {fmtNum(modelSummary.qcDefect)}
-                      </td>
-                      <td className="px-4 py-4 text-center font-mono text-sm text-indigo-800">
-                        {fmtNum(modelSummary.print)}
-                      </td>
-                      <td className="px-4 py-4 text-center font-mono text-sm text-emerald-800">
-                        {fmtNum(modelSummary.sewing)}
-                      </td>
-                      <td className="px-4 py-4 text-center font-mono text-sm text-teal-800">
-                        {fmtNum(modelSummary.sets)}
-                      </td>
-                      <td className="px-4 py-4 text-center font-mono text-sm">
-                        {pctOf(modelSummary.cut, modelSummary.target, true)}%
-                      </td>
-                    </tr>
-                  </tfoot>
+                {sizeRows.length === 0 ? (
+                  <EmptyState
+                    title="لا توجد فئات مقاسات"
+                    hint="أضف فئات المقاسات أو موديلات لعرض التفصيل."
+                    icon={<Boxes className="h-5 w-5" />}
+                  />
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-xs text-slate-500">
+                          <th className="py-2 text-right font-medium">فئة المقاس</th>
+                          <th className="py-2 text-center font-medium">المقاسات</th>
+                          <th className="py-2 text-center font-medium">
+                            ولادي ({metric === 'models' ? 'موديل' : 'قطعة'})
+                          </th>
+                          <th className="py-2 text-center font-medium">
+                            بناتي ({metric === 'models' ? 'موديل' : 'قطعة'})
+                          </th>
+                          <th className="py-2 text-center font-medium">إجمالي الموديلات</th>
+                          <th className="py-2 text-center font-medium">إجمالي القطع</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {sizeRows.map((row) => (
+                          <tr key={row.size_id} className="text-slate-700 hover:bg-slate-50/70">
+                            <td className="py-2 pr-1 text-right font-semibold">{row.size_name}</td>
+                            <td className="py-2 text-center text-xs text-slate-500">{row.size_values || '—'}</td>
+                            <td className="py-2 text-center tabular-nums">{fmt(row.boys_value)}</td>
+                            <td className="py-2 text-center tabular-nums">{fmt(row.girls_value)}</td>
+                            <td className="py-2 text-center font-semibold tabular-nums">{fmt(row.total_models)}</td>
+                            <td className="py-2 text-center tabular-nums">{fmt(row.total_pieces)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
-              </table>
+              </SectionCard>
             </div>
-          </div>
-        </>
-      )}
+          )}
 
-      {/* ------------------ تبويب 2: تقارير الإنتاج والسرعة ------------------ */}
-      {activeTab === 'production' && (
-        <>
-          <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs space-y-4 print:hidden">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {(['cutting', 'printing', 'sewing'] as ProductionSection[]).map((key) => {
-                const meta = productionSectionMeta[key];
-                const Icon = meta.icon;
-                const isActive = selectedSection === key;
-
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => {
-                      setSelectedSection(key);
-                      setDateFrom('');
-                      setDateTo('');
-                    }}
-                    className={`flex items-center gap-3 p-3 rounded-2xl border text-start transition cursor-pointer ${
-                      isActive
-                        ? 'bg-slate-900 border-slate-900 text-white shadow-sm'
-                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-                    }`}
-                  >
-                    <span
-                      className={`w-10 h-10 rounded-xl flex items-center justify-center border shrink-0 ${
-                        isActive ? 'bg-white/10 border-white/20 text-amber-300' : meta.iconClass
-                      }`}
-                    >
-                      <Icon className="w-5 h-5" />
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block font-black text-sm truncate">{meta.title}</span>
-                      <span
-                        className={`block text-[11px] font-semibold truncate ${
-                          isActive ? 'text-slate-300' : 'text-slate-500'
-                        }`}
-                      >
-                        {meta.subtitle}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="flex flex-col lg:flex-row lg:items-end gap-3 pt-1">
-              <div className="space-y-1.5">
-                <span className="flex items-center gap-1.5 text-[11px] font-black text-slate-600">
-                  <Calendar className="w-3.5 h-3.5" />
-                  فترة التجميع
-                </span>
-                <div className="bg-slate-100 p-1.5 rounded-2xl flex gap-1">
-                  {(
-                    [
-                      { key: 'daily', label: 'يومي' },
-                      { key: 'weekly', label: 'أسبوعي' },
-                      { key: 'monthly', label: 'شهري' }
-                    ] as { key: ReportPeriod; label: string }[]
-                  ).map((period) => (
-                    <button
-                      key={period.key}
-                      type="button"
-                      onClick={() => setSelectedPeriod(period.key)}
-                      className={`px-4 py-1.5 rounded-xl text-xs font-black transition cursor-pointer ${
-                        selectedPeriod === period.key
-                          ? 'bg-white text-slate-900 shadow-xs'
-                          : 'text-slate-500 hover:text-slate-800'
-                      }`}
-                    >
-                      {period.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 flex-1">
-                <label className="space-y-1.5">
-                  <span className="block text-[11px] font-black text-slate-600">من تاريخ</span>
-                  <input
-                    type="date"
-                    value={dateFrom}
-                    onChange={(e) => setDateFrom(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/60 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-white"
-                  />
-                </label>
-                <label className="space-y-1.5">
-                  <span className="block text-[11px] font-black text-slate-600">إلى تاريخ</span>
-                  <input
-                    type="date"
-                    value={dateTo}
-                    onChange={(e) => setDateTo(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/60 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-white"
-                  />
-                </label>
-              </div>
-
-              <button
-                type="button"
-                onClick={resetTimeFilters}
-                className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-black transition cursor-pointer"
-              >
-                عرض كل الفترات
-              </button>
-            </div>
-          </div>
-
-          {/* مؤشرات الإنتاج */}
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">إجمالي القطع</span>
-                <span className="w-9 h-9 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center">
-                  <Boxes className="w-4 h-4 text-slate-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-slate-900 font-mono">
-                {fmtNum(overallSummary.totalPieces)}
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                على مدار {rangeDays} يوم عمل بالنطاق المحدد
-              </p>
-            </div>
-
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">متوسط الإنتاج اليومي</span>
-                <span className="w-9 h-9 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center">
-                  <Gauge className="w-4 h-4 text-amber-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-amber-700 font-mono">
-                {fmtNum(overallSummary.avgPerBucket)}
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                لكل فترة {periodLabelAr.replace('تجميع ', '')}
-              </p>
-            </div>
-
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">عدد عمليات التشغيل</span>
-                <span className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center">
-                  <Factory className="w-4 h-4 text-indigo-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-indigo-700 font-mono">
-                {fmtNum(overallSummary.totalOperations)}
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                {sectionMeta.title.replace('تقرير ', '')}
-              </p>
-            </div>
-
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">موديلات وفترات</span>
-                <span className="w-9 h-9 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center">
-                  <TrendingUp className="w-4 h-4 text-emerald-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-emerald-700 font-mono">
-                {fmtNum(overallSummary.totalModels)}
-                <span className="text-sm text-slate-400 font-bold"> موديل</span>
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                موزعة على {fmtNum(overallSummary.bucketsCount)} فترة مجمعة
-              </p>
-            </div>
-          </div>
-
-          {/* سرعة الأقسام */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-            {(['cutting', 'printing', 'sewing'] as ProductionSection[]).map((key) => {
-              const meta = productionSectionMeta[key];
-              const Icon = meta.icon;
-              const speed = productionSpeed[key];
-              const maxPerDay = Math.max(
-                productionSpeed.cutting.perDay,
-                productionSpeed.printing.perDay,
-                productionSpeed.sewing.perDay,
-                1
-              );
-              const fillPct = Math.min(100, Math.round((speed.perDay / maxPerDay) * 100));
-              const isCurrent = selectedSection === key;
-
-              return (
-                <div
-                  key={key}
-                  className={`bg-white p-4 rounded-3xl border shadow-xs space-y-3 ${
-                    isCurrent ? 'border-slate-900/20 ring-2 ring-amber-400/30' : 'border-slate-200/80'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`w-9 h-9 rounded-xl border flex items-center justify-center ${meta.iconClass}`}
-                      >
-                        <Icon className="w-4 h-4" />
-                      </span>
-                      <div>
-                        <h4 className="font-black text-slate-900 text-sm">
-                          {meta.title.replace('تقرير ', '')}
-                        </h4>
-                        <p className="text-[10px] font-bold text-slate-500">معدل السرعة الفعلي</p>
+          {activeTab === 'production' && (
+            <div className="space-y-5">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div>
+                      <span className="mb-1 block text-xs font-medium text-slate-500">الفترة</span>
+                      <div className="flex flex-wrap rounded-xl bg-slate-100 p-1">
+                        {PERIOD_OPTIONS.map((option) => (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() => selectPeriod(option.key)}
+                            className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                              period === option.key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
+                            }`}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
                       </div>
                     </div>
-                    <Gauge className="w-4 h-4 text-slate-300" />
+                    {period === 'custom' && (
+                      <>
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-medium text-slate-500">من</span>
+                          <input
+                            type="date"
+                            value={periodFrom}
+                            onChange={(event) => setPeriodFrom(event.target.value)}
+                            className={inputClass}
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-medium text-slate-500">إلى</span>
+                          <input
+                            type="date"
+                            value={periodTo}
+                            onChange={(event) => setPeriodTo(event.target.value)}
+                            className={inputClass}
+                          />
+                        </label>
+                      </>
+                    )}
                   </div>
-
-                  <div className="flex items-end gap-1">
-                    <span className="text-2xl font-black font-mono text-slate-900">
-                      {fmtNum(speed.perDay)}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-xs text-slate-500">
+                      {productionReport?.period_label}
+                      {productionReport ? ` • ${productionReport.days} يوم` : ''}
                     </span>
-                    <span className="text-[11px] font-black text-slate-500 mb-1">قطعة / يوم</span>
-                  </div>
-
-                  <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-                    <div className={`h-full rounded-full ${meta.accent}`} style={{ width: `${fillPct}%` }}></div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 pt-1">
-                    <div className="bg-slate-50 rounded-xl border border-slate-100 p-2">
-                      <span className="block text-[10px] font-bold text-slate-500">إجمالي القطع</span>
-                      <span className="block font-black font-mono text-slate-900 text-sm">
-                        {fmtNum(speed.pieces)}
-                      </span>
-                    </div>
-                    <div className="bg-slate-50 rounded-xl border border-slate-100 p-2">
-                      <span className="block text-[10px] font-bold text-slate-500">عدد العمليات</span>
-                      <span className="block font-black font-mono text-slate-900 text-sm">
-                        {fmtNum(speed.operations)}
-                      </span>
-                    </div>
-                    <div className="bg-slate-50 rounded-xl border border-slate-100 p-2 col-span-2">
-                      <span className="block text-[10px] font-bold text-slate-500">
-                        متوسط القطع لكل عملية
-                      </span>
-                      <span className="block font-black font-mono text-slate-900 text-sm">
-                        {fmtNum(speed.perOperation)} قطعة
-                      </span>
-                    </div>
+                    {canEditTargets && (
+                      <button
+                        type="button"
+                        onClick={openTargetsEditor}
+                        className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+                      >
+                        <Settings2 className="h-4 w-4" />
+                        تعديل التارجت
+                      </button>
+                    )}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-
-          {/* متوسط زمن المراحل */}
-          <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-xs space-y-3">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-2">
-                <Timer className="w-4 h-4 text-slate-500" />
-                <h3 className="font-black text-slate-900 text-sm">
-                  متوسط زمن المراحل (من سجل تتبع الموديلات)
-                </h3>
               </div>
-              <span className="text-[11px] font-bold text-slate-500">
-                عدد الموديلات المحللة: {fmtNum(activeModels.length)}
-              </span>
-            </div>
 
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              {(
-                [
-                  {
-                    key: 'cutting' as const,
-                    title: 'التصميم ← القص',
-                    cls: 'text-rose-700 bg-rose-50 border-rose-200'
-                  },
-                  {
-                    key: 'printing' as const,
-                    title: 'القص ← المطابع',
-                    cls: 'text-indigo-700 bg-indigo-50 border-indigo-200'
-                  },
-                  {
-                    key: 'sewing' as const,
-                    title: 'المطابع ← المكن',
-                    cls: 'text-emerald-700 bg-emerald-50 border-emerald-200'
-                  },
-                  {
-                    key: 'final' as const,
-                    title: 'المكن ← الفرز النهائي',
-                    cls: 'text-amber-700 bg-amber-50 border-amber-200'
+              {productionError ? (
+                <ErrorBanner message={productionError} onRetry={() => void loadProduction()} />
+              ) : null}
+
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <StatCard
+                  label="إجمالي القطع"
+                  value={fmt(productionTotals.pieces)}
+                  hint="كل الأقسام خلال الفترة"
+                  icon={<Package className="h-4 w-4" />}
+                  tone="blue"
+                />
+                <StatCard
+                  label="إجمالي التارجت"
+                  value={fmt(productionTotals.target)}
+                  hint={`نسبة الإنجاز ${productionTotals.progress}%`}
+                  icon={<Target className="h-4 w-4" />}
+                  tone="indigo"
+                />
+                <StatCard
+                  label="أعلى قسم"
+                  value={productionTotals.best?.label || '—'}
+                  hint={
+                    productionTotals.best
+                      ? `${fmt(productionTotals.best.pieces_count)} قطعة`
+                      : 'لا توجد بيانات'
                   }
-                ]
-              ).map((item) => {
-                const data = stageDurations[item.key];
+                  icon={<Factory className="h-4 w-4" />}
+                  tone="emerald"
+                />
+                <StatCard
+                  label="الأقسام النشطة"
+                  value={fmt(productionTotals.activeCount)}
+                  hint="أقسام سجّلت إنتاجاً"
+                  icon={<Gauge className="h-4 w-4" />}
+                  tone="amber"
+                />
+              </div>
 
-                return (
-                  <div
-                    key={item.key}
-                    className="rounded-2xl border border-slate-200 bg-slate-50/60 p-3 space-y-1.5"
-                  >
-                    <span className="block text-[11px] font-black text-slate-600">{item.title}</span>
-                    <div className={`inline-flex px-2.5 py-1 rounded-xl border font-black text-sm ${item.cls}`}>
-                      {formatDuration(data.avg)}
+              {productionLoading && !productionReport ? (
+                <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <LoadingBlock />
+                </div>
+              ) : departments.length === 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <EmptyState
+                    title="لا توجد أرقام إنتاج في هذه الفترة"
+                    hint="جرّب توسيع الفترة الزمنية أو اختيار الشهر."
+                    icon={<Gauge className="h-5 w-5" />}
+                  />
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {departments.map((dep) => (
+                    <div key={dep.key} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="flex h-9 w-9 items-center justify-center rounded-xl"
+                            style={{ backgroundColor: `${dep.color}1A`, color: dep.color }}
+                          >
+                            {DEPARTMENT_META[dep.key]?.icon || <Factory className="h-4 w-4" />}
+                          </span>
+                          <div>
+                            <p className="text-sm font-bold text-slate-800">{dep.label}</p>
+                            <p className="text-[11px] text-slate-500">{fmt(dep.models_count)} موديل</p>
+                          </div>
+                        </div>
+                        <DeltaBadge delta={dep.delta} percent={dep.delta_percent} />
+                      </div>
+
+                      <div className="mt-4 flex items-end justify-between">
+                        <div>
+                          <p className="text-2xl font-bold tabular-nums text-slate-900">{fmt(dep.pieces_count)}</p>
+                          <p className="text-[11px] text-slate-500">قطعة</p>
+                        </div>
+                        <div className="text-left">
+                          <p className="text-sm font-bold tabular-nums text-slate-800">{fmt(dep.avg_daily)}</p>
+                          <p className="text-[11px] text-slate-500">قطعة / يوم</p>
+                        </div>
+                      </div>
+
+                      <div className="mt-3">
+                        {dep.target > 0 ? (
+                          <>
+                            <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500">
+                              <span>
+                                التارجت: {fmt(dep.target)}
+                                {dep.target_daily > 0 ? ` • يومي ${fmt(dep.target_daily)}` : ''}
+                              </span>
+                              <span className="font-semibold text-slate-700">{dep.progress_percent}%</span>
+                            </div>
+                            <ProgressBar value={dep.progress_percent} color={dep.color} />
+                          </>
+                        ) : (
+                          <p className="text-[11px] text-slate-400">لم يُحدد تارجت لهذا القسم</p>
+                        )}
+                      </div>
+
+                      {dep.daily_series.length > 1 && (
+                        <div className="mt-3 h-16 w-full" dir="ltr">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={dep.daily_series} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+                              <Area
+                                type="monotone"
+                                dataKey="pieces"
+                                stroke={dep.color}
+                                fill={dep.color}
+                                fillOpacity={0.15}
+                                strokeWidth={2}
+                              />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
                     </div>
-                    <span className="block text-[10px] font-bold text-slate-500">
-                      {data.count > 0
-                        ? `متوسط محسوب من ${fmtNum(data.count)} موديل`
-                        : 'لا توجد أحداث كافية'}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-
-            <p className="text-[10px] font-bold text-slate-400 leading-relaxed">
-              * يتم احتساب المتوسط من أحداث التتبع المسجلة فعليًا لكل موديل، وتظهر «—» عند عدم توفر
-              الأحداث اللازمة لحساب المدة.
-            </p>
-          </div>
-
-          <AggregationTable
-            buckets={aggregatedData}
-            summary={overallSummary}
-            title={sectionMeta.title}
-            periodLabel={periodLabelAr}
-            secondaryFallback="—"
-            emptyTitle={`لا توجد حركات مسجلة في ${sectionMeta.title.replace('تقرير ', '')} خلال هذه الفترة`}
-          />
-        </>
-      )}
-
-      {/* ------------------ تبويب 3: تقارير الفرز والعيوب ------------------ */}
-      {activeTab === 'quality' && (
-        <>
-          <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs space-y-4 print:hidden">
-            <div className="flex flex-col lg:flex-row lg:items-end gap-3">
-              <div className="space-y-1.5 flex-1">
-                <span className="flex items-center gap-1.5 text-[11px] font-black text-slate-600">
-                  <ListChecks className="w-3.5 h-3.5" />
-                  مرحلة الفرز
-                </span>
-                <div className="flex flex-wrap gap-2">
-                  {(
-                    ['all', 'before_print', 'after_print', 'after_sewing'] as QualityStageFilter[]
-                  ).map((stage) => (
-                    <button
-                      key={stage}
-                      type="button"
-                      onClick={() => setQualityStage(stage)}
-                      className={`px-3.5 py-2 rounded-xl border text-xs font-black transition cursor-pointer ${
-                        qualityStage === stage
-                          ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                          : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-                      }`}
-                    >
-                      {QC_STAGE_LABELS[stage]}
-                    </button>
                   ))}
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 lg:w-[320px]">
-                <label className="space-y-1.5">
-                  <span className="block text-[11px] font-black text-slate-600">من تاريخ</span>
-                  <input
-                    type="date"
-                    value={dateFrom}
-                    onChange={(e) => setDateFrom(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/60 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-white"
-                  />
-                </label>
-                <label className="space-y-1.5">
-                  <span className="block text-[11px] font-black text-slate-600">إلى تاريخ</span>
-                  <input
-                    type="date"
-                    value={dateTo}
-                    onChange={(e) => setDateTo(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/60 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-white"
-                  />
-                </label>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  resetTimeFilters();
-                  setQualityStage('all');
-                }}
-                className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-black transition cursor-pointer"
-              >
-                إعادة تعيين
-              </button>
+              )}
             </div>
-          </div>
+          )}
 
-          {/* مؤشرات الجودة */}
-          <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">القطع المفحوصة</span>
-                <span className="w-9 h-9 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center">
-                  <Search className="w-4 h-4 text-slate-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-slate-900 font-mono">
-                {fmtNum(qualitySummary.inspected)}
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">إجمالي ما تم فحصه</p>
-            </div>
-
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">القطع السليمة</span>
-                <span className="w-9 h-9 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center">
-                  <CheckCircle className="w-4 h-4 text-emerald-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-emerald-700 font-mono">
-                {fmtNum(qualitySummary.good)}
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                {pctOf(qualitySummary.good, qualitySummary.inspected)}% من المفحوص
-              </p>
-            </div>
-
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">القطع التالفة</span>
-                <span className="w-9 h-9 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-center">
-                  <AlertTriangle className="w-4 h-4 text-rose-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-rose-700 font-mono">
-                {fmtNum(qualitySummary.defect)}
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">هالك + درجة ثانية</p>
-            </div>
-
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">نسبة العيوب</span>
-                <span className="w-9 h-9 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center">
-                  <Percent className="w-4 h-4 text-amber-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-amber-700 font-mono">
-                {qualitySummary.ratio}%
-              </div>
-              <div className="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                <div
-                  className={`h-full rounded-full ${
-                    qualitySummary.ratio >= 5
-                      ? 'bg-rose-500'
-                      : qualitySummary.ratio >= 2
-                        ? 'bg-amber-500'
-                        : 'bg-emerald-500'
-                  }`}
-                  style={{ width: `${Math.min(100, qualitySummary.ratio * 5)}%` }}
-                ></div>
-              </div>
-            </div>
-
-            <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-black text-slate-500">سجلات الفحص</span>
-                <span className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center">
-                  <ClipboardList className="w-4 h-4 text-indigo-600" />
-                </span>
-              </div>
-              <div className="mt-2 text-2xl font-black text-indigo-700 font-mono">
-                {fmtNum(qualitySummary.records)}
-              </div>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                {QC_STAGE_LABELS[qualityStage]}
-              </p>
-            </div>
-          </div>
-
-          {/* جداول نسب العيوب */}
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            {renderDefectTable(
-              'نسب العيوب حسب الموديل',
-              'ترتيب الموديلات حسب عدد القطع التالفة ونسبة العيوب من إجمالي المفحوص.',
-              qualityByModel,
-              'لا توجد عيوب مسجلة على مستوى الموديلات',
-              'bg-rose-500'
-            )}
-            {renderDefectTable(
-              'نسب العيوب حسب القطعة',
-              'مقارنة التيشرت والبنطلون وبقية القطع في معدلات الهالك والدرجة الثانية.',
-              qualityByPart,
-              'لا توجد عيوب مسجلة على مستوى القطع',
-              'bg-indigo-500'
-            )}
-            {renderDefectTable(
-              'نسب العيوب حسب المطبعة',
-              'تقييم أداء المطابع بناءً على نسبة القطع التالفة المكتشفة في الفرز.',
-              qualityByPrintHouse,
-              'لا توجد بيانات مطابع مرتبطة بسجلات الفرز',
-              'bg-violet-500'
-            )}
-            {renderDefectTable(
-              'نسب العيوب حسب ورشة المكن',
-              'تقييم أداء ورش الخياطة بناءً على نسبة العيوب المكتشفة بعد المكن.',
-              qualityByWorkshop,
-              'لا توجد بيانات ورش مرتبطة بسجلات الفرز',
-              'bg-emerald-500'
-            )}
-          </div>
-
-          {/* سجل عمليات الفحص */}
-          <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
-            <div className="p-4 border-b border-slate-100 bg-slate-50/60 flex items-center justify-between gap-2 flex-wrap print:bg-white print:border-b-2 print:border-slate-800">
-              <div className="flex items-center gap-2">
-                <ClipboardList className="w-5 h-5 text-slate-700" />
-                <div>
-                  <h3 className="font-black text-slate-900 text-sm">سجل عمليات الفحص التفصيلي</h3>
-                  <p className="text-[11px] font-bold text-slate-500">
-                    أحدث سجلات الفرز مع الكميات السليمة والتالفة وملاحظات العيوب
-                  </p>
+          {activeTab === 'quality' && (
+            <div className="space-y-5">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <label className="relative block">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">بحث بكود الموديل</span>
+                    <Search className="pointer-events-none absolute right-3 top-[34px] h-4 w-4 text-slate-400" />
+                    <input
+                      value={qualitySearch}
+                      onChange={(event) => setQualitySearch(event.target.value)}
+                      placeholder="مثال: MD-1024"
+                      className={`${inputClass} pr-9`}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">ترتيب حسب</span>
+                    <select
+                      value={qualitySort}
+                      onChange={(event) => setQualitySort(event.target.value as SortKey)}
+                      className={inputClass}
+                    >
+                      <option value="shortage">أكبر عجز</option>
+                      <option value="percent">أعلى نسبة عجز</option>
+                      <option value="cut">أكبر كمية مقصوصة</option>
+                      <option value="code">كود الموديل</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">من تاريخ</span>
+                    <input
+                      type="date"
+                      value={qualityFrom}
+                      onChange={(event) => setQualityFrom(event.target.value)}
+                      className={inputClass}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">إلى تاريخ</span>
+                    <input
+                      type="date"
+                      value={qualityTo}
+                      onChange={(event) => setQualityTo(event.target.value)}
+                      className={inputClass}
+                    />
+                  </label>
                 </div>
               </div>
-              <span className="text-[11px] font-black text-slate-600 px-2.5 py-1 rounded-lg bg-white border border-slate-200">
-                {fmtNum(qualityRecords.length)} سجل
-              </span>
-            </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-start min-w-[900px]">
-                <thead className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200 print:bg-slate-200 print:text-black">
-                  <tr>
-                    <th className="px-4 py-3">التاريخ</th>
-                    <th className="px-4 py-3">الموديل</th>
-                    <th className="px-4 py-3">المرحلة</th>
-                    <th className="px-4 py-3">القطعة</th>
-                    <th className="px-4 py-3">اللون / المقاس</th>
-                    <th className="px-4 py-3 text-center">مفحوص</th>
-                    <th className="px-4 py-3 text-center">سليم</th>
-                    <th className="px-4 py-3 text-center">تالف</th>
-                    <th className="px-4 py-3 text-center">النسبة</th>
-                    <th className="px-4 py-3">مسؤول الجودة</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {qualityRecords.length > 0 ? (
-                    [...qualityRecords]
-                      .sort((a, b) =>
-                        String(b.created_at || '').localeCompare(String(a.created_at || ''))
-                      )
-                      .slice(0, 60)
-                      .map((rec) => {
-                        const { good, defect, inspected } = qualityRecordValues(rec);
-                        const modelCode =
-                          models.find((m) => m.id === rec.model_id)?.model_code || 'موديل';
-                        const ratio = pctOf(defect, inspected);
+              {qualityError ? <ErrorBanner message={qualityError} onRetry={() => void loadQuality()} /> : null}
 
-                        return (
-                          <tr key={rec.id} className="hover:bg-amber-50/30 transition">
-                            <td className="px-4 py-3 font-bold text-slate-600 whitespace-nowrap">
-                              {rec.created_at
-                                ? new Date(rec.created_at).toLocaleDateString('ar-EG')
-                                : '—'}
-                            </td>
-                            <td className="px-4 py-3">
-                              <div className="font-black text-slate-900">{modelCode}</div>
-                              {(rec.defect_notes || rec.notes) && (
-                                <div className="text-[10px] font-bold text-rose-600 max-w-[180px] truncate">
-                                  {rec.defect_notes || rec.notes}
-                                </div>
-                              )}
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-[10px] font-black text-slate-700">
-                                {QC_STAGE_LABELS[
-                                  (rec.stage || 'after_sewing') as QualityStageFilter
-                                ] || 'فرز'}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 font-bold text-slate-700">
-                              {getPartLabel(rec.part_type || rec.partType)}
-                            </td>
-                            <td className="px-4 py-3 font-bold text-slate-600">
-                              {rec.color_name || '—'} / {rec.size || '—'}
-                            </td>
-                            <td className="px-4 py-3 text-center font-black font-mono text-slate-900">
-                              {fmtNum(inspected)}
-                            </td>
-                            <td className="px-4 py-3 text-center font-black font-mono text-emerald-700">
-                              {fmtNum(good)}
-                            </td>
-                            <td className="px-4 py-3 text-center font-black font-mono text-rose-700">
-                              {fmtNum(defect)}
-                            </td>
-                            <td className="px-4 py-3 text-center">
-                              <span
-                                className={`px-2 py-0.5 rounded-lg border text-[10px] font-black ${
-                                  ratio >= 5
-                                    ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                    : ratio >= 2
-                                      ? 'bg-amber-50 text-amber-700 border-amber-200'
-                                      : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <StatCard
+                  label="إجمالي المقصوص"
+                  value={fmt(qualitySummary?.total_cut_pieces)}
+                  hint={`${fmt(qualitySummary?.models_count)} موديل`}
+                  icon={<Scissors className="h-4 w-4" />}
+                  tone="slate"
+                />
+                <StatCard
+                  label="السليم الحالي"
+                  value={fmt(qualitySummary?.total_current_pieces)}
+                  hint="حسب مرحلة كل موديل"
+                  icon={<CheckCircle2 className="h-4 w-4" />}
+                  tone="emerald"
+                />
+                <StatCard
+                  label="إجمالي العجز"
+                  value={fmt(qualitySummary?.total_shortage)}
+                  hint={`نسبة ${pct(qualitySummary?.total_shortage_percent)}`}
+                  icon={<AlertTriangle className="h-4 w-4" />}
+                  tone="rose"
+                />
+                <StatCard
+                  label="إجمالي الهالك"
+                  value={fmt(qualitySummary?.total_defects)}
+                  hint={
+                    qualitySummary && qualitySummary.worst_stage && qualitySummary.worst_stage.defects > 0
+                      ? `أعلى مرحلة: ${qualitySummary.worst_stage.label}`
+                      : 'لا توجد عيوب مسجلة'
+                  }
+                  icon={<Flame className="h-4 w-4" />}
+                  tone="amber"
+                />
+              </div>
+
+              {defectRows.length > 0 && (
+                <SectionCard title="الهالك حسب مرحلة الفرز" subtitle="مجموع القطع التالفة المسجلة في كل مرحلة">
+                  <div className="space-y-3">
+                    {defectRows.map((item) => (
+                      <div key={item.stage}>
+                        <div className="mb-1 flex items-center justify-between text-xs">
+                          <span className="text-slate-600">{item.label}</span>
+                          <span className="font-semibold text-slate-800">{fmt(item.defects)} تالف</span>
+                        </div>
+                        <ProgressBar value={(item.defects / defectsMax) * 100} color="#F59E0B" />
+                      </div>
+                    ))}
+                  </div>
+                </SectionCard>
+              )}
+
+              <SectionCard
+                title="الموديلات والعجز"
+                subtitle="اضغط على أي موديل لعرض تفصيل المراحل والفاقد"
+                action={<span className="text-xs text-slate-500">{fmt(qualityRows.length)} موديل</span>}
+              >
+                {qualityLoading && !qualityReport ? (
+                  <LoadingBlock />
+                ) : qualityRows.length === 0 ? (
+                  <EmptyState
+                    title="لا توجد موديلات مطابقة"
+                    hint="جرّب تغيير البحث أو الفترة الزمنية."
+                    icon={<AlertTriangle className="h-5 w-5" />}
+                  />
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-xs text-slate-500">
+                          <th className="w-8 py-2" />
+                          <th className="py-2 text-right font-medium">الموديل</th>
+                          <th className="py-2 text-center font-medium">النوع</th>
+                          <th className="py-2 text-center font-medium">المرحلة</th>
+                          <th className="py-2 text-center font-medium">المقصوص</th>
+                          <th className="py-2 text-center font-medium">السليم</th>
+                          <th className="py-2 text-center font-medium">العجز</th>
+                          <th className="py-2 text-center font-medium">نسبة العجز</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {qualityRows.map((row) => {
+                          const expanded = expandedModelId === row.model_id;
+                          const waterfall = waterfalls[row.model_id];
+                          return (
+                            <React.Fragment key={row.model_id}>
+                              <tr
+                                onClick={() => void toggleModelDetails(row.model_id)}
+                                className={`cursor-pointer text-slate-700 transition hover:bg-slate-50/70 ${
+                                  expanded ? 'bg-slate-50' : ''
                                 }`}
                               >
-                                {ratio}%
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 font-bold text-slate-700">
-                              {rec.inspector_name || '—'}
-                            </td>
-                          </tr>
-                        );
-                      })
-                  ) : (
-                    <tr>
-                      <td colSpan={10} className="px-6 py-12 text-center">
-                        <div className="flex flex-col items-center gap-1.5">
-                          <AlertCircle className="w-8 h-8 text-slate-300 stroke-1" />
-                          <p className="font-black text-slate-700 text-sm">
-                            لا توجد سجلات فرز في هذه المرحلة أو الفترة
-                          </p>
-                          <p className="text-[11px] font-bold text-slate-400">
-                            اختر مرحلة فرز أخرى أو وسّع نطاق التاريخ لعرض النتائج.
-                          </p>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                                <td className="py-2 text-center text-slate-400">
+                                  {waterfallLoading === row.model_id ? (
+                                    <Loader2 className="mx-auto h-4 w-4 animate-spin" />
+                                  ) : expanded ? (
+                                    <ChevronUp className="mx-auto h-4 w-4" />
+                                  ) : (
+                                    <ChevronDown className="mx-auto h-4 w-4" />
+                                  )}
+                                </td>
+                                <td className="py-2 pr-1 text-right">
+                                  <span className="font-semibold">{row.model_code}</span>
+                                  <span className="mt-0.5 block text-[11px] text-slate-400">
+                                    {row.composition_label}
+                                  </span>
+                                </td>
+                                <td className="py-2 text-center text-xs">{row.model_type || '—'}</td>
+                                <td className="py-2 text-center">
+                                  <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                                    {row.stage_label}
+                                  </span>
+                                </td>
+                                <td className="py-2 text-center tabular-nums">{fmt(row.cut_pieces)}</td>
+                                <td className="py-2 text-center tabular-nums">{fmt(row.current_pieces)}</td>
+                                <td
+                                  className={`py-2 text-center font-semibold tabular-nums ${
+                                    row.shortage > 0 ? 'text-rose-600' : 'text-emerald-600'
+                                  }`}
+                                >
+                                  {fmt(row.shortage)}
+                                </td>
+                                <td className="py-2 text-center text-xs tabular-nums text-slate-500">
+                                  {pct(row.shortage_percent)}
+                                </td>
+                              </tr>
+                              {expanded && (
+                                <tr>
+                                  <td colSpan={8} className="bg-slate-50/60 px-2 py-3">
+                                    {waterfall ? (
+                                      <WaterfallPanel data={waterfall} />
+                                    ) : waterfallLoading === row.model_id ? (
+                                      <LoadingBlock label="جارٍ تحميل تفصيل المراحل..." />
+                                    ) : (
+                                      <p className="py-4 text-center text-xs text-slate-500">
+                                        تعذّر تحميل تفصيل هذا الموديل.
+                                      </p>
+                                    )}
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </SectionCard>
             </div>
+          )}
 
-            {qualityRecords.length > 60 && (
-              <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 text-[10px] font-bold text-slate-500">
-                يتم عرض أحدث 60 سجل من إجمالي {fmtNum(qualityRecords.length)} سجل — استخدم تصدير CSV
-                للحصول على القائمة الكاملة.
+
+          {targetsOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" dir="rtl">
+              <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+                <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
+                      <Target className="h-4 w-4" />
+                    </span>
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-800">تارجت الأقسام</h3>
+                      <p className="text-xs text-slate-500">تُحفظ القيم وتُطبق على تقارير الإنتاج مباشرة.</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setTargetsOpen(false)}
+                    className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="max-h-[60vh] space-y-3 overflow-y-auto px-5 py-4">
+                  {DEPARTMENT_ORDER.map((key) => {
+                    const meta = DEPARTMENT_META[key];
+                    const entry = targetsDraft[key] || { daily: 0, monthly: 0 };
+                    return (
+                      <div
+                        key={key}
+                        className="grid grid-cols-1 items-center gap-3 rounded-xl border border-slate-200 p-3 sm:grid-cols-[1fr_130px_130px]"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                            {meta?.icon || <Factory className="h-4 w-4" />}
+                          </span>
+                          <p className="text-sm font-semibold text-slate-700">{meta?.label || key}</p>
+                        </div>
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-medium text-slate-500">تارجت يومي</span>
+                          <input
+                            type="number"
+                            min={0}
+                            value={entry.daily}
+                            onChange={(event) => updateTargetValue(key, 'daily', event.target.value)}
+                            className={inputClass}
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-medium text-slate-500">تارجت شهري</span>
+                          <input
+                            type="number"
+                            min={0}
+                            value={entry.monthly}
+                            onChange={(event) => updateTargetValue(key, 'monthly', event.target.value)}
+                            className={inputClass}
+                          />
+                        </label>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-4">
+                  <button
+                    type="button"
+                    onClick={() => setTargetsOpen(false)}
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void saveTargets()}
+                    disabled={targetsSaving}
+                    className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                  >
+                    {targetsSaving ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4" />
+                    )}
+                    حفظ التارجت
+                  </button>
+                </div>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </>
       )}
     </div>
   );
 };
+

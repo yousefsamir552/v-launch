@@ -162,7 +162,8 @@ const DEFAULT_GLOBAL_SETTINGS: GlobalSiteSettings = {
     'تم الانتهاء من المرحلة الحالية وجارٍ تسليم القطع للقسم التالي.',
     'تنبيه: يوجد نقص في بعض المستلزمات، يرجى المراجعة العاجلة.'
   ],
-  favorite_accessory_ids: []
+  favorite_accessory_ids: [],
+  department_targets: {}
 };
 
 const DESIGN_STAGES = new Set(['مرحلة التصميم', 'تصميم']);

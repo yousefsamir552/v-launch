@@ -144,6 +144,8 @@ export interface GlobalSiteSettings {
   default_sewing_instructions: string;
   internal_message_templates: string[];
   favorite_accessory_ids?: string[];
+  /** تارجتات أقسام الإنتاج (يومي / شهري): { cutting: { daily, monthly }, ... } */
+  department_targets?: DepartmentTargetsMap;
   updated_by?: string;
   updated_at?: string;
 }
@@ -1509,4 +1511,208 @@ export interface HRReportsPayload {
     department_breakdown: HRReportDepartmentRow[];
     discipline: HRReportDiscipline;
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Reports & Statistics v2 — التقارير والإحصائيات                      */
+/* ------------------------------------------------------------------ */
+
+/** تارجت قسم: عدد القطع اليومي والشهري. */
+export interface DepartmentTarget {
+  daily: number;
+  monthly: number;
+}
+
+export type DepartmentTargetsMap = Record<string, DepartmentTarget>;
+
+/** صف فئة مقاس في تبويب "الموديلات حسب المقاس". */
+export interface SizeCategoryReportRow {
+  size_id: string;
+  size_name: string;
+  size_values: string;
+  boys_models: number;
+  girls_models: number;
+  boys_pieces: number;
+  girls_pieces: number;
+  boys_value: number;
+  girls_value: number;
+  total_models: number;
+  total_pieces: number;
+}
+
+export interface ReportBreakdownItem {
+  key: string;
+  label: string;
+  models_count: number;
+  pieces_count: number;
+}
+
+export interface ReportStageItem {
+  key: string;
+  label: string;
+  models_count: number;
+}
+
+export interface ModelsReportResponse {
+  metric: 'models' | 'pieces';
+  date_from: string;
+  date_to: string;
+  composition_filter: string;
+  model_type_filter: string;
+  size_categories: SizeCategoryReportRow[];
+  composition_breakdown: ReportBreakdownItem[];
+  stage_breakdown: ReportStageItem[];
+  model_types: string[];
+  totals: {
+    models: number;
+    boys_models: number;
+    girls_models: number;
+    pieces: number;
+    boys_pieces: number;
+    girls_pieces: number;
+    size_categories: number;
+  };
+  generated_at: string;
+}
+
+/** نقطة يومية في سلسلة قسم (تبويب الإنتاج والسرعة). */
+export interface DepartmentDailyPoint {
+  date: string;
+  label: string;
+  pieces: number;
+  target: number;
+}
+
+export interface DepartmentReportCard {
+  key: string;
+  label: string;
+  icon: string;
+  color: string;
+  models_count: number;
+  pieces_count: number;
+  avg_daily: number;
+  target: number;
+  target_daily: number;
+  target_monthly: number;
+  progress_percent: number;
+  previous_pieces: number;
+  delta: number;
+  delta_percent: number;
+  daily_series: DepartmentDailyPoint[];
+}
+
+export interface ProductionDepartmentsResponse {
+  period: string;
+  period_label: string;
+  date_from: string;
+  date_to: string;
+  days: number;
+  departments: DepartmentReportCard[];
+  targets: DepartmentTargetsMap;
+  generated_at: string;
+}
+
+/** صف موديل في تبويب "المشاكل والعجز". */
+export interface ShortageReportRow {
+  model_id: number;
+  client_id: string;
+  model_code: string;
+  model_type: string;
+  image: string;
+  status: string;
+  stage: string;
+  stage_label: string;
+  garment_composition: string;
+  composition_label: string;
+  cut_pieces: number;
+  current_pieces: number;
+  shortage: number;
+  shortage_percent: number;
+}
+
+export interface DefectStageRow {
+  stage: string;
+  label: string;
+  defects: number;
+  counted: number;
+}
+
+export interface QualityShortageResponse {
+  summary: {
+    models_count: number;
+    total_cut_pieces: number;
+    total_current_pieces: number;
+    total_shortage: number;
+    total_shortage_percent: number;
+    total_defects: number;
+    worst_stage: DefectStageRow;
+  };
+  defects_by_stage: DefectStageRow[];
+  models: ShortageReportRow[];
+  sort: string;
+  search: string;
+  generated_at: string;
+}
+
+/** مرحلة داخل تفصيل الموديل (Waterfall): مدخل → مخرج → فقد. */
+export interface ModelWaterfallStage {
+  key: string;
+  label: string;
+  in_qty: number;
+  out_qty: number;
+  loss: number;
+}
+
+export interface ModelWaterfallPart {
+  part: string;
+  label: string;
+  cut_pieces: number;
+  good_pieces: number;
+  printed_pieces: number;
+  sewn_pieces: number;
+  shortage: number;
+  stages: ModelWaterfallStage[];
+}
+
+export interface ModelAssemblyStage {
+  key: string;
+  label: string;
+  in_qty: number;
+  out_qty: number;
+  loss: number;
+  status: 'completed' | 'in_progress' | 'not_started';
+  status_label: string;
+  records_count: number;
+  completed_count: number;
+}
+
+export interface ModelStageWaterfallResponse {
+  model: {
+    id: number;
+    model_code: string;
+    model_type: string;
+    image: string;
+    status: string;
+    stage: string;
+    stage_label: string;
+    garment_composition: string;
+    composition_label: string;
+    target_cut_quantity: number;
+    total_cut_pieces: number;
+    count_after_sewing: number;
+  };
+  parts: ModelWaterfallPart[];
+  model_stages: ModelAssemblyStage[];
+  summary: {
+    cut_total: number;
+    good_total: number;
+    shortage_total: number;
+    shortage_percent: number;
+  };
+  generated_at: string;
+}
+
+export interface DepartmentTargetsResponse {
+  targets: DepartmentTargetsMap;
+  can_edit: boolean;
 }
