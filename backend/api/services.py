@@ -1,10 +1,11 @@
 import os
 from datetime import date, timedelta
+from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from .models import (
-    SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier,
+    SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier, Workshop,
     Fabric, FabricColor, FabricTransaction,
     AccessoryType, Accessory, AccessoryTransaction,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
@@ -41,6 +42,21 @@ PART_ALIASES = {
 }
 REAL_PARTS = ('shirt', 'pants', 'jacket')
 QC_STAGE_RANK = {'before_print': 1, 'after_print': 2, 'after_sewing': 3}
+
+# المراحل التي تُعتبر "بعد المكن": عندها يُعتمد عدد الفحص النهائي (QC after sewing)
+# في حساب الأطقم التامة بدلاً من عدد القص فقط.
+FINISHED_PART_STAGES = (
+    'qc_after_sewing', 'finishing', 'ironing', 'packaging', 'dest', 'completed',
+)
+FINISHED_STATUSES = {
+    'العد بعد المكن',
+    'في التشطيب',
+    'في المكواة',
+    'في التعبئة والتغليف',
+    'جاهز للدَست',
+    'مخزن الإنتاج التام',
+    'مكتمل الإنتاج',
+}
 
 
 def normalize_part_key(value):
@@ -172,6 +188,24 @@ def recompute_model_part_totals(model):
     return model
 
 
+def _model_reached_finished_stage(model):
+    """True when every part of the model has moved past the sewing stage.
+
+    Uses the per-part stages when available (the single source of truth) and
+    falls back to the coarse legacy status for older rows.
+    """
+    raw = getattr(model, 'part_stages', None)
+    stages = []
+    if isinstance(raw, dict) and raw:
+        stages = [
+            raw.get(part) for part in get_model_parts(model)
+            if raw.get(part) in PART_STAGE_ORDER
+        ]
+    if stages:
+        return all(stage in FINISHED_PART_STAGES for stage in stages)
+    return (getattr(model, 'status', '') or '') in FINISHED_STATUSES
+
+
 def model_part_summary(model):
     """Returns the per-part representation exposed to the frontend."""
     parts = get_model_parts(model)
@@ -201,12 +235,46 @@ def model_part_summary(model):
         completed_sets = int(model.total_cut_pieces or 0)
     else:
         completed_sets = min((int(cut_map.get(part, 0) or 0) for part in parts), default=0)
+
+    # --- الأطقم التامة الجاهزة (بعد اعتماد الفحص النهائي وخصم عينات التصوير) ---
+    # العدد المعتمد لكل قطعة = عدد الفحص النهائي إن وُجد وإلا عدد القص.
+    if 'single' in parts:
+        healthy_sets = int(getattr(model, 'count_after_sewing', 0) or 0)
+        if not healthy_sets:
+            healthy_sets = int(getattr(model, 'count_after_print', 0) or 0)
+        if not healthy_sets:
+            healthy_sets = int(getattr(model, 'total_cut_pieces', 0) or 0)
+    else:
+        approved_counts = [
+            int(qc_map.get(part, 0) or 0) or int(cut_map.get(part, 0) or 0)
+            for part in parts
+        ]
+        healthy_sets = min(approved_counts, default=0)
+    healthy_sets = max(0, int(healthy_sets))
+
+    # قطع العينات التي ما زالت في التصوير تُخصم مؤقتاً من الأطقم السليمة.
+    photography_outstanding_qty = 0
+    try:
+        requirement = model.packaging_requirement
+    except PackagingRequirement.DoesNotExist:
+        requirement = None
+    if requirement is not None:
+        photography_outstanding_qty = max(0, int(requirement.photography_outstanding_qty or 0))
+    finished_good_sets = max(0, healthy_sets - photography_outstanding_qty)
+
+    # بعد المكن/التشطيب/الإنتاج التام يصبح عدد الأطقم التامة هو المعتمد فعلياً
+    # (بدلاً من عدد القص) حتى لا يظهر رقم مضاعف للموديلات ذات القطعتين.
+    if _model_reached_finished_stage(model):
+        completed_sets = finished_good_sets
+
     return {
         'parts': parts,
         'cut_summary': cut_summary,
         'qc_summary': qc_summary,
         'sewing_available': sewing_available,
         'completed_sets': completed_sets,
+        'finished_good_sets': finished_good_sets,
+        'photography_outstanding_qty': photography_outstanding_qty,
     }
 
 
@@ -884,6 +952,51 @@ def ensure_schema_columns():
                 if 'price_per_unit' not in cols:
                     cursor.execute(f'ALTER TABLE {price_table} ADD COLUMN price_per_unit numeric(12,2) NOT NULL DEFAULT 0;')
 
+            # ------------------------------------------------------------------
+            # Historical unit-price snapshots + optional supplier/workshop links
+            # (foundation for the future accounting section / قسم الحسابات).
+            # ------------------------------------------------------------------
+            for snapshot_table in (
+                'api_fabrictransaction', 'api_accessorytransaction',
+                'api_modelrequirement', 'api_modelaccessory',
+            ):
+                if snapshot_table not in table_names:
+                    continue
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, snapshot_table)]
+                if 'unit_price_snapshot' not in cols:
+                    cursor.execute(
+                        f'ALTER TABLE {snapshot_table} ADD COLUMN unit_price_snapshot numeric(12,2) NOT NULL DEFAULT 0;'
+                    )
+
+            # معرف المورد FK اختياري على حركات المخزن (الموردون موجودون مسبقاً في api_supplier).
+            fk_id_type = 'bigint' if connection.vendor == 'postgresql' else 'integer'
+            if 'api_supplier' in table_names:
+                for supplier_table in ('api_fabrictransaction', 'api_accessorytransaction'):
+                    if supplier_table not in table_names:
+                        continue
+                    cols = [col.name for col in connection.introspection.get_table_description(cursor, supplier_table)]
+                    if 'supplier_id' not in cols:
+                        cursor.execute(
+                            f'ALTER TABLE {supplier_table} ADD COLUMN supplier_id {fk_id_type} NULL '
+                            'REFERENCES api_supplier(id) ON DELETE SET NULL;'
+                        )
+
+            # معرف الورشة FK اختياري على إرساليات المطابع/المكن وسجلات التشطيب والأسمبلي.
+            if 'api_workshop' in table_names:
+                for workshop_table in (
+                    'api_printdispatch', 'api_sewingdispatch',
+                    'api_finishingrecord', 'api_assemblystagerecord',
+                ):
+                    if workshop_table not in table_names:
+                        continue
+                    cols = [col.name for col in connection.introspection.get_table_description(cursor, workshop_table)]
+                    if 'workshop_id' not in cols:
+                        cursor.execute(
+                            f'ALTER TABLE {workshop_table} ADD COLUMN workshop_id {fk_id_type} NULL '
+                            'REFERENCES api_workshop(id) ON DELETE SET NULL;'
+                        )
+
+
             if 'api_cuttingspreadlayer' not in table_names:
                 if connection.vendor == 'postgresql':
                     cursor.execute('''
@@ -1022,25 +1135,34 @@ def apply_packaging_material_transaction(size_rule, operation, amount, notes='',
     except (TypeError, ValueError):
         unit_price = 0.0
 
-    current = float(size_rule.current_stock or 0)
-    if operation == 'add':
-        new_stock = current + amount
-    elif operation == 'deduct':
-        new_stock = max(0.0, current - amount)
-    else:
-        operation = 'adjust'
-        new_stock = max(0.0, amount)
+    with transaction.atomic():
+        # اقفل صف الرصيد لمنع تضارب الأرصدة عند الصرف المتزامن، واقرأ أحدث قيمة
+        # من قاعدة البيانات بدلاً من الاعتماد على نسخة قديمة في الذاكرة.
+        locked_rule = PackagingMaterialSizeRule.objects.select_for_update().get(pk=size_rule.pk)
+        current = float(locked_rule.current_stock or 0)
+        if operation == 'add':
+            new_stock = current + amount
+        elif operation == 'deduct':
+            new_stock = max(0.0, current - amount)
+        else:
+            operation = 'adjust'
+            new_stock = max(0.0, amount)
 
-    size_rule.current_stock = new_stock
-    size_rule.save(update_fields=['current_stock', 'updated_at'])
-    return PackagingMaterialTransaction.objects.create(
-        size_rule=size_rule,
-        operation=operation,
-        amount=amount,
-        price_per_unit=unit_price,
-        notes=notes or '',
-        timestamp=timestamp or '',
-    )
+        locked_rule.current_stock = new_stock
+        locked_rule.save(update_fields=['current_stock', 'updated_at'])
+        txn = PackagingMaterialTransaction.objects.create(
+            size_rule=locked_rule,
+            operation=operation,
+            amount=amount,
+            price_per_unit=unit_price,
+            notes=notes or '',
+            timestamp=timestamp or '',
+        )
+
+    # حدّث النسخة التي يملكها المستدعي حتى تعكسها استجابة الـ API مباشرة.
+    size_rule.current_stock = locked_rule.current_stock
+    size_rule.updated_at = locked_rule.updated_at
+    return txn
 
 
 def ensure_initial_seed():
@@ -1500,7 +1622,7 @@ def generate_assembly_delivery_notifications():
 def dispatch_model_to_sewing_service(
     model_id, workshop_name, pieces_count, expected_delivery_date,
     notes=None, user_name='مدير الإنتاج', piece_type='shirt', piece_label=None, client_id=None,
-    cost_per_piece=0.0, total_cost=None,
+    cost_per_piece=0.0, total_cost=None, workshop=None,
 ):
     """
     Records sewing dispatch and moves model into sewing stage with independent piece tracking.
@@ -1533,12 +1655,16 @@ def dispatch_model_to_sewing_service(
 
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
     clean_notes = (notes or '').strip()
+    # اربط الورشة المسجلة بالاسم إن لم تُمرَّر صريحاً، مع الإبقاء على الاسم النصي كما هو.
+    if workshop is None and workshop_name:
+        workshop = Workshop.objects.filter(name__iexact=workshop_name).first()
     dispatch = SewingDispatch.objects.create(
         client_id=client_id,
         model=model,
         piece_type=piece_type,
         piece_label=resolved_label,
         workshop_name=workshop_name,
+        workshop=workshop,
         pieces_count=pieces_count,
         expected_delivery_date=expected_delivery_date,
         dispatched_at_str=now_str,
@@ -1759,9 +1885,30 @@ def set_packaging_step_service(model, step, step_date=None, notes=None,
     return requirement
 
 
+def _model_part_pieces(model, part):
+    """أفضل عدد قطع متاح لهذه القطعة في الموديل (لحساب تكاليف التشطيب/المكواة).
+
+    يعتمد على العد السليم (qc_*) أولاً، ثم المقصوص (cut_*)، ثم العد بعد المكن،
+    وأخيراً إجمالي المقصوص — بنفس أولويات تقارير الإنتاج.
+    """
+    key = normalize_part_key(part)
+    if key in ('shirt', 'pants', 'jacket'):
+        value = int(getattr(model, f'qc_{key}_pieces', 0) or 0)
+        if value:
+            return value
+        value = int(getattr(model, f'cut_{key}_pieces', 0) or 0)
+        if value:
+            return value
+    return (
+        int(getattr(model, 'count_after_sewing', 0) or 0)
+        or int(getattr(model, 'total_cut_pieces', 0) or 0)
+        or 0
+    )
+
+
 def start_finishing_service(model, parts=None, entry_date=None, expected_exit_date=None,
                             notes=None, vendor_name=None, user_name='مسؤول التشطيب',
-                            cost_per_piece=0.0, total_cost=None):
+                            cost_per_piece=0.0, total_cost=None, workshop=None):
     """
     Starts (or updates) the finishing stage for the given model parts.
     Each part gets its own FinishingRecord and its own ``part_stages`` entry;
@@ -1776,6 +1923,10 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
     expected = _parse_date_value(expected_exit_date)
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
     unit_cost, total_finish_cost = resolve_cost_values(cost_per_piece, total_cost)
+
+    # اربط الورشة المسجلة بالاسم إن لم تُمرَّر صريحاً، مع الإبقاء على الاسم النصي كما هو.
+    if workshop is None and clean_vendor:
+        workshop = Workshop.objects.filter(name__iexact=clean_vendor).first()
 
     ensure_part_stages(model)
 
@@ -1797,8 +1948,14 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
         raise ValueError('القطع المحددة تجاوزت مرحلة التشطيب بالفعل')
 
     records = []
+    part_totals = []
     stages = get_part_stages(model)
     for part in part_keys:
+        part_pieces = _model_part_pieces(model, part)
+        part_unit_cost, part_total_cost = resolve_cost_values(
+            cost_per_piece, total_cost, pieces_count=part_pieces
+        )
+        part_totals.append(part_total_cost)
         record, created = FinishingRecord.objects.get_or_create(
             model=model,
             part_type=part,
@@ -1806,9 +1963,10 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
                 'entry_date': entry,
                 'expected_exit_date': expected,
                 'vendor_name': clean_vendor,
+                'workshop': workshop,
                 'notes': clean_notes or None,
-                'cost_per_piece': unit_cost,
-                'total_cost': total_finish_cost,
+                'cost_per_piece': part_unit_cost,
+                'total_cost': part_total_cost,
             },
         )
         if not created:
@@ -1819,13 +1977,19 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
                 record.notes = clean_notes
             if clean_vendor:
                 record.vendor_name = clean_vendor
-            if unit_cost or total_finish_cost:
-                record.cost_per_piece = unit_cost
-                record.total_cost = total_finish_cost
+            if workshop is not None:
+                record.workshop = workshop
+            if part_unit_cost or part_total_cost:
+                record.cost_per_piece = part_unit_cost
+                record.total_cost = part_total_cost
             record.save()
         # Only the requested parts move into finishing; siblings keep their stage.
         stages[part] = 'finishing'
         records.append(record)
+
+    # إن لم يرسل المستخدم الإجمالي يدوياً، فالإجمالي = مجموع تكلفة قطع كل الأجزاء.
+    if total_cost in (None, ''):
+        total_finish_cost = round(sum(part_totals), 2)
 
     model.part_stages = stages
     model.status = 'في التشطيب'
@@ -1935,7 +2099,8 @@ ASSEMBLY_STAGE_NEXT_STATUS = {
 
 def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
                           expected_exit_date=None, notes=None, vendor_name=None,
-                          user_name='مسؤول المكواة', cost_per_piece=0.0, total_cost=None):
+                          user_name='مسؤول المكواة', cost_per_piece=0.0, total_cost=None,
+                          workshop=None):
     """Starts (or updates) the ironing stage for one or more garment parts.
 
     Ironing is tracked per part: each part gets its own AssemblyStageRecord with
@@ -1950,6 +2115,10 @@ def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
     expected = _parse_date_value(expected_exit_date)
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
     unit_cost, total_iron_cost = resolve_cost_values(cost_per_piece, total_cost)
+
+    # اربط الورشة المسجلة بالاسم إن لم تُمرَّر صريحاً، مع الإبقاء على الاسم النصي كما هو.
+    if workshop is None and clean_vendor:
+        workshop = Workshop.objects.filter(name__iexact=clean_vendor).first()
 
     ensure_part_stages(model)
     stages = get_part_stages(model)
@@ -1977,7 +2146,13 @@ def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
         raise ValueError(f"لا يمكن بدء المكواة قبل استلام ({labels}) من التشطيب")
 
     records = []
+    part_totals = []
     for part in requested:
+        part_pieces = _model_part_pieces(model, part)
+        part_unit_cost, part_total_cost = resolve_cost_values(
+            cost_per_piece, total_cost, pieces_count=part_pieces
+        )
+        part_totals.append(part_total_cost)
         record, created = AssemblyStageRecord.objects.get_or_create(
             model=model,
             stage='ironing',
@@ -1986,9 +2161,10 @@ def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
                 'entry_date': entry,
                 'expected_exit_date': expected,
                 'vendor_name': clean_vendor,
+                'workshop': workshop,
                 'notes': clean_notes or None,
-                'cost_per_piece': unit_cost,
-                'total_cost': total_iron_cost,
+                'cost_per_piece': part_unit_cost,
+                'total_cost': part_total_cost,
             },
         )
         if not created:
@@ -1997,14 +2173,20 @@ def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
                 record.expected_exit_date = expected
             if clean_vendor:
                 record.vendor_name = clean_vendor
+            if workshop is not None:
+                record.workshop = workshop
             if clean_notes:
                 record.notes = clean_notes
-            if unit_cost or total_iron_cost:
-                record.cost_per_piece = unit_cost
-                record.total_cost = total_iron_cost
+            if part_unit_cost or part_total_cost:
+                record.cost_per_piece = part_unit_cost
+                record.total_cost = part_total_cost
             record.save()
         stages[part] = 'ironing'
         records.append(record)
+
+    # إن لم يرسل المستخدم الإجمالي يدوياً، فالإجمالي = مجموع تكلفة قطع كل الأجزاء.
+    if total_cost in (None, ''):
+        total_iron_cost = round(sum(part_totals), 2)
 
     model.part_stages = stages
     model._skip_timeline_signal = True
@@ -2093,7 +2275,8 @@ def receive_ironing_service(record_id, actual_exit_date=None, notes=None,
 
 def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_date=None,
                                  notes=None, vendor_name=None, part_type=None,
-                                 user_name='مسؤول الأسمبلي', cost_per_piece=0.0, total_cost=None):
+                                 user_name='مسؤول الأسمبلي', cost_per_piece=0.0, total_cost=None,
+                                 workshop=None):
     """
     Starts (or updates) one assembly stage (ironing / packaging / dest).
 
@@ -2117,6 +2300,7 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
             user_name=user_name,
             cost_per_piece=cost_per_piece,
             total_cost=total_cost,
+            workshop=workshop,
         )
 
     if stage == 'packaging':
@@ -2142,6 +2326,10 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
     unit_cost, total_stage_cost = resolve_cost_values(cost_per_piece, total_cost)
 
+    # اربط الورشة المسجلة بالاسم إن لم تُمرَّر صريحاً، مع الإبقاء على الاسم النصي كما هو.
+    if workshop is None and clean_vendor:
+        workshop = Workshop.objects.filter(name__iexact=clean_vendor).first()
+
     record, created = AssemblyStageRecord.objects.get_or_create(
         model=model,
         stage=stage,
@@ -2150,6 +2338,7 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
             'entry_date': entry,
             'expected_exit_date': expected,
             'vendor_name': clean_vendor,
+            'workshop': workshop,
             'notes': clean_notes or None,
             'cost_per_piece': unit_cost,
             'total_cost': total_stage_cost,
@@ -2161,6 +2350,8 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
             record.expected_exit_date = expected
         if clean_vendor:
             record.vendor_name = clean_vendor
+        if workshop is not None:
+            record.workshop = workshop
         if clean_notes:
             record.notes = clean_notes
         if unit_cost or total_stage_cost:

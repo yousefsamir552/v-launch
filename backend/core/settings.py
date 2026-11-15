@@ -127,7 +127,9 @@ REST_FRAMEWORK = {
 AUTH_PASSWORD_VALIDATORS = []
 
 LANGUAGE_CODE = 'ar'
-TIME_ZONE = 'UTC'
+# توقيت المصنع الفعلي (مصر) حتى تتطابق تواريخ الحركات (date.today())
+# وتوقيتات سجل التدقيق (timezone.localtime()) مع التوقيت المحلي.
+TIME_ZONE = 'Africa/Cairo'
 USE_I18N = True
 USE_TZ = True
 

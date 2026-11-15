@@ -18,6 +18,43 @@ export const auditContextHeaders = (section: string): Record<string, string> => 
   'X-Audit-Section': String(section || '').trim()
 });
 
+/**
+ * الأطقم التامة الفعلية للموديل:
+ * تُعتمد قيمة completed_sets الجاهزة من الباك إند أولاً (وهي تخصم عجز عينات
+ * التصوير)، وإلا نرجع للمعادلة القديمة كاحتياط للموديلات غير المحسوبة.
+ */
+export const finishedSetsOf = (
+  model?:
+    | {
+        completed_sets?: number;
+        count_after_sewing?: number;
+        count_after_print?: number;
+        actual_cut_count?: number;
+        target_cut_quantity?: number;
+      }
+    | null
+): number => {
+  if (!model) return 0;
+  const completedSets = Number(model.completed_sets || 0);
+  if (completedSets > 0) return completedSets;
+  return Number(
+    model.count_after_sewing ||
+      model.count_after_print ||
+      model.actual_cut_count ||
+      model.target_cut_quantity ||
+      0
+  );
+};
+
+/** عدد قطع عينة التصوير المحتجزة (تُخصم مؤقتاً من الأطقم التامة). */
+export const photographyOutstandingOf = (
+  model?: { photography_outstanding_qty?: number } | null
+): number => Math.max(0, Number(model?.photography_outstanding_qty || 0));
+
+/** وصف قصير يظهر بجانب الرقم عند وجود قطع محتجزة في التصوير. */
+export const photographyHoldLabel = (quantity: number): string =>
+  quantity > 0 ? `${quantity} قطعة عينة في التصوير` : '';
+
 /** رتبة المرحلة ضمن سلسلة الإنتاج (الأكبر = الأكثر تقدماً). */
 export const stageRank = (stage?: string | null): number => {
   const index = PART_STAGE_ORDER.indexOf(String(stage || '') as PartStage);

@@ -61,6 +61,7 @@ import {
   SNOOZED_NOTIFICATIONS_STORAGE_KEY
 } from '../types';
 import { buildPackagingDemandMap } from '../utils/packagingMaterials';
+import { finishedSetsOf, photographyOutstandingOf } from '../utils/completedModels';
 import { exportCsv, exportZipCsv, datedFileName, CsvValue, CsvSheet } from '../utils/exportExcel';
 
 /**
@@ -175,10 +176,14 @@ const PRE_PRODUCTION_STAGES = new Set(['مرحلة التصميم', 'تصميم'
 /**
  * ترويسات تدقيق تُمرَّر عند تعديل موديل تجاوز قسم التصميم/القص،
  * ليقوم الباك إند بتسجيل السجل بعلامة "[تعديل على موديل منتهي]".
+ * القسم يحدد اسم الشاشة/القسم الذي تم منه التعديل داخل سجل التدقيق.
  */
-const auditHeadersForModel = (model?: DesignModel | null) => {
+const auditHeadersForModel = (
+  model?: DesignModel | null,
+  section: string = 'التصميم'
+) => {
   if (!model) return undefined;
-  return PRE_PRODUCTION_STAGES.has(model.status) ? undefined : auditContextHeaders('التصميم');
+  return PRE_PRODUCTION_STAGES.has(model.status) ? undefined : auditContextHeaders(section);
 };
 
 interface AppContextType {
@@ -2384,7 +2389,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               notesShirt: model.notes_shirt,
               notesPants: model.notes_pants
             })
-      }, auditHeadersForModel(model))
+      }, auditHeadersForModel(model, 'التصميم'))
       .then((savedModel) => {
         setModels((prev) => prev.map((m) => (m.id === data.modelId ? savedModel : m)));
         logAction('التصميم', `تحديث خطة وخامات الموديل ${model.model_code} (حجز من المتاح للتصميم)`);
@@ -2427,7 +2432,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
     );
     api
-      .updateModel(modelId, filteredData, auditHeadersForModel(models.find((m) => m.id === modelId)))
+      .updateModel(
+        modelId,
+        filteredData,
+        auditHeadersForModel(models.find((m) => m.id === modelId), 'التصميم')
+      )
       .then((saved) => {
         setModels((prev) => prev.map((m) => (m.id === modelId ? saved : m)));
         addFlashMessage('تم تحديث بيانات وملاحظات التشغيل بنجاح');
@@ -3523,6 +3532,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       'الحالة',
       'عدد القطع المقصوصة',
       'عدد الأطقم المكتملة',
+      'قطع عينة في التصوير (مخصومة)',
       'ملاحظات'
     ];
     const rows: CsvValue[][] = completed.map((m) => [
@@ -3530,7 +3540,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       m.model_type,
       m.status,
       m.total_cut_pieces ?? 0,
-      m.completed_sets ?? 0,
+      // الأطقم التامة الفعلية بعد خصم عينات التصوير (completed_sets من الباك إند).
+      finishedSetsOf(m),
+      photographyOutstandingOf(m),
       m.design_notes || '-'
     ]);
 
@@ -4258,7 +4270,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     api
-      .updatePrintDispatchStatus(dispatchId, status, currentUser?.real_name || 'مسؤول المطابع')
+      .updatePrintDispatchStatus(
+        dispatchId,
+        status,
+        currentUser?.real_name || 'مسؤول المطابع',
+        auditHeadersForModel(
+          models.find((m) => m.id === disp.model_id),
+          'المطابع والتطريز'
+        )
+      )
       .then((saved) => {
         setPrintDispatches((prev) => prev.map((d) => (d.id === dispatchId ? saved : d)));
         refreshState();
@@ -4601,16 +4621,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     api
-      .setPackagingStep(modelId, {
-        step,
-        date: resolvedDate,
-        notes: cleanNotes,
-        user_name: currentUser?.real_name || 'مسؤول الأمبالاج',
-        ...(step === 'sent_to_photo' && cleanQty !== undefined ? { sent_qty: cleanQty } : {}),
-        ...(step === 'received_from_photo' && cleanQty !== undefined
-          ? { received_qty: cleanQty }
-          : {})
-      })
+      .setPackagingStep(
+        modelId,
+        {
+          step,
+          date: resolvedDate,
+          notes: cleanNotes,
+          user_name: currentUser?.real_name || 'مسؤول الأمبالاج',
+          ...(step === 'sent_to_photo' && cleanQty !== undefined ? { sent_qty: cleanQty } : {}),
+          ...(step === 'received_from_photo' && cleanQty !== undefined
+            ? { received_qty: cleanQty }
+            : {})
+        },
+        auditHeadersForModel(targetModel, 'الأسمبلي والأمبالاج')
+      )
       .then((res) => {
         const saved: PackagingRequirement | undefined = res?.packagingRequirement;
         if (saved) {

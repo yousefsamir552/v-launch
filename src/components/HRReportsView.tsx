@@ -23,10 +23,12 @@ import { useApp } from '../context/AppContext';
 import { api } from '../api/client';
 import { escapeHtml, renderLogoHtml } from '../utils/printShared';
 import type {
+  HRAttendanceSettings,
   HRReportDepartmentRow,
   HRReportLoanItem,
   HRReportMonthRow,
-  HRReportsPayload
+  HRReportsPayload,
+  HRWeekDayKey
 } from '../types';
 
 const MONTH_LABELS_AR = [
@@ -35,6 +37,25 @@ const MONTH_LABELS_AR = [
 ];
 const WEEK_DAY_AR = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 const WEEK_DAYS_SHORT = ['ح', 'ن', 'ث', 'ر', 'خ', 'ج', 'س'];
+
+/** مفاتيح أيام الأسبوع وفق Date.getDay() (0=الأحد ... 6=السبت). */
+const WEEK_DAY_KEYS: HRWeekDayKey[] = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday'
+];
+/** الافتراضي: الأحد (Date.getDay() = 0). */
+const DEFAULT_WEEKLY_OFF_INDEX = 0;
+
+/** رقم يوم الإجازة الأسبوعية وفق Date.getDay() من قيمة إعدادات الحضور. */
+const weeklyOffIndexFromKey = (key?: string | null): number => {
+  const index = WEEK_DAY_KEYS.indexOf((key || 'Sunday') as HRWeekDayKey);
+  return index >= 0 ? index : DEFAULT_WEEKLY_OFF_INDEX;
+};
 
 const pad2 = (value: number) => String(value).padStart(2, '0');
 const monthKeyOf = (year: number, monthIndex: number) => `${year}-${pad2(monthIndex + 1)}`;
@@ -54,9 +75,17 @@ const formatDayLabel = (iso: string) => {
   return `${WEEK_DAY_AR[parsed.getDay()]} ${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 };
 
-/** أيام الشهر مرتبة داخل شبكة سبعة أعمدة (الأحد أول يوم). */
-const buildMonthCells = (year: number, monthIndex: number): (string | null)[] => {
-  const leading = new Date(year, monthIndex, 1).getDay();
+/**
+ * أيام الشهر مرتبة داخل شبكة سبعة أعمدة تبدأ من يوم الإجازة الأسبوعية
+ * (الأحد افتراضياً) لأن الأسبوع يُحسب حتى يوم الإجازة.
+ */
+const buildMonthCells = (
+  year: number,
+  monthIndex: number,
+  weekStartIndex: number = DEFAULT_WEEKLY_OFF_INDEX
+): (string | null)[] => {
+  const firstDayIndex = new Date(year, monthIndex, 1).getDay();
+  const leading = (firstDayIndex - weekStartIndex + 7) % 7;
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
   const cells: (string | null)[] = [];
   for (let index = 0; index < leading; index += 1) cells.push(null);
@@ -65,6 +94,12 @@ const buildMonthCells = (year: number, monthIndex: number): (string | null)[] =>
   }
   return cells;
 };
+
+/** تسميات أيام الأسبوع مرتبة بدءاً من يوم الإجازة الأسبوعية. */
+const rotateWeekLabels = (weekStartIndex: number): string[] => [
+  ...WEEK_DAYS_SHORT.slice(weekStartIndex),
+  ...WEEK_DAYS_SHORT.slice(0, weekStartIndex)
+];
 
 export const HRReportsView: React.FC = () => {
   const { addFlashMessage, globalSettings, canAccessHRSection } = useApp();
@@ -84,6 +119,8 @@ export const HRReportsView: React.FC = () => {
   const [error, setError] = useState('');
   const [openDay, setOpenDay] = useState<string | null>(null);
   const [openMonth, setOpenMonth] = useState<string | null>(null);
+  // يوم الإجازة الأسبوعية من إعدادات الحضور — يحدد بداية شبكة الأسبوع في التقويم.
+  const [weeklyOffIndex, setWeeklyOffIndex] = useState<number>(DEFAULT_WEEKLY_OFF_INDEX);
 
   const canView = canAccessHRSection('reports') || canAccessHRSection('payroll');
 
@@ -107,6 +144,21 @@ export const HRReportsView: React.FC = () => {
   useEffect(() => {
     void loadReport();
   }, [loadReport]);
+
+  // جلب إعدادات الحضور مرة واحدة لمعرفة يوم الإجازة الأسبوعية المعتمد.
+  useEffect(() => {
+    let active = true;
+    api
+      .getHRAttendanceSettings()
+      .then((settings: HRAttendanceSettings | null) => {
+        if (!active) return;
+        setWeeklyOffIndex(weeklyOffIndexFromKey(settings?.weekly_off_day));
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const loansByDay = payload?.loans_by_day || {};
   const loansSummary = payload?.loans_summary;
@@ -426,7 +478,7 @@ export const HRReportsView: React.FC = () => {
 
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {Array.from({ length: 12 }).map((_, monthIndex) => {
-                const cells = buildMonthCells(year, monthIndex);
+                const cells = buildMonthCells(year, monthIndex, weeklyOffIndex);
                 const monthKey = monthKeyOf(year, monthIndex);
                 return (
                   <div key={monthKey} className="rounded-2xl border border-slate-200 bg-slate-50/40 p-3">
@@ -435,7 +487,7 @@ export const HRReportsView: React.FC = () => {
                       <span className="text-[10px] font-black text-purple-700">{formatMoney(monthLoanTotals[monthKey] || 0)}</span>
                     </div>
                     <div className="grid grid-cols-7 gap-1">
-                      {WEEK_DAYS_SHORT.map((label, index) => (
+                      {rotateWeekLabels(weeklyOffIndex).map((label, index) => (
                         <span key={`${monthKey}-head-${index}`} className="text-center text-[9px] font-black text-slate-400">{label}</span>
                       ))}
                       {cells.map((iso, index) => {

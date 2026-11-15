@@ -1,7 +1,27 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { Boxes, Printer, X, CheckCircle2, Factory, Package } from 'lucide-react';
+import { Boxes, Printer, X, CheckCircle2, Factory, Package, AlertTriangle } from 'lucide-react';
 import { isImageLogo } from '../utils/printShared';
+import { finishedSetsOf, photographyHoldLabel, photographyOutstandingOf } from '../utils/completedModels';
+import type { DesignModel } from '../types';
+
+/**
+ * تنبيه صغير يظهر بجانب رقم الأطقم عندما تكون هناك قطع عينة محتجزة في التصوير
+ * (تم خصمها مؤقتاً من الأطقم التامة في الباك إند).
+ */
+const PhotographyHoldBadge: React.FC<{ model: DesignModel }> = ({ model }) => {
+  const holdQty = photographyOutstandingOf(model);
+  if (holdQty <= 0) return null;
+  return (
+    <span
+      title={`${photographyHoldLabel(holdQty)} — مخصومة مؤقتاً من الأطقم التامة`}
+      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200"
+    >
+      <AlertTriangle className="w-3 h-3" />
+      {holdQty}
+    </span>
+  );
+};
 
 export const ProductionWarehouseView: React.FC = () => {
   const { models, globalSettings, exportProductionWarehouseCsv } = useApp();
@@ -13,7 +33,8 @@ export const ProductionWarehouseView: React.FC = () => {
     (m) => !m.is_deleted && (m.status === 'مخزن الإنتاج التام' || m.status === 'مكتمل الإنتاج')
   );
 
-  const totalFinishedPieces = finishedModels.reduce((sum, m) => sum + (m.count_after_sewing || m.count_after_print || m.target_cut_quantity || 0), 0);
+  // الأطقم التامة الفعلية (completed_sets من الباك إند بعد خصم عينات التصوير).
+  const totalFinishedSets = finishedModels.reduce((sum, m) => sum + finishedSetsOf(m), 0);
 
   return (
     <div className="space-y-6">
@@ -66,7 +87,7 @@ export const ProductionWarehouseView: React.FC = () => {
             </h3>
           </div>
           <span className="text-xs font-bold px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
-            إجمالي القطع الجاهزة: {totalFinishedPieces} قطعة
+            إجمالي الأطقم الجاهزة: {totalFinishedSets} طقم
           </span>
         </div>
 
@@ -85,7 +106,7 @@ export const ProductionWarehouseView: React.FC = () => {
             <tbody className="divide-y divide-slate-100 font-semibold">
               {finishedModels.length > 0 ? (
                 finishedModels.map((m) => {
-                  const actual = m.count_after_sewing || m.count_after_print || m.actual_cut_count || m.target_cut_quantity;
+                  const actual = finishedSetsOf(m);
                   return (
                     <tr key={m.id} className="hover:bg-slate-50 transition">
                       <td className="px-6 py-4 font-bold text-slate-900 flex items-center gap-2">
@@ -103,7 +124,10 @@ export const ProductionWarehouseView: React.FC = () => {
                       <td className="px-6 py-4 text-slate-600">{m.model_type}</td>
                       <td className="px-6 py-4 text-center font-bold text-slate-700">{m.target_cut_quantity}</td>
                       <td className="px-6 py-4 text-center font-black text-emerald-700 text-sm">
-                        {actual} قطعة
+                        <span className="inline-flex items-center gap-1.5">
+                          {actual} طقم
+                          <PhotographyHoldBadge model={m} />
+                        </span>
                       </td>
                       <td className="px-6 py-4 text-center text-slate-500 font-mono">
                         {new Date(m.created_at).toLocaleDateString('ar-EG')}
@@ -184,7 +208,7 @@ export const ProductionWarehouseView: React.FC = () => {
                 </h1>
                 <p className="text-xs text-slate-600 mt-0.5 font-bold">
                   تاريخ الاستخراج: {new Date().toLocaleString('ar-EG', { hour12: false })} —
-                  إجمالي القطع الجاهزة: {totalFinishedPieces} قطعة
+                  إجمالي الأطقم الجاهزة: {totalFinishedSets} طقم
                 </p>
               </div>
 
@@ -201,7 +225,7 @@ export const ProductionWarehouseView: React.FC = () => {
                 </thead>
                 <tbody className="font-semibold">
                   {finishedModels.map((m) => {
-                    const actual = m.count_after_sewing || m.count_after_print || m.actual_cut_count || m.target_cut_quantity;
+                    const actual = finishedSetsOf(m);
                     return (
                       <tr key={m.id}>
                         <td className="border border-slate-800 p-2.5">
@@ -217,7 +241,12 @@ export const ProductionWarehouseView: React.FC = () => {
                         <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{m.model_code}</td>
                         <td className="border border-slate-800 p-2.5 text-slate-700">{m.model_type}</td>
                         <td className="border border-slate-800 p-2.5 text-center">{m.target_cut_quantity}</td>
-                        <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900">{actual} قطعة</td>
+                        <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900">
+                          <span className="inline-flex items-center gap-1">
+                            {actual} طقم
+                            <PhotographyHoldBadge model={m} />
+                          </span>
+                        </td>
                         <td className="border border-slate-800 p-2.5 text-center text-slate-700">{m.status}</td>
                       </tr>
                     );

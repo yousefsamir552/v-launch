@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+*.sqlite3
+db.sqlite3
+backend/db.sqlite3
+*.textClipping

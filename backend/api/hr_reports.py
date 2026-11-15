@@ -30,6 +30,7 @@ from .models import (
     RANK_SUDO,
 )
 from .permissions import IsAuthenticatedProfile
+from .hr_attendance_io import DEFAULT_WEEKLY_OFF_WEEKDAY, weekly_off_weekday
 from .views import (
     is_sudo_profile,
     rank_scoped_queryset,
@@ -113,7 +114,7 @@ def _is_attended(record):
     return bool(record.check_in)
 
 
-def _sunday_ratio(absent_count):
+def _weekly_off_ratio(absent_count):
     if absent_count >= 5:
         return 1.0
     if absent_count == 4:
@@ -125,9 +126,9 @@ def _sunday_ratio(absent_count):
     return 0.0
 
 
-def _sunday_deduction_for_date(records_by_date, sunday):
-    """نسبة خصم يوم الأحد وفق غياب الأيام الستة السابقة له."""
-    week_dates = [sunday - timedelta(days=offset) for offset in range(6, 0, -1)]
+def _weekly_off_deduction_for_date(records_by_date, off_date):
+    """نسبة خصم يوم الإجازة الأسبوعية وفق غياب الأيام الستة السابقة له."""
+    week_dates = [off_date - timedelta(days=offset) for offset in range(6, 0, -1)]
     if not any(day in records_by_date for day in week_dates):
         return 0.0
     absent_count = 0
@@ -135,16 +136,17 @@ def _sunday_deduction_for_date(records_by_date, sunday):
         record = records_by_date.get(day)
         if record is None or (not record.is_excused and not record.check_in):
             absent_count += 1
-    return _sunday_ratio(absent_count)
+    return _weekly_off_ratio(absent_count)
 
 
-def _compute_month_accrual(records_by_date, month_key, up_to_iso):
-    """استحقاق الشهر على أساس الحضور الفعلي + أيام الأحد المدفوعة (حد 30 يوماً)."""
+def _compute_month_accrual(records_by_date, month_key, up_to_iso,
+                           weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY):
+    """استحقاق الشهر على أساس الحضور الفعلي + أيام الإجازة الأسبوعية المدفوعة (حد 30 يوماً)."""
     y, m = (int(part) for part in month_key.split('-'))
     last_day = calendar.monthrange(y, m)[1]
     attended_days = 0.0
     workdays_in_scope = 0
-    paid_sunday_days = 0.0
+    paid_weekly_off_days = 0.0
 
     for day in range(1, last_day + 1):
         cursor = date(y, m, day)
@@ -152,20 +154,21 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso):
         has_check_in = bool(record and record.check_in)
         if up_to_iso and cursor > up_to_iso and not has_check_in:
             continue
-        if cursor.weekday() == 6:  # الأحد (0=الإثنين ... 6=الأحد)
+        # يوم الإجازة الأسبوعية المدفوعة (يأتي من إعدادات الحضور، والأحد افتراضياً).
+        if cursor.weekday() == weekly_off_index:
             if has_check_in:
                 workdays_in_scope += 1
                 attended_days += 1
                 continue
             week_dates = [cursor - timedelta(days=offset) for offset in range(6, 0, -1)]
             if any(day_key in records_by_date for day_key in week_dates):
-                paid_sunday_days += max(0.0, 1.0 - _sunday_deduction_for_date(records_by_date, cursor))
+                paid_weekly_off_days += max(0.0, 1.0 - _weekly_off_deduction_for_date(records_by_date, cursor))
             continue
         workdays_in_scope += 1
         if record and _is_attended(record):
             attended_days += 1
 
-    earned_days = attended_days + paid_sunday_days
+    earned_days = attended_days + paid_weekly_off_days
     month_last = date(y, m, last_day)
     month_complete = up_to_iso is None or up_to_iso >= month_last
     if month_complete and workdays_in_scope > 0 and attended_days >= workdays_in_scope:
@@ -174,7 +177,7 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso):
 
     return {
         'attended_days': round(attended_days, 2),
-        'paid_sunday_days': round(paid_sunday_days, 2),
+        'paid_sunday_days': round(paid_weekly_off_days, 2),
         'earned_days': round(earned_days, 2),
     }
 
@@ -251,7 +254,8 @@ def _match_late_rule(rules, late_minutes):
 # Helpers — monthly payroll row (mirror of PayrollPanel)
 # ---------------------------------------------------------------------------
 def _payroll_for_employee_month(employee, employee_records, records_by_date,
-                                penalties, loans, month_key, settings, up_to_iso):
+                                penalties, loans, month_key, settings, up_to_iso,
+                                weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY):
     salary = float(employee.monthly_salary or 0)
     day_rate = salary / 30.0
     hour_rate = day_rate / 8.0
@@ -268,8 +272,8 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
             continue
         if record.review_status == 'rejected':
             continue
-        # الأحد بدون بصمة حضور = إجازة أسبوعية مدفوعة (لا إضافي/خصم عليه).
-        if record.date.weekday() == 6 and not record.check_in:
+        # يوم الإجازة الأسبوعية بدون بصمة حضور = إجازة مدفوعة (لا إضافي/خصم عليه).
+        if record.date.weekday() == weekly_off_index and not record.check_in:
             continue
 
         overtime_days += float(record.overtime_days or 0)
@@ -295,7 +299,7 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
         attendance_days += ded_days
         attendance_hours += ded_hours
 
-    accrual = _compute_month_accrual(records_by_date, month_key, up_to_iso)
+    accrual = _compute_month_accrual(records_by_date, month_key, up_to_iso, weekly_off_index)
     earned_base = accrual['earned_days'] * day_rate
 
     penalty_days = 0.0
@@ -479,6 +483,7 @@ class HRReportsViewSet(viewsets.ViewSet):
             loans_by_employee[loan.employee_id].append(loan)
 
         settings = HRAttendanceSettings.objects.first()
+        weekly_off_index = weekly_off_weekday(settings)
 
         def up_to_for(month_key):
             if month_key == default_month:
@@ -504,6 +509,7 @@ class HRReportsViewSet(viewsets.ViewSet):
                     month_key,
                     settings,
                     up_to_for(month_key),
+                    weekly_off_index,
                 )
             employee_rows[employee.id] = per_month
 
@@ -524,6 +530,7 @@ class HRReportsViewSet(viewsets.ViewSet):
             window_records=window_records,
             window_loans=window_loans,
             available_years=available_years,
+            weekly_off_index=weekly_off_index,
         ))
 
     # ------------------------------------------------------------------
@@ -544,7 +551,8 @@ class HRReportsViewSet(viewsets.ViewSet):
     def _build_payload(cls, *, year, today, year_months, range_months,
                        range_from_key, range_to_key, range_start, range_end,
                        employees, employee_rows, active_workers,
-                       window_records, window_loans, available_years):
+                       window_records, window_loans, available_years,
+                       weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY):
         # --- التقرير السنوي + تفصيل الأقسام لكل شهر ---
         months_payload = []
         monthly_departments = {}
@@ -648,7 +656,9 @@ class HRReportsViewSet(viewsets.ViewSet):
                 ),
             },
             'loans_by_day': loans_by_day,
-            'loans_summary': cls._build_loans_summary(loans_by_day, today, year),
+            'loans_summary': cls._build_loans_summary(
+                loans_by_day, today, year, weekly_off_index
+            ),
         }
 
     @staticmethod
@@ -737,7 +747,8 @@ class HRReportsViewSet(viewsets.ViewSet):
         }
 
     @staticmethod
-    def _build_loans_summary(loans_by_day, today, year):
+    def _build_loans_summary(loans_by_day, today, year,
+                             weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY):
         """إجمالي الأسبوع / إجمالي الشهر الحالي / أعلى يوم صرف خلال السنة."""
         def sum_range(start, end):
             total = 0.0
@@ -751,8 +762,9 @@ class HRReportsViewSet(viewsets.ViewSet):
                 cursor += timedelta(days=1)
             return round(total, 2), count
 
-        # الأسبوع يبدأ يوم الأحد (weekday: الإثنين=0 ... الأحد=6).
-        week_start = today - timedelta(days=(today.weekday() + 1) % 7)
+        # الأسبوع يبدأ من يوم الإجازة الأسبوعية المحدد في الإعدادات
+        # (date.weekday: الإثنين=0 ... الأحد=6).
+        week_start = today - timedelta(days=(today.weekday() - weekly_off_index) % 7)
         week_end = week_start + timedelta(days=6)
         month_start = date(today.year, today.month, 1)
         month_end = date(

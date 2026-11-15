@@ -37,6 +37,20 @@ def get_ext_id(obj) -> str:
     return obj.client_id or str(obj.id)
 
 
+def supplier_ext_id(instance) -> str:
+    """المعرف الخارجي للمورد المرتبط بحركة مخزن (نص فارغ إن لم يوجد)."""
+    if not getattr(instance, 'supplier_id', None):
+        return ''
+    return get_ext_id(instance.supplier)
+
+
+def workshop_ext_id(instance) -> str:
+    """المعرف الخارجي للورشة المسجلة المرتبطة بسجل تشغيل (نص فارغ إن لم توجد)."""
+    if not getattr(instance, 'workshop_id', None):
+        return ''
+    return get_ext_id(instance.workshop)
+
+
 def to_date_str(value) -> str:
     """Return an ISO date string for date objects or raw string inputs (never raises)."""
     if not value:
@@ -47,11 +61,16 @@ def to_date_str(value) -> str:
 
 
 def viewer_rank_from_context(context) -> int:
-    """رتبة المستخدم الحالي من سياق الطلب (0 عند غياب الهوية = رؤية إدارية كاملة)."""
+    """رتبة المستخدم الحالي من سياق الطلب.
+
+    Fail-closed: عند غياب الطلب/الهوية نفترض أدنى رتبة (RANK_LEVEL_THREE)
+    حتى لا تُكشف مسميات الرتب (rank_label) بالخطأ إذا استُدعي أي Serializer
+    دون تمرير ``request`` في الـ context.
+    """
     request = (context or {}).get('request')
     profile = getattr(request, 'user_profile', None) if request else None
     if profile is None:
-        return RANK_SUDO
+        return RANK_LEVEL_THREE
     if profile.is_sudo or profile.username.lower() == 'sudo':
         return RANK_SUDO
     return coerce_rank_level(profile.rank_level)
@@ -300,6 +319,13 @@ class FabricTransactionSerializer(serializers.ModelSerializer):
             'operation': instance.operation,
             'amount': float(instance.amount or 0),
             'timestamp': instance.timestamp or (instance.created_at.strftime('%Y-%m-%d %H:%M') if instance.created_at else ''),
+            # سعر الوحدة التاريخي يُخفى (None) لمن لا يملك صلاحية عرض أسعار الخامات.
+            'unit_price_snapshot': (
+                float(instance.unit_price_snapshot or 0)
+                if viewer_can_view(self.context, 'view_fabric_prices')
+                else None
+            ),
+            'supplier_id': supplier_ext_id(instance),
         }
 
 
@@ -372,6 +398,13 @@ class AccessoryTransactionSerializer(serializers.ModelSerializer):
             'model_code_ref': instance.model_code_ref or '',
             'notes': instance.notes or '',
             'timestamp': instance.timestamp or (instance.created_at.strftime('%Y-%m-%d %H:%M') if instance.created_at else ''),
+            # سعر الوحدة التاريخي يُخفى (None) لمن لا يملك صلاحية عرض أسعار الإكسسوارات.
+            'unit_price_snapshot': (
+                float(instance.unit_price_snapshot or 0)
+                if viewer_can_view(self.context, 'view_accessory_prices')
+                else None
+            ),
+            'supplier_id': supplier_ext_id(instance),
         }
 
 
@@ -387,6 +420,12 @@ class ModelRequirementSerializer(serializers.ModelSerializer):
             'color_id': get_ext_id(instance.color),
             'part_name': instance.part_name,
             'planned_quantity': float(instance.planned_quantity or 0),
+            # سعر الوحدة التاريخي يُخفى (None) لمن لا يملك صلاحية عرض أسعار الخامات.
+            'unit_price_snapshot': (
+                float(instance.unit_price_snapshot or 0)
+                if viewer_can_view(self.context, 'view_fabric_prices')
+                else None
+            ),
         }
 
 
@@ -410,6 +449,12 @@ class ModelAccessorySerializer(serializers.ModelSerializer):
             'accessory_name': instance.accessory_name,
             'unit': instance.unit or 'قطعة',
             'image': instance.image or '',
+            # سعر الوحدة التاريخي يُخفى (None) لمن لا يملك صلاحية عرض أسعار الإكسسوارات.
+            'unit_price_snapshot': (
+                float(instance.unit_price_snapshot or 0)
+                if viewer_can_view(self.context, 'view_accessory_prices')
+                else None
+            ),
         }
 
 
@@ -571,6 +616,7 @@ class PrintDispatchSerializer(serializers.ModelSerializer):
             'id': get_ext_id(instance),
             'model_id': get_ext_id(instance.model),
             'shop_name': instance.print_house,
+            'workshop_id': workshop_ext_id(instance),
             'piece_type': instance.piece_type or 'shirt',
             'piece_label': instance.piece_label or instance.get_piece_type_display(),
             'print_location': instance.print_location or '',
@@ -607,6 +653,7 @@ class SewingDispatchSerializer(serializers.ModelSerializer):
             'id': get_ext_id(instance),
             'model_id': get_ext_id(instance.model),
             'workshop_name': instance.workshop_name,
+            'workshop_id': workshop_ext_id(instance),
             'pieces_count': pcs,
             'dispatched_at': disp_at,
             'expected_delivery_date': to_date_str(instance.expected_delivery_date),
@@ -670,6 +717,8 @@ class ModelItemSerializer(serializers.ModelSerializer):
             'qc_summary': parts_info['qc_summary'],
             'sewing_available': parts_info['sewing_available'],
             'completed_sets': parts_info['completed_sets'],
+            'finished_good_sets': parts_info['finished_good_sets'],
+            'photography_outstanding_qty': parts_info['photography_outstanding_qty'],
             'part_stages': part_stages,
             'part_stages_detail': {
                 part: {
@@ -766,6 +815,7 @@ class FinishingRecordSerializer(serializers.ModelSerializer):
             'part_type': instance.part_type or 'shirt',
             'piece_label': instance.piece_label or instance.get_part_type_display(),
             'vendor_name': instance.vendor_name or '',
+            'workshop_id': workshop_ext_id(instance),
             'entry_date': to_date_str(instance.entry_date) or None,
             'expected_exit_date': to_date_str(instance.expected_exit_date) or None,
             'actual_exit_date': to_date_str(instance.actual_exit_date) or None,
@@ -796,6 +846,7 @@ class AssemblyStageRecordSerializer(serializers.ModelSerializer):
             'part_type': instance.part_type or '',
             'part_label': dict(PART_TYPE_CHOICES).get(instance.part_type, '') if instance.part_type else '',
             'vendor_name': instance.vendor_name or '',
+            'workshop_id': workshop_ext_id(instance),
             'entry_date': to_date_str(instance.entry_date) or None,
             'expected_exit_date': to_date_str(instance.expected_exit_date) or None,
             'actual_exit_date': to_date_str(instance.actual_exit_date) or None,
@@ -875,7 +926,10 @@ class PackagingMaterialRuleSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def to_representation(self, instance):
-        size_rules = instance.size_rules.select_related('supplier').all()
+        # نستخدم الكاش المحمّل مسبقاً عبر prefetch_related
+        # ('size_rules__rule', 'size_rules__supplier', 'size_rules__transactions')
+        # بدلاً من استعلام جديد لكل قاعدة يلغي الـ prefetch.
+        size_rules = list(instance.size_rules.all())
         total_stock = sum(float(row.current_stock or 0) for row in size_rules)
         return {
             'id': get_ext_id(instance),

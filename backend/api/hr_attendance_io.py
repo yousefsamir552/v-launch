@@ -57,6 +57,38 @@ STATUS_ALIASES = {
 
 VALID_ATTENDANCE_STATUSES = ('present', 'absent', 'leave', 'missing_punch')
 
+# تحويل اسم يوم الإجازة الأسبوعية (من إعدادات الحضور) إلى رقم date.weekday()
+# حيث الإثنين = 0 ... الأحد = 6. الافتراضي هو الأحد.
+WEEKLY_OFF_DAY_INDEX = {
+    'monday': 0,
+    'tuesday': 1,
+    'wednesday': 2,
+    'thursday': 3,
+    'friday': 4,
+    'saturday': 5,
+    'sunday': 6,
+    # أسماء عربية (احتياط) بنفس الترتيب.
+    'الإثنين': 0, 'الاثنين': 0,
+    'الثلاثاء': 1,
+    'الأربعاء': 2, 'الاربعاء': 2,
+    'الخميس': 3,
+    'الجمعة': 4,
+    'السبت': 5,
+    'الأحد': 6, 'الاحد': 6,
+}
+
+DEFAULT_WEEKLY_OFF_WEEKDAY = 6  # الأحد
+
+
+def weekly_off_weekday(settings, default=DEFAULT_WEEKLY_OFF_WEEKDAY):
+    """رقم يوم الإجازة الأسبوعية المدفوعة وفق date.weekday() (الإثنين=0 ... الأحد=6)."""
+    raw = str(getattr(settings, 'weekly_off_day', '') or '').strip()
+    if not raw:
+        return default
+    if raw in WEEKLY_OFF_DAY_INDEX:
+        return WEEKLY_OFF_DAY_INDEX[raw]
+    return WEEKLY_OFF_DAY_INDEX.get(raw.lower(), default)
+
 _EXCEL_EPOCH = date(1899, 12, 30)
 _XLSX_NS = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
 
@@ -620,7 +652,7 @@ def compute_attendance(settings, employee, work_date, check_in, check_out, statu
 
 
 # ---------------------------------------------------------------------------
-# العمل الإضافي وخصم يوم الإجازة الأسبوعية (الأحد)
+# العمل الإضافي وخصم يوم الإجازة الأسبوعية
 # ---------------------------------------------------------------------------
 
 def _clock_minutes(value):
@@ -698,8 +730,8 @@ def compute_overtime(settings, check_out):
 
 def sunday_deduction_for_week(records_by_date, week_dates):
     """
-    احتساب خصم يوم الأحد (الإجازة الأسبوعية) وفق عدد أيام الغياب بدون عذر
-    خلال أيام العمل الستة (الاثنين..السبت) في نفس الأسبوع:
+    احتساب خصم يوم الإجازة الأسبوعية وفق عدد أيام الغياب بدون عذر
+    خلال أيام العمل الستة السابقة له في نفس الأسبوع:
 
       2 أيام  -> ثلث يوم (1/3)
       3 أيام  -> نصف يوم (1/2)
@@ -736,23 +768,26 @@ def sunday_deduction_for_week(records_by_date, week_dates):
     }
 
 
-def _week_dates_for_sunday(sunday_date):
-    """أيام العمل الستة (الاثنين..السبت) التي تسبق يوم الأحد."""
-    return [sunday_date - timedelta(days=offset) for offset in range(6, 0, -1)]
+def _week_dates_before(off_date):
+    """أيام العمل الستة التي تسبق يوم الإجازة الأسبوعية."""
+    return [off_date - timedelta(days=offset) for offset in range(6, 0, -1)]
 
 
 def reapply_employee_month(settings, employee, month_start, month_end, preserve_decisions=False):
     """
-    إعادة تطبيق قواعد الحضور والإضافي وخصم الأحد على كل سجلات موظف في شهر.
+    إعادة تطبيق قواعد الحضور والإضافي وخصم الإجازة الأسبوعية على كل سجلات موظف في شهر.
 
     تُستخدم عند رفع الشيت وتعديل سجل والضغط على "إعادة تطبيق القواعد".
     عند preserve_decisions=True تُحفظ قرارات المراجعة اليدوية (approved/rejected)
-    كما هي مع تحديث الإضافي وخصم الأحد فقط.
+    كما هي مع تحديث الإضافي وخصم الإجازة الأسبوعية فقط.
     ترجع عدد السجلات التي تغيّرت.
     """
     from .models import HRAttendanceRecord
 
-    # نقرأ أسبوعاً قبل بداية الشهر حتى يُحسب خصم أول أحد في الشهر بشكل صحيح،
+    # يوم الإجازة الأسبوعية المدفوعة يأتي من إعدادات الحضور (وليس ثابتاً على الأحد).
+    weekly_off_index = weekly_off_weekday(settings)
+
+    # نقرأ أسبوعاً قبل بداية الشهر حتى يُحسب خصم أول يوم إجازة في الشهر بشكل صحيح،
     # لكن نُعيد حساب/إنشاء سجلات الشهر المطلوب فقط.
     lookup_start = month_start - timedelta(days=6)
     all_records = list(
@@ -793,35 +828,35 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
             deduction_hours = computed['deduction_hours']
             review_status = computed['review_status']
 
-        # يوم الأحد إجازة أسبوعية مدفوعة فقط عندما لا توجد بصمة حضور فعلية له.
-        # أما الأحد الذي سجّل فيه الموظف بصمة حضور فيُعامل كيوم عمل عادي
+        # يوم الإجازة الأسبوعية إجازة مدفوعة فقط عندما لا توجد بصمة حضور فعلية له.
+        # أما يوم الإجازة الذي سجّل فيه الموظف بصمة حضور فيُعامل كيوم عمل عادي
         # (تُطبّق عليه قواعد التأخير والإضافي ويُحتسب ضمن أيام الحضور).
-        is_sunday = record.date.weekday() == 6
-        worked_sunday = is_sunday and bool(record.check_in)
-        if is_sunday and not worked_sunday:
+        is_weekly_off = record.date.weekday() == weekly_off_index
+        worked_weekly_off = is_weekly_off and bool(record.check_in)
+        if is_weekly_off and not worked_weekly_off:
             deduction_days = 0.0
             deduction_hours = 0.0
             review_status = 'auto_applied'
 
-        sunday_days = 0.0
-        sunday_note = ''
-        if is_sunday and not worked_sunday:
+        weekly_off_days = 0.0
+        weekly_off_note = ''
+        if is_weekly_off and not worked_weekly_off:
             result = sunday_deduction_for_week(
-                records_by_date, _week_dates_for_sunday(record.date)
+                records_by_date, _week_dates_before(record.date)
             )
-            sunday_days = result['sunday_deduction_days']
-            sunday_note = result['sunday_deduction_note']
+            weekly_off_days = result['sunday_deduction_days']
+            weekly_off_note = result['sunday_deduction_note']
 
         new_values = {
-            'status': 'leave' if (is_sunday and not worked_sunday) else computed['status'],
+            'status': 'leave' if (is_weekly_off and not worked_weekly_off) else computed['status'],
             'calculated_deduction_days': deduction_days,
             'calculated_deduction_hours': deduction_hours,
-            'late_minutes': 0.0 if (is_sunday and not worked_sunday) else float(computed['late_minutes'] or 0),
-            'early_minutes': 0.0 if (is_sunday and not worked_sunday) else float(computed['early_minutes'] or 0),
+            'late_minutes': 0.0 if (is_weekly_off and not worked_weekly_off) else float(computed['late_minutes'] or 0),
+            'early_minutes': 0.0 if (is_weekly_off and not worked_weekly_off) else float(computed['early_minutes'] or 0),
             'overtime_days': overtime['overtime_days'],
             'overtime_hours': overtime['overtime_hours'],
-            'sunday_deduction_days': sunday_days,
-            'sunday_deduction_note': sunday_note,
+            'sunday_deduction_days': weekly_off_days,
+            'sunday_deduction_note': weekly_off_note,
             'review_status': review_status,
         }
 
@@ -839,14 +874,14 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
             record.save()
             changed += 1
 
-    # إنشاء سجل ليوم الأحد (إجازة مدفوعة) لكل أسبوع به بيانات عمل،
-    # حتى يظهر خصم الأحد صراحةً أمام تاريخه في السجل.
+    # إنشاء سجل ليوم الإجازة الأسبوعية (إجازة مدفوعة) لكل أسبوع به بيانات عمل،
+    # حتى يظهر خصم الإجازة الأسبوعية صراحةً أمام تاريخه في السجل.
     today = date.today()
     limit = min(month_end, today)
     cursor = month_start
     while cursor <= limit:
-        if cursor.weekday() == 6 and cursor not in records_by_date:
-            week_dates = _week_dates_for_sunday(cursor)
+        if cursor.weekday() == weekly_off_index and cursor not in records_by_date:
+            week_dates = _week_dates_before(cursor)
             if any(day in records_by_date for day in week_dates):
                 result = sunday_deduction_for_week(records_by_date, week_dates)
                 HRAttendanceRecord.objects.create(

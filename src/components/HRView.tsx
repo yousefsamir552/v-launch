@@ -33,7 +33,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { HRReportsView } from './HRReportsView';
-import { renderLogoHtml } from '../utils/printShared';
+import { escapeHtml, renderLogoHtml } from '../utils/printShared';
 import { api } from '../api/client';
 import {
   HRJobTitle,
@@ -192,6 +192,32 @@ const currentMonth = () => new Date().toISOString().slice(0, 7);
 /** أسماء أيام الأسبوع بالعربية لعرض سجل الحضور اليومي. */
 const WEEK_DAY_AR = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 
+/** ترتيب مفاتيح أيام الأسبوع كما تُخزَّن في إعدادات الحضور (يطابق Date.getDay). */
+const WEEK_DAY_KEYS: HRWeekDayKey[] = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday'
+];
+
+/** الافتراضي: الأحد (Date.getDay() = 0). */
+const DEFAULT_WEEKLY_OFF_INDEX = 0;
+
+/**
+ * رقم يوم الإجازة الأسبوعية وفق Date.getDay() (0=الأحد ... 6=السبت)
+ * انطلاقاً من القيمة المحفوظة في إعدادات الحضور (مثل 'Sunday'/'Friday').
+ */
+const weeklyOffIndexFromKey = (key?: string | null): number => {
+  const index = WEEK_DAY_KEYS.indexOf((key || 'Sunday') as HRWeekDayKey);
+  return index >= 0 ? index : DEFAULT_WEEKLY_OFF_INDEX;
+};
+
+/** الاسم العربي ليوم الإجازة الأسبوعية المستخدم في العناوين والطباعة. */
+const weeklyOffDayLabel = (index: number): string => WEEK_DAY_AR[index] || WEEK_DAY_AR[0];
+
 const formatDayLabel = (iso: string) => {
   const parsed = new Date(`${iso}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return iso;
@@ -203,9 +229,9 @@ const isoDate = (value: Date) =>
     value.getDate()
   ).padStart(2, '0')}`;
 
-/** أيام العمل الستة (الاثنين..السبت) التي تسبق يوم الأحد. */
-const weekDatesBeforeSunday = (sundayIso: string): string[] => {
-  const base = new Date(`${sundayIso}T00:00:00`);
+/** أيام العمل الستة التي تسبق يوم الإجازة الأسبوعية. */
+const weekDatesBeforeWeeklyOff = (offDayIso: string): string[] => {
+  const base = new Date(`${offDayIso}T00:00:00`);
   if (Number.isNaN(base.getTime())) return [];
   const dates: string[] = [];
   for (let offset = 6; offset >= 1; offset -= 1) {
@@ -216,8 +242,8 @@ const weekDatesBeforeSunday = (sundayIso: string): string[] => {
   return dates;
 };
 
-/** نسبة خصم يوم الأحد según عدد أيام الغياب بدون عذر في الأسبوع. */
-const sundayRatioForAbsences = (count: number): number => {
+/** نسبة خصم يوم الإجازة الأسبوعية según عدد أيام الغياب بدون عذر في الأسبوع. */
+const weeklyOffRatioForAbsences = (count: number): number => {
   if (count >= 5) return 1;
   if (count === 4) return 2 / 3;
   if (count === 3) return 1 / 2;
@@ -225,8 +251,8 @@ const sundayRatioForAbsences = (count: number): number => {
   return 0;
 };
 
-/** وصف عربي لنسبة خصم الأحد. */
-const sundayRatioLabel = (days: number): string => {
+/** وصف عربي لنسبة خصم يوم الإجازة الأسبوعية. */
+const weeklyOffRatioLabel = (days: number): string => {
   if (days >= 1) return 'يوم كامل';
   if (days >= 2 / 3) return 'ثلثي يوم';
   if (days >= 1 / 2) return 'نصف يوم';
@@ -234,12 +260,12 @@ const sundayRatioLabel = (days: number): string => {
   return '';
 };
 
-/** حساب خصم يوم أحد واحد من سجلات أيام العمل في الأسبوع. */
-const sundayDeductionForDate = (
+/** حساب خصم يوم إجازة أسبوعية واحد من سجلات أيام العمل في الأسبوع. */
+const weeklyOffDeductionForDate = (
   recordsByDate: Map<string, HRAttendanceRecord>,
-  sundayIso: string
+  offDayIso: string
 ): number => {
-  const weekDates = weekDatesBeforeSunday(sundayIso);
+  const weekDates = weekDatesBeforeWeeklyOff(offDayIso);
   if (weekDates.length === 0) return 0;
   // لا نحسب خصماً لأسبوع لا توجد فيه أي بيانات لهذا الموظف.
   if (!weekDates.some((day) => recordsByDate.has(day))) return 0;
@@ -247,15 +273,16 @@ const sundayDeductionForDate = (
     const record = recordsByDate.get(day);
     return !record || (!record.is_excused && !record.check_in);
   }).length;
-  return sundayRatioForAbsences(absentCount);
+  return weeklyOffRatioForAbsences(absentCount);
 };
 
-/** إجمالي خصم أيام الأحد لموظف داخل شهر معيّن. */
-const sumSundayDeductionsForEmployeeMonth = (
+/** إجمالي خصم أيام الإجازة الأسبوعية لموظف داخل شهر معيّن. */
+const sumWeeklyOffDeductionsForEmployeeMonth = (
   records: HRAttendanceRecord[],
   employeeId: string,
   monthKey: string,
-  upToIso?: string
+  upToIso?: string,
+  weeklyOffIndex: number = DEFAULT_WEEKLY_OFF_INDEX
 ): number => {
   if (!monthKey) return 0;
   const [yearStr, monthStr] = monthKey.split('-');
@@ -272,13 +299,13 @@ const sumSundayDeductionsForEmployeeMonth = (
   let total = 0;
   for (let day = 1; day <= lastDay; day += 1) {
     const cursor = new Date(year, month - 1, day);
-    if (cursor.getDay() !== 0) continue;
-    const sundayIso = isoDate(cursor);
-    if (upToIso && sundayIso > upToIso) continue;
-    // الأحد الذي سُجّلت له بصمة حضور يوم عمل وليس إجازة أسبوعية، فلا يُخصم.
-    const sundayRecord = recordsByDate.get(sundayIso);
-    if (sundayRecord && sundayRecord.check_in) continue;
-    total += sundayDeductionForDate(recordsByDate, sundayIso);
+    if (cursor.getDay() !== weeklyOffIndex) continue;
+    const offDayIso = isoDate(cursor);
+    if (upToIso && offDayIso > upToIso) continue;
+    // يوم الإجازة الذي سُجّلت له بصمة حضور يُعامل كيوم عمل، فلا يُخصم.
+    const offDayRecord = recordsByDate.get(offDayIso);
+    if (offDayRecord && offDayRecord.check_in) continue;
+    total += weeklyOffDeductionForDate(recordsByDate, offDayIso);
   }
   return total;
 };
@@ -369,15 +396,16 @@ interface MonthAccrual {
 
 /**
  * استحقاق الموظف داخل شهر على أساس الحضور الفعلي:
- * - أيام العمل الفعلية (عدا الأحد) التي حضر فيها.
- * - أيام الأحد المدفوعة في الأسابيع التي حضر فيها (بعد خصم نسبة الغياب).
+ * - أيام العمل الفعلية (عدا يوم الإجازة الأسبوعية) التي حضر فيها.
+ * - أيام الإجازة الأسبوعية المدفوعة في الأسابيع التي حضر فيها (بعد خصم نسبة الغياب).
  * - إذا اكتمل الشهر بحضور كامل يُمنح 30 يوماً (تعويض 28/29) وبحد أقصى 30.
  */
 const computeMonthAccrual = (
   employeeId: string,
   records: HRAttendanceRecord[],
   monthKey: string,
-  upToIso?: string
+  upToIso?: string,
+  weeklyOffIndex: number = DEFAULT_WEEKLY_OFF_INDEX
 ): MonthAccrual => {
   const empty: MonthAccrual = { attendedDays: 0, paidSundayDays: 0, earnedDays: 0 };
   if (!monthKey) return empty;
@@ -403,17 +431,17 @@ const computeMonthAccrual = (
     const hasCheckIn = !!record?.check_in;
     // اليوم الحالي (بعد نقطة التوقف = أمس) يُحتسب إذا وُجدت له بصمة حضور فعلية.
     if (upToIso && iso > upToIso && !hasCheckIn) continue;
-    if (cursor.getDay() === 0) {
-      // الأحد الذي عمل فيه الموظف (له بصمة حضور) يوم عمل عادي مستحق.
+    if (cursor.getDay() === weeklyOffIndex) {
+      // يوم الإجازة الذي عمل فيه الموظف (له بصمة حضور) يوم عمل عادي مستحق.
       if (hasCheckIn) {
         workdaysInScope += 1;
         attendedDays += 1;
         continue;
       }
-      const weekDates = weekDatesBeforeSunday(iso);
+      const weekDates = weekDatesBeforeWeeklyOff(iso);
       const hasWeekData = weekDates.some((dateStr) => recordsByDate.has(dateStr));
       if (hasWeekData) {
-        paidSundayDays += Math.max(0, 1 - sundayDeductionForDate(recordsByDate, iso));
+        paidSundayDays += Math.max(0, 1 - weeklyOffDeductionForDate(recordsByDate, iso));
       }
       continue;
     }
@@ -1801,6 +1829,8 @@ const AttendanceRulesPanel: React.FC<{
 
     setIsSaving(true);
     setFormError('');
+    // تغيير يوم الإجازة الأسبوعية يغيّر احتساب السجلات المسجّلة، لذا نعيد تطبيق القواعد تلقائياً.
+    const weeklyOffChanged = !!settings && weeklyOff !== settings.weekly_off_day;
     try {
       await api.updateHRAttendanceSettings({
         official_start_time: startTime,
@@ -1819,6 +1849,14 @@ const AttendanceRulesPanel: React.FC<{
         }))
       });
       addFlashMessage('تم حفظ قواعد الحضور والانصراف بنجاح');
+      if (weeklyOffChanged) {
+        const reapplyResult = await api.reapplyHRAttendanceRules().catch(() => null);
+        const offLabel = HR_WEEK_DAYS.find((day) => day.key === weeklyOff)?.label || weeklyOff;
+        addFlashMessage(
+          `تم إعادة احتساب ${Number(reapplyResult?.updated ?? 0)} سجل حضور على أساس إجازة أسبوعية يوم ${offLabel}`,
+          'info'
+        );
+      }
       logAction('الموارد البشرية', 'تحديث قواعد الحضور والانصراف العامة');
       await onRefresh();
     } catch (err: any) {
@@ -2279,6 +2317,9 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
   const [isDownloading, setIsDownloading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadErrors, setUploadErrors] = useState<{ row: number; message: string }[]>([]);
+  // يوم الإجازة الأسبوعية المعتمد من الإعدادات (الأحد افتراضياً) لعناوين خصم الإجازة.
+  const [weeklyOffIndex, setWeeklyOffIndex] = useState<number>(DEFAULT_WEEKLY_OFF_INDEX);
+  const weeklyOffLabel = weeklyOffDayLabel(weeklyOffIndex);
 
   // إدخال بصمة يدوية / تسجيل عذر
   const [timeTarget, setTimeTarget] = useState<HRAttendanceRecord | null>(null);
@@ -2293,8 +2334,12 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
   const loadRecords = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await api.getHRAttendanceRecords();
+      const [res, settingsRes] = await Promise.all([
+        api.getHRAttendanceRecords(),
+        api.getHRAttendanceSettings().catch(() => null)
+      ]);
       setRecords(Array.isArray(res) ? res : []);
+      setWeeklyOffIndex(weeklyOffIndexFromKey(settingsRes?.weekly_off_day));
     } catch (err: any) {
       addFlashMessage(err?.message || 'فشل تحميل سجل الحضور من السيرفر', 'danger');
     } finally {
@@ -2658,12 +2703,12 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
       .map((record) => {
         const employee = employees.find((item) => item.id === record.employee_id);
         return `<tr>
-          <td>${record.date}</td>
-          <td>${record.employee_name || employee?.name || '-'}</td>
-          <td>${record.employee_code || employee?.employee_code || '-'}</td>
-          <td>${record.check_in || '—'}</td>
-          <td>${record.check_out || '—'}</td>
-          <td>${ATTENDANCE_STATUS_LABELS[record.status] || record.status}</td>
+          <td>${escapeHtml(record.date)}</td>
+          <td>${escapeHtml(record.employee_name || employee?.name || '-')}</td>
+          <td>${escapeHtml(record.employee_code || employee?.employee_code || '-')}</td>
+          <td>${escapeHtml(record.check_in || '—')}</td>
+          <td>${escapeHtml(record.check_out || '—')}</td>
+          <td>${escapeHtml(ATTENDANCE_STATUS_LABELS[record.status] || record.status)}</td>
           <td>${Number(record.calculated_deduction_days) || 0} يوم / ${Number(record.calculated_deduction_hours) || 0} ساعة</td>
           <td>${Number(record.overtime_days) || 0} يوم / ${Number(record.overtime_hours) || 0} ساعة</td>
           <td>${(Number(record.sunday_deduction_days) || 0) > 0 ? `${Number(record.sunday_deduction_days)} يوم` : '—'}</td>
@@ -2679,7 +2724,7 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
       return;
     }
     win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
-      <title>${title}</title>
+      <title>${escapeHtml(title)}</title>
       <style>
         body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#0f172a}
         .brand{text-align:center;margin-bottom:6px}
@@ -2690,9 +2735,9 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
         th{background:#f1f5f9}
       </style></head><body>
       <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 46)}</div>
-      <h1>${globalSettings.site_name || 'مصنع الملابس الجاهزة'} — ${title}</h1>
+      <h1>${escapeHtml(globalSettings.site_name || 'مصنع الملابس الجاهزة')} — ${escapeHtml(title)}</h1>
       <p class="meta">عدد السجلات: ${list.length} — حضور: ${summary.present} — غياب: ${summary.absents} — بانتظار المراجعة: ${summary.pending}</p>
-      <table><thead><tr><th>التاريخ</th><th>الموظف</th><th>الكود</th><th>الحضور</th><th>الانصراف</th><th>الحالة</th><th>الخصم</th><th>الإضافي</th><th>خصم الأحد</th></tr></thead>
+      <table><thead><tr><th>التاريخ</th><th>الموظف</th><th>الكود</th><th>الحضور</th><th>الانصراف</th><th>الحالة</th><th>الخصم</th><th>الإضافي</th><th>خصم ${escapeHtml(weeklyOffLabel)}</th></tr></thead>
       <tbody>${rowsHtml}</tbody></table>
       </body></html>`);
     win.document.close();
@@ -3195,7 +3240,7 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
                       ) : null}
                       {(Number(record.sunday_deduction_days) || 0) > 0 && (
                         <p className="font-black text-[10px] text-rose-600 font-mono mt-0.5">
-                          خصم الأحد: {Number(record.sunday_deduction_days) || 0} يوم
+                          خصم {weeklyOffLabel}: {Number(record.sunday_deduction_days) || 0} يوم
                         </p>
                       )}
                       {record.sunday_deduction_note && (
@@ -3706,6 +3751,9 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
   const [isDeleting, setIsDeleting] = useState(false);
   const [attendanceRecords, setAttendanceRecords] = useState<HRAttendanceRecord[]>([]);
   const [penalties, setPenalties] = useState<HRPenalty[]>([]);
+  // يوم الإجازة الأسبوعية من إعدادات الحضور (الأحد افتراضياً) — يُستخدم في احتساب الاستحقاق.
+  const [weeklyOffIndex, setWeeklyOffIndex] = useState<number>(DEFAULT_WEEKLY_OFF_INDEX);
+  const weeklyOffLabel = weeklyOffDayLabel(weeklyOffIndex);
   const [dueSearch, setDueSearch] = useState('');
   const [overLimit, setOverLimit] = useState<{ amount: number; limit: number } | null>(null);
   const [pendingLoanPayload, setPendingLoanPayload] = useState<any | null>(null);
@@ -3713,14 +3761,16 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
   const loadLoans = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [loansRes, attendanceRes, penaltiesRes] = await Promise.all([
+      const [loansRes, attendanceRes, penaltiesRes, settingsRes] = await Promise.all([
         api.getHRLoans(),
         api.getHRAttendanceRecords().catch(() => [] as HRAttendanceRecord[]),
-        api.getHRPenalties().catch(() => [] as HRPenalty[])
+        api.getHRPenalties().catch(() => [] as HRPenalty[]),
+        api.getHRAttendanceSettings().catch(() => null)
       ]);
       setLoans(Array.isArray(loansRes) ? loansRes : []);
       setAttendanceRecords(Array.isArray(attendanceRes) ? attendanceRes : []);
       setPenalties(Array.isArray(penaltiesRes) ? penaltiesRes : []);
+      setWeeklyOffIndex(weeklyOffIndexFromKey(settingsRes?.weekly_off_day));
     } catch (err: any) {
       addFlashMessage(err?.message || 'فشل تحميل السُلف من السيرفر', 'danger');
     } finally {
@@ -3775,9 +3825,9 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       const hourRate = hourlyRateFor(salary);
       const employeeRecords = attendanceRecords.filter((record) => {
         if (record.employee_id !== employee.id || !rangeSet.has(record.date)) return false;
-        // يوم الأحد يُحسب منفصلاً ضمن أيام الأحد المدفوعة.
+        // يوم الإجازة الأسبوعية يُحسب منفصلاً ضمن أيام الإجازة المدفوعة.
         const recordDay = new Date(`${record.date}T00:00:00`);
-        return recordDay.getDay() !== 0;
+        return recordDay.getDay() !== weeklyOffIndex;
       });
       // خصم التأخير/الانصراف على أيام الحضور فقط (الغياب مستبعد من أيام الاستحقاق).
       const penaltyRecords = employeeRecords.filter(
@@ -3791,11 +3841,12 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         (sum, record) => sum + (Number(record.calculated_deduction_hours) || 0),
         0
       );
-      const sundayDeductionDays = sumSundayDeductionsForEmployeeMonth(
+      const sundayDeductionDays = sumWeeklyOffDeductionsForEmployeeMonth(
         attendanceRecords,
         employee.id,
         duePeriod.monthKey,
-        duePeriod.yesterdayIso
+        duePeriod.yesterdayIso,
+        weeklyOffIndex
       );
       const employeePenalties = penalties.filter(
         (penalty) => penalty.employee_id === employee.id && rangeSet.has(penalty.date)
@@ -3809,12 +3860,13 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       const previousLoans = loans
         .filter((loan) => loan.employee_id === employee.id && rangeSet.has(loan.date))
         .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
-      // المستحق يُبنى على الحضور الفعلي (أيام العمل + أيام الأحد المدفوعة) لا على أيام التقويم.
+      // المستحق يُبنى على الحضور الفعلي (أيام العمل + أيام الإجازة الأسبوعية المدفوعة) لا على أيام التقويم.
       const accrual = computeMonthAccrual(
         employee.id,
         attendanceRecords,
         duePeriod.monthKey,
-        duePeriod.yesterdayIso
+        duePeriod.yesterdayIso,
+        weeklyOffIndex
       );
       const earned = dayRate * accrual.earnedDays;
       // خصم الأحد مطبّق عبر تقليل أيام الاستحقاق، فلا يُخصم مالياً مرة أخرى.
@@ -3838,7 +3890,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         currentDue
       };
     });
-  }, [employees, attendanceRecords, penalties, loans, duePeriod]);
+  }, [employees, attendanceRecords, penalties, loans, duePeriod, weeklyOffIndex]);
 
   const dueGroups = useMemo(() => {
     const query = dueSearch.trim().toLowerCase();
@@ -3892,7 +3944,7 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     const formBlock = `
       <div class="form-block">
         <h2>نموذج طلب سلفة</h2>
-        <p class="sub">${globalSettings.site_name || 'مصنع الملابس الجاهزة'} — إدارة الموارد البشرية</p>
+        <p class="sub">${escapeHtml(globalSettings.site_name || 'مصنع الملابس الجاهزة')} — إدارة الموارد البشرية</p>
         <table>
           <tr><td class="label">اسم الموظف</td><td></td></tr>
           <tr><td class="label">كود الموظف</td><td></td></tr>
@@ -3936,11 +3988,11 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     }
     const body = dueGroups
       .map(
-        (group) => `<h2>${group.label} <span>(${group.rows.length} موظف)</span></h2>
+        (group) => `<h2>${escapeHtml(group.label)} <span>(${group.rows.length} موظف)</span></h2>
         <table>
           <thead><tr>
             <th>الكود</th><th>الموظف</th><th>المرتب</th><th>الأيام المستحقة</th>
-            <th>خصم التأخير</th><th>خصم الأحد</th><th>الجزاءات</th>
+            <th>خصم التأخير</th><th>خصم ${escapeHtml(weeklyOffLabel)}</th><th>الجزاءات</th>
             <th>السُلف السابقة</th><th>المستحق الحالي</th>
           </tr></thead>
           <tbody>
@@ -3949,8 +4001,8 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                 const attendanceDays = row.attendanceDeductionDays + row.attendanceDeductionHours / 8;
                 const penaltyDays = row.penaltyDays + row.penaltyHours / 8;
                 return `<tr>
-                  <td>${row.employee.employee_code || '-'}</td>
-                  <td>${row.employee.name}</td>
+                  <td>${escapeHtml(row.employee.employee_code || '-')}</td>
+                  <td>${escapeHtml(row.employee.name)}</td>
                   <td>${formatMoney(row.salary)}</td>
                   <td>${row.earnedDays.toFixed(2)}</td>
                   <td>${attendanceDays.toFixed(2)} يوم</td>
@@ -3984,8 +4036,8 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         th{background:#f1f5f9}
       </style></head><body>
       <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 48)}</div>
-      <h1>${globalSettings.site_name || 'مصنع الملابس الجاهزة'} — تقرير السُلف والمستحقات</h1>
-      <p class="sub">شهر ${duePeriod.monthKey} — من أول الشهر حتى ${duePeriod.yesterdayLabel} (أيام العمل: ${duePeriod.workdays})</p>
+      <h1>${escapeHtml(globalSettings.site_name || 'مصنع الملابس الجاهزة')} — تقرير السُلف والمستحقات</h1>
+      <p class="sub">شهر ${escapeHtml(duePeriod.monthKey)} — من أول الشهر حتى ${escapeHtml(duePeriod.yesterdayLabel)} (أيام العمل: ${duePeriod.workdays})</p>
       ${body}
       <p class="sub">إجمالي المرتبات: ${formatMoney(dueTotals.salary)} — إجمالي السُلف السابقة: ${formatMoney(
         dueTotals.previousLoans
@@ -4193,8 +4245,8 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         <div>
           <h3 className="text-xs font-black text-slate-900">استحقاق السُلف حتى أمس</h3>
           <p className="text-[10px] font-bold text-slate-500 mt-0.5">
-            من أول الشهر حتى {duePeriod.yesterdayLabel} — أيام العمل: {duePeriod.workdays} (الأحد
-            أجازة مدفوعة)
+            من أول الشهر حتى {duePeriod.yesterdayLabel} — أيام العمل: {duePeriod.workdays} ({weeklyOffLabel} أجازة
+            مدفوعة)
           </p>
         </div>
         <input
@@ -5229,6 +5281,9 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
   const [loans, setLoans] = useState<HRLoan[]>([]);
   const [settings, setSettings] = useState<HRAttendanceSettings | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // يوم الإجازة الأسبوعية المدفوعة من الإعدادات (الأحد افتراضياً).
+  const weeklyOffIndex = weeklyOffIndexFromKey(settings?.weekly_off_day);
+  const weeklyOffLabel = weeklyOffDayLabel(weeklyOffIndex);
 
   const loadPayrollData = useCallback(async () => {
     setIsLoading(true);
@@ -5264,6 +5319,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         ? isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1))
         : undefined;
     const officialStart = settings?.official_start_time || '08:30';
+    // يوم الإجازة الأسبوعية المدفوعة مأخوذ من نطاق المكوّن (weeklyOffIndex).
 
     return employees.map((employee) => {
       const baseSalary = Number(employee.monthly_salary) || 0;
@@ -5279,10 +5335,10 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         if (record.employee_id !== employee.id) return;
         if (!inMonth(record.date)) return;
         if (record.review_status === 'rejected') return;
-        // يوم الأحد بدون بصمة حضور = إجازة أسبوعية مدفوعة (تُحسب ضمن الأيام المستحقة).
-        // أما الأحد الذي عمل فيه الموظف (له بصمة حضور) فيُعامل كيوم عمل عادي.
+        // يوم الإجازة الأسبوعية بدون بصمة حضور = إجازة مدفوعة (تُحسب ضمن الأيام المستحقة).
+        // أما يوم الإجازة الذي عمل فيه الموظف (له بصمة حضور) فيُعامل كيوم عمل عادي.
         const recordDay = new Date(`${record.date}T00:00:00`);
-        if (recordDay.getDay() === 0 && !record.check_in) return;
+        if (recordDay.getDay() === weeklyOffIndex && !record.check_in) return;
 
         overtimeDays += Number(record.overtime_days) || 0;
         overtimeHours += Number(record.overtime_hours) || 0;
@@ -5307,16 +5363,17 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         attendanceHours += dedHours;
       });
 
-      // الأجر المكتسب على أساس الحضور الفعلي + أيام الأحد المدفوعة (بحد أقصى 30 يوماً).
-      const accrual = computeMonthAccrual(employee.id, records, month, upToIso);
+      // الأجر المكتسب على أساس الحضور الفعلي + أيام الإجازة الأسبوعية المدفوعة (بحد أقصى 30 يوماً).
+      const accrual = computeMonthAccrual(employee.id, records, month, upToIso, weeklyOffIndex);
       const earnedBase = accrual.earnedDays * dayRate;
 
-      // خصم يوم الأحد يُحسب من سجلات أيام العمل الستة (للعرض فقط — مطبّق ضمن الأيام المستحقة).
-      const sundayDeductionDays = sumSundayDeductionsForEmployeeMonth(
+      // خصم يوم الإجازة يُحسب من سجلات أيام العمل الستة (للعرض فقط — مطبّق ضمن الأيام المستحقة).
+      const sundayDeductionDays = sumWeeklyOffDeductionsForEmployeeMonth(
         records,
         employee.id,
         month,
-        upToIso
+        upToIso,
+        weeklyOffIndex
       );
 
       let penaltyDays = 0;
@@ -5333,7 +5390,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
 
       const attendanceDeduction = attendanceDays * dayRate + attendanceHours * hourRate;
-      // خصم الأحد ليس مبلغاً إضافياً: أثره ظاهر في تقليل الأيام المستحقة (earnedDays).
+      // خصم الإجازة الأسبوعية ليس مبلغاً إضافياً: أثره ظاهر في تقليل الأيام المستحقة (earnedDays).
       const sundayDeduction = 0;
       const penaltyDeduction = penaltyDays * dayRate + penaltyHours * hourRate;
       const overtimePay = overtimeDays * dayRate + overtimeHours * hourRate;
@@ -5426,6 +5483,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     const dayRate = dailyRateFor(row.baseSalary);
     const hourRate = hourlyRateFor(row.baseSalary);
     const officialStart = settings?.official_start_time || '08:30';
+    const weeklyOffLabel = weeklyOffDayLabel(weeklyOffIndex);
     const statusLabels: Record<string, string> = {
       present: 'حاضر',
       absent: 'غائب',
@@ -5437,7 +5495,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     for (let day = 1; day <= daysInMonth; day += 1) {
       const cursor = new Date(year, monthNumber - 1, day);
       const iso = isoDate(cursor);
-      const isSunday = cursor.getDay() === 0;
+      const isWeeklyOff = cursor.getDay() === weeklyOffIndex;
       const record = recordsByDate.get(iso);
       const dayLabel = WEEK_DAY_AR[cursor.getDay()];
       const dateLabel = `${String(day).padStart(2, '0')}/${String(monthNumber).padStart(2, '0')}`;
@@ -5446,26 +5504,26 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       const loansCell = loansTotal > 0 ? formatMoney(loansTotal) : '—';
       const loansReason = dayLoans.map((loan) => loan.notes || 'سلفة').join('، ');
 
-      // الأحد إجازة أسبوعية مدفوعة فقط عند غياب بصمة الحضور؛
-      // الأحد الذي عُمل فيه يُطبع كيوم عمل عادي ببصماته وخصمه.
-      if (isSunday && !(record && record.check_in)) {
-        const weekDates = weekDatesBeforeSunday(iso);
+      // يوم الإجازة الأسبوعية إجازة مدفوعة فقط عند غياب بصمة الحضور؛
+      // اليوم الذي عُمل فيه يُطبع كيوم عمل عادي ببصماته وخصمه.
+      if (isWeeklyOff && !(record && record.check_in)) {
+        const weekDates = weekDatesBeforeWeeklyOff(iso);
         const hasWeekData = weekDates.some((dateStr) => recordsByDate.has(dateStr));
         const absentCount = weekDates.filter((dateStr) => {
           const rec = recordsByDate.get(dateStr);
           return !rec || (!rec.is_excused && !rec.check_in);
         }).length;
-        const ratio = hasWeekData ? sundayRatioForAbsences(absentCount) : 0;
+        const ratio = hasWeekData ? weeklyOffRatioForAbsences(absentCount) : 0;
         const deduction = ratio * dayRate;
         const reason =
           ratio > 0
-            ? `خصم ${sundayRatioLabel(ratio)} بسبب غياب ${absentCount} أيام بدون عذر`
-            : 'إجازة أسبوعية مدفوعة';
+            ? `خصم ${weeklyOffRatioLabel(ratio)} بسبب غياب ${absentCount} أيام بدون عذر`
+            : `إجازة أسبوعية مدفوعة (${weeklyOffLabel})`;
         dayRows.push(`<tr class="${ratio > 0 ? 'row-absent' : 'row-off'}">
           <td class="mono">${dateLabel} — ${dayLabel}</td><td>—</td><td>—</td><td>—</td>
           <td class="mono">${loansCell}</td>
           <td class="mono">${deduction ? formatMoney(-deduction) : '—'}</td>
-          <td class="note">${reason}${loansReason ? ` — ${loansReason}` : ''}</td></tr>`);
+          <td class="note">${escapeHtml(reason)}${loansReason ? ` — ${escapeHtml(loansReason)}` : ''}</td></tr>`);
         continue;
       }
 
@@ -5473,7 +5531,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         dayRows.push(`<tr class="row-off">
           <td class="mono">${dateLabel} — ${dayLabel}</td><td>—</td><td>—</td><td>—</td>
           <td class="mono">${loansCell}</td><td class="mono">—</td>
-          <td class="note">لا يوجد سجل${loansReason ? ` — ${loansReason}` : ''}</td></tr>`);
+          <td class="note">لا يوجد سجل${loansReason ? ` — ${escapeHtml(loansReason)}` : ''}</td></tr>`);
         continue;
       }
 
@@ -5492,7 +5550,6 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       else if (record.status === 'leave') reason = statusLabels[record.status] || 'إجازة';
       else if (lateMinutes > 0) reason = `تأخير ${lateMinutes} دقيقة`;
       else if (deduction > 0) reason = 'خصم تأخير / انصراف مبكر';
-      if (loansReason) reason += ` — ${loansReason}`;
 
       // أحمر للغياب، أزرق لأيام الإضافي، أصفر للتأخير.
       let rowClass = 'row-ok';
@@ -5502,14 +5559,15 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       else if (record.status === 'leave') rowClass = 'row-off';
       else if (deduction > 0) rowClass = 'row-warn';
 
+      // reason قد يحتوي على excuse_note القادم من قاعدة البيانات: يُهرَّب دائماً عند الإخراج.
       dayRows.push(`<tr class="${rowClass}">
         <td class="mono">${dateLabel} — ${dayLabel}</td>
-        <td class="mono">${record.check_in || '—'}</td>
-        <td class="mono">${record.check_out || '—'}</td>
+        <td class="mono">${escapeHtml(record.check_in || '—')}</td>
+        <td class="mono">${escapeHtml(record.check_out || '—')}</td>
         <td class="mono">${overtime ? formatMoney(overtime) : '—'}</td>
         <td class="mono">${loansCell}</td>
         <td class="mono">${deduction ? formatMoney(-deduction) : '—'}</td>
-        <td class="note">${reason}</td></tr>`);
+        <td class="note">${escapeHtml(reason)}${loansReason ? ` — ${escapeHtml(loansReason)}` : ''}</td></tr>`);
     }
     const dayRowsHtml = dayRows.join('');
     const overtimeText = `${row.overtimeDays} يوم / ${row.overtimeHours} ساعة`;
@@ -5520,24 +5578,24 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       <div class="head">
         <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 46)}</div>
         <div class="title">
-          <h1>${globalSettings.site_name || 'مصنع الملابس الجاهزة'}</h1>
-          <p>ورقة مرتب عامل — شهر ${month}</p>
+          <h1>${escapeHtml(globalSettings.site_name || 'مصنع الملابس الجاهزة')}</h1>
+          <p>ورقة مرتب عامل — شهر ${escapeHtml(month)}</p>
         </div>
       </div>
       <table class="info">
         <tr>
-          <td class="label">اسم العامل</td><td>${row.employee.name}</td>
-          <td class="label">كود البصمة</td><td class="mono">${row.employee.employee_code || '-'}</td>
+          <td class="label">اسم العامل</td><td>${escapeHtml(row.employee.name)}</td>
+          <td class="label">كود البصمة</td><td class="mono">${escapeHtml(row.employee.employee_code || '-')}</td>
         </tr>
         <tr>
-          <td class="label">الوظيفة</td><td>${row.employee.job_title || '—'}</td>
-          <td class="label">القسم</td><td>${workerDepartment(row)}</td>
+          <td class="label">الوظيفة</td><td>${escapeHtml(row.employee.job_title || '—')}</td>
+          <td class="label">القسم</td><td>${escapeHtml(workerDepartment(row))}</td>
         </tr>
         <tr>
           <td class="label">الأيام المستحقة</td>
           <td class="mono">${row.earnedDays.toFixed(2)} يوم</td>
           <td class="label">تفصيل الأيام</td>
-          <td class="mono">حضور ${row.attendedDays.toFixed(2)} + أحد ${row.paidSundayDays.toFixed(2)}</td>
+          <td class="mono">حضور ${row.attendedDays.toFixed(2)} + ${escapeHtml(weeklyOffLabel)} ${row.paidSundayDays.toFixed(2)}</td>
         </tr>
         <tr class="screen-only">
           <td class="label">المرتب الشهري</td>
@@ -5557,7 +5615,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
         <tr><td>الأجر المكتسب (${row.earnedDays.toFixed(2)} يوم)</td><td class="mono">${formatMoney(row.earnedBase)}</td></tr>
         <tr><td>إجمالي الإضافي (${overtimeText})</td><td class="mono pos">${formatMoney(row.overtimePay)}</td></tr>
         <tr><td>خصم التأخير والانصراف المبكر (${attendanceText})</td><td class="mono neg">${formatMoney(row.attendanceDeduction)}</td></tr>
-        <tr><td>خصم أيام الأحد (${row.sundayDeductionDays.toFixed(2)} يوم — مطبّق ضمن الأيام المستحقة)</td><td class="mono">—</td></tr>
+        <tr><td>خصم أيام ${escapeHtml(weeklyOffLabel)} (${row.sundayDeductionDays.toFixed(2)} يوم — مطبّق ضمن الأيام المستحقة)</td><td class="mono">—</td></tr>
         <tr><td>الجزاءات (${penaltyText})</td><td class="mono neg">${formatMoney(row.penaltyDeduction)}</td></tr>
         <tr><td>السُلف</td><td class="mono neg">${formatMoney(row.loanDeduction)}</td></tr>
         <tr><td>إجمالي الخصومات</td><td class="mono neg">${formatMoney(row.totalDeduction)}</td></tr>
@@ -5612,7 +5670,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       return;
     }
     win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
-      <title>ورقة مرتب ${row.employee.name}</title>
+      <title>ورقة مرتب ${escapeHtml(row.employee.name)}</title>
       <style>${workerSheetStyles}</style></head><body>${buildWorkerSheetHtml(row)}</body></html>`);
     win.document.close();
     win.focus();
@@ -5632,7 +5690,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       return;
     }
     win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
-      <title>أوراق مرتبات العمال — ${month}</title>
+      <title>أوراق مرتبات العمال — ${escapeHtml(month)}</title>
       <style>${workerSheetStyles}</style></head><body>${sheets}</body></html>`);
     win.document.close();
     win.focus();
@@ -5669,7 +5727,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
           <div>
             <h2 className="text-sm font-black text-slate-900">مرتبات الشهر</h2>
             <p className="text-[11px] font-bold text-slate-500 mt-0.5">
-              صافي المرتب = الأجر المكتسب (أيام الحضور + أيام الأحد المدفوعة بحد أقصى 30 يوماً) +
+              صافي المرتب = الأجر المكتسب (أيام الحضور + أيام {weeklyOffLabel} المدفوعة بحد أقصى 30 يوماً) +
               الإضافي − (التأخير + الجزاءات + السُلف).
             </p>
           </div>
@@ -5768,7 +5826,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                     <td className="px-4 py-3 text-center font-mono font-black text-slate-800 whitespace-nowrap">
                       <p>{row.earnedDays.toFixed(2)} يوم</p>
                       <p className="text-[10px] text-slate-400">
-                        حضور {row.attendedDays.toFixed(2)} + أحد {row.paidSundayDays.toFixed(2)}
+                        حضور {row.attendedDays.toFixed(2)} + {weeklyOffLabel} {row.paidSundayDays.toFixed(2)}
                       </p>
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-black text-slate-800 whitespace-nowrap">
@@ -5786,7 +5844,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
                       <p className="text-[10px] text-slate-400">
                         {row.attendanceDays} يوم / {row.attendanceHours} ساعة
                         {row.sundayDeductionDays > 0
-                          ? ` (أحد ${row.sundayDeductionDays.toFixed(2)} يوم داخل المستحق)`
+                          ? ` (${weeklyOffLabel} ${row.sundayDeductionDays.toFixed(2)} يوم داخل المستحق)`
                           : ''}
                       </p>
                     </td>
@@ -5858,7 +5916,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       <div className="flex items-start gap-2 px-4 py-3 rounded-2xl bg-blue-50 border border-blue-200 text-blue-800 text-[11px] font-bold">
         <Info className="w-4 h-4 shrink-0" />
         <span>
-          يُحسب الأجر على أيام الحضور الفعلي + أيام الأحد المدفوعة (بحد أقصى 30 يوماً)، وتُخصم
+          يُحسب الأجر على أيام الحضور الفعلي + أيام {weeklyOffLabel} المدفوعة (بحد أقصى 30 يوماً)، وتُخصم
           قواعد التأخير ومخالفات الجزاءات والسُلف فقط. تُتجاهل السجلات «المرفوضة»، وراتب اليوم =
           المرتب ÷ 30 وراتب الساعة = راتب اليوم ÷ 8.
         </span>

@@ -731,7 +731,8 @@ def log_action(
             details=str(details or ''),
             changes=changes_list,
             ip_address=get_client_ip(request),
-            timestamp=timezone.now().strftime('%Y-%m-%d %H:%M:%S'),
+            # التوقيت المحلي للمصنع (Africa/Cairo) وليس UTC.
+            timestamp=timezone.localtime(timezone.now()).strftime('%Y-%m-%d %H:%M:%S'),
         )
     except Exception:
         return None

@@ -9,10 +9,11 @@ from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import JSONParser
 from rest_framework.request import Request as DRFRequest
-from rest_framework.test import APIRequestFactory
+from rest_framework.test import APIClient, APIRequestFactory
 
 from .models import (
     Role, UserProfile, Fabric, FabricColor, Accessory,
+    FabricTransaction, AccessoryTransaction, Workshop,
     ModelItem, ModelTimeline, PrintDispatch, InternalMessage,
     SewingDispatch, FinishingRecord, AssemblyStageRecord,
     PackagingMaterialRule, PackagingMaterialSizeRule,
@@ -22,9 +23,11 @@ from .models import (
 from .serializers import (
     FabricColorSerializer, AccessorySerializer, PrintDispatchSerializer,
     SewingDispatchSerializer, FinishingRecordSerializer, AssemblyStageRecordSerializer,
+    FabricTransactionSerializer, AccessoryTransactionSerializer,
     PackagingMaterialSizeRuleSerializer, PackagingMaterialRuleSerializer,
     ModelItemSerializer, HREmployeeSerializer,
 )
+from .services import dispatch_model_to_sewing_service
 from .views import (
     AuthViewSet, StateViewSet, InternalMessageViewSet, ModelItemViewSet,
     HREmployeeViewSet,
@@ -134,6 +137,69 @@ class FinancialFieldGatingTests(PermissionTestBase):
         self.assertNotIn('cost_per_piece', details)
         self.assertNotIn('total_cost', details)
         self.assertEqual(details['pieces_count'], 10)
+
+    def test_fabric_transaction_snapshot_hidden_without_permission(self):
+        txn = FabricTransaction.objects.create(
+            color=self.color, fabric=self.fabric, operation='deduct', amount=5,
+            unit_price_snapshot=25.5,
+        )
+        hidden = FabricTransactionSerializer(
+            txn, context={'request': self._request(self.design_user)}
+        ).data
+        self.assertIsNone(hidden['unit_price_snapshot'])
+        visible = FabricTransactionSerializer(
+            txn, context={'request': self._request(self.fabric_user)}
+        ).data
+        self.assertEqual(visible['unit_price_snapshot'], 25.5)
+
+    def test_accessory_transaction_snapshot_hidden_without_permission(self):
+        role = make_role('accessories-prices', accessories_view=True, view_accessory_prices=True)
+        viewer = make_user('accessorykeeper', role)
+        txn = AccessoryTransaction.objects.create(
+            accessory=self.accessory,
+            accessory_code=self.accessory.code,
+            accessory_name=self.accessory.name,
+            operation='deduct',
+            amount=2,
+            unit_price_snapshot=1.25,
+        )
+        hidden = AccessoryTransactionSerializer(
+            txn, context={'request': self._request(self.design_user)}
+        ).data
+        self.assertIsNone(hidden['unit_price_snapshot'])
+        visible = AccessoryTransactionSerializer(
+            txn, context={'request': self._request(viewer)}
+        ).data
+        self.assertEqual(visible['unit_price_snapshot'], 1.25)
+
+    def test_workshop_link_exposed_on_dispatch_without_changing_text_name(self):
+        workshop = Workshop.objects.create(name='مطبعة النور')
+        self.dispatch.workshop = workshop
+        self.dispatch.save(update_fields=['workshop'])
+        data = PrintDispatchSerializer(
+            self.dispatch, context={'request': self._request(self.sewing_user)}
+        ).data
+        self.assertEqual(data['shop_name'], 'مطبعة النور')
+        self.assertEqual(data['workshop_id'], workshop.client_id or str(workshop.id))
+
+
+class WorkshopLinkServiceTests(PermissionTestBase):
+    """الربط التلقائي للورشة المسجلة من الاسم النصي بدون كسر السجلات القديمة."""
+
+    def test_sewing_dispatch_links_registered_workshop_by_name(self):
+        workshop = Workshop.objects.create(name='ورشة الأمل')
+        dispatch = dispatch_model_to_sewing_service(
+            self.model.id, 'ورشة الأمل', 5, timezone.now().date().isoformat(),
+        )
+        self.assertEqual(dispatch.workshop_id, workshop.id)
+        self.assertEqual(dispatch.workshop_name, 'ورشة الأمل')
+
+    def test_sewing_dispatch_keeps_null_workshop_when_name_is_unknown(self):
+        dispatch = dispatch_model_to_sewing_service(
+            self.model.id, 'ورشة غير مسجلة', 5, timezone.now().date().isoformat(),
+        )
+        self.assertIsNone(dispatch.workshop_id)
+        self.assertEqual(dispatch.workshop_name, 'ورشة غير مسجلة')
 
 
 class DepartmentPriceIsolationTests(PermissionTestBase):
@@ -489,5 +555,59 @@ class UserSerializerContextTests(PermissionTestBase):
         self.assertTrue(response.data['onlineUsers'])
         for row in response.data['onlineUsers']:
             self.assertIn('rank_label', row)
+
+
+class FabricSectionViewOnlyPermissionTests(PermissionTestBase):
+    """صلاحية (view) وحدها تسمح بقراءة قسم المخزن وتمنع الإضافة/التعديل.
+
+    فصل ``_view`` عن ``_edit`` يمنع أي مستخدم يملك "رؤية فقط" من الكتابة في
+    ``FabricViewSet`` (POST / PUT / PATCH / DELETE).
+    """
+
+    def setUp(self):
+        super().setUp()
+        view_only_role = make_role(
+            'fabric-view-only', fabric_warehouse_view=True, fabric_warehouse_edit=False,
+        )
+        self.view_only_user = make_user('fabric-viewer', view_only_role)
+        self.client = APIClient()
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {self.view_only_user.auth_token}'
+        )
+
+    def test_view_only_can_read_fabric_section(self):
+        response = self.client.get('/api/fabrics/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            len(response.data), Fabric.objects.filter(is_deleted=False).count()
+        )
+
+    def test_view_only_cannot_create_fabric(self):
+        response = self.client.post(
+            '/api/fabrics/', {'name': 'قماش غير مصرح'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Fabric.objects.filter(name='قماش غير مصرح').exists())
+
+    def test_view_only_cannot_update_fabric(self):
+        response = self.client.put(
+            f'/api/fabrics/{self.fabric.pk}/',
+            {'name': 'تعديل غير مصرح'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.fabric.refresh_from_db()
+        self.assertEqual(self.fabric.name, 'قطن')
+
+    def test_edit_permission_can_create_fabric(self):
+        editor_role = make_role(
+            'fabric-editor', fabric_warehouse_view=True, fabric_warehouse_edit=True,
+        )
+        editor = make_user('fabric-editor', editor_role)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {editor.auth_token}')
+        response = client.post('/api/fabrics/', {'name': 'قماش مصرح'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(Fabric.objects.filter(name='قماش مصرح').exists())
 
 

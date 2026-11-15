@@ -378,6 +378,10 @@ export interface FabricTransaction {
   operation: 'add' | 'deduct';
   amount: number;
   timestamp: string;
+  /** سعر الوحدة التاريخي وقت الحركة — يُعاد null لمن لا يملك صلاحية عرض أسعار الخامات. */
+  unit_price_snapshot?: number | null;
+  /** المورد المرتبط بالحركة (اختياري، للتوافق مع السجلات القديمة). */
+  supplier_id?: string | null;
 }
 
 export type ModelStatus =
@@ -444,6 +448,10 @@ export interface DesignModel {
   qc_summary?: Partial<Record<GarmentPart, number>>;
   sewing_available?: Partial<Record<GarmentPart, number>>;
   completed_sets?: number;
+  /** الأطقم التامة الفعلية بعد خصم قطع عينة التصوير المحتجزة. */
+  finished_good_sets?: number;
+  /** عدد قطع عينة التصوير المرسلة ولم تُسترجع بعد (مخصومة مؤقتاً). */
+  photography_outstanding_qty?: number;
   cut_shirt_pieces?: number;
   cut_pants_pieces?: number;
   cut_jacket_pieces?: number;
@@ -497,6 +505,8 @@ export interface ModelRequirement {
   part_name: string;
   planned_quantity: number;
   required_quantity?: number;
+  /** سعر الوحدة التاريخي — يُعاد null لمن لا يملك صلاحية عرض أسعار الخامات. */
+  unit_price_snapshot?: number | null;
 }
 
 export interface ModelAccessory {
@@ -510,6 +520,8 @@ export interface ModelAccessory {
   accessory_name: string;
   unit?: string;
   image?: string;
+  /** سعر الوحدة التاريخي — يُعاد null لمن لا يملك صلاحية عرض أسعار الإكسسوارات. */
+  unit_price_snapshot?: number | null;
 }
 
 export interface CuttingSpreadLayer {
@@ -647,6 +659,8 @@ export interface PrintDispatch {
   id: string;
   model_id: string;
   shop_name: string;
+  /** معرف الورشة المسجلة المرتبطة (اختياري — يظل الاسم النصي هو المصدر الأساسي). */
+  workshop_id?: string;
   piece_type?: GarmentPart;
   piece_label?: string; // "تيشرت" / "بنطلون" / "جاكيت"
   print_location?: string; // مكان الطباعة: صدر / ظهر / كم / تطريز
@@ -668,6 +682,8 @@ export interface SewingDispatch {
   id: string;
   model_id: string;
   workshop_name: string;
+  /** معرف الورشة المسجلة المرتبطة (اختياري — يظل الاسم النصي هو المصدر الأساسي). */
+  workshop_id?: string;
   pieces_count: number;
   dispatched_at: string;
   expected_delivery_date: string;
@@ -748,6 +764,8 @@ export interface FinishingRecord {
   part_type: GarmentPart;
   piece_label?: string;
   vendor_name?: string;
+  /** معرف الورشة المسجلة المرتبطة (اختياري — يظل الاسم النصي هو المصدر الأساسي). */
+  workshop_id?: string;
   entry_date?: string | null;
   expected_exit_date?: string | null;
   actual_exit_date?: string | null;
@@ -1030,6 +1048,8 @@ export interface AssemblyStageRecord {
   part_type?: GarmentPart | '';
   part_label?: string;
   vendor_name?: string;
+  /** معرف الورشة المسجلة المرتبطة (اختياري — يظل الاسم النصي هو المصدر الأساسي). */
+  workshop_id?: string;
   entry_date?: string | null;
   expected_exit_date?: string | null;
   actual_exit_date?: string | null;
@@ -1144,6 +1164,10 @@ export interface AccessoryTransaction {
   model_code_ref?: string;
   notes?: string;
   timestamp: string;
+  /** سعر الوحدة التاريخي وقت الحركة — يُعاد null لمن لا يملك صلاحية عرض أسعار الإكسسوارات. */
+  unit_price_snapshot?: number | null;
+  /** المورد المرتبط بالحركة (اختياري، للتوافق مع السجلات القديمة). */
+  supplier_id?: string | null;
 }
 
 // ==========================================================================

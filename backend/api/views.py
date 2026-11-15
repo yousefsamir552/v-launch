@@ -113,6 +113,7 @@ from .hr_attendance_io import (
     month_bounds,
     parse_attendance_sheet,
     reapply_employee_month,
+    weekly_off_weekday,
 )
 
 
@@ -458,6 +459,32 @@ def read_department_cost_payload(request, profile, perm_key: str, perm_label: st
     return cost, total
 
 
+def _accessory_price_snapshot(accessory_ref):
+    """سعر وحدة الإكسسوار الحالي من كتالوج الإكسسوارات (صفر إن لم يوجد)."""
+    accessory = resolve_by_id(Accessory, accessory_ref)
+    return (accessory.price_per_unit or 0) if accessory else 0
+
+
+def resolve_workshop_link(data, name=None):
+    """
+    يحدد سجل الورشة المسجلة لربطه بحركات المطابع/الورش.
+
+    * ``workshop_id`` / ``workshopId`` من الطلب له الأولوية (client_id أو pk).
+    * وإلا البحث بالاسم النصي (``name__iexact``) بدون أي تعديل على الاسم النصي المحفوظ.
+    * عدم العثور على ورشة مسجلة ليس خطأً: يبقى الحقل NULL وتظل التوافقية كاملة.
+    """
+    data = data or {}
+    raw_id = data.get('workshop_id') or data.get('workshopId')
+    if raw_id:
+        workshop = resolve_by_id(Workshop, raw_id)
+        if workshop:
+            return workshop
+    clean_name = (name or '').strip()
+    if clean_name:
+        return Workshop.objects.filter(name__iexact=clean_name).first()
+    return None
+
+
 class BasePermViewSet(AuditedModelViewSetMixin, viewsets.ModelViewSet):
     """
     Base ViewSet supporting lookup by client_id or database pk, and attaching user_profile to request.
@@ -702,7 +729,9 @@ class StateViewSet(viewsets.ViewSet):
     def list(self, request):
         ensure_initial_seed()
         ensure_packaging_material_categories()
-        sync_reserved_quantities()
+        # لا نستدعي sync_reserved_quantities() هنا: يتم استدعاؤه عند كل تعديل فعلي
+        # في خطة التصميم أو صرف القماش، واستدعاؤه في كل قراءة للحالة يفرض فحصاً
+        # وكتابة على كامل جداول الألوان والإكسسوارات مع كل تحديث للصفحة.
         req_ctx = {'request': request}
 
         # Heartbeat: keep the current user's ONLINE marker fresh on every state sync.
@@ -777,7 +806,8 @@ class StateViewSet(viewsets.ViewSet):
             'assemblyStageRecords': AssemblyStageRecordSerializer(AssemblyStageRecord.objects.select_related('model').all(), many=True, context=req_ctx).data,
             'packagingMaterialRules': PackagingMaterialRuleSerializer(
                 PackagingMaterialRule.objects.prefetch_related(
-                    'size_rules', 'size_rules__supplier', 'size_rules__transactions'
+                    'size_rules', 'size_rules__rule', 'size_rules__supplier',
+                    'size_rules__transactions'
                 ).all(),
                 many=True, context=req_ctx
             ).data,
@@ -965,7 +995,7 @@ class RoleViewSet(BasePermViewSet):
         )
         role.save()
         return Response(
-            RoleSerializer(role, context=self.get_serializer_context()).data,
+            RoleSerializer(role, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -1014,7 +1044,7 @@ class RoleViewSet(BasePermViewSet):
         role.save()
         # Update cached role_title on non-sudo users assigned to this role
         UserProfile.objects.filter(role=role).exclude(username__iexact='sudo').exclude(is_sudo=True).update(role_title=role.name)
-        return Response(RoleSerializer(role, context=self.get_serializer_context()).data)
+        return Response(RoleSerializer(role, context={'request': request}).data)
 
     def destroy(self, request, *args, **kwargs):
         denied = self._check_manage_permissions(request)
@@ -1173,6 +1203,15 @@ class UserProfileViewSet(BasePermViewSet):
 
         viewer = get_viewer_profile(request)
         is_self = bool(viewer and viewer.pk == user.pk)
+        # تعديل حساب شخص آخر يتطلب صلاحية إدارة المستخدمين أو الصلاحيات.
+        if not is_self and not (
+            viewer
+            and (viewer.has_perm('manage_users') or viewer.has_perm('manage_permissions'))
+        ):
+            return Response(
+                {'detail': 'ليس لديك صلاحية تعديل حسابات المستخدمين'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         if not is_self and not can_manage_target(request, user.rank_level):
             return Response(
                 {'detail': 'لا تملك صلاحية تعديل مستخدم بهذه الرتبة'},
@@ -1282,6 +1321,14 @@ class UserProfileViewSet(BasePermViewSet):
         return Response(UserProfileSerializer(user, context={'request': request}).data)
 
     def destroy(self, request, *args, **kwargs):
+        viewer = get_viewer_profile(request)
+        if not viewer or not (
+            viewer.has_perm('manage_users') or viewer.has_perm('manage_permissions')
+        ):
+            return Response(
+                {'detail': 'ليس لديك صلاحية إدارة حسابات المستخدمين'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         lookup_val = self.kwargs.get(self.lookup_url_kwarg or self.lookup_field)
         if self._is_targeting_sudo(lookup_val):
             return Response(
@@ -1293,6 +1340,11 @@ class UserProfileViewSet(BasePermViewSet):
             return Response(
                 {'detail': 'لا يمكن حذف حساب الطوارئ المطلق'},
                 status=status.HTTP_403_FORBIDDEN
+            )
+        if viewer and viewer.pk == user.pk:
+            return Response(
+                {'detail': 'لا يمكنك تنفيذ هذا الإجراء على حسابك الشخصي'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         if not can_manage_target(request, user.rank_level):
             return Response(
@@ -1315,6 +1367,14 @@ class UserProfileViewSet(BasePermViewSet):
 
     @action(detail=True, methods=['post'])
     def toggle_active(self, request, pk=None):
+        viewer = get_viewer_profile(request)
+        if not viewer or not (
+            viewer.has_perm('manage_users') or viewer.has_perm('manage_permissions')
+        ):
+            return Response(
+                {'detail': 'ليس لديك صلاحية إدارة حسابات المستخدمين'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         if self._is_targeting_sudo(pk):
             return Response(
                 {'detail': 'لا يمكن تعطيل حساب الطوارئ المطلق'},
@@ -1325,6 +1385,11 @@ class UserProfileViewSet(BasePermViewSet):
             return Response(
                 {'detail': 'لا يمكن تعطيل حساب الطوارئ المطلق'},
                 status=status.HTTP_403_FORBIDDEN
+            )
+        if viewer and viewer.pk == user.pk:
+            return Response(
+                {'detail': 'لا يمكنك تنفيذ هذا الإجراء على حسابك الشخصي'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         user.is_active = not user.is_active
         if not user.is_active:
@@ -1588,10 +1653,13 @@ class FabricColorViewSet(BasePermViewSet):
                 operation=op,
                 amount=amount,
                 timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
+                # سعر الوحدة التاريخي وقت الحركة + ربط المورد الاختياري (يظل NULL إن لم يُمرّر).
+                unit_price_snapshot=col.price_per_unit or 0,
+                supplier=resolve_by_id(Supplier, data.get('supplier_id') or data.get('supplierId')),
             )
             payload = {
                 'color': FabricColorSerializer(col, context={'request': request}).data,
-                'transaction': FabricTransactionSerializer(tr).data,
+                'transaction': FabricTransactionSerializer(tr, context={'request': request}).data,
             }
         return Response(payload)
 
@@ -1754,10 +1822,13 @@ class AccessoryViewSet(BasePermViewSet):
                 model_code_ref=data.get('modelCodeRef') or '',
                 notes=data.get('notes') or '',
                 timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
+                # سعر الوحدة التاريخي وقت الحركة + ربط المورد الاختياري (يظل NULL إن لم يُمرّر).
+                unit_price_snapshot=getattr(acc, 'price_per_unit', 0) or 0,
+                supplier=resolve_by_id(Supplier, data.get('supplier_id') or data.get('supplierId')),
             )
             payload = {
                 'accessory': AccessorySerializer(acc, context={'request': request}).data,
-                'transaction': AccessoryTransactionSerializer(tr).data,
+                'transaction': AccessoryTransactionSerializer(tr, context={'request': request}).data,
             }
         return Response(payload)
 
@@ -1782,7 +1853,9 @@ class AccessoryTransactionViewSet(BasePermViewSet):
 
 
 class ModelItemViewSet(BasePermViewSet):
-    queryset = ModelItem.objects.filter(is_deleted=False).prefetch_related('timeline', 'accessories')
+    queryset = ModelItem.objects.filter(is_deleted=False).prefetch_related(
+        'timeline', 'accessories', 'requirements', 'requirements__color'
+    )
     serializer_class = ModelItemSerializer
 
     # أقسام يُسمح لها بقراءة الموديلات (كل قسم تشغيلي يعرض الموديلات في واجهته).
@@ -2065,6 +2138,10 @@ class ModelItemViewSet(BasePermViewSet):
                     col.quantity = max(0.0, round(float(col.quantity or 0) - float(req.planned_quantity), 2))
                     col.reserved_quantity = max(0.0, round(float(col.reserved_quantity or 0) - float(req.planned_quantity), 2))
                     col.save()
+                    if not req.unit_price_snapshot:
+                        # التقاط السعر التاريخي للمتطلب إن لم يُلتقط وقت الربط.
+                        req.unit_price_snapshot = col.price_per_unit or 0
+                        req.save(update_fields=['unit_price_snapshot'])
                     FabricTransaction.objects.create(
                         color=col,
                         fabric=col.fabric,
@@ -2073,6 +2150,8 @@ class ModelItemViewSet(BasePermViewSet):
                         operation='deduct',
                         amount=req.planned_quantity,
                         timestamp=now_str,
+                        # سعر الوحدة التاريخي وقت الصرف (يُستخدم في قسم الحسابات لاحقاً).
+                        unit_price_snapshot=col.price_per_unit or 0,
                     )
                     issued_fabrics.append({
                         'part_name': req.part_name,
@@ -2091,6 +2170,10 @@ class ModelItemViewSet(BasePermViewSet):
                         acc_item.current_stock = max(0, int(round(float(acc_item.current_stock or 0) - planned_qty)))
                         acc_item.reserved_quantity = max(0.0, round(float(acc_item.reserved_quantity or 0) - planned_qty, 2))
                         acc_item.save()
+                        if not m_acc.unit_price_snapshot:
+                            # التقاط السعر التاريخي للإكسسوار إن لم يُلتقط وقت الربط.
+                            m_acc.unit_price_snapshot = acc_item.price_per_unit or 0
+                            m_acc.save(update_fields=['unit_price_snapshot'])
                         AccessoryTransaction.objects.create(
                             accessory=acc_item,
                             accessory_code=acc_item.code,
@@ -2100,6 +2183,8 @@ class ModelItemViewSet(BasePermViewSet):
                             model_code_ref=model.model_code,
                             notes=f"صرف إكسسوار للتشغيل والقص ({'بنطلون' if m_acc.target_type == 'pants' else 'تيشرت'}) - موديل: {model.model_code}",
                             timestamp=now_str,
+                            # سعر الوحدة التاريخي وقت الصرف (يُستخدم في قسم الحسابات لاحقاً).
+                            unit_price_snapshot=acc_item.price_per_unit or 0,
                         )
                 issued_accessories.append({
                     'accessory_name': m_acc.accessory_name,
@@ -2251,6 +2336,7 @@ class ModelItemViewSet(BasePermViewSet):
         disp = dispatch_model_to_sewing_service(
             get_ext_id(model), workshop_name, pieces_count, expected_date, notes, user, piece_type,
             piece_label, client_id=client_id, cost_per_piece=cost_per_piece, total_cost=total_cost,
+            workshop=resolve_workshop_link(request.data, workshop_name),
         )
         log_price_change(
             request, 'قسم المكن والخياطة',
@@ -2637,6 +2723,9 @@ class ModelItemViewSet(BasePermViewSet):
                 user_name=data.get('user_name') or data.get('user') or 'مسؤول التشطيب',
                 cost_per_piece=finishing_cost,
                 total_cost=finishing_total,
+                workshop=resolve_workshop_link(
+                    data, data.get('vendor_name') or data.get('vendorName') or ''
+                ),
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -2706,6 +2795,9 @@ class ModelItemViewSet(BasePermViewSet):
                 user_name=data.get('user_name') or data.get('user') or 'مسؤول المكواة',
                 cost_per_piece=ironing_cost,
                 total_cost=ironing_total,
+                workshop=resolve_workshop_link(
+                    data, data.get('vendor_name') or data.get('vendorName') or ''
+                ),
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -2783,6 +2875,9 @@ class ModelItemViewSet(BasePermViewSet):
                 user_name=data.get('user_name') or data.get('user') or 'مسؤول الأسمبلي',
                 cost_per_piece=assembly_cost,
                 total_cost=assembly_total,
+                workshop=resolve_workshop_link(
+                    data, data.get('vendor_name') or data.get('vendorName') or ''
+                ),
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -2863,6 +2958,8 @@ class ModelRequirementViewSet(BasePermViewSet):
             color=color,
             part_name=(data.get('part_name') or data.get('partName') or '').strip(),
             planned_quantity=max(0.0, float(data.get('planned_quantity') or data.get('plannedQuantity') or 0)),
+            # التقاط سعر الوحدة الحالي للون وقت ربط المتطلب بالموديل.
+            unit_price_snapshot=color.price_per_unit or 0,
         )
         sync_reserved_quantities()
         return Response(ModelRequirementSerializer(req).data, status=status.HTTP_201_CREATED)
@@ -2870,6 +2967,11 @@ class ModelRequirementViewSet(BasePermViewSet):
     def update(self, request, *args, **kwargs):
         req = self.get_object()
         data = request.data
+        if 'color_id' in data or 'colorId' in data:
+            color = resolve_by_id(FabricColor, data.get('color_id') or data.get('colorId'))
+            if color:
+                req.color = color
+                req.unit_price_snapshot = color.price_per_unit or 0
         if 'part_name' in data or 'partName' in data:
             req.part_name = (data.get('part_name') or data.get('partName') or req.part_name).strip()
         if 'planned_quantity' in data or 'plannedQuantity' in data:
@@ -2907,6 +3009,8 @@ class ModelAccessoryViewSet(BasePermViewSet):
             planned_quantity=max(0.0, float(data.get('planned_quantity') or 0)),
             unit=data.get('unit') or 'قطعة',
             image=clean_image_value(data.get('image') or '', 'model-accessories', 'صورة الإكسسوار'),
+            # التقاط سعر الوحدة الحالي للإكسسوار وقت الربط بالموديل.
+            unit_price_snapshot=_accessory_price_snapshot(data.get('accessory_id')),
         )
         sync_reserved_quantities()
         return Response(ModelAccessorySerializer(m_acc).data, status=status.HTTP_201_CREATED)
@@ -2914,6 +3018,9 @@ class ModelAccessoryViewSet(BasePermViewSet):
     def update(self, request, *args, **kwargs):
         m_acc = self.get_object()
         data = request.data
+        if 'accessory_id' in data:
+            m_acc.accessory_id_ref = data.get('accessory_id') or None
+            m_acc.unit_price_snapshot = _accessory_price_snapshot(m_acc.accessory_id_ref)
         if 'planned_quantity' in data:
             m_acc.planned_quantity = max(0.0, float(data.get('planned_quantity') or 0))
         if 'piece_consumption' in data:
@@ -2953,10 +3060,6 @@ class CuttingRecordViewSet(BasePermViewSet):
         spreader = (data.get('spreader_name') or data.get('spreaderName') or '').strip()
         cutter = (data.get('cutter_name') or data.get('cutterName') or '').strip()
         raw_layers = data.get('color_layers') or data.get('colorLayers') or []
-
-        # Calculate spread number automatically if not passed
-        existing_spreads_count = CuttingRecord.objects.filter(model=model).count()
-        spread_num = int(data.get('spread_number') or data.get('spreadNumber') or (existing_spreads_count + 1))
 
         # Aggregate layers and build color summary from color_layers
         parsed_layers = []
@@ -3002,6 +3105,15 @@ class CuttingRecordViewSet(BasePermViewSet):
         part_type = normalize_part_key(data.get('part_type') or data.get('partType') or 'shirt')
 
         with transaction.atomic():
+            # اقفل سجل الموديل أولاً ثم احسب رقم الفرشة، حتى لا تحصل فرشتان
+            # متزامنتان على نفس الرقم (Race Condition).
+            model = ModelItem.objects.select_for_update().get(pk=model.pk)
+            existing_spreads_count = CuttingRecord.objects.filter(model=model).count()
+            spread_num = int(
+                data.get('spread_number')
+                or data.get('spreadNumber')
+                or (existing_spreads_count + 1)
+            )
             rec = CuttingRecord.objects.create(
                 client_id=data.get('id') or data.get('client_id'),
                 model=model,
@@ -3282,6 +3394,7 @@ class PrintDispatchViewSet(BasePermViewSet):
             client_id=data.get('id') or data.get('client_id'),
             model=model,
             print_house=shop_name,
+            workshop=resolve_workshop_link(data, shop_name),
             piece_type=piece_type,
             piece_label=piece_label,
             pieces_count=pieces,
@@ -3461,7 +3574,8 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
     permission_classes = [HasDynamicSectionPermission]
     required_section = 'assembly_packaging'
     queryset = PackagingMaterialRule.objects.prefetch_related(
-        'size_rules', 'size_rules__supplier', 'size_rules__transactions'
+        'size_rules', 'size_rules__rule', 'size_rules__supplier',
+        'size_rules__transactions'
     ).all()
     serializer_class = PackagingMaterialRuleSerializer
 
@@ -4261,7 +4375,7 @@ class HREmployeeViewSet(BasePermViewSet):
                 return rank_error
             obj.rank_level = new_rank
         obj.save()
-        return Response(HREmployeeSerializer(obj, context=self.get_serializer_context()).data)
+        return Response(HREmployeeSerializer(obj, context={'request': request}).data)
 
     def destroy(self, request, *args, **kwargs):
         obj = self.get_object()
@@ -4373,8 +4487,9 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         check_out_val = parse_time_value(data.get('check_out'))
         # الاحتساب تلقائي دائماً، ويُحترم الخصم اليدوي فقط عند manual_deduction=true.
         manual_deduction = bool(data.get('manual_deduction'))
+        settings_obj = HRAttendanceSettings.get_solo()
         computed = compute_attendance(
-            HRAttendanceSettings.get_solo(),
+            settings_obj,
             employee,
             rec_date or date.today(),
             check_in_val,
@@ -4392,9 +4507,9 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             ded_hours = computed['deduction_hours']
             if data.get('review_status') is None:
                 review_val = computed['review_status']
-        # يوم الأحد إجازة أسبوعية مدفوعة فقط عند غياب بصمة الحضور.
-        # الأحد الذي سُجّلت له بصمة حضور يُعامل كيوم عمل عادي (خصم تأخير + إضافي).
-        if (rec_date or date.today()).weekday() == 6 and not check_in_val:
+        # يوم الإجازة الأسبوعية (من إعدادات الحضور) إجازة مدفوعة فقط عند غياب بصمة الحضور.
+        # اليوم الذي سُجّلت له بصمة حضور يُعامل كيوم عمل عادي (خصم تأخير + إضافي).
+        if (rec_date or date.today()).weekday() == weekly_off_weekday(settings_obj) and not check_in_val:
             ded_days = 0.0
             ded_hours = 0.0
             late_minutes_val = 0.0
@@ -4516,9 +4631,9 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             if data.get('review_status') is None:
                 obj.review_status = computed['review_status']
 
-        # يوم الأحد إجازة أسبوعية مدفوعة فقط عند غياب بصمة الحضور.
-        # الأحد الذي سُجّلت له بصمة حضور يُعامل كيوم عمل عادي (خصم تأخير + إضافي).
-        if obj.date.weekday() == 6 and not obj.check_in:
+        # يوم الإجازة الأسبوعية (من إعدادات الحضور) إجازة مدفوعة فقط عند غياب بصمة الحضور.
+        # اليوم الذي سُجّلت له بصمة حضور يُعامل كيوم عمل عادي (خصم تأخير + إضافي).
+        if obj.date.weekday() == weekly_off_weekday(settings_obj) and not obj.check_in:
             obj.calculated_deduction_days = 0
             obj.calculated_deduction_hours = 0
             obj.late_minutes = 0
@@ -4528,7 +4643,7 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
 
         obj.save()
         if not manual_deduction:
-            # إعادة حساب خصم يوم الأحد بعد تحديث السجل (يعتمد على سجلات الأسبوع).
+            # إعادة حساب خصم يوم الإجازة الأسبوعية بعد تحديث السجل (يعتمد على سجلات الأسبوع).
             month_start, month_end = month_bounds(obj.date)
             reapply_employee_month(
                 settings_obj, obj.employee, month_start, month_end,
@@ -4695,7 +4810,7 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
                 review_count += 1
             affected_employees[employee.pk] = employee
 
-        # إعادة احتساب الإضافي وخصم يوم الأحد لكل موظف تأثر بالرفع.
+        # إعادة احتساب الإضافي وخصم يوم الإجازة الأسبوعية لكل موظف تأثر بالرفع.
         if affected_employees and parsed['rows']:
             month_start, month_end = month_bounds(parsed['rows'][0]['date'])
             for employee in affected_employees.values():
@@ -4805,7 +4920,7 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
 
     @action(detail=False, methods=['post'], url_path='reapply-rules')
     def reapply_rules(self, request):
-        """إعادة تطبيق قواعد الحضور والإضافي وخصم الأحد على سجلات شهر كامل."""
+        """إعادة تطبيق قواعد الحضور والإضافي وخصم يوم الإجازة الأسبوعية على سجلات شهر كامل."""
         month_start, month_end = self._sheet_month(request)
         settings_obj = HRAttendanceSettings.get_solo()
         employees = list(rank_scoped_queryset(HREmployee.objects.all(), request))

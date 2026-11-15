@@ -763,6 +763,9 @@ class FabricTransaction(models.Model):
     notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
     operation = models.CharField(max_length=20, default='deduct', verbose_name="نوع العملية")
     amount = models.FloatField(default=0.0, verbose_name="الكمية")
+    # سعر الوحدة التاريخي وقت الحركة: يثبّت تكلفة الموديلات القديمة حتى لو تغير سعر المخزن.
+    unit_price_snapshot = models.DecimalField(max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر الوحدة وقت العملية")
+    supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True, related_name="+", verbose_name="المورد")
     timestamp = models.CharField(max_length=100, blank=True, default='', verbose_name="التوقيت")
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -850,6 +853,9 @@ class AccessoryTransaction(models.Model):
     amount = models.FloatField(default=0.0, verbose_name="الكمية")
     model_code_ref = models.CharField(max_length=150, blank=True, default='', verbose_name="كود الموديل")
     notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
+    # سعر الوحدة التاريخي وقت الحركة: يثبّت تكلفة الموديلات القديمة حتى لو تغير سعر المخزن.
+    unit_price_snapshot = models.DecimalField(max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر الوحدة وقت العملية")
+    supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True, related_name="+", verbose_name="المورد")
     timestamp = models.CharField(max_length=100, blank=True, default='', verbose_name="التوقيت")
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -1069,6 +1075,8 @@ class ModelRequirement(models.Model):
     color = models.ForeignKey(FabricColor, on_delete=models.CASCADE, related_name="requirements", verbose_name="اللون")
     part_name = models.CharField(max_length=150, verbose_name="اسم القطعة / الجزء")
     planned_quantity = models.FloatField(default=0.0, verbose_name="الكمية المخططة")
+    # سعر الوحدة التاريخي وقت ربط المتطلب بالموديل (لحساب التكلفة الفعلية لاحقاً).
+    unit_price_snapshot = models.DecimalField(max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر الوحدة وقت العملية")
 
     def save(self, *args, **kwargs):
         if not self.client_id:
@@ -1091,6 +1099,8 @@ class ModelAccessory(models.Model):
     planned_quantity = models.FloatField(default=0.0, verbose_name="الكمية المخططة")
     unit = models.CharField(max_length=50, default="قطعة", verbose_name="الوحدة")
     image = models.TextField(blank=True, null=True, verbose_name="صورة الإكسسوار")
+    # سعر الوحدة التاريخي وقت الصرف للموديل (لحساب التكلفة الفعلية لاحقاً).
+    unit_price_snapshot = models.DecimalField(max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر الوحدة وقت العملية")
 
     def save(self, *args, **kwargs):
         guard_image_field(self, 'image', 'صورة الإكسسوار')
@@ -1225,6 +1235,8 @@ class PrintDispatch(models.Model):
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, related_name="dispatches")
     print_house = models.CharField(max_length=200, verbose_name="اسم المطبعة")
+    # الربط الاختياري بسجل الورشة المسجل (يُبقى الاسم النصي أعلاه كما هو للتوافقية).
+    workshop = models.ForeignKey(Workshop, on_delete=models.SET_NULL, null=True, blank=True, related_name="+", verbose_name="الورشة المسجلة")
     # نوع القطعة المرسلة للمطبعة (تيشرت / بنطلون / جاكيت / قطعة واحدة) لمطابقة تقسيم الموديل
     piece_type = models.CharField(max_length=20, choices=PART_TYPE_CHOICES, default='shirt', verbose_name="نوع القطعة")
     piece_label = models.CharField(max_length=50, blank=True, null=True, verbose_name="مسمى القطعة")
@@ -1269,6 +1281,8 @@ class SewingDispatch(models.Model):
     piece_type = models.CharField(max_length=20, choices=PIECE_CHOICES, default='shirt', verbose_name="نوع القطعة")
     piece_label = models.CharField(max_length=50, blank=True, null=True, verbose_name="مسمى القطعة")
     workshop_name = models.CharField(max_length=200, verbose_name="اسم ورشة المكن / الخياطة")
+    # الربط الاختياري بسجل الورشة المسجل (يُبقى الاسم النصي أعلاه كما هو للتوافقية).
+    workshop = models.ForeignKey(Workshop, on_delete=models.SET_NULL, null=True, blank=True, related_name="+", verbose_name="الورشة المسجلة")
     pieces_count = models.IntegerField(default=0, verbose_name="القطع المسلمة للورشة")
     dispatched_date = models.DateField(auto_now_add=True, verbose_name="تاريخ الخروج للورشة")
     dispatched_at_str = models.CharField(max_length=100, blank=True, null=True)
@@ -1494,6 +1508,8 @@ class FinishingRecord(models.Model):
     part_type = models.CharField(max_length=20, choices=PART_TYPE_CHOICES, default='shirt', verbose_name="نوع القطعة")
     piece_label = models.CharField(max_length=50, blank=True, null=True, verbose_name="مسمى القطعة")
     vendor_name = models.CharField(max_length=150, blank=True, default='', verbose_name="الجهة / ورشة التشطيب")
+    # الربط الاختياري بسجل الورشة المسجل (يُبقى الاسم النصي أعلاه كما هو للتوافقية).
+    workshop = models.ForeignKey(Workshop, on_delete=models.SET_NULL, null=True, blank=True, related_name="+", verbose_name="الورشة المسجلة")
     entry_date = models.DateField(blank=True, null=True, verbose_name="تاريخ دخول التشطيب")
     expected_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج المتوقع")
     actual_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الاستلام الفعلي")
@@ -1549,6 +1565,8 @@ class AssemblyStageRecord(models.Model):
     # Packaging and dest stay model-level, so part_type is left as ''.
     part_type = models.CharField(max_length=20, blank=True, default='', verbose_name="نوع القطعة (للمكواة)")
     vendor_name = models.CharField(max_length=150, blank=True, default='', verbose_name="الجهة / الورشة")
+    # الربط الاختياري بسجل الورشة المسجل (يُبقى الاسم النصي أعلاه كما هو للتوافقية).
+    workshop = models.ForeignKey(Workshop, on_delete=models.SET_NULL, null=True, blank=True, related_name="+", verbose_name="الورشة المسجلة")
     entry_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الدخول")
     expected_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج المتوقع")
     actual_exit_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الخروج الفعلي")

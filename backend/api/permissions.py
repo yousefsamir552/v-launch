@@ -92,10 +92,14 @@ class HasDynamicSectionPermission(permissions.BasePermission):
         # its own per-section filtering), so a section endpoint must never leak
         # its data to users who cannot open that section.
         perm_field = self.section_perm_map.get(required_section, required_section)
-        # صلاحية التعديل تمنح قراءة القسم أيضاً (نفس منطق الواجهة).
-        return profile.has_perm(perm_field) or profile.has_perm(
-            perm_field.replace('_view', '_edit')
-        )
+        edit_field = perm_field.replace('_view', '_edit')
+        # القراءة: تكفي صلاحية العرض أو صلاحية التعديل (صلاحية التعديل تمنح
+        # قراءة القسم أيضاً — نفس منطق الواجهة).
+        if request.method in permissions.SAFE_METHODS:
+            return profile.has_perm(perm_field) or profile.has_perm(edit_field)
+        # أي طلب كتابة (POST / PUT / PATCH / DELETE) يتطلب صلاحية التعديل صراحةً.
+        # صلاحية "رؤية فقط" لا تسمح بالإضافة أو التعديل أو الحذف.
+        return profile.has_perm(edit_field)
 
 
 class CanManageCatalog(permissions.BasePermission):
