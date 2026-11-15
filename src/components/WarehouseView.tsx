@@ -44,6 +44,7 @@ export const WarehouseView: React.FC = () => {
     addFabricOrColor,
     recordTransaction,
     exportWarehouseInventoryCsv,
+    exportFabricTransactionsCsv,
     updateColorPrice,
     hasPermission,
     canViewFabricPrices,
@@ -633,7 +634,16 @@ export const WarehouseView: React.FC = () => {
                 className="flex items-center gap-2 px-5 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition shadow-md shadow-emerald-500/20 cursor-pointer"
               >
                 <FileSpreadsheet className="w-4 h-4" />
-                <span>📥 تحميل إكسيل</span>
+                <span>📊 تصدير Excel (الجرد)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={exportFabricTransactionsCsv}
+                className="flex items-center gap-2 px-5 py-2 rounded-full bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold transition shadow-md shadow-teal-500/20 cursor-pointer"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>📊 تصدير Excel (الحركات)</span>
               </button>
 
               <button

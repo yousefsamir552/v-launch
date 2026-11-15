@@ -348,7 +348,8 @@ export const PackagingMaterialsView: React.FC = () => {
     savePackagingMaterialRule,
     deletePackagingMaterialRule,
     canViewAssemblyPrices,
-    canEditAssemblyPrices
+    canEditAssemblyPrices,
+    exportPackagingMaterialsCsv
   } = useApp();
 
   const canEdit = hasAssemblyPackagingAccess(true);
@@ -1033,6 +1034,13 @@ export const PackagingMaterialsView: React.FC = () => {
             <div className="px-3 py-1.5 rounded-full bg-white/15 text-[11px] font-black">
               إجمالي العجز: {formatNumber(summary.shortage)}
             </div>
+            <button
+              type="button"
+              onClick={exportPackagingMaterialsCsv}
+              className="px-4 py-1.5 rounded-full bg-white text-slate-900 hover:bg-slate-100 text-[11px] font-black transition cursor-pointer"
+            >
+              📊 تصدير Excel
+            </button>
           </div>
         </div>
       </div>

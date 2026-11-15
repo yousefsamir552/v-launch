@@ -15,6 +15,7 @@ import {
   History,
 } from 'lucide-react';
 import { api } from '../api/client';
+import { exportCsv, datedFileName } from '../utils/exportExcel';
 import { COMPLETED_MODEL_MARKER, isCompletedModelAudit } from '../utils/completedModels';
 import type { AuditLog, AuditLogFiltersMeta, AuditLogListResponse } from '../types';
 
@@ -197,6 +198,23 @@ export const AuditLogsView: React.FC<AuditLogsViewProps> = ({ onBack }) => {
   const canGoPrev = page > 1;
   const canGoNext = page < totalPages;
 
+  const exportAuditCsv = () => {
+    exportCsv(
+      datedFileName('audit_logs'),
+      ['التاريخ والوقت', 'المستخدم', 'القسم', 'نوع الإجراء', 'الإجراء', 'العنصر المتأثر', 'التفاصيل', 'عنوان IP'],
+      logs.map((log) => [
+        log.timestamp || '-',
+        log.userName || '-',
+        log.section || '-',
+        log.actionType || '-',
+        log.action || '-',
+        log.targetName || '-',
+        log.details || '-',
+        log.ip_address || '-'
+      ])
+    );
+  };
+
   return (
     <div className="space-y-5 animate-in fade-in duration-200">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -212,13 +230,22 @@ export const AuditLogsView: React.FC<AuditLogsViewProps> = ({ onBack }) => {
           </div>
         </div>
 
-        <button
-          onClick={onBack}
-          className="flex items-center gap-2 px-5 py-2 rounded-full border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs shadow-xs transition"
-        >
-          <ArrowRight className="w-4 h-4" />
-          <span>← العودة للإعدادات</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={exportAuditCsv}
+            className="flex items-center gap-2 px-5 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition"
+          >
+            <span>📊 تصدير Excel</span>
+          </button>
+          <button
+            onClick={onBack}
+            className="flex items-center gap-2 px-5 py-2 rounded-full border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs shadow-xs transition"
+          >
+            <ArrowRight className="w-4 h-4" />
+            <span>← العودة للإعدادات</span>
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs p-4 md:p-5 space-y-4">

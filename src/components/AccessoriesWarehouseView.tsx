@@ -37,6 +37,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
     deleteAccessoryItem,
     recordAccessoryTransaction,
     exportAccessoryInventoryCsv,
+    exportAccessoryTransactionsCsv,
     markAccessoryWithdrawn,
     formatSupplierWhatsappMessage,
     globalSettings
@@ -658,7 +659,17 @@ export const AccessoriesWarehouseView: React.FC = () => {
               title="تصدير شيت إكسيل"
             >
               <FileSpreadsheet className="w-4 h-4" />
-              <span>تصدير إكسيل</span>
+              <span>📊 تصدير Excel (الجرد)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={exportAccessoryTransactionsCsv}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded-full transition shadow-xs cursor-pointer"
+              title="تصدير حركات الإكسسوارات"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              <span>📊 تصدير Excel (الحركات)</span>
             </button>
 
             {canEdit && (

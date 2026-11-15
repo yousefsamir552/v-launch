@@ -14,7 +14,7 @@ interface ProductionControlViewProps {
 export const ProductionControlView: React.FC<ProductionControlViewProps> = ({
   initialSubTab = 'printing'
 }) => {
-  const { models, hasPermission } = useApp();
+  const { models, hasPermission, exportPrintDispatchesCsv } = useApp();
 
   const [activeSubTab, setActiveSubTab] = useState<ProductionControlTab>(initialSubTab);
 
@@ -59,6 +59,14 @@ export const ProductionControlView: React.FC<ProductionControlViewProps> = ({
               </p>
             </div>
           </div>
+
+          <button
+            type="button"
+            onClick={exportPrintDispatchesCsv}
+            className="flex items-center gap-2 px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition cursor-pointer shrink-0"
+          >
+            <span>📊 تصدير Excel</span>
+          </button>
 
           {/* Sub-tab Navigation */}
           <div className="flex items-center gap-1.5 bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80">

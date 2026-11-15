@@ -4968,3 +4968,185 @@ class HRLoanViewSet(BasePermViewSet):
             obj.notes = data.get('notes') or ''
         obj.save()
         return Response(HRLoanSerializer(obj).data)
+
+
+# ---------------------------------------------------------------------------
+# تصفير بيانات المصنع الانتقائي (Factory Reset) — مخصص لحساب sudo فقط
+# ---------------------------------------------------------------------------
+FACTORY_RESET_SECTIONS = {
+    'production': 'الموديلات وخط الإنتاج بالكامل (يشمل مخزن الإنتاج التام)',
+    'fabric': 'مخزن القماش (الأصناف والألوان وحركات الوارد/الصادر)',
+    'accessories': 'مخزن الإكسسوارات (التصنيفات والأصناف والحركات)',
+    'packaging_materials': 'خامات التشغيل والتعبئة (الفئات والمقاسات والحركات)',
+    'suppliers_workshops': 'الموردون والورش',
+    'hr': 'بيانات الموارد البشرية (الوظائف والموظفين والحضور والجزاءات والسُلف)',
+    'users_roles': 'حسابات المستخدمين والأدوار والصلاحيات (مع الإبقاء على sudo فقط)',
+    'audit_logs': 'سجل التدقيق والرسائل الداخلية',
+}
+
+
+def _count_and_delete(queryset, label, summary):
+    """يعُدّ السجلات ثم يحذفها دفعة واحدة ويسجّل العدد في الملخّص."""
+    total = queryset.count()
+    if total:
+        queryset.delete()
+    summary[label] = summary.get(label, 0) + total
+    return total
+
+
+class FactoryResetViewSet(viewsets.ViewSet):
+    """
+    تصفير انتقائي لبيانات المصنع. العملية محمية بحساب sudo فقط وتُنفَّذ داخل
+    ``transaction.atomic()`` بترتيب آمن يتفادى قيود ``PROTECT`` في PostgreSQL
+    (HRJobTitle هو الحقل الوحيد المحمي عبر HREmployee.job).
+    """
+
+    def list(self, request):
+        """يعيد تعريف الأقسام المتاحة للتصفير (للاستخدام في الواجهة)."""
+        return Response({
+            'sections': [
+                {'key': key, 'label': label}
+                for key, label in FACTORY_RESET_SECTIONS.items()
+            ]
+        })
+
+    def create(self, request):
+        profile = getattr(request, 'user_profile', None) or resolve_request_user_profile(request)
+        if not is_sudo_profile(profile):
+            return Response(
+                {'detail': 'هذه العملية مخصصة لحساب sudo فقط ولا يمكن تنفيذها من أي حساب آخر.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        raw_sections = request.data.get('sections')
+        if not isinstance(raw_sections, list):
+            return Response(
+                {'detail': 'يجب إرسال قائمة الأقسام المطلوب تصفيرها.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        selected = {str(item).strip() for item in raw_sections if str(item).strip()}
+        unknown = selected - set(FACTORY_RESET_SECTIONS.keys())
+        if unknown:
+            return Response(
+                {'detail': f'أقسام غير معروفة: {", ".join(sorted(unknown))}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not selected:
+            return Response(
+                {'detail': 'لم يتم تحديد أي قسم للتصفير.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        confirmation = str(request.data.get('confirmation') or '').strip()
+        if confirmation != 'تأكيد':
+            return Response(
+                {'detail': 'كلمة التأكيد غير صحيحة. اكتب «تأكيد» للمتابعة.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+        summary = {}
+        notes = []
+
+        with transaction.atomic():
+            # 1) الرسائل الداخلية أولاً لأنها مرتبطة بالمستخدمين بـ CASCADE.
+            if selected & {'users_roles', 'audit_logs'}:
+                _count_and_delete(InternalMessage.objects.all(), 'الرسائل الداخلية', summary)
+
+            # 2) الموارد البشرية: الحضور/الجزاءات/السُلف ← الموظفين ← الوظائف (PROTECT).
+            if 'hr' in selected:
+                _count_and_delete(HRAttendanceRecord.objects.all(), 'سجلات الحضور', summary)
+                _count_and_delete(HRPenalty.objects.all(), 'الجزاءات', summary)
+                _count_and_delete(HRLoan.objects.all(), 'السُلف', summary)
+                _count_and_delete(HREmployee.objects.all(), 'الموظفين', summary)
+                _count_and_delete(HRJobTitle.objects.all(), 'الوظائف', summary)
+                _count_and_delete(HRAttendanceSettings.objects.all(), 'إعدادات الحضور', summary)
+
+            # 3) خامات التشغيل: الحركات ← المقاسات ← الفئات.
+            if 'packaging_materials' in selected:
+                _count_and_delete(PackagingMaterialTransaction.objects.all(), 'حركات خامات التشغيل', summary)
+                _count_and_delete(PackagingMaterialSizeRule.objects.all(), 'مقاسات خامات التشغيل', summary)
+                _count_and_delete(PackagingMaterialRule.objects.all(), 'فئات خامات التشغيل', summary)
+
+            # 4) خط الإنتاج بالكامل (الأبناء قبل الآباء).
+            if 'production' in selected:
+                _count_and_delete(AppNotification.objects.all(), 'التنبيهات', summary)
+                _count_and_delete(CuttingSpreadLayer.objects.all(), 'طبقات القص', summary)
+                _count_and_delete(CuttingRecord.objects.all(), 'سجلات القص', summary)
+                _count_and_delete(QCRecord.objects.all(), 'سجلات الفرز والجودة', summary)
+                _count_and_delete(PrintDispatch.objects.all(), 'أوامر المطابع', summary)
+                _count_and_delete(SewingDispatch.objects.all(), 'أوامر المكن', summary)
+                _count_and_delete(FinishingRecord.objects.all(), 'سجلات التشطيب', summary)
+                _count_and_delete(AssemblyStageRecord.objects.all(), 'سجلات الأسمبلي', summary)
+                _count_and_delete(PackagingRequirement.objects.all(), 'متطلبات التعبئة', summary)
+                _count_and_delete(ModelRequirement.objects.all(), 'متطلبات الموديلات', summary)
+                _count_and_delete(ModelAccessory.objects.all(), 'إكسسوارات الموديلات', summary)
+                _count_and_delete(ModelTimeline.objects.all(), 'سجل مراحل الموديلات', summary)
+                _count_and_delete(ModelItem.objects.all(), 'الموديلات', summary)
+
+            # 5) مخزن القماش.
+            if 'fabric' in selected:
+                if 'production' not in selected:
+                    notes.append(
+                        'حذف ألوان القماش يزيل تلقائياً متطلبات الألوان المرتبطة بالموديلات (CASCADE).'
+                    )
+                _count_and_delete(FabricTransaction.objects.all(), 'حركات القماش', summary)
+                _count_and_delete(FabricColor.objects.all(), 'ألوان القماش', summary)
+                _count_and_delete(Fabric.objects.all(), 'أصناف القماش', summary)
+
+            # 6) مخزن الإكسسوارات.
+            if 'accessories' in selected:
+                _count_and_delete(AccessoryTransaction.objects.all(), 'حركات الإكسسوارات', summary)
+                _count_and_delete(Accessory.objects.all(), 'أصناف الإكسسوارات', summary)
+                _count_and_delete(AccessoryType.objects.all(), 'تصنيفات الإكسسوارات', summary)
+
+            # 7) الموردون والورش.
+            if 'suppliers_workshops' in selected:
+                _count_and_delete(Supplier.objects.all(), 'الموردون', summary)
+                _count_and_delete(Workshop.objects.all(), 'الورش', summary)
+
+
+            # 8) الحسابات والأدوار — مع الإبقاء الإجباري على حساب sudo.
+            if 'users_roles' in selected:
+                keep_sudo_filter = Q(username__iexact='sudo') | Q(is_sudo=True)
+                _count_and_delete(
+                    UserProfile.objects.exclude(keep_sudo_filter),
+                    'حسابات المستخدمين',
+                    summary,
+                )
+                _count_and_delete(Role.objects.all(), 'الأدوار الوظيفية', summary)
+                notes.append('تم الإبقاء على حساب sudo فقط، وأي حساب أو دور وظيفي آخر تم حذفه.')
+
+            # 9) سجل التدقيق (بعد كل شيء).
+            if 'audit_logs' in selected:
+                _count_and_delete(AuditLog.objects.all(), 'سجلات التدقيق', summary)
+
+        # سجل تدقيق دائم لعملية التصفير نفسها (حتى لو مُسح السجل القديم).
+        summary_parts = [f'{label}: {count}' for label, count in summary.items() if count]
+        forwarded_for = (request.META.get('HTTP_X_FORWARDED_FOR', '') or '').split(',')[0].strip()
+        try:
+            AuditLog.objects.create(
+                user_id_ref=str(getattr(profile, 'client_id', '') or getattr(profile, 'id', '') or ''),
+                user_name='sudo',
+                user_full_name=str(getattr(profile, 'real_name', '') or 'sudo'),
+                section='سجل المراقبة',
+                action_type='custom',
+                action='تصفير بيانات المصنع (Factory Reset)',
+                target_name='Factory Reset',
+                details='تصفير انتقائي للأقسام: ' + ('، '.join(summary_parts) or 'لا يوجد'),
+                changes=[],
+                ip_address=forwarded_for or request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                timestamp=timezone.now().strftime('%Y-%m-%d %H:%M:%S'),
+            )
+        except Exception:
+            # لا نُفشل العملية بسبب تعذّر كتابة سجل التدقيق.
+            pass
+
+        return Response({
+            'status': 'success',
+            'summary': summary,
+            'total': sum(summary.values()),
+            'sections': sorted(selected),
+            'notes': notes,
+        })
+

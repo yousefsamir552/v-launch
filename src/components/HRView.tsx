@@ -439,7 +439,7 @@ const computeMonthAccrual = (
 
 
 export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initialSubTab }) => {
-  const { addFlashMessage, canManageHR, canAccessHRSection, visibleRankLevels } = useApp();
+  const { addFlashMessage, canManageHR, canAccessHRSection, visibleRankLevels, exportHRSectionsZip } = useApp();
 
   const [section, setSection] = useState<HRSection>(initialSection);
   const [staffTab, setStaffTab] = useState<'employees' | 'jobs'>(
@@ -635,6 +635,14 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
               <Briefcase className="w-3.5 h-3.5 text-purple-600" />
               الوظائف: {jobTitles.length}
             </span>
+            <button
+              type="button"
+              onClick={() => void exportHRSectionsZip()}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black transition cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              📊 تصدير Excel
+            </button>
             <button
               type="button"
               onClick={() => void loadHRData()}

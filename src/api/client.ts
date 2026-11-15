@@ -445,6 +445,19 @@ export const api = {
   },
   getAuditLogFilters: () => request<any>('/audit-logs/filters/'),
 
+  // تصفير بيانات المصنع الانتقائي (sudo فقط)
+  factoryReset: (sections: string[], confirmation: string) =>
+    request<{
+      status: string;
+      summary: Record<string, number>;
+      total: number;
+      sections: string[];
+      notes: string[];
+    }>('/factory-reset/', {
+      method: 'POST',
+      body: JSON.stringify({ sections, confirmation })
+    }),
+
   // الموارد البشرية (HR)
   getHRJobTitles: () => request<any[]>('/hr-job-titles/'),
   createHRJobTitle: (data: any) =>

@@ -73,7 +73,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     rankLabelFor,
     currentUserRank,
     isRoleAssignable,
-    getCreatedDescendants
+    getCreatedDescendants,
+    exportFullBackupZip,
+    refreshState
   } = useApp();
 
   // Strictly filter out sudo so regular users never see or know of sudo (Task 2)
@@ -415,6 +417,112 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     deleteUser(target.id, descendants.length > 0);
   };
 
+  // -------------------------------------------------------------------------
+  // تصدير نسخة احتياطية كاملة (ZIP يضم كل أوراق Excel المتاحة للمستخدم)
+  // -------------------------------------------------------------------------
+  const [backupBusy, setBackupBusy] = useState(false);
+
+  const handleExportFullBackup = async () => {
+    setBackupBusy(true);
+    try {
+      await exportFullBackupZip();
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // تصفير بيانات المصنع الانتقائي (sudo فقط)
+  // -------------------------------------------------------------------------
+  const isSudo =
+    currentUser?.username?.toLowerCase() === 'sudo' || Boolean(currentUser?.is_sudo);
+
+  const FACTORY_RESET_OPTIONS: { key: string; label: string; hint: string }[] = [
+    {
+      key: 'production',
+      label: 'خط الإنتاج والموديلات',
+      hint: 'الموديلات، القص، الفرز، المطابع، المكن، التشطيب، الأسمبلي، التعبئة، ومتطلبات التعبئة'
+    },
+    {
+      key: 'fabric',
+      label: 'مخزن القماش',
+      hint: 'أصناف القماش وألوانه وحركات الوارد/الصادر'
+    },
+    {
+      key: 'accessories',
+      label: 'مخزن الإكسسوارات',
+      hint: 'التصنيفات والأصناف والحركات'
+    },
+    {
+      key: 'packaging_materials',
+      label: 'خامات التشغيل والتعبئة',
+      hint: 'الفئات والمقاسات والحركات'
+    },
+    {
+      key: 'suppliers_workshops',
+      label: 'الموردون والورش',
+      hint: 'كل الموردين والورش المسجلة'
+    },
+    {
+      key: 'hr',
+      label: 'الموارد البشرية',
+      hint: 'الوظائف، الموظفون، الحضور، الجزاءات، السُلف، وإعدادات الحضور'
+    },
+    {
+      key: 'users_roles',
+      label: 'المستخدمون والأدوار',
+      hint: 'كل الحسابات والأدوار مع الإبقاء على حساب sudo فقط'
+    },
+    {
+      key: 'audit_logs',
+      label: 'سجل التدقيق والرسائل',
+      hint: 'سجل المراقبة والرسائل الداخلية'
+    }
+  ];
+
+  const [resetSections, setResetSections] = useState<string[]>([]);
+  const [resetConfirmText, setResetConfirmText] = useState('');
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetSummary, setResetSummary] = useState<Record<string, number> | null>(null);
+
+  const toggleResetSection = (key: string) => {
+    setResetSections((prev) =>
+      prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
+    );
+  };
+
+  const handleFactoryReset = async () => {
+    if (!isSudo) return;
+    if (resetSections.length === 0) {
+      addFlashMessage('اختر قسماً واحداً على الأقل للتصفير', 'warning');
+      return;
+    }
+    if (resetConfirmText.trim() !== 'تأكيد') {
+      addFlashMessage('اكتب «تأكيد» في خانة التأكيد للمتابعة', 'warning');
+      return;
+    }
+    const ok = window.confirm(
+      'تحذير: سيتم حذف البيانات المحددة نهائياً ولا يمكن استرجاعها إلا من نسخة احتياطية.\n\nهل أنت متأكد من تنفيذ التصفير؟'
+    );
+    if (!ok) return;
+
+    setResetBusy(true);
+    setResetSummary(null);
+    try {
+      const result = await api.factoryReset(resetSections, resetConfirmText.trim());
+      setResetSummary(result.summary);
+      setResetSections([]);
+      setResetConfirmText('');
+      addFlashMessage(`تم تصفير البيانات بنجاح (${result.total} سجل)`, 'success');
+      result.notes?.forEach((note) => addFlashMessage(note, 'info'));
+      await refreshState();
+    } catch (err: any) {
+      addFlashMessage(err?.message || 'فشل تنفيذ عملية التصفير', 'danger');
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* Top Header */}
@@ -499,6 +607,125 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
             </button>
           )}
         </div>
+      </div>
+
+      {/* Backup & Selective Factory Reset */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {/* Full backup (permission-aware) */}
+        <div className="bg-white rounded-3xl border border-emerald-200 shadow-xs p-5 space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 rounded-2xl bg-emerald-50 text-emerald-600">
+              <FileText className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-slate-900">نسخة احتياطية كاملة (Excel / ZIP)</h3>
+              <p className="text-[11px] font-semibold text-slate-500 leading-relaxed mt-1">
+                تنزيل حزمة ZIP تضم كل الأقسام المتاحة لك كملفات CSV تُفتح في Excel. أعمدة الأسعار
+                والرواتب تُخفى تلقائياً بحسب صلاحياتك.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleExportFullBackup}
+            disabled={backupBusy}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black shadow-md transition disabled:opacity-60 cursor-pointer"
+          >
+            <FileText className="w-4 h-4" />
+            <span>{backupBusy ? 'جارٍ تجهيز النسخة...' : '📊 تصدير نسخة احتياطية كاملة'}</span>
+          </button>
+        </div>
+
+        {/* Selective factory reset — sudo only */}
+        {isSudo && (
+          <div className="bg-white rounded-3xl border border-rose-200 shadow-xs p-5 space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-2xl bg-rose-50 text-rose-600">
+                <RotateCcw className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-slate-900">تصفير بيانات المصنع (Sudo فقط)</h3>
+                <p className="text-[11px] font-semibold text-slate-500 leading-relaxed mt-1">
+                  حذف نهائي وانتقائي للبيانات المحددة داخل معاملة واحدة. لا يمكن التراجع — خذ نسخة
+                  احتياطية أولاً.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2 max-h-64 overflow-y-auto pe-1">
+              <label className="flex items-center gap-2 text-[11px] font-black text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={resetSections.length === FACTORY_RESET_OPTIONS.length}
+                  onChange={(e) =>
+                    setResetSections(
+                      e.target.checked ? FACTORY_RESET_OPTIONS.map((option) => option.key) : []
+                    )
+                  }
+                  className="w-3.5 h-3.5 accent-rose-600"
+                />
+                تحديد الكل ({FACTORY_RESET_OPTIONS.length} أقسام)
+              </label>
+              {FACTORY_RESET_OPTIONS.map((option) => (
+                <label
+                  key={option.key}
+                  className="flex items-start gap-2 rounded-xl border border-slate-200 p-2.5 hover:bg-slate-50 transition cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={resetSections.includes(option.key)}
+                    onChange={() => toggleResetSection(option.key)}
+                    className="mt-0.5 w-3.5 h-3.5 accent-rose-600"
+                  />
+                  <span>
+                    <span className="block text-[11px] font-black text-slate-800">{option.label}</span>
+                    <span className="block text-[10px] font-semibold text-slate-500">{option.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-black text-slate-700 mb-1">
+                للتأكيد اكتب كلمة «تأكيد»
+              </label>
+              <input
+                type="text"
+                value={resetConfirmText}
+                onChange={(e) => setResetConfirmText(e.target.value)}
+                placeholder="تأكيد"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-rose-200 bg-rose-50/40 text-xs font-black text-rose-800 focus:ring-2 focus:ring-rose-200 focus:outline-hidden"
+              />
+            </div>
+
+            {resetSummary && (
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-1">
+                <p className="text-[11px] font-black text-slate-700">نتيجة آخر تصفير:</p>
+                {Object.entries(resetSummary).map(([label, count]) => (
+                  <p
+                    key={label}
+                    className="text-[10px] font-semibold text-slate-600 flex items-center justify-between gap-2"
+                  >
+                    <span>{label}</span>
+                    <span className="font-black text-slate-900">{count}</span>
+                  </p>
+                ))}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleFactoryReset}
+              disabled={
+                resetBusy || resetSections.length === 0 || resetConfirmText.trim() !== 'تأكيد'
+              }
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-black shadow-md transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            >
+              <Lock className="w-4 h-4" />
+              <span>{resetBusy ? 'جارٍ التنفيذ...' : '🗑️ تنفيذ التصفير المحدد'}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Tab 1: Roles Management */}

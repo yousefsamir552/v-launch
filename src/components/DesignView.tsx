@@ -29,7 +29,7 @@ interface DesignViewProps {
 }
 
 export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) => {
-  const { models, sizeDefs, addDesignModel, hasPermission, canAddDesignNotes } = useApp();
+  const { models, sizeDefs, addDesignModel, hasPermission, canAddDesignNotes, exportDesignModelsCsv } = useApp();
   const canEdit = hasPermission('design', true);
   const canWriteNotes = canAddDesignNotes();
 
@@ -166,6 +166,13 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
             onChange={setShowCompleted}
             tone="slate"
           />
+          <button
+            type="button"
+            onClick={exportDesignModelsCsv}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition cursor-pointer"
+          >
+            <span>📊 تصدير Excel</span>
+          </button>
           {canEdit && (
             <button
               onClick={() => setShowAddModal(true)}

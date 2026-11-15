@@ -4,7 +4,7 @@ import { Boxes, Printer, X, CheckCircle2, Factory, Package } from 'lucide-react'
 import { isImageLogo } from '../utils/printShared';
 
 export const ProductionWarehouseView: React.FC = () => {
-  const { models, globalSettings } = useApp();
+  const { models, globalSettings, exportProductionWarehouseCsv } = useApp();
   const [showPrintModal, setShowPrintModal] = useState(false);
 
   // Finished production models — فقط الموديلات التي وصلت فعلاً لمخزن الإنتاج التام
@@ -38,6 +38,13 @@ export const ProductionWarehouseView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={exportProductionWarehouseCsv}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-500/20 transition cursor-pointer"
+          >
+            <span>📊 تصدير Excel</span>
+          </button>
           <button
             type="button"
             onClick={() => setShowPrintModal(true)}

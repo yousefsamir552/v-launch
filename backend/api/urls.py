@@ -12,7 +12,8 @@ from .views import (
     AuditLogViewSet, ReportsViewSet,
     HRJobTitleViewSet, HREmployeeViewSet, HRAttendanceSettingsViewSet,
     HRAttendanceRecordViewSet, HRPenaltyViewSet, HRLoanViewSet,
-    PackagingMaterialRuleViewSet, PackagingMaterialTransactionViewSet
+    PackagingMaterialRuleViewSet, PackagingMaterialTransactionViewSet,
+    FactoryResetViewSet
 )
 from .hr_reports import HRReportsViewSet
 
@@ -52,6 +53,8 @@ router.register(r'hr-loans', HRLoanViewSet, basename='hr-loans')
 router.register(r'hr-reports', HRReportsViewSet, basename='hr-reports')
 router.register(r'packaging-material-rules', PackagingMaterialRuleViewSet, basename='packaging-material-rules')
 router.register(r'packaging-material-transactions', PackagingMaterialTransactionViewSet, basename='packaging-material-transactions')
+# تصفير بيانات المصنع الانتقائي (sudo فقط)
+router.register(r'factory-reset', FactoryResetViewSet, basename='factory-reset')
 
 urlpatterns = [
     path('', include(router.urls)),

@@ -1176,7 +1176,8 @@ export const AssemblyPackagingView: React.FC = () => {
     assemblyStageRecords,
     getPartStages,
     hasPermission,
-    hasAssemblyPackagingAccess
+    hasAssemblyPackagingAccess,
+    exportAssemblyPackagingCsv
   } = useApp();
 
   const activeSectionDefault = (): 'pipeline' | 'materials' => {
@@ -1329,6 +1330,13 @@ export const AssemblyPackagingView: React.FC = () => {
               {TABS.find((tab) => tab.key === activeTab)?.label}: متبقي{' '}
               {pendingCountForTab(activeTab)}
             </div>
+            <button
+              type="button"
+              onClick={exportAssemblyPackagingCsv}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-white text-slate-900 hover:bg-slate-100 text-[11px] font-black transition cursor-pointer"
+            >
+              <span>📊 تصدير Excel</span>
+            </button>
           </div>
         </div>
       </div>
