@@ -681,8 +681,9 @@ export const SewingView: React.FC = () => {
 
                       <EndedModelBadge currentStage={PART_STAGE_LABELS[stage as PartStage]} />
 
-                      <div className="w-full py-2 rounded-xl bg-slate-200 text-slate-500 font-bold text-[11px] text-center cursor-not-allowed">
-                        تم تحويله مسبقاً
+                      <div className="w-full py-2 rounded-xl bg-slate-200 text-slate-600 border border-slate-300 font-bold text-[11px] text-center cursor-not-allowed">
+                        <span>🔒 تم الانتهاء وخرج بالفعل من هذه المرحلة</span>
+                        <Lock className="w-3.5 h-3.5 inline ms-1" />
                       </div>
                     </div>
                   );

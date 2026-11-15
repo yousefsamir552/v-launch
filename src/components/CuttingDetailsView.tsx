@@ -17,8 +17,10 @@ import {
   Ruler,
   StickyNote
 } from 'lucide-react';
-import { CuttingSpreadLayer, GarmentPart, PART_EMOJI, getPartLabel } from '../types';
+import { CuttingSpreadLayer, GarmentPart, PART_EMOJI, getPartLabel, PART_STAGE_LABELS, PartStage } from '../types';
 import { printCuttingOrder } from '../utils/printCuttingOrder';
+import { EndedModelBadge } from './CompletedModelsToggle';
+import { currentStageLabel, stageBeyond } from '../utils/completedModels';
 
 interface CuttingDetailsViewProps {
   modelId: string;
@@ -37,6 +39,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     fabricColors,
     cuttingRecords,
     getModelParts,
+    getPartStages,
     getModelColorList,
     getModelSizeList,
     sizeDefs,
@@ -61,6 +64,10 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
 
   // Garment parts for this model — each part is cut & counted independently.
   const modelParts = getModelParts(modelId);
+  // Per-part stages: a part that already left cutting can never be finished again.
+  const partStages = getPartStages(modelId);
+  const isPartCuttingCompleted = (part: GarmentPart) => stageBeyond(partStages[part], 'cutting');
+  const isAllCuttingCompleted = modelParts.every((part) => isPartCuttingCompleted(part));
   const [selectedPart, setSelectedPart] = useState<GarmentPart>(
     () => modelParts[0] || 'shirt'
   );
@@ -229,20 +236,23 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   };
 
   const handleFinishCutting = (parts?: GarmentPart[]) => {
-    const targetParts = parts && parts.length > 0 ? parts : undefined;
-    const scopedRecords = targetParts
-      ? modelCuttingRecords.filter((r) =>
-          targetParts.includes((r.part_type || r.partType || 'shirt') as GarmentPart)
-        )
-      : modelCuttingRecords;
+    const requestedParts = parts && parts.length > 0 ? parts : modelParts;
+    // فقط القطع التي ما زالت فعلياً في مرحلة القص قابلة للإنهاء.
+    const targetParts = requestedParts.filter((part) => !isPartCuttingCompleted(part));
+    if (targetParts.length === 0) {
+      alert('تم إنهاء قص هذه القطع وتحويلها للمرحلة التالية مسبقاً ولا يمكن إعادة تحويلها.');
+      return;
+    }
+
+    const scopedRecords = modelCuttingRecords.filter((r) =>
+      targetParts.includes((r.part_type || r.partType || 'shirt') as GarmentPart)
+    );
     if (scopedRecords.length === 0) {
       alert('يجب تسجيل فرشة قص واحدة على الأقل قبل التحويل للفرز!');
       return;
     }
 
-    const partsLabel = targetParts
-      ? targetParts.map((part) => getPartLabel(part)).join(' + ')
-      : 'كل القطع';
+    const partsLabel = targetParts.map((part) => getPartLabel(part)).join(' + ');
     if (
       !window.confirm(
         `هل أنت متأكد من إنهاء قص [${partsLabel}] وتحويلها للفرز والكنترول (العد قبل الطباعة)?`
@@ -254,9 +264,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     finishCuttingToQC(modelId, canWriteNotes ? cuttingNotes.trim() : '', targetParts);
 
     // Stay on the screen while other parts are still in cutting.
-    const remainingParts = targetParts
-      ? modelParts.filter((part) => !targetParts.includes(part))
-      : [];
+    const remainingParts = modelParts.filter(
+      (part) => !targetParts.includes(part) && !isPartCuttingCompleted(part)
+    );
     if (remainingParts.length === 0) {
       onFinishedToQC();
     }
@@ -371,6 +381,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
               <span className="px-3 py-0.5 rounded-full text-xs font-black bg-rose-50 text-rose-700 border border-rose-200">
                 {model.status}
               </span>
+              {isAllCuttingCompleted && (
+                <EndedModelBadge currentStage={currentStageLabel(model)} />
+              )}
             </div>
 
             <p className="text-xs text-slate-500 font-semibold">
@@ -990,37 +1003,65 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                     const partSpreadCount = modelCuttingRecords.filter(
                       (r) => (r.part_type || r.partType || 'shirt') === part
                     ).length;
+                    const isCompleted = isPartCuttingCompleted(part);
                     return (
                       <button
                         key={part}
                         type="button"
                         onClick={() => handleFinishCutting([part])}
-                        disabled={partSpreadCount === 0}
+                        disabled={partSpreadCount === 0 || isCompleted}
                         className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-full font-extrabold text-xs border transition ${
-                          partSpreadCount === 0
+                          isCompleted
+                            ? 'bg-slate-200 text-slate-600 border-slate-300 cursor-not-allowed'
+                            : partSpreadCount === 0
                             ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
                             : 'bg-white text-emerald-800 border-emerald-300 hover:bg-emerald-50 cursor-pointer'
                         }`}
                       >
-                        <span>{PART_EMOJI[part]}</span>
-                        <span>إنهاء قص {getPartLabel(part)}</span>
-                        <span className="text-[10px] font-bold text-slate-400">
-                          ({partSpreadCount} فرشة)
-                        </span>
+                        {isCompleted ? (
+                          <>
+                            <Lock className="w-3.5 h-3.5" />
+                            <span>
+                              تم إنهاء قص {getPartLabel(part)} — خرجت إلى (
+                              {PART_STAGE_LABELS[(partStages[part] || 'cutting') as PartStage]})
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span>{PART_EMOJI[part]}</span>
+                            <span>إنهاء قص {getPartLabel(part)}</span>
+                            <span className="text-[10px] font-bold text-slate-400">
+                              ({partSpreadCount} فرشة)
+                            </span>
+                          </>
+                        )}
                       </button>
                     );
                   })}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleFinishCutting()}
-                  className="w-full py-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <CheckCircle2 className="w-5 h-5" />
-                  <span>
-                    ✔️ إنهاء قص كل القطع والتحويل للفرز والكنترول (جدول العد قبل الطباعة)
-                  </span>
-                </button>
+                {isAllCuttingCompleted ? (
+                  <button
+                    type="button"
+                    disabled
+                    className="w-full py-3.5 rounded-full bg-slate-200 text-slate-600 border border-slate-300 font-extrabold text-xs flex items-center justify-center gap-2 cursor-not-allowed"
+                  >
+                    <Lock className="w-4 h-4" />
+                    <span>
+                      🔒 تم الانتهاء وخرج الموديل بالفعل من مرحلة القص ({currentStageLabel(model)})
+                    </span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleFinishCutting()}
+                    className="w-full py-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-5 h-5" />
+                    <span>
+                      ✔️ إنهاء قص كل القطع والتحويل للفرز والكنترول (جدول العد قبل الطباعة)
+                    </span>
+                  </button>
+                )}
               </>
             )}
           </div>

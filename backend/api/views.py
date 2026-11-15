@@ -11,6 +11,7 @@ from django.http import Http404, HttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_time
 from datetime import date, timedelta
+import re
 import secrets
 
 from .models import (
@@ -80,6 +81,8 @@ from .services import (
     advance_parts_to_stage,
     derive_pipeline_status,
     seed_part_stages_from_status,
+    get_part_stages,
+    set_all_part_stages,
 )
 from .reports import (
     get_production_report,
@@ -482,6 +485,24 @@ def resolve_workshop_link(data, name=None):
     clean_name = (name or '').strip()
     if clean_name:
         return Workshop.objects.filter(name__iexact=clean_name).first()
+    return None
+
+
+def resolve_supplier_link(data=None, fallback_id_ref=None, fallback_name=None):
+    """يربط الحركة بسجل Supplier عبر المعرّف الممرر أو معرّف/اسم المورد المسجل على الخامة أو الإكسسوار."""
+    if isinstance(data, dict):
+        explicit_id = data.get('supplier_id') or data.get('supplierId')
+        if explicit_id:
+            found = resolve_by_id(Supplier, explicit_id)
+            if found:
+                return found
+    if fallback_id_ref:
+        found = resolve_by_id(Supplier, fallback_id_ref)
+        if found:
+            return found
+    clean_name = str(fallback_name or '').strip()
+    if clean_name:
+        return Supplier.objects.filter(name__iexact=clean_name).first()
     return None
 
 
@@ -1653,9 +1674,13 @@ class FabricColorViewSet(BasePermViewSet):
                 operation=op,
                 amount=amount,
                 timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
-                # سعر الوحدة التاريخي وقت الحركة + ربط المورد الاختياري (يظل NULL إن لم يُمرّر).
+                # سعر الوحدة التاريخي وقت الحركة + ربط المورد تلقائياً من الخامة عند عدم تمريره.
                 unit_price_snapshot=col.price_per_unit or 0,
-                supplier=resolve_by_id(Supplier, data.get('supplier_id') or data.get('supplierId')),
+                supplier=resolve_supplier_link(
+                    data,
+                    getattr(col.fabric, 'supplier_id_ref', None),
+                    getattr(col.fabric, 'supplier', None),
+                ),
             )
             payload = {
                 'color': FabricColorSerializer(col, context={'request': request}).data,
@@ -1822,9 +1847,13 @@ class AccessoryViewSet(BasePermViewSet):
                 model_code_ref=data.get('modelCodeRef') or '',
                 notes=data.get('notes') or '',
                 timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
-                # سعر الوحدة التاريخي وقت الحركة + ربط المورد الاختياري (يظل NULL إن لم يُمرّر).
+                # سعر الوحدة التاريخي وقت الحركة + ربط المورد تلقائياً من الإكسسوار عند عدم تمريره.
                 unit_price_snapshot=getattr(acc, 'price_per_unit', 0) or 0,
-                supplier=resolve_by_id(Supplier, data.get('supplier_id') or data.get('supplierId')),
+                supplier=resolve_supplier_link(
+                    data,
+                    getattr(acc, 'supplier_id_ref', None),
+                    getattr(acc, 'supplier', None),
+                ),
             )
             payload = {
                 'accessory': AccessorySerializer(acc, context={'request': request}).data,
@@ -2110,6 +2139,16 @@ class ModelItemViewSet(BasePermViewSet):
     @action(detail=True, methods=['post'])
     def issue_fabric_to_cutting(self, request, pk=None):
         model = self.get_object()
+
+        # حماية من إعادة صرف / نقل موديل غادر مرحلة التصميم بالفعل.
+        if model.status not in ('مرحلة التصميم', 'تصميم'):
+            return Response(
+                {
+                    'error': 'تم صرف خامات هذا الموديل وتحويله لقسم القص مسبقاً ولا يمكن إعادة صرفه أو نقله مرة أخرى.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         user_name = request.data.get('user_name') or 'مسؤول التصميم'
 
@@ -2152,6 +2191,12 @@ class ModelItemViewSet(BasePermViewSet):
                         timestamp=now_str,
                         # سعر الوحدة التاريخي وقت الصرف (يُستخدم في قسم الحسابات لاحقاً).
                         unit_price_snapshot=col.price_per_unit or 0,
+                        # ربط المورد تلقائياً من بطاقة الخامة المسجل عليها المورد.
+                        supplier=resolve_supplier_link(
+                            None,
+                            getattr(col.fabric, 'supplier_id_ref', None),
+                            getattr(col.fabric, 'supplier', None),
+                        ),
                     )
                     issued_fabrics.append({
                         'part_name': req.part_name,
@@ -2185,6 +2230,12 @@ class ModelItemViewSet(BasePermViewSet):
                             timestamp=now_str,
                             # سعر الوحدة التاريخي وقت الصرف (يُستخدم في قسم الحسابات لاحقاً).
                             unit_price_snapshot=acc_item.price_per_unit or 0,
+                            # ربط المورد تلقائياً من بطاقة الإكسسوار المسجل عليها المورد.
+                            supplier=resolve_supplier_link(
+                                None,
+                                getattr(acc_item, 'supplier_id_ref', None),
+                                getattr(acc_item, 'supplier', None),
+                            ),
                         )
                 issued_accessories.append({
                     'accessory_name': m_acc.accessory_name,
@@ -2195,6 +2246,8 @@ class ModelItemViewSet(BasePermViewSet):
 
             model.status = 'في القص'
             model.cut_at = timezone.now().isoformat()
+            # مزامنة مراحل كل القطع مع الحالة العامة حتى لا يظهر الموديل في قسم آخر.
+            set_all_part_stages(model, 'cutting', save=False)
             model._skip_timeline_signal = True
             model.save()
 
@@ -2246,18 +2299,26 @@ class ModelItemViewSet(BasePermViewSet):
             requested_parts = [single_part]
 
         seed_part_stages_from_status(model)
-        moved_parts = []
-        if requested_parts:
-            for part in requested_parts:
-                key = normalize_part_key(part)
-                advance_parts_to_stage(model, 'qc_before_print', [key])
-                moved_parts.append(key)
-            parts_label = ' / '.join(
-                dict(PART_TYPE_CHOICES).get(key, key) for key in moved_parts
+        current_stages = get_part_stages(model)
+        target_keys = (
+            [normalize_part_key(p) for p in requested_parts]
+            if requested_parts
+            else list(current_stages.keys())
+        )
+        target_keys = [key for key in target_keys if key in current_stages]
+        # فقط القطع التي ما زالت فعلياً في قسم القص يمكن ترحيلها.
+        cutting_keys = [key for key in target_keys if current_stages.get(key) == 'cutting']
+        if not cutting_keys:
+            return Response(
+                {'error': 'تم إنهاء قص هذه القطع وتحويلها للمرحلة التالية مسبقاً ولا يمكن إعادة تحويلها.'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        else:
-            advance_parts_to_stage(model, 'qc_before_print')
-            parts_label = 'جميع القطع'
+
+        moved_parts = list(cutting_keys)
+        advance_parts_to_stage(model, 'qc_before_print', cutting_keys)
+        parts_label = ' / '.join(
+            dict(PART_TYPE_CHOICES).get(key, key) for key in moved_parts
+        )
         derive_pipeline_status(model)
         model._skip_timeline_signal = True
         model.save()
@@ -4448,11 +4509,34 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
     required_hr_section = 'attendance'
 
     def get_queryset(self):
-        return rank_scoped_queryset(
+        """سجلات البصمة مع دعم الفلترة الشهرية لتقليل حجم البيانات المرسلة.
+
+        ``month`` (YYYY-MM) يقيّد النطاق بالشهر المطلوب. ومع
+        ``include_prev_week=1`` تبدأ النافذة قبل أول يوم بالشهر بـ 6 أيام حتى
+        تتوفر أيام الأسبوع السابقة اللازمة لاحتساب خصم الإجازة الأسبوعية
+        واستحقاق المرتب. بدون ``month`` يبقى السلوك القديم (كل السجلات) حتى لا
+        تتأثر الاستدعاءات العامة مثل النسخ الاحتياطي الشامل.
+        """
+        qs = rank_scoped_queryset(
             HRAttendanceRecord.objects.select_related('employee', 'employee__job').all(),
             self.request,
             field='employee__rank_level',
         )
+        params = self.request.query_params
+        if params.get('month'):
+            month_start, month_end = self._sheet_month(self.request)
+            lookup_start = month_start
+            if params.get('include_prev_week') in ('1', 'true', 'yes'):
+                lookup_start = month_start - timedelta(days=6)
+            qs = qs.filter(date__gte=lookup_start, date__lte=month_end)
+
+        emp_id = params.get('employee_id')
+        if emp_id:
+            employee = resolve_by_id(HREmployee, emp_id)
+            if employee is None:
+                return qs.none()
+            qs = qs.filter(employee=employee)
+        return qs
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -4948,11 +5032,18 @@ class HRPenaltyViewSet(BasePermViewSet):
     required_hr_section = 'penalties'
 
     def get_queryset(self):
-        return rank_scoped_queryset(
+        qs = rank_scoped_queryset(
             HRPenalty.objects.select_related('employee').all(),
             self.request,
             field='employee__rank_level',
         )
+        # فلترة شهرية اختيارية (YYYY-MM)؛ بدون تمرير month تبقى كل السجلات
+        # متاحة للاستدعاءات العامة مثل تصدير Excel الشامل.
+        month_value = self.request.query_params.get('month')
+        if month_value and re.match(r'^\d{4}-\d{2}$', month_value.strip()):
+            month_start, month_end = month_bounds(month_value)
+            qs = qs.filter(date__gte=month_start, date__lte=month_end)
+        return qs
 
     def create(self, request, *args, **kwargs):
         data = request.data
@@ -5025,11 +5116,18 @@ class HRLoanViewSet(BasePermViewSet):
     required_hr_section = 'loans'
 
     def get_queryset(self):
-        return rank_scoped_queryset(
+        qs = rank_scoped_queryset(
             HRLoan.objects.select_related('employee').all(),
             self.request,
             field='employee__rank_level',
         )
+        # فلترة شهرية اختيارية (YYYY-MM)؛ بدون تمرير month تبقى كل السجلات
+        # متاحة للاستدعاءات العامة مثل تصدير Excel الشامل.
+        month_value = self.request.query_params.get('month')
+        if month_value and re.match(r'^\d{4}-\d{2}$', month_value.strip()):
+            month_start, month_end = month_bounds(month_value)
+            qs = qs.filter(date__gte=month_start, date__lte=month_end)
+        return qs
 
     def create(self, request, *args, **kwargs):
         data = request.data

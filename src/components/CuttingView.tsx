@@ -1,24 +1,37 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { Scissors } from 'lucide-react';
+import { Scissors, Lock } from 'lucide-react';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
-import { currentStageLabel } from '../utils/completedModels';
+import { currentStageLabel, stageBeyond } from '../utils/completedModels';
 
 interface CuttingViewProps {
   onOpenCuttingDetails: (modelId: string) => void;
 }
 
-const DESIGN_OR_CUTTING_STATUSES = ['مرحلة التصميم', 'تصميم', 'في القص', 'جاري القص'];
+const DESIGN_STATUSES = ['مرحلة التصميم', 'تصميم'];
 
 export const CuttingView: React.FC<CuttingViewProps> = ({ onOpenCuttingDetails }) => {
-  const { models } = useApp();
+  const { models, getModelParts, getPartStages } = useApp();
   const [showCompleted, setShowCompleted] = useState(false);
 
-  const cuttingModels = models.filter((m) => !m.is_deleted && m.status === 'في القص');
+  // تظهر في قسم القص فقط الموديلات التي لديها قطعة واحدة على الأقل ما زالت في القص.
+  const cuttingModels = models.filter(
+    (m) =>
+      !m.is_deleted &&
+      !DESIGN_STATUSES.includes(m.status) &&
+      getModelParts(m.id).some(
+        (part) => (getPartStages(m.id)[part] || 'cutting') === 'cutting'
+      )
+  );
 
-  // الموديلات التي تجاوزت قسم القص (منتهية من هذا القسم).
+  // الموديلات التي تجاوزت *جميع* قطعها مرحلة القص (منتهية من هذا القسم).
   const endedModels = models.filter(
-    (m) => !m.is_deleted && !DESIGN_OR_CUTTING_STATUSES.includes(m.status)
+    (m) =>
+      !m.is_deleted &&
+      !DESIGN_STATUSES.includes(m.status) &&
+      getModelParts(m.id).every((part) =>
+        stageBeyond(getPartStages(m.id)[part], 'cutting')
+      )
   );
 
   return (
@@ -147,8 +160,9 @@ export const CuttingView: React.FC<CuttingViewProps> = ({ onOpenCuttingDetails }
                       النوع: {model.model_type || 'غير محدد'}
                     </p>
                     <div className="pt-1 space-y-1.5">
-                      <div className="w-full py-2 px-4 rounded-full bg-slate-200 text-slate-500 font-bold text-xs text-center cursor-not-allowed">
-                        تم تحويله مسبقاً
+                      <div className="w-full py-2 px-4 rounded-full bg-slate-200 text-slate-600 border border-slate-300 font-bold text-xs text-center cursor-not-allowed inline-flex items-center justify-center gap-1.5">
+                        <Lock className="w-3.5 h-3.5" />
+                        <span>تم الانتهاء وخرج بالفعل من هذه المرحلة</span>
                       </div>
                       <button
                         onClick={() => onOpenCuttingDetails(model.id)}

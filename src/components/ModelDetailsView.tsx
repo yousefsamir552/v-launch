@@ -22,6 +22,8 @@ import {
   DEFAULT_GARMENT_COMPOSITION,
   partsForComposition
 } from '../types';
+import { EndedModelBadge } from './CompletedModelsToggle';
+import { currentStageLabel } from '../utils/completedModels';
 
 interface ModelDetailsViewProps {
   modelId: string;
@@ -138,6 +140,10 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     );
   }
 
+  // A model that already left the design stage must never be issued again.
+  const isDesignCompleted =
+    model.status !== 'مرحلة التصميم' && model.status !== 'تصميم';
+
   // General Tools / Favorite Accessories saved in Settings (Task 2.1)
   const favoriteIds = globalSettings?.favorite_accessory_ids || [];
   const generalToolItems = accessoryItems.filter((item) => favoriteIds.includes(item.id));
@@ -244,6 +250,12 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   };
 
   const handleIssueFabric = () => {
+    if (isDesignCompleted) {
+      alert(
+        `تم الانتهاء وخرج الموديل بالفعل من مرحلة التصميم (${currentStageLabel(model)}) ولا يمكن إعادة صرف القماش أو نقله مرة أخرى.`
+      );
+      return;
+    }
     const totalPlanned = modelReqs.reduce(
       (sum, r) => sum + (reqQuantities[r.id] ?? r.planned_quantity),
       0
@@ -324,6 +336,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 <span className="inline-block px-3 py-1 rounded-full text-xs font-black bg-amber-100 text-amber-900 border border-amber-300">
                   {model.status}
                 </span>
+                {isDesignCompleted && <EndedModelBadge currentStage={currentStageLabel(model)} />}
               </div>
               <p className="text-slate-500 text-xs sm:text-sm mt-1">
                 النوع: <strong className="text-slate-800">{model.model_type || 'أولادي'}</strong> | تاريخ الإنشاء:{' '}
@@ -355,13 +368,26 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
 
           <div className="flex flex-wrap items-center gap-3 pt-1 border-t border-slate-100">
             {canEdit && (
-              <button
-                onClick={handleIssueFabric}
-                className="flex items-center gap-2 px-6 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-600/20 transition cursor-pointer"
-              >
-                <Scissors className="w-4 h-4" />
-                <span>✂️ صرف القماش والتوجيه للقص</span>
-              </button>
+              isDesignCompleted ? (
+                <button
+                  type="button"
+                  disabled
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-full bg-slate-200 text-slate-600 border border-slate-300 font-bold text-xs cursor-not-allowed"
+                >
+                  <Lock className="w-4 h-4" />
+                  <span>
+                    🔒 تم الانتهاء وخرج الموديل بالفعل من مرحلة التصميم ({currentStageLabel(model)})
+                  </span>
+                </button>
+              ) : (
+                <button
+                  onClick={handleIssueFabric}
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-600/20 transition cursor-pointer"
+                >
+                  <Scissors className="w-4 h-4" />
+                  <span>✂️ صرف القماش والتوجيه للقص</span>
+                </button>
+              )
             )}
 
             {canEdit && (

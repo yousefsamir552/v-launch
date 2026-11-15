@@ -16,10 +16,12 @@ import {
   GarmentPart,
   PART_EMOJI,
   PART_STAGE_LABELS,
+  PartStage,
   getPartLabel
 } from '../types';
 import { printManualCountSheet } from '../utils/printManualCountSheet';
 import { isImageLogo } from '../utils/printShared';
+import { stageBeyond } from '../utils/completedModels';
 
 interface QCDetailsViewProps {
   modelId: string;
@@ -75,6 +77,18 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
   });
 
   const selectedPartStages = getPartStages(modelId);
+  const selectedStageKey = (
+    selectedStage === 'before_print'
+      ? 'qc_before_print'
+      : selectedStage === 'after_print'
+      ? 'qc_after_print'
+      : 'qc_after_sewing'
+  ) as PartStage;
+  // قطعة غادرت مرحلة الفرز المختارة بالفعل لا يمكن ترحيلها مرة أخرى.
+  const isSelectedPartEnded = stageBeyond(
+    selectedPartStages[selectedPart],
+    selectedStageKey
+  );
 
   const canWriteNotes =
     selectedStage === 'before_print'
@@ -210,6 +224,10 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
   };
 
   const handleFinishQC = () => {
+    if (isSelectedPartEnded) {
+      alert('تم الانتهاء وخرجت هذه القطعة من المرحلة بالفعل ولا يمكن إعادة ترحيلها.');
+      return;
+    }
     const entries = buildMatrixEntries();
     const sumGood = entries.reduce((s, item) => s + item.good_qty, 0);
     const sumDefect = entries.reduce((s, item) => s + item.defect_qty, 0);
@@ -812,10 +830,24 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
               <button
                 type="button"
                 onClick={handleFinishQC}
-                className="w-full py-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer"
+                disabled={isSelectedPartEnded}
+                className={`w-full py-3.5 rounded-full font-extrabold text-xs transition flex items-center justify-center gap-2 ${
+                  isSelectedPartEnded
+                    ? 'bg-slate-200 text-slate-600 border border-slate-300 cursor-not-allowed'
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-500/20 cursor-pointer'
+                }`}
               >
-                <CheckCircle2 className="w-5 h-5" />
-                <span>✔️ اعتماد الفرز النهائي وترحيل الموديل للمرحلة التالية</span>
+                {isSelectedPartEnded ? (
+                  <>
+                    <Lock className="w-4 h-4" />
+                    <span>🔒 تم الانتهاء وخرجت القطعة بالفعل من هذه المرحلة</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-5 h-5" />
+                    <span>✔️ اعتماد الفرز النهائي وترحيل الموديل للمرحلة التالية</span>
+                  </>
+                )}
               </button>
             </div>
           )}

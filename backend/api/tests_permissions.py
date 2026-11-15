@@ -13,8 +13,9 @@ from rest_framework.test import APIClient, APIRequestFactory
 
 from .models import (
     Role, UserProfile, Fabric, FabricColor, Accessory,
-    FabricTransaction, AccessoryTransaction, Workshop,
-    ModelItem, ModelTimeline, PrintDispatch, InternalMessage,
+    FabricTransaction, AccessoryTransaction, Workshop, Supplier,
+    ModelItem, ModelTimeline, ModelRequirement, ModelAccessory,
+    PrintDispatch, InternalMessage,
     SewingDispatch, FinishingRecord, AssemblyStageRecord,
     PackagingMaterialRule, PackagingMaterialSizeRule,
     HRJobTitle, HREmployee, AuditLog,
@@ -30,6 +31,7 @@ from .serializers import (
 from .services import dispatch_model_to_sewing_service
 from .views import (
     AuthViewSet, StateViewSet, InternalMessageViewSet, ModelItemViewSet,
+    FabricColorViewSet, AccessoryViewSet, resolve_supplier_link,
     HREmployeeViewSet,
 )
 
@@ -200,6 +202,104 @@ class WorkshopLinkServiceTests(PermissionTestBase):
         )
         self.assertIsNone(dispatch.workshop_id)
         self.assertEqual(dispatch.workshop_name, 'ورشة غير مسجلة')
+
+
+class SupplierLinkAutoFallbackTests(PermissionTestBase):
+    """التقاط المورد تلقائياً من بطاقة الخامة/الإكسسوار في حركات المخزن وصرف القص."""
+
+    def setUp(self):
+        super().setUp()
+        self.supplier = Supplier.objects.create(name='مورد الأقمشة الذهبي')
+        self.fabric.supplier_id_ref = self.supplier.client_id
+        self.fabric.save(update_fields=['supplier_id_ref'])
+        self.accessory.supplier_id_ref = self.supplier.client_id
+        self.accessory.save(update_fields=['supplier_id_ref'])
+
+    def _post_request(self, data):
+        return self._request(self.fabric_user, method='post', data=data)
+
+    def _call_action(self, view, action_name, request, **kwargs):
+        view.format_kwarg = None
+        view.request = request
+        view.kwargs = kwargs
+        return getattr(view, action_name)(request, **kwargs)
+
+    def test_resolve_supplier_link_prefers_explicit_id(self):
+        other = Supplier.objects.create(name='مورد بديل')
+        found = resolve_supplier_link(
+            {'supplier_id': other.client_id},
+            self.fabric.supplier_id_ref,
+            self.fabric.supplier,
+        )
+        self.assertEqual(found.id, other.id)
+
+    def test_resolve_supplier_link_falls_back_to_registered_name(self):
+        legacy_fabric = Fabric.objects.create(name='كتان', supplier='مورد الأقمشة الذهبي')
+        found = resolve_supplier_link(
+            None, legacy_fabric.supplier_id_ref, legacy_fabric.supplier,
+        )
+        self.assertEqual(found.id, self.supplier.id)
+
+    def test_fabric_record_transaction_falls_back_to_fabric_supplier(self):
+        request = self._post_request({
+            'colorId': self.color.client_id,
+            'operation': 'add',
+            'amount': 5,
+        })
+        response = self._call_action(FabricColorViewSet(), 'record_transaction', request)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        tr = FabricTransaction.objects.latest('id')
+        self.assertEqual(tr.supplier_id, self.supplier.id)
+        self.assertEqual(float(tr.unit_price_snapshot), 25.5)
+
+    def test_accessory_record_transaction_falls_back_to_accessory_supplier(self):
+        request = self._post_request({
+            'accessoryId': self.accessory.client_id,
+            'operation': 'add',
+            'amount': 3,
+        })
+        response = self._call_action(AccessoryViewSet(), 'record_transaction', request)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        tr = AccessoryTransaction.objects.latest('id')
+        self.assertEqual(tr.supplier_id, self.supplier.id)
+        self.assertEqual(float(tr.unit_price_snapshot), 1.25)
+
+    def test_issue_fabric_to_cutting_links_supplier_and_price_snapshot(self):
+        ModelRequirement.objects.create(
+            model=self.model, color=self.color, part_name='تيشرت', planned_quantity=2,
+        )
+        ModelAccessory.objects.create(
+            model=self.model,
+            accessory_id_ref=self.accessory.client_id,
+            accessory_name=self.accessory.name,
+            target_type='shirt',
+            planned_quantity=3,
+        )
+        self.model.refresh_from_db()
+
+        request = self._post_request({'user_name': 'مسؤول التصميم'})
+        response = self._call_action(
+            ModelItemViewSet(), 'issue_fabric_to_cutting', request,
+            pk=str(self.model.pk),
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        fabric_tr = FabricTransaction.objects.filter(
+            model_code_ref=self.model.model_code,
+        ).latest('id')
+        self.assertEqual(fabric_tr.supplier_id, self.supplier.id)
+        self.assertEqual(float(fabric_tr.unit_price_snapshot), 25.5)
+
+        acc_tr = AccessoryTransaction.objects.filter(
+            model_code_ref=self.model.model_code,
+        ).latest('id')
+        self.assertEqual(acc_tr.supplier_id, self.supplier.id)
+        self.assertEqual(float(acc_tr.unit_price_snapshot), 1.25)
+
+        self.model.refresh_from_db()
+        self.assertEqual(self.model.status, 'في القص')
 
 
 class DepartmentPriceIsolationTests(PermissionTestBase):

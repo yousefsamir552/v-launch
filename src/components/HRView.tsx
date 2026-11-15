@@ -2335,7 +2335,7 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
     setIsLoading(true);
     try {
       const [res, settingsRes] = await Promise.all([
-        api.getHRAttendanceRecords(),
+        api.getHRAttendanceRecords({ month, includePrevWeek: true }),
         api.getHRAttendanceSettings().catch(() => null)
       ]);
       setRecords(Array.isArray(res) ? res : []);
@@ -2346,7 +2346,7 @@ const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ employe
       setIsLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [month]);
 
   useEffect(() => {
     void loadRecords();
@@ -3758,44 +3758,6 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
   const [overLimit, setOverLimit] = useState<{ amount: number; limit: number } | null>(null);
   const [pendingLoanPayload, setPendingLoanPayload] = useState<any | null>(null);
 
-  const loadLoans = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const [loansRes, attendanceRes, penaltiesRes, settingsRes] = await Promise.all([
-        api.getHRLoans(),
-        api.getHRAttendanceRecords().catch(() => [] as HRAttendanceRecord[]),
-        api.getHRPenalties().catch(() => [] as HRPenalty[]),
-        api.getHRAttendanceSettings().catch(() => null)
-      ]);
-      setLoans(Array.isArray(loansRes) ? loansRes : []);
-      setAttendanceRecords(Array.isArray(attendanceRes) ? attendanceRes : []);
-      setPenalties(Array.isArray(penaltiesRes) ? penaltiesRes : []);
-      setWeeklyOffIndex(weeklyOffIndexFromKey(settingsRes?.weekly_off_day));
-    } catch (err: any) {
-      addFlashMessage(err?.message || 'فشل تحميل السُلف من السيرفر', 'danger');
-    } finally {
-      setIsLoading(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    void loadLoans();
-  }, [loadLoans]);
-
-  const filteredLoans = useMemo(() => {
-    return loans.filter((loan) => {
-      if (month && !(loan.date || '').startsWith(month)) return false;
-      if (employeeFilter && loan.employee_id !== employeeFilter) return false;
-      return true;
-    });
-  }, [loans, month, employeeFilter]);
-
-  const totalAmount = useMemo(
-    () => filteredLoans.reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0),
-    [filteredLoans]
-  );
-
   // فترة الاستحقاق: من أول الشهر حتى أمس (30 يوماً حسابية كحد أقصى)
   const duePeriod = useMemo(() => {
     const now = new Date();
@@ -3815,6 +3777,46 @@ const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       dates
     };
   }, []);
+
+  const loadLoans = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [loansRes, attendanceRes, penaltiesRes, settingsRes] = await Promise.all([
+        api.getHRLoans(),
+        api
+          .getHRAttendanceRecords({ month: duePeriod.monthKey, includePrevWeek: true })
+          .catch(() => [] as HRAttendanceRecord[]),
+        api.getHRPenalties().catch(() => [] as HRPenalty[]),
+        api.getHRAttendanceSettings().catch(() => null)
+      ]);
+      setLoans(Array.isArray(loansRes) ? loansRes : []);
+      setAttendanceRecords(Array.isArray(attendanceRes) ? attendanceRes : []);
+      setPenalties(Array.isArray(penaltiesRes) ? penaltiesRes : []);
+      setWeeklyOffIndex(weeklyOffIndexFromKey(settingsRes?.weekly_off_day));
+    } catch (err: any) {
+      addFlashMessage(err?.message || 'فشل تحميل السُلف من السيرفر', 'danger');
+    } finally {
+      setIsLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [month, duePeriod.monthKey]);
+
+  useEffect(() => {
+    void loadLoans();
+  }, [loadLoans]);
+
+  const filteredLoans = useMemo(() => {
+    return loans.filter((loan) => {
+      if (month && !(loan.date || '').startsWith(month)) return false;
+      if (employeeFilter && loan.employee_id !== employeeFilter) return false;
+      return true;
+    });
+  }, [loans, month, employeeFilter]);
+
+  const totalAmount = useMemo(
+    () => filteredLoans.reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0),
+    [filteredLoans]
+  );
 
   // المستحق حتى أمس = (المرتب ÷ 30) × أيام الاستحقاق الفعلية − التأخير − الجزاءات − السُلف
   const loanDueRows = useMemo<LoanDueRow[]>(() => {
@@ -5289,9 +5291,9 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
     setIsLoading(true);
     try {
       const [recordsRes, penaltiesRes, loansRes, settingsRes] = await Promise.all([
-        api.getHRAttendanceRecords(),
-        api.getHRPenalties(),
-        api.getHRLoans(),
+        api.getHRAttendanceRecords({ month, includePrevWeek: true }),
+        api.getHRPenalties(month),
+        api.getHRLoans(month),
         api.getHRAttendanceSettings().catch(() => null)
       ]);
       setRecords(Array.isArray(recordsRes) ? recordsRes : []);
@@ -5304,7 +5306,7 @@ const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
       setIsLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [month]);
 
   useEffect(() => {
     void loadPayrollData();

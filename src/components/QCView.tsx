@@ -14,11 +14,11 @@ import {
   Grid,
   Save
 } from 'lucide-react';
-import { QCStageType, Model, QCMatrixCellInput, GarmentPart, PART_EMOJI, getPartLabel } from '../types';
+import { QCStageType, Model, QCMatrixCellInput, GarmentPart, PartStage, PART_EMOJI, getPartLabel } from '../types';
 import { printManualCountSheet } from '../utils/printManualCountSheet';
 import { isImageLogo } from '../utils/printShared';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
-import { currentStageLabel, stageRank } from '../utils/completedModels';
+import { currentStageLabel, stageRank, stageBeyond } from '../utils/completedModels';
 
 type QCPartCard = { model: Model; part: GarmentPart };
 
@@ -53,14 +53,24 @@ export const QCView: React.FC = () => {
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [countingModel, setCountingModel] = useState<Model | null>(null);
   const [modalPart, setModalPart] = useState<GarmentPart>('shirt');
-  // Only parts currently waiting in this QC stage can be counted here.
+  // Only parts currently waiting in this QC stage can be counted here, plus the
+  // specifically selected part (so ended parts can still be reviewed/edited).
   const modalParts: GarmentPart[] = countingModel
     ? getModelParts(countingModel.id).filter(
         (part) =>
+          part === modalPart ||
           (getPartStages(countingModel.id)[part] || 'cutting') ===
-          QC_STAGE_TO_PART_STAGE[activeTab]
+            QC_STAGE_TO_PART_STAGE[activeTab]
       )
     : [];
+
+  // هل تجاوزت القطعة المختارة مرحلة التبويب الحالي (أي خرجت من هذه المرحلة)؟
+  const isModalPartEnded = countingModel
+    ? stageBeyond(
+        getPartStages(countingModel.id)[modalPart],
+        QC_STAGE_TO_PART_STAGE[activeTab] as PartStage
+      )
+    : false;
 
   // Matrix state: key is `${color}___${size}` -> { good: number, defect: number }
   const [matrixState, setMatrixState] = useState<
@@ -217,6 +227,10 @@ export const QCView: React.FC = () => {
   const handleApproveAndAdvance = (e: React.FormEvent) => {
     e.preventDefault();
     if (!countingModel) return;
+    if (isModalPartEnded) {
+      alert('تم الانتهاء وخرجت هذه القطعة من المرحلة بالفعل ولا يمكن إعادة ترحيلها.');
+      return;
+    }
 
     const entries = buildMatrixEntriesFromState(countingModel);
     const totalGood = entries.reduce((sum, item) => sum + item.good_qty, 0);
@@ -699,8 +713,16 @@ export const QCView: React.FC = () => {
                       تجاوزت هذه القطعة مرحلة {getStageTitle(activeTab)} بالفعل.
                     </p>
                     <div className="space-y-1.5 pt-1">
-                      <div className="w-full py-2 rounded-full bg-slate-200 text-slate-500 font-bold text-xs text-center cursor-not-allowed">
-                        تم تحويله مسبقاً — لا يمكن إعادة العد
+                      <button
+                        onClick={() => handleOpenCountModal(model, part)}
+                        className="w-full py-2 px-4 rounded-full bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Grid className="w-4 h-4" />
+                        <span>عرض / تعديل جدول الفرز</span>
+                      </button>
+                      <div className="w-full py-2 rounded-full bg-slate-200 text-slate-600 border border-slate-300 font-bold text-xs text-center cursor-not-allowed inline-flex items-center justify-center gap-1.5">
+                        <Lock className="w-3.5 h-3.5" />
+                        <span>تم تحويله مسبقاً — لا يمكن إعادة الترحيل</span>
                       </div>
                       <button
                         onClick={() => handlePrintManualSheet(model, part)}
@@ -1056,13 +1078,26 @@ export const QCView: React.FC = () => {
                       <Save className="w-4 h-4" />
                       <span>حفظ الجدول فقط (بدون ترحيل المرحلة)</span>
                     </button>
-                    <button
-                      type="submit"
-                      className="px-6 py-2.5 rounded-full bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs shadow-md shadow-purple-600/20 transition flex items-center gap-2 cursor-pointer"
-                    >
-                      <CheckCircle className="w-4 h-4" />
-                      <span>اعتماد جدول العد وتوجيه الموديل للخطوة التالية</span>
-                    </button>
+                    {isModalPartEnded ? (
+                      <button
+                        type="button"
+                        disabled
+                        className="px-6 py-2.5 rounded-full bg-slate-200 text-slate-600 border border-slate-300 font-bold text-xs flex items-center gap-2 cursor-not-allowed"
+                      >
+                        <Lock className="w-4 h-4" />
+                        <span>
+                          🔒 تم الانتهاء وخرج بالفعل من هذه المرحلة ({currentStageLabel(countingModel)})
+                        </span>
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        className="px-6 py-2.5 rounded-full bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs shadow-md shadow-purple-600/20 transition flex items-center gap-2 cursor-pointer"
+                      >
+                        <CheckCircle className="w-4 h-4" />
+                        <span>اعتماد جدول العد وتوجيه الموديل للخطوة التالية</span>
+                      </button>
+                    )}
                   </>
                 )}
               </div>

@@ -10,7 +10,8 @@ import {
   PackageCheck,
   Search,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Lock
 } from 'lucide-react';
 import {
   DesignModel,
@@ -1466,8 +1467,12 @@ export const AssemblyPackagingView: React.FC = () => {
                 }
               >
                 {ended && (
-                  <div className="px-1 pb-1.5">
+                  <div className="px-1 pb-1.5 space-y-1.5">
                     <EndedModelBadge currentStage={currentStageLabel(model)} />
+                    <div className="w-full py-2 rounded-xl bg-slate-200 text-slate-600 border border-slate-300 font-bold text-[11px] text-center cursor-not-allowed">
+                      <span>🔒 تم الانتهاء وخرج بالفعل من هذه المرحلة</span>
+                      <Lock className="w-3.5 h-3.5 inline ms-1" />
+                    </div>
                   </div>
                 )}
                 {card}

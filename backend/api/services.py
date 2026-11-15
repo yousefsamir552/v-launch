@@ -528,6 +528,13 @@ def ensure_part_stages(model):
         model.part_stages = stages
         model._skip_timeline_signal = True
         model.save(update_fields=['part_stages', 'updated_at'])
+
+    # إذا غادرت كل القطع مرحلة القص بينما الحالة العامة ما زالت "في القص"
+    # نحدّث الحالة فوراً حتى لا يظهر الموديل في قسم القص وقسم آخر في نفس الوقت.
+    if stages and (model.status or '') in ('في القص', 'جاري القص'):
+        if all(_stage_index(stage) > _stage_index('cutting') for stage in stages.values()):
+            derive_pipeline_status(model, save=True)
+
     return stages
 
 

@@ -476,7 +476,14 @@ export const api = {
   getHRAttendanceSettings: () => request<any>('/hr-attendance-settings/'),
   updateHRAttendanceSettings: (data: any) =>
     request<any>('/hr-attendance-settings/update_settings/', { method: 'POST', body: JSON.stringify(data) }),
-  getHRAttendanceRecords: () => request<any[]>('/hr-attendance-records/'),
+  getHRAttendanceRecords: (params?: { month?: string; includePrevWeek?: boolean; employeeId?: string }) => {
+    const search = new URLSearchParams();
+    if (params?.month) search.set('month', params.month);
+    if (params?.includePrevWeek) search.set('include_prev_week', '1');
+    if (params?.employeeId) search.set('employee_id', params.employeeId);
+    const qs = search.toString();
+    return request<any[]>(`/hr-attendance-records/${qs ? `?${qs}` : ''}`);
+  },
   createHRAttendanceRecord: (data: any) =>
     request<any>('/hr-attendance-records/', { method: 'POST', body: JSON.stringify(data) }),
   updateHRAttendanceRecord: (id: string, data: any) =>
@@ -502,14 +509,16 @@ export const api = {
     request<any>(`/hr-attendance-records/reapply-rules/${month ? `?month=${encodeURIComponent(month)}` : ''}`, {
       method: 'POST'
     }),
-  getHRPenalties: () => request<any[]>('/hr-penalties/'),
+  getHRPenalties: (month?: string) =>
+    request<any[]>(`/hr-penalties/${month ? `?month=${encodeURIComponent(month)}` : ''}`),
   createHRPenalty: (data: any) =>
     request<any>('/hr-penalties/', { method: 'POST', body: JSON.stringify(data) }),
   updateHRPenalty: (id: string, data: any) =>
     request<any>(`/hr-penalties/${encodeURIComponent(id)}/`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteHRPenalty: (id: string) =>
     request<any>(`/hr-penalties/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
-  getHRLoans: () => request<any[]>('/hr-loans/'),
+  getHRLoans: (month?: string) =>
+    request<any[]>(`/hr-loans/${month ? `?month=${encodeURIComponent(month)}` : ''}`),
   createHRLoan: (data: any) =>
     request<any>('/hr-loans/', { method: 'POST', body: JSON.stringify(data) }),
   updateHRLoan: (id: string, data: any) =>

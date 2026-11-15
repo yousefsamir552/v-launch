@@ -2577,6 +2577,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const targetModel = models.find((m) => m.id === modelId);
     if (!targetModel) return { success: false, message: 'الموديل غير موجود' };
 
+    // منع إعادة الصرف/النقل لموديل غادر مرحلة التصميم بالفعل.
+    if (targetModel.status !== 'مرحلة التصميم' && targetModel.status !== 'تصميم') {
+      const message =
+        'تم صرف خامات هذا الموديل وتحويله لقسم القص مسبقاً ولا يمكن إعادة صرفه أو نقله مرة أخرى.';
+      addFlashMessage(message, 'danger');
+      return { success: false, message };
+    }
+
     const reqQuantities = extraData?.reqQuantities || {};
     const accQuantities = extraData?.accQuantities || {};
 
