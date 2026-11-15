@@ -15,7 +15,8 @@ import {
   Calculator,
   Printer,
   Ruler,
-  StickyNote
+  StickyNote,
+  RotateCcw
 } from 'lucide-react';
 import { CuttingSpreadLayer, GarmentPart, PART_EMOJI, getPartLabel, PART_STAGE_LABELS, PartStage } from '../types';
 import { printCuttingOrder } from '../utils/printCuttingOrder';
@@ -37,6 +38,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     models,
     requirements,
     fabricColors,
+    fabrics,
     cuttingRecords,
     getModelParts,
     getPartStages,
@@ -46,13 +48,17 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     addCuttingRecord,
     finishCuttingToQC,
     exportCuttingCsv,
+    returnFabricFromCutting,
     hasPermission,
+    hasSpecificPermission,
     canAddCuttingNotes,
     globalSettings
   } = useApp();
 
   const canEdit = hasPermission('cutting', true);
   const canWriteNotes = canAddCuttingNotes();
+  // إرجاع الفائض متاح لمن يعدّل القص أو يعدّل مخزن القماش.
+  const canReturnSurplus = canEdit || hasSpecificPermission('fabric_warehouse_edit');
   const model = models.find((m) => m.id === modelId);
   const modelReqs = requirements.filter((r) => r.model_id === modelId);
   const modelCuttingRecords = cuttingRecords.filter((r) => r.model_id === modelId);
@@ -112,6 +118,12 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   const [shadeDegree, setShadeDegree] = useState<string>('');
   const [cuttingNotes, setCuttingNotes] = useState<string>('');
 
+  // حالة نافذة إرجاع فائض القماش إلى المخزن
+  const [surplusReqId, setSurplusReqId] = useState<string | null>(null);
+  const [surplusQty, setSurplusQty] = useState<string>('');
+  const [surplusNotes, setSurplusNotes] = useState<string>('');
+  const [isReturningSurplus, setIsReturningSurplus] = useState<boolean>(false);
+
   if (!model) {
     return (
       <div className="bg-white rounded-3xl p-8 text-center text-slate-500 border border-slate-200">
@@ -125,6 +137,54 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
       </div>
     );
   }
+
+  // البنود المصروفة للقص والتي ما زال لها رصيد قابل للإرجاع كمخزون.
+  const returnableReqs = modelReqs.filter((r) => Number(r.planned_quantity) > 0);
+  const surplusReq = returnableReqs.find((r) => r.id === surplusReqId) || null;
+  const surplusAvailable = surplusReq ? Math.max(0, Number(surplusReq.planned_quantity) || 0) : 0;
+  const surplusQtyNumber = Number(surplusQty);
+  const isSurplusQtyValid =
+    Number.isFinite(surplusQtyNumber) &&
+    surplusQtyNumber > 0 &&
+    surplusQtyNumber <= surplusAvailable + 0.000001;
+  const surplusColor = surplusReq
+    ? fabricColors.find((c) => c.id === surplusReq.color_id)
+    : undefined;
+  const surplusFabric = surplusColor
+    ? fabrics.find((f) => f.id === surplusColor.fabric_id)
+    : undefined;
+
+  const openSurplusReturn = (reqId: string) => {
+    const req = returnableReqs.find((r) => r.id === reqId);
+    if (!req) return;
+    setSurplusReqId(reqId);
+    setSurplusQty(String(Math.max(0, Number(req.planned_quantity) || 0)));
+    setSurplusNotes('');
+  };
+
+  const closeSurplusReturn = () => {
+    if (isReturningSurplus) return;
+    setSurplusReqId(null);
+    setSurplusQty('');
+    setSurplusNotes('');
+  };
+
+  const handleConfirmSurplusReturn = async () => {
+    if (!surplusReq || !isSurplusQtyValid || isReturningSurplus) return;
+    setIsReturningSurplus(true);
+    const result = await returnFabricFromCutting(
+      modelId,
+      surplusReq.id,
+      surplusQtyNumber,
+      canWriteNotes ? surplusNotes.trim() : ''
+    );
+    setIsReturningSurplus(false);
+    if (result.success) {
+      setSurplusReqId(null);
+      setSurplusQty('');
+      setSurplusNotes('');
+    }
+  };
 
   const handleAddColorRow = () => {
     const nextColor =
@@ -493,6 +553,82 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
               {model.design_notes}
             </p>
           </div>
+        </div>
+      )}
+
+      {/* Surplus Fabric Return Card — إرجاع ما لم يُستخدم من الأقمشة المصروفة للقص */}
+      {returnableReqs.length > 0 && (
+        <div className="bg-white rounded-3xl p-5 border border-emerald-200/90 shadow-xs">
+          <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
+            <div className="flex items-center gap-2.5">
+              <span className="w-9 h-9 rounded-xl bg-emerald-100 border border-emerald-200 flex items-center justify-center shrink-0">
+                <RotateCcw className="w-4 h-4 text-emerald-700" />
+              </span>
+              <div>
+                <h2 className="text-sm font-black text-emerald-900">
+                  ↩️ إرجاع فائض الأقمشة إلى المخزن
+                </h2>
+                <p className="text-[11px] font-bold text-slate-500">
+                  الكميات المصروفة للقص والقابلة للإرجاع كمخزون فعلي (لكل لون وقطعة)
+                </p>
+              </div>
+            </div>
+            <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-black">
+              {returnableReqs.length.toLocaleString('ar-EG')} بند قابل للإرجاع
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
+            {returnableReqs.map((req) => {
+              const col = fabricColors.find((c) => c.id === req.color_id);
+              const fab = col ? fabrics.find((f) => f.id === col.fabric_id) : undefined;
+              const remaining = Math.max(0, Number(req.planned_quantity) || 0);
+              const unit = fab?.unit || '';
+              return (
+                <div
+                  key={req.id}
+                  className="rounded-2xl border border-emerald-100 bg-emerald-50/40 p-3 flex flex-col gap-2"
+                >
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-black text-emerald-950 truncate">
+                      {fab?.name || 'خامة غير معروفة'}
+                      {col ? (
+                        <span className="text-emerald-700 font-bold">
+                          {' '}• {col.color_code}
+                          {col.color_name ? ` (${col.color_name})` : ''}
+                        </span>
+                      ) : null}
+                    </p>
+                    <p className="text-[10px] font-bold text-slate-500">{req.part_name}</p>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-slate-600">
+                      المتبقي:{' '}
+                      <strong className="text-emerald-800 font-black">
+                        {remaining.toLocaleString('ar-EG')} {unit}
+                      </strong>
+                    </span>
+                    {canReturnSurplus && (
+                      <button
+                        type="button"
+                        onClick={() => openSurplusReturn(req.id)}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold transition cursor-pointer shadow-xs"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>إرجاع فائض</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {!canReturnSurplus && (
+            <p className="mt-3 text-[10px] font-bold text-slate-400">
+              🔒 إرجاع الفائض يتطلب صلاحية تعديل القص أو تعديل مخزن القماش.
+            </p>
+          )}
         </div>
       )}
 
@@ -1067,6 +1203,116 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Modal: تأكيد إرجاع فائض قماش إلى المخزن */}
+      {surplusReq && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={closeSurplusReturn}
+        >
+          <div
+            className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <span className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                <RotateCcw className="w-5 h-5" />
+              </span>
+              <div>
+                <h3 className="text-base font-black text-slate-900">↩️ إرجاع فائض للمخزن</h3>
+                <p className="text-[11px] font-bold text-slate-500">
+                  سيتم خصم الكمية من متطلبات الموديل وإضافتها لرصيد المخزن الفعلي.
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-emerald-100 bg-emerald-50/50 p-3 space-y-1">
+              <p className="text-xs font-black text-emerald-950">
+                {surplusFabric?.name || 'خامة غير معروفة'}
+                {surplusColor ? (
+                  <span className="text-emerald-700">
+                    {' '}• {surplusColor.color_code}
+                    {surplusColor.color_name ? ` (${surplusColor.color_name})` : ''}
+                  </span>
+                ) : null}
+              </p>
+              <p className="text-[11px] font-bold text-slate-600">
+                القطعة: {surplusReq.part_name}
+              </p>
+              <p className="text-[11px] font-bold text-slate-600">
+                المتبقي المصروف للموديل:{' '}
+                <strong className="text-emerald-800 font-black">
+                  {surplusAvailable.toLocaleString('ar-EG')} {surplusFabric?.unit || ''}
+                </strong>
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-extrabold text-slate-700">
+                الكمية المراد إرجاعها ({surplusFabric?.unit || 'وحدة'})
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  max={surplusAvailable}
+                  step="0.01"
+                  value={surplusQty}
+                  onChange={(event) => setSurplusQty(event.target.value)}
+                  className="flex-1 px-4 py-2.5 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 outline-none text-sm font-bold text-slate-800"
+                />
+                <button
+                  type="button"
+                  onClick={() => setSurplusQty(String(surplusAvailable))}
+                  className="px-3 py-2.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[11px] font-extrabold transition cursor-pointer whitespace-nowrap"
+                >
+                  إرجاع الكل
+                </button>
+              </div>
+              {!isSurplusQtyValid && (
+                <p className="text-[10px] font-bold text-rose-600">
+                  أدخل كمية أكبر من صفر ولا تتجاوز المتبقي المصروف للموديل.
+                </p>
+              )}
+            </div>
+
+            {canWriteNotes && (
+              <div className="space-y-1.5">
+                <label className="block text-xs font-extrabold text-slate-700">
+                  ملاحظات الإرجاع (اختياري)
+                </label>
+                <textarea
+                  rows={2}
+                  value={surplusNotes}
+                  onChange={(event) => setSurplusNotes(event.target.value)}
+                  placeholder="سبب إرجاع الفائض، حالة القماش، أو أي تفاصيل أخرى..."
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 outline-none text-sm font-bold text-slate-800 resize-none"
+                />
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={closeSurplusReturn}
+                disabled={isReturningSurplus}
+                className="px-5 py-2 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSurplusReturn}
+                disabled={!isSurplusQtyValid || isReturningSurplus}
+                className="inline-flex items-center gap-1.5 px-5 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition shadow-md shadow-emerald-600/20 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>{isReturningSurplus ? 'جارٍ الإرجاع...' : 'تأكيد إرجاع الفائض'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

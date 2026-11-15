@@ -228,7 +228,11 @@ export const App: React.FC = () => {
         {currentTab === 'assembly_packaging' && <AssemblyPackagingView />}
 
         {/* Master Model Tracking */}
-        {currentTab === 'models_tracking' && <MasterModelTrackingView />}
+        {currentTab === 'models_tracking' && (
+          <MasterModelTrackingView
+            onNavigateToStage={(tab, modelId) => handleNavigate(tab, modelId)}
+          />
+        )}
 
         {/* Reports & Analytics Section */}
         {currentTab === 'reports' && <ReportsView />}

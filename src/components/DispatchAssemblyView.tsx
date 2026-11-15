@@ -103,6 +103,49 @@ export const DispatchAssemblyView: React.FC = () => {
   const [printCost, setPrintCost] = useState('');
   const [printTarget, setPrintTarget] = useState<PrintDispatch | null>(null);
 
+  // استلام جزئي على دفعات من المطبعة.
+  const [receivingDispatch, setReceivingDispatch] = useState<PrintDispatch | null>(null);
+  const [receiveQty, setReceiveQty] = useState<number>(0);
+  const [receiveNotes, setReceiveNotes] = useState('');
+
+  const getReceivedPieces = (disp: PrintDispatch) => Math.max(0, Number(disp.received_pieces || 0));
+  const getRemainingPieces = (disp: PrintDispatch) =>
+    Math.max(0, Number(disp.pieces_count || 0) - getReceivedPieces(disp));
+
+  const openReceiveModal = (disp: PrintDispatch) => {
+    setReceivingDispatch(disp);
+    setReceiveQty(getRemainingPieces(disp));
+    setReceiveNotes(disp.notes || '');
+  };
+
+  const confirmPartialReceive = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!receivingDispatch) return;
+    const remaining = getRemainingPieces(receivingDispatch);
+    const qty = Math.floor(Number(receiveQty) || 0);
+    if (remaining <= 0) {
+      alert('تم استلام كامل كمية هذه التشغيلة مسبقاً');
+      return;
+    }
+    if (qty <= 0) {
+      alert('أدخل كمية استلام أكبر من صفر');
+      return;
+    }
+    if (qty > remaining) {
+      alert(`الكمية المتبقية عند المطبعة ${remaining} قطعة فقط — لا يمكن استلام أكثر منها`);
+      return;
+    }
+    updateDispatchStatus(
+      receivingDispatch.id,
+      'تم الاستلام بالمصنع',
+      qty,
+      allowPrintNotes ? receiveNotes.trim() : undefined
+    );
+    setReceivingDispatch(null);
+    setReceiveQty(0);
+    setReceiveNotes('');
+  };
+
   // ورش المطابع والتطريز فقط (يمكن أن تحمل الورشة أكثر من تخصص).
   const printWorkshops = workshops.filter((w) =>
     (w.workshop_type || []).some((t) => t === 'printing' || t === 'embroidery')
@@ -163,6 +206,8 @@ export const DispatchAssemblyView: React.FC = () => {
         return 'bg-amber-100 text-amber-800 border-amber-300';
       case 'قيد التنفيذ':
         return 'bg-blue-100 text-blue-800 border-blue-300';
+      case 'استلام جزئي':
+        return 'bg-amber-100 text-amber-800 border-amber-300';
       case 'تم الاستلام بالمصنع':
         return 'bg-emerald-100 text-emerald-800 border-emerald-300';
       default:
@@ -402,6 +447,12 @@ export const DispatchAssemblyView: React.FC = () => {
               {printDispatches.length > 0 ? (
                 printDispatches.map((disp) => {
                   const m = models.find((model) => model.id === disp.model_id);
+                  const receivedPieces = getReceivedPieces(disp);
+                  const remainingPieces = getRemainingPieces(disp);
+                  const progressPct =
+                    Number(disp.pieces_count || 0) > 0
+                      ? Math.min(100, Math.round((receivedPieces / Number(disp.pieces_count)) * 100))
+                      : 0;
 
                   return (
                     <tr key={disp.id} className="hover:bg-slate-50 transition">
@@ -421,7 +472,25 @@ export const DispatchAssemblyView: React.FC = () => {
                       </td>
                       <td className="px-6 py-4 font-bold text-slate-800">{disp.shop_name}</td>
                       <td className="px-6 py-4 text-center font-black text-slate-900 text-sm">
-                        {disp.pieces_count}
+                        <div>{disp.pieces_count}</div>
+                        <div className="mt-1.5 w-24 mx-auto">
+                          <div className="h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all ${
+                                progressPct >= 100 ? 'bg-emerald-500' : 'bg-amber-500'
+                              }`}
+                              style={{ width: `${progressPct}%` }}
+                            />
+                          </div>
+                          <div className="mt-1 flex items-center justify-between text-[9px] font-extrabold">
+                            <span className="text-emerald-700">
+                              مستلم {receivedPieces.toLocaleString('ar-EG')}
+                            </span>
+                            <span className="text-amber-700">
+                              متبقي {remainingPieces.toLocaleString('ar-EG')}
+                            </span>
+                          </div>
+                        </div>
                       </td>
                       <td className="px-6 py-4 text-center">
                         <span className="px-2 py-0.5 rounded-md bg-teal-700 text-white font-bold text-[10px] whitespace-nowrap">
@@ -508,11 +577,11 @@ export const DispatchAssemblyView: React.FC = () => {
                         <div className="flex flex-wrap items-center justify-center gap-1.5">
                           {disp.status !== 'تم الاستلام بالمصنع' && canEdit ? (
                             <button
-                              onClick={() => updateDispatchStatus(disp.id, 'تم الاستلام بالمصنع')}
+                              onClick={() => openReceiveModal(disp)}
                               className="px-3.5 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
-                              title="استلام من المطبعة وتحويل تلقائي للعد بعد الطباعة"
+                              title="استلام من المطبعة على دفعات وتحويل تلقائي للعد بعد الطباعة"
                             >
-                              استلام بالمصنع 📥
+                              {receivedPieces > 0 ? 'استلام المتبقي 📥' : 'استلام بالمصنع 📥'}
                             </button>
                           ) : (
                             <span className="text-emerald-700 font-bold text-xs flex items-center justify-center gap-1">
@@ -790,6 +859,170 @@ export const DispatchAssemblyView: React.FC = () => {
                   className="px-6 py-2 rounded-full bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs shadow-md shadow-teal-700/20"
                 >
                   تأكيد الإرسال للمطبعة
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: استلام جزئي/كلي من المطبعة (دفعات) */}
+      {receivingDispatch && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 max-h-[92vh] overflow-y-auto">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white z-10">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-emerald-600 text-white flex items-center justify-center">
+                  <Truck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-slate-900 text-base leading-tight">
+                    استلام من المطبعة / التطريز
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    {models.find((mm) => mm.id === receivingDispatch.model_id)?.model_code || 'موديل'} •{' '}
+                    {receivingDispatch.shop_name} •{' '}
+                    {receivingDispatch.piece_label ||
+                      getPartLabel(receivingDispatch.piece_type || 'shirt')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setReceivingDispatch(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={confirmPartialReceive} className="p-6 space-y-4">
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-3 text-center">
+                  <span className="block text-[10px] font-bold text-slate-500 mb-0.5">الإجمالي</span>
+                  <span className="text-lg font-black text-slate-800">
+                    {Number(receivingDispatch.pieces_count || 0).toLocaleString('ar-EG')}
+                  </span>
+                </div>
+                <div className="rounded-2xl bg-emerald-50 border border-emerald-200 p-3 text-center">
+                  <span className="block text-[10px] font-bold text-emerald-600 mb-0.5">تم استلامه</span>
+                  <span className="text-lg font-black text-emerald-700">
+                    {getReceivedPieces(receivingDispatch).toLocaleString('ar-EG')}
+                  </span>
+                </div>
+                <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3 text-center">
+                  <span className="block text-[10px] font-bold text-amber-600 mb-0.5">المتبقي</span>
+                  <span className="text-lg font-black text-amber-700">
+                    {getRemainingPieces(receivingDispatch).toLocaleString('ar-EG')}
+                  </span>
+                </div>
+              </div>
+
+              {(() => {
+                const total = Number(receivingDispatch.pieces_count || 0);
+                const received = getReceivedPieces(receivingDispatch);
+                const pct = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
+                return (
+                  <div>
+                    <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-emerald-500 transition-all"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <div className="mt-1 text-[10px] font-bold text-slate-500 text-center">
+                      نسبة الاستلام {pct}%
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  الكمية المستلمة في هذه الدفعة *
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={getRemainingPieces(receivingDispatch) || 1}
+                    required
+                    value={receiveQty || ''}
+                    onChange={(e) => setReceiveQty(parseInt(e.target.value) || 0)}
+                    className="flex-1 px-4 py-2.5 rounded-xl border border-slate-300 text-sm text-center font-black text-emerald-800 focus:ring-2 focus:ring-emerald-600 focus:outline-hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setReceiveQty(getRemainingPieces(receivingDispatch))}
+                    className="px-3.5 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 font-bold text-[11px] hover:bg-emerald-100 whitespace-nowrap cursor-pointer"
+                  >
+                    استلام الكل ({getRemainingPieces(receivingDispatch).toLocaleString('ar-EG')})
+                  </button>
+                </div>
+                <p className="mt-1 text-[10px] text-slate-400">
+                  عند استلام جزء فقط تبقى التشغيلة مفتوحة بحالة «استلام جزئي» لمتابعة باقي الكمية.
+                </p>
+              </div>
+
+              {allowPrintNotes && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    ملاحظات الاستلام (اختياري)
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={receiveNotes}
+                    onChange={(e) => setReceiveNotes(e.target.value)}
+                    placeholder="مثال: الدفعة الأولى بها 3 قطع معيبة تحتاج إعادة طباعة..."
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-600 focus:outline-hidden"
+                  ></textarea>
+                </div>
+              )}
+
+              {(receivingDispatch.receive_history || []).length > 0 && (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+                  <div className="flex items-center gap-1.5 text-[11px] font-black text-slate-600 mb-2">
+                    📜 سجل الدفعات السابقة
+                  </div>
+                  <ul className="space-y-1 max-h-32 overflow-y-auto">
+                    {(receivingDispatch.receive_history || []).map((entry, idx) => (
+                      <li
+                        key={`${entry.date}-${idx}`}
+                        className="flex items-center justify-between gap-2 rounded-lg bg-white border border-slate-100 px-2.5 py-1.5 text-[10px]"
+                      >
+                        <span className="font-mono text-slate-500">{entry.date || '-'}</span>
+                        <span className="font-black text-emerald-700">
+                          +{Number(entry.qty || 0).toLocaleString('ar-EG')} قطعة
+                        </span>
+                        <span className="text-slate-500">
+                          إجمالي {Number(entry.total_received || 0).toLocaleString('ar-EG')}
+                        </span>
+                        {entry.user && <span className="text-slate-400">{entry.user}</span>}
+                        {entry.notes && (
+                          <span className="text-slate-400 truncate max-w-[6rem]" title={entry.notes}>
+                            {entry.notes}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReceivingDispatch(null)}
+                  className="px-4 py-2 rounded-full text-xs font-bold text-slate-600 hover:bg-slate-100"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="px-6 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-600/20 cursor-pointer"
+                >
+                  {receiveQty >= getRemainingPieces(receivingDispatch)
+                    ? 'تأكيد الاستلام الكامل'
+                    : 'تأكيد الاستلام الجزئي'}
                 </button>
               </div>
             </form>

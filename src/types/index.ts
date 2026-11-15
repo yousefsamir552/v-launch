@@ -487,6 +487,7 @@ export interface DesignModel {
   design_notes?: string;
   notes_shirt: string;
   notes_pants: string;
+  notes_jacket?: string;
 
   colored_at?: string;
   cut_at?: string;
@@ -512,7 +513,7 @@ export interface ModelRequirement {
 export interface ModelAccessory {
   id: string;
   model_id: string;
-  target_type: 'shirt' | 'pants';
+  target_type: 'shirt' | 'pants' | 'jacket' | 'single';
   piece_consumption: number;
   planned_quantity: number;
   accessory_id?: string;
@@ -653,7 +654,20 @@ export interface QCRecord {
   inspector_name?: string;
 }
 
-export type DispatchStatus = 'مرسل للمطبعة' | 'قيد التنفيذ' | 'تم الاستلام بالمصنع';
+/** سجل دفعة استلام واحدة (الاستلام الجزئي على دفعات). */
+export interface ReceiveHistoryEntry {
+  date: string;
+  qty: number;
+  total_received: number;
+  user?: string;
+  notes?: string;
+}
+
+export type DispatchStatus =
+  | 'مرسل للمطبعة'
+  | 'قيد التنفيذ'
+  | 'استلام جزئي'
+  | 'تم الاستلام بالمصنع';
 
 export interface PrintDispatch {
   id: string;
@@ -668,6 +682,12 @@ export interface PrintDispatch {
   dispatched_at: string;
   expected_delivery_date?: string;
   pieces_count: number;
+  /** إجمالي القطع المستلمة فعلياً (الاستلام الجزئي على دفعات). */
+  received_pieces?: number;
+  /** المتبقي في الورشة = pieces_count - received_pieces. */
+  remaining_pieces?: number;
+  /** سجل كل دفعة استلام. */
+  receive_history?: ReceiveHistoryEntry[];
   print_type: string;
   cost_per_piece?: number | null;
   total_cost?: number | null;
@@ -676,7 +696,11 @@ export interface PrintDispatch {
   received_at?: string;
 }
 
-export type SewingDispatchStatus = 'في ورشة المكن' | 'قيد الخياطة والتشغيل' | 'تم الاستلام';
+export type SewingDispatchStatus =
+  | 'في ورشة المكن'
+  | 'قيد الخياطة والتشغيل'
+  | 'استلام جزئي'
+  | 'تم الاستلام';
 
 export interface SewingDispatch {
   id: string;
@@ -685,6 +709,12 @@ export interface SewingDispatch {
   /** معرف الورشة المسجلة المرتبطة (اختياري — يظل الاسم النصي هو المصدر الأساسي). */
   workshop_id?: string;
   pieces_count: number;
+  /** إجمالي القطع المستلمة فعلياً (الاستلام الجزئي على دفعات). */
+  received_pieces?: number;
+  /** المتبقي في الورشة = pieces_count - received_pieces. */
+  remaining_pieces?: number;
+  /** سجل كل دفعة استلام. */
+  receive_history?: ReceiveHistoryEntry[];
   dispatched_at: string;
   expected_delivery_date: string;
   status: SewingDispatchStatus;

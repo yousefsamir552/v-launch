@@ -892,6 +892,9 @@ def ensure_schema_columns():
                                  'qc_shirt_pieces', 'qc_pants_pieces', 'qc_jacket_pieces'):
                     if part_col not in cols:
                         cursor.execute(f'ALTER TABLE api_modelitem ADD COLUMN {part_col} integer NOT NULL DEFAULT 0;')
+                # ملاحظات تشغيل القطعة الثالثة (الجاكيت) — ترقية آمنة لقواعد البيانات القائمة.
+                if 'notes_jacket' not in cols:
+                    cursor.execute("ALTER TABLE api_modelitem ADD COLUMN notes_jacket text NOT NULL DEFAULT '';")
 
             if 'api_cuttingrecord' in table_names:
                 cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_cuttingrecord')]
@@ -942,6 +945,24 @@ def ensure_schema_columns():
                 ):
                     if price_col not in cols:
                         cursor.execute(f'ALTER TABLE api_role ADD COLUMN {price_col} boolean NOT NULL DEFAULT false;')
+
+            for partial_receipt_table in ('api_sewingdispatch', 'api_printdispatch'):
+                if partial_receipt_table not in table_names:
+                    continue
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, partial_receipt_table)]
+                if 'received_pieces' not in cols:
+                    cursor.execute(
+                        f'ALTER TABLE {partial_receipt_table} ADD COLUMN received_pieces integer NOT NULL DEFAULT 0;'
+                    )
+                if 'receive_history' not in cols:
+                    if connection.vendor == 'postgresql':
+                        cursor.execute(
+                            f"ALTER TABLE {partial_receipt_table} ADD COLUMN receive_history jsonb NOT NULL DEFAULT '[]'::jsonb;"
+                        )
+                    else:
+                        cursor.execute(
+                            f"ALTER TABLE {partial_receipt_table} ADD COLUMN receive_history text NOT NULL DEFAULT '[]';"
+                        )
 
             for cost_table in ('api_sewingdispatch', 'api_finishingrecord', 'api_assemblystagerecord'):
                 if cost_table not in table_names:
@@ -1712,41 +1733,81 @@ def dispatch_model_to_sewing_service(
     return dispatch
 
 
-def receive_model_from_sewing_service(dispatch_id, user_name='مراقب الجودة', notes=''):
+def receive_model_from_sewing_service(dispatch_id, user_name='مراقب الجودة', notes='', received_qty=None):
     """
     Receives model from sewing workshop and routes it to QC (العد بعد المكن).
+
+    Supports partial receipt on several batches: every call adds ``received_qty``
+    pieces to ``received_pieces``, appends a row to ``receive_history`` and keeps
+    the part at the QC-after-sewing stage so the sorting section can count each
+    delivered batch as soon as it arrives.
     """
     dispatch = resolve_by_id(SewingDispatch, dispatch_id)
     if not dispatch:
         raise ValueError("إرسالية الخياطة غير موجودة")
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-    dispatch.status = 'تم الاستلام'
+    clean_notes = (notes or '').strip()
+
+    total_pieces = int(dispatch.pieces_count or 0)
+    already_received = int(dispatch.received_pieces or 0)
+    remaining_before = max(0, total_pieces - already_received)
+
+    try:
+        requested_qty = int(received_qty) if received_qty not in (None, '') else 0
+    except (TypeError, ValueError):
+        requested_qty = 0
+
+    if requested_qty > 0:
+        if remaining_before == 0:
+            raise ValueError('تم استلام كامل كمية هذه التشغيلة مسبقاً')
+        batch_qty = min(remaining_before, requested_qty)
+    else:
+        batch_qty = remaining_before or total_pieces
+
+    dispatch.received_pieces = already_received + batch_qty
+    history = dispatch.receive_history if isinstance(dispatch.receive_history, list) else []
+    history.append({
+        'date': now_str,
+        'qty': batch_qty,
+        'total_received': dispatch.received_pieces,
+        'user': user_name,
+        'notes': clean_notes,
+    })
+    dispatch.receive_history = history
+    is_complete = dispatch.received_pieces >= total_pieces
+    dispatch.status = 'تم الاستلام' if is_complete else 'استلام جزئي'
     dispatch.received_date = date.today()
     dispatch.received_at_str = now_str
-    clean_notes = (notes or '').strip()
     if clean_notes:
         dispatch.notes = f"{dispatch.notes} | استلام: {clean_notes}".strip(' |')
     dispatch.save()
 
     model = dispatch.model
-    if dispatch.piece_type == 'shirt':
-        model.sewing_shirt_status = 'تم الاستلام'
-    elif dispatch.piece_type == 'pants':
-        model.sewing_pants_status = 'تم الاستلام'
+    if is_complete:
+        if dispatch.piece_type == 'shirt':
+            model.sewing_shirt_status = 'تم الاستلام'
+        elif dispatch.piece_type == 'pants':
+            model.sewing_pants_status = 'تم الاستلام'
 
     # Bug fix: advance ONLY the received part. The other part keeps its stage so
     # receiving one part never ejects the sibling part out of sewing.
+    # Partial batches also open the sorting stage so every delivered batch is
+    # counted right away.
     advance_parts_to_stage(model, 'qc_after_sewing', [dispatch.piece_type or 'shirt'])
     derive_pipeline_status(model)
 
     other_pending = SewingDispatch.objects.filter(model=model).exclude(id=dispatch.id).exclude(status='تم الاستلام').exists()
-    all_done = not other_pending
+    all_done = not other_pending and is_complete
 
     model._skip_timeline_signal = True
     model.save()
 
     label = dispatch.piece_label or ('تيشرت' if dispatch.piece_type == 'shirt' else 'بنطلون')
-    tl_notes = f"تم استلام {dispatch.pieces_count} قطعة [{label}] من ورشة {dispatch.workshop_name}{' واكتمال القطع وتوجيه الموديل تلقائياً إلى الفرز والجودة (العد بعد المكن)' if all_done else ''}"
+    tl_notes = (
+        f"استلام دفعة ({batch_qty} قطعة) — إجمالي المستلم {dispatch.received_pieces} من {total_pieces} [{label}] "
+        f"من ورشة {dispatch.workshop_name}"
+        f"{' واكتمال القطع وتوجيه الموديل تلقائياً إلى الفرز والجودة (العد بعد المكن)' if all_done else ''}"
+    )
     if clean_notes:
         tl_notes += f" | ملاحظات: {clean_notes}"
 
@@ -1764,10 +1825,13 @@ def receive_model_from_sewing_service(dispatch_id, user_name='مراقب الج�
             'piece_label': label,
             'workshop_name': dispatch.workshop_name,
             'pieces_count': dispatch.pieces_count,
+            'batch_qty': batch_qty,
+            'received_pieces': dispatch.received_pieces,
+            'remaining_pieces': max(0, total_pieces - dispatch.received_pieces),
             'dispatched_at': dispatch.dispatched_at_str or '',
             'expected_delivery_date': str(dispatch.expected_delivery_date or ''),
             'received_at': now_str,
-            'status': 'تم الاستلام',
+            'status': dispatch.status,
             'worker_notes': clean_notes or (dispatch.notes or ''),
             'operator_name': user_name,
         }

@@ -1050,6 +1050,7 @@ class ModelItem(models.Model):
     design_notes = models.TextField(blank=True, null=True, default='', verbose_name="ملاحظات قسم التصميم")
     notes_shirt = models.TextField(blank=True, null=True, default='', verbose_name="ملاحظات تشغيل التيشرت")
     notes_pants = models.TextField(blank=True, null=True, default='', verbose_name="ملاحظات تشغيل البنطلون")
+    notes_jacket = models.TextField(blank=True, null=True, default='', verbose_name="ملاحظات تشغيل الجاكيت")
 
     colored_at = models.CharField(max_length=100, blank=True, null=True, verbose_name="تاريخ التلوين")
     cut_at = models.CharField(max_length=100, blank=True, null=True, verbose_name="تاريخ القص")
@@ -1088,6 +1089,8 @@ class ModelAccessory(models.Model):
     TARGET_TYPES = [
         ('shirt', 'تيشرت'),
         ('pants', 'بنطلون'),
+        ('jacket', 'جاكيت'),
+        ('single', 'قطعة واحدة'),
     ]
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, related_name="accessories")
@@ -1241,6 +1244,9 @@ class PrintDispatch(models.Model):
     piece_type = models.CharField(max_length=20, choices=PART_TYPE_CHOICES, default='shirt', verbose_name="نوع القطعة")
     piece_label = models.CharField(max_length=50, blank=True, null=True, verbose_name="مسمى القطعة")
     pieces_count = models.IntegerField(default=0, verbose_name="عدد القطع المرسلة")
+    # الاستلام الجزئي على دفعات: الكمية المستلمة فعلياً وسجل كل دفعة.
+    received_pieces = models.IntegerField(default=0, verbose_name="عدد القطع المستلمة فعلياً")
+    receive_history = models.JSONField(default=list, blank=True, verbose_name="سجل دفعات الاستلام")
     print_type = models.CharField(max_length=100, default="سلك سكرين مائي", verbose_name="نوع الطباعة")
     print_location = models.CharField(max_length=200, blank=True, default='', verbose_name="مكان الطباعة (صدر / ظهر / كم / تطريز)")
     print_details = models.TextField(blank=True, null=True, verbose_name="تفاصيل الطباعة")
@@ -1284,6 +1290,9 @@ class SewingDispatch(models.Model):
     # الربط الاختياري بسجل الورشة المسجل (يُبقى الاسم النصي أعلاه كما هو للتوافقية).
     workshop = models.ForeignKey(Workshop, on_delete=models.SET_NULL, null=True, blank=True, related_name="+", verbose_name="الورشة المسجلة")
     pieces_count = models.IntegerField(default=0, verbose_name="القطع المسلمة للورشة")
+    # الاستلام الجزئي على دفعات: الكمية المستلمة فعلياً وسجل كل دفعة.
+    received_pieces = models.IntegerField(default=0, verbose_name="عدد القطع المستلمة فعلياً")
+    receive_history = models.JSONField(default=list, blank=True, verbose_name="سجل دفعات الاستلام")
     dispatched_date = models.DateField(auto_now_add=True, verbose_name="تاريخ الخروج للورشة")
     dispatched_at_str = models.CharField(max_length=100, blank=True, null=True)
     expected_delivery_date = models.DateField(verbose_name="تاريخ الاستلام المتوقع")

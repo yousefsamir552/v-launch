@@ -18,7 +18,8 @@ import {
   ClipboardList,
   Flame,
   Package,
-  PackageCheck
+  PackageCheck,
+  Rocket
 } from 'lucide-react';
 import {
   Model,
@@ -72,6 +73,27 @@ const STAGE_ORDER: StageKey[] = [
   'dest',
   'production_warehouse'
 ];
+
+/** ربط مرحلة التتبع بالقسم/التبويب الفعلي الذي تُدار منه. */
+const STAGE_TAB_MAP: Record<StageKey, string> = {
+  design: 'model_details',
+  cutting: 'cutting_details',
+  qc_pre_print: 'qc_details',
+  printing: 'printing',
+  qc_post_print: 'qc_details',
+  sewing: 'sewing',
+  qc_post_sewing: 'qc_details',
+  packaging_requirements: 'assembly_packaging',
+  finishing: 'assembly_packaging',
+  ironing: 'assembly_packaging',
+  packaging: 'assembly_packaging',
+  dest: 'assembly_packaging',
+  production_warehouse: 'production_warehouse'
+};
+
+interface MasterModelTrackingViewProps {
+  onNavigateToStage?: (tab: string, modelId: string) => void;
+}
 
 interface StageMeta {
   title: string;
@@ -291,7 +313,7 @@ const AccessoriesTable: React.FC<{ accs: ModelAccessory[] }> = ({ accs }) => {
           {accs.map((a) => (
             <tr key={a.id} className="hover:bg-slate-50">
               <td className="py-2 px-3 font-bold text-slate-800">
-                {a.target_type === 'pants' ? 'بنطلون' : 'تيشرت'}
+                {getPartLabel(a.target_type)}
               </td>
               <td className="py-2 px-3 font-semibold text-slate-900">{a.accessory_name}</td>
               <td className="py-2 px-3 font-mono text-slate-600">{a.accessory_code || '-'}</td>
@@ -691,7 +713,9 @@ interface BuiltStage {
   summary: string;
 }
 
-export const MasterModelTrackingView: React.FC = () => {
+export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = ({
+  onNavigateToStage
+}) => {
   const {
     models,
     cuttingRecords,
@@ -757,6 +781,16 @@ export const MasterModelTrackingView: React.FC = () => {
     if (s.includes('مكتمل') || s.includes('الإنتاج التام') || s.includes('مخزن'))
       return 'production_warehouse';
     return 'design';
+  };
+
+
+  /** الانتقال للقسم الذي تُدار منه المرحلة الحالية للموديل. */
+  const navigateToCurrentStage = (model: Model, stageKey?: StageKey) => {
+    if (!onNavigateToStage) return;
+    const targetKey = stageKey || resolveCurrentStageKey(model);
+    setActiveModelForTimeline(null);
+    setSelectedStage(null);
+    onNavigateToStage(STAGE_TAB_MAP[targetKey], model.id);
   };
 
 
@@ -1360,13 +1394,27 @@ export const MasterModelTrackingView: React.FC = () => {
                       </td>
 
                       <td className="py-3 px-4 text-center">
-                        <button
-                          onClick={() => setActiveModelForTimeline(model)}
-                          className="px-3.5 py-1.5 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-xs border border-blue-200/80 transition flex items-center justify-center gap-1.5 mx-auto cursor-pointer"
-                        >
-                          <Clock className="w-3.5 h-3.5" />
-                          <span>عرض المراحل (7)</span>
-                        </button>
+                        <div className="flex flex-col items-stretch gap-1.5 max-w-[190px] mx-auto">
+                          <button
+                            onClick={() => setActiveModelForTimeline(model)}
+                            className="px-3.5 py-1.5 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-xs border border-blue-200/80 transition flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <Clock className="w-3.5 h-3.5" />
+                            <span>عرض المراحل (7)</span>
+                          </button>
+                          {onNavigateToStage && (
+                            <button
+                              onClick={() => navigateToCurrentStage(model)}
+                              className="px-3 py-1.5 rounded-full bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-[10px] border border-emerald-200/80 transition flex items-center justify-center gap-1 cursor-pointer"
+                              title={`الانتقال إلى قسم ${STAGE_META[resolveCurrentStageKey(model)].title}`}
+                            >
+                              <Rocket className="w-3 h-3 shrink-0" />
+                              <span className="truncate">
+                                🚀 الذهاب للقسم الحالي ({STAGE_META[resolveCurrentStageKey(model)].title})
+                              </span>
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1585,16 +1633,27 @@ export const MasterModelTrackingView: React.FC = () => {
                 </div>
               </div>
 
-              <div className="pt-3 mt-2 border-t border-slate-200 flex items-center justify-between gap-2">
+              <div className="pt-3 mt-2 border-t border-slate-200 flex items-center justify-between gap-2 flex-wrap">
                 <span className="text-[11px] font-bold text-slate-500">
                   المرحلة الحالية: {STAGE_META[currentKey].title}
                 </span>
-                <button
-                  onClick={() => setActiveModelForTimeline(null)}
-                  className="px-6 py-2 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition cursor-pointer"
-                >
-                  إغلاق
-                </button>
+                <div className="flex items-center gap-2">
+                  {onNavigateToStage && (
+                    <button
+                      onClick={() => navigateToCurrentStage(model)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition shadow-md shadow-emerald-600/20 cursor-pointer"
+                    >
+                      <Rocket className="w-3.5 h-3.5" />
+                      <span>🚀 الذهاب للقسم الحالي ({STAGE_META[currentKey].title})</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setActiveModelForTimeline(null)}
+                    className="px-6 py-2 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition cursor-pointer"
+                  >
+                    إغلاق
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -1868,7 +1927,20 @@ export const MasterModelTrackingView: React.FC = () => {
                     })()}
                 </div>
 
-                <div className="pt-3 border-t border-slate-200 flex justify-end">
+                <div className="pt-3 border-t border-slate-200 flex items-center justify-between gap-2 flex-wrap">
+                  {onNavigateToStage ? (
+                    <button
+                      onClick={() => navigateToCurrentStage(model)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition shadow-md shadow-emerald-600/20 cursor-pointer"
+                    >
+                      <Rocket className="w-3.5 h-3.5" />
+                      <span>
+                        🚀 الذهاب للقسم الحالي ({STAGE_META[resolveCurrentStageKey(model)].title})
+                      </span>
+                    </button>
+                  ) : (
+                    <span />
+                  )}
                   <button
                     onClick={() => setSelectedStage(null)}
                     className="px-6 py-2 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition cursor-pointer"

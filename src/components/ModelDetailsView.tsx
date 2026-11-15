@@ -20,7 +20,8 @@ import {
   GARMENT_COMPOSITION_ORDER,
   GARMENT_COMPOSITION_LABELS,
   DEFAULT_GARMENT_COMPOSITION,
-  partsForComposition
+  partsForComposition,
+  getPartLabel
 } from '../types';
 import { EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel } from '../utils/completedModels';
@@ -74,7 +75,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
 
   // Accessory addition form with target_type & piece_consumption
   const [selectedAccessoryId, setSelectedAccessoryId] = useState('');
-  const [accTargetType, setAccTargetType] = useState<'shirt' | 'pants'>('shirt');
+  const [accTargetType, setAccTargetType] = useState<'shirt' | 'pants' | 'jacket' | 'single'>('shirt');
   const [accPieceConsumption, setAccPieceConsumption] = useState<number>(1);
 
   // Local Form state for Section 2 (Planning quantities, markers, notes)
@@ -85,6 +86,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   const [designNotes, setDesignNotes] = useState('');
   const [notesShirt, setNotesShirt] = useState('');
   const [notesPants, setNotesPants] = useState('');
+  const [notesJacket, setNotesJacket] = useState('');
 
   useEffect(() => {
     if (model) {
@@ -94,6 +96,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
       setDesignNotes(model.design_notes || '');
       setNotesShirt(model.notes_shirt || '');
       setNotesPants(model.notes_pants || '');
+      setNotesJacket(model.notes_jacket || '');
     }
   }, [model]);
 
@@ -113,18 +116,35 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
 
   // ---- Garment composition drives which accessory sections are available ----
   // A shirt-only model must never show a pants accessory section and vice versa.
-  const compositionParts = partsForComposition(model?.garment_composition);
+  const compositionParts = (() => {
+    const parts = [...partsForComposition(model?.garment_composition)];
+    // بعض الموديلات (المستوردة أو القديمة) تحمل قطعاً إضافية مثل "قطعة واحدة"
+    // في garment_parts دون تغيير التكوين الأساسي، لذا ندمجها لعرض قسم الإكسسوار.
+    (model?.garment_parts || []).forEach((part) => {
+      if (part && !parts.includes(part)) parts.push(part);
+    });
+    return parts;
+  })();
   const canAddShirt = compositionParts.includes('shirt');
   const canAddPants = compositionParts.includes('pants');
+  const canAddJacket = compositionParts.includes('jacket');
+  const canAddSingle = compositionParts.includes('single');
+
+  // Arabic label for the currently selected accessory section (تيشرت / بنطلون / جاكيت / قطعة واحدة).
+  const accTargetLabel = getPartLabel(accTargetType);
 
   useEffect(() => {
-    if (accTargetType === 'shirt' && !canAddShirt && canAddPants) {
-      setAccTargetType('pants');
-    } else if (accTargetType === 'pants' && !canAddPants && canAddShirt) {
-      setAccTargetType('shirt');
+    const availableTargets: Array<'shirt' | 'pants' | 'jacket' | 'single'> = [
+      ...(canAddShirt ? (['shirt'] as const) : []),
+      ...(canAddPants ? (['pants'] as const) : []),
+      ...(canAddJacket ? (['jacket'] as const) : []),
+      ...(canAddSingle ? (['single'] as const) : [])
+    ];
+    if (availableTargets.length > 0 && !availableTargets.includes(accTargetType)) {
+      setAccTargetType(availableTargets[0]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accTargetType, canAddShirt, canAddPants]);
+  }, [accTargetType, canAddShirt, canAddPants, canAddJacket, canAddSingle]);
 
   if (!model) {
     return (
@@ -161,7 +181,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
 
   const handleAddGeneralTool = (
     toolItem: AccessoryItem,
-    targetType: 'shirt' | 'pants' = accTargetType
+    targetType: 'shirt' | 'pants' | 'jacket' | 'single' = accTargetType
   ) => {
     if (!canEdit) return;
     // Guard against duplicates for the same target section
@@ -186,10 +206,85 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     });
   };
 
-  const handleUpdateTargetCut = (newQty: number) => {
-    setTargetCutQuantity(newQty);
-    updateModelNotesAndTarget(modelId, { target_cut_quantity: newQty });
+  /**
+   * إعادة حساب كميات الإكسسوارات تلقائياً = استهلاك القطعة × أساس العدّ
+   * (العدد المستهدف للقص أو العدد المقصوص فعلياً).
+   */
+  const recalcAccQuantities = (basis: number) => {
+    const safeBasis = Math.max(0, Number(basis) || 0);
+    const next: Record<string, number> = {};
+    modelAccs.forEach((acc) => {
+      next[acc.id] = Math.round((Number(acc.piece_consumption) || 1) * safeBasis);
+    });
+    setAccQuantities(next);
+    return next;
   };
+
+  const handleUpdateTargetCut = (newQty: number) => {
+    const safeQty = Math.max(0, Number(newQty) || 0);
+    setTargetCutQuantity(safeQty);
+    // مزامنة تلقائية لكميات الإكسسوارات مع العدد المستهدف للقص.
+    recalcAccQuantities(safeQty);
+  };
+
+  /**
+   * حفظ العدد المستهدف وكميات الإكسسوارات المزامنة معه عند مغادرة حقل العدد
+   * (تجنب إرسال طلب للباك إند مع كل رقم يُكتب).
+   */
+  const handlePersistTargetCut = () => {
+    if (!canEdit) return;
+    if (targetCutQuantity === Number(model?.target_cut_quantity ?? 500)) return;
+    const nextQuantities = recalcAccQuantities(targetCutQuantity);
+    updateModelPlan({
+      modelId,
+      reqQuantities,
+      accQuantities: nextQuantities,
+      mainMarkerUrl,
+      printMarkerUrl,
+      designNotes,
+      notesShirt,
+      notesPants,
+      notesJacket,
+      targetCutQuantity
+    });
+  };
+
+  /** مطابقة كميات كل الإكسسوارات مع العدد المقصوص فعلياً للموديل. */
+  const handleMatchActualCut = () => {
+    if (!canEdit) return;
+    const actualCut = Number(model.total_cut_pieces || model.actual_cut_count || 0);
+    if (actualCut <= 0) {
+      alert('لا يوجد عدد مقصوص فعلي مسجّل لهذا الموديل بعد. سجّل القص أولاً ثم أعد المحاولة.');
+      return;
+    }
+    const nextQuantities = recalcAccQuantities(actualCut);
+    updateModelPlan({
+      modelId,
+      reqQuantities,
+      accQuantities: nextQuantities,
+      mainMarkerUrl,
+      printMarkerUrl,
+      designNotes,
+      notesShirt,
+      notesPants,
+      notesJacket,
+      targetCutQuantity
+    });
+  };
+
+  /** أقسام الموديل الأخرى التي تحتوي على نفس الأداة العامة (تيشرت / بنطلون / جاكيت). */
+  const otherTargetsLabel = (tool: AccessoryItem): string =>
+    Array.from(
+      new Set(
+        modelAccs
+          .filter(
+            (a) =>
+              (a.accessory_id === tool.id || a.accessory_code === tool.code) &&
+              a.target_type !== accTargetType
+          )
+          .map((a) => getPartLabel(a.target_type))
+      )
+    ).join(' / ');
 
   const currentComposition: GarmentComposition =
     (model.garment_composition as GarmentComposition) || DEFAULT_GARMENT_COMPOSITION;
@@ -245,6 +340,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
       designNotes,
       notesShirt,
       notesPants,
+      notesJacket,
       targetCutQuantity
     });
   };
@@ -290,8 +386,10 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     }
   };
 
-  const shirtAccessories = modelAccs.filter((a) => a.target_type !== 'pants');
+  const shirtAccessories = modelAccs.filter((a) => a.target_type === 'shirt');
   const pantsAccessories = modelAccs.filter((a) => a.target_type === 'pants');
+  const jacketAccessories = modelAccs.filter((a) => a.target_type === 'jacket');
+  const singleAccessories = modelAccs.filter((a) => a.target_type === 'single');
 
   const selectedColorObj = fabricColors.find((c) => c.id === selectedColorId);
   const selectedColorFab = fabrics.find((f) => f.id === selectedColorObj?.fabric_id);
@@ -358,10 +456,15 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                     disabled={!canEdit}
                     value={targetCutQuantity}
                     onChange={(e) => handleUpdateTargetCut(parseInt(e.target.value) || 0)}
+                    onBlur={handlePersistTargetCut}
                     className="w-24 px-2 py-1 text-base font-black text-blue-950 bg-white border border-blue-300 rounded-lg text-center focus:ring-2 focus:ring-blue-500"
                   />
                   <span className="text-xs font-black text-blue-800">قطعة</span>
                 </div>
+                <span className="text-[10px] text-blue-700/80 block mt-1">
+                  تتم مزامنة كميات الإكسسوارات تلقائياً مع هذا العدد، وتُحفظ عند مغادرة
+                  الحقل أو حفظ خطة الموديل.
+                </span>
               </div>
             </div>
           </div>
@@ -510,7 +613,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
               <Sparkles className="w-4 h-4 text-pink-600" />
               <span>
                 تخصيص الإكسسوارات (
-                {canAddShirt && canAddPants ? 'تيشرت / بنطلون' : canAddShirt ? 'تيشرت' : 'بنطلون'}):
+                {compositionParts.map((part) => getPartLabel(part)).join(' / ')}):
               </span>
             </h3>
 
@@ -520,7 +623,13 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                   قسم الإكسسوار حسب قطع الموديل *
                 </label>
                 <div
-                  className={`grid gap-2 ${canAddShirt && canAddPants ? 'grid-cols-2' : 'grid-cols-1'}`}
+                  className={`grid gap-2 ${
+                    [canAddShirt, canAddPants, canAddJacket, canAddSingle].filter(Boolean).length >= 3
+                      ? 'grid-cols-3'
+                      : canAddShirt && canAddPants
+                        ? 'grid-cols-2'
+                        : 'grid-cols-1'
+                  }`}
                 >
                   {canAddShirt && (
                     <button
@@ -549,13 +658,41 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                       <span>👖 إكسسوار بنطلون</span>
                     </button>
                   )}
+                  {canAddJacket && (
+                    <button
+                      type="button"
+                      onClick={() => setAccTargetType('jacket')}
+                      className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                        accTargetType === 'jacket'
+                          ? 'bg-emerald-50 border-emerald-400 text-emerald-900 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      <span>🧥 إكسسوار جاكيت</span>
+                    </button>
+                  )}
+                  {canAddSingle && (
+                    <button
+                      type="button"
+                      onClick={() => setAccTargetType('single')}
+                      className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                        accTargetType === 'single'
+                          ? 'bg-violet-50 border-violet-400 text-violet-900 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      <span>👕 إكسسوار قطعة واحدة</span>
+                    </button>
+                  )}
                 </div>
                 <span className="text-[10px] text-slate-400 block mt-1">
-                  {canAddShirt && canAddPants
-                    ? 'الموديل يحتوي على تيشرت وبنطلون: يمكنك إضافة إكسسوارات لكل قطعة على حدة.'
-                    : canAddShirt
-                      ? 'الموديل تيشرت فقط: تُضاف الإكسسوارات لقسم التيشرت.'
-                      : 'الموديل بنطلون فقط: تُضاف الإكسسوارات لقسم البنطلون.'}
+                  {compositionParts.length > 1
+                    ? `الموديل يحتوي على ${compositionParts
+                        .map((part) => getPartLabel(part))
+                        .join(' و')}: يمكنك إضافة إكسسوارات لكل قطعة على حدة.`
+                    : `الموديل ${getPartLabel(compositionParts[0])} فقط: تُضاف الإكسسوارات لقسم ${getPartLabel(
+                        compositionParts[0]
+                      )}.`}
                 </span>
               </div>
 
@@ -611,7 +748,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                   className="w-full py-2.5 rounded-xl bg-pink-600 hover:bg-pink-700 text-white font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>إضافة الإكسسوار لـ {accTargetType === 'shirt' ? 'التيشرت' : 'البنطلون'}</span>
+                  <span>إضافة الإكسسوار لـ {accTargetLabel}</span>
                 </button>
               )}
             </form>
@@ -622,7 +759,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 <div className="flex items-center gap-1.5">
                   <Star className="w-4 h-4 text-amber-500 fill-amber-500 shrink-0" />
                   <h4 className="font-extrabold text-xs text-slate-900">
-                    🛠️ الأدوات العامة (اختيار سريع لـ {accTargetType === 'shirt' ? 'التيشرت' : 'البنطلون'}):
+                    🛠️ الأدوات العامة (اختيار سريع لـ {accTargetLabel}):
                   </h4>
                 </div>
                 <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-black">
@@ -633,7 +770,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
               <p className="text-[11px] text-slate-500">
                 اضغط على أي أداة عامة لإضافتها فوراً كصف عادي في قائمة إكسسوارات الموديل ضمن قسم{' '}
                 <strong className="text-slate-800">
-                  {accTargetType === 'shirt' ? 'التيشرت' : 'البنطلون'}
+                  {accTargetLabel}
                 </strong>
                 . الأداة المضافة تختفي من هنا، ويمكن حذفها من جدول الإكسسوارات.
               </p>
@@ -673,7 +810,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                               متاح: {avail} {tool.unit}
                               {isAddedToOtherTarget && (
                                 <strong className="text-indigo-600 ms-1">
-                                  • (مضاف أيضاً بـ {accTargetType === 'shirt' ? 'البنطلون' : 'التيشرت'})
+                                  • (مضاف أيضاً بـ {otherTargetsLabel(tool) || accTargetLabel})
                                 </strong>
                               )}
                             </span>
@@ -689,7 +826,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 </div>
                 ) : (
                   <div className="p-3.5 rounded-2xl bg-emerald-50/70 border border-emerald-200 text-center text-xs text-emerald-900 font-bold">
-                    ✓ تمت إضافة كل الأدوات العامة إلى قسم {accTargetType === 'shirt' ? 'التيشرت' : 'البنطلون'}.
+                    ✓ تمت إضافة كل الأدوات العامة إلى قسم {accTargetLabel}.
                   </div>
                 )
               ) : (
@@ -845,17 +982,33 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
               </div>
             </div>
 
-            {/* SEPARATED ACCESSORIES SECTION: Shirt vs Pants */}
+            {/* SEPARATED ACCESSORIES SECTION: Shirt / Pants / Jacket */}
             <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs space-y-5">
-              <div className="flex items-center justify-between border-b pb-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
                 <h3 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-pink-600" />
                   <span>
                     قائمة إكسسوارات التشغيل (
-                    {canAddShirt && canAddPants ? 'مقسمة تيشرت / بنطلون' : canAddShirt ? 'تيشرت' : 'بنطلون'}):
+                    {compositionParts.map((part) => getPartLabel(part)).join(' / ')}):
                   </span>
                 </h3>
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={handleMatchActualCut}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] shadow-xs transition cursor-pointer"
+                    title="إعادة حساب كمية كل إكسسوار = استهلاك القطعة × العدد المقصوص فعلياً"
+                  >
+                    <span>🔄 مطابقة الكميات مع المقصوص الفعلي</span>
+                    <span className="px-1.5 py-0.2 rounded-full bg-white/20 text-[10px] font-black">
+                      {Number(model.total_cut_pieces || model.actual_cut_count || 0)}
+                    </span>
+                  </button>
+                )}
               </div>
+              <p className="text-[10px] text-slate-500 -mt-2">
+                زر المطابقة يعيد حساب الكمية الإجمالية المطلوبة لكل إكسسوار حسب العدد المقصوص فعلياً ويحفظ الخطة، بينما تغيير العدد المستهدف في الأعلى يزامن الكميات تلقائياً قبل الحفظ.
+              </p>
 
               {/* Subsection 1: T-Shirt Accessories (only for models that include a shirt part) */}
               {canAddShirt && (
@@ -993,6 +1146,142 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 </div>
               </div>
               )}
+
+              {/* Subsection 3: Jacket Accessories (only for three-piece models) */}
+              {canAddJacket && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-xs font-black text-emerald-950 bg-emerald-50/70 p-2 rounded-xl border border-emerald-200">
+                  <span>🧥 إكسسوارات ومستلزمات الجاكيت ({jacketAccessories.length}):</span>
+                </div>
+
+                <div className="overflow-x-auto border rounded-2xl">
+                  <table className="w-full text-xs text-start">
+                    <thead className="bg-slate-50 text-slate-600 font-bold">
+                      <tr>
+                        <th className="p-2">الإكسسوار</th>
+                        <th className="p-2 text-center">استهلاك القطعة</th>
+                        <th className="p-2 text-center">الكمية الإجمالية المطلوبة</th>
+                        <th className="p-2 text-center">الوحدة</th>
+                        <th className="p-2 text-center">إجراء</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {jacketAccessories.length > 0 ? (
+                        jacketAccessories.map((acc) => (
+                          <tr key={acc.id}>
+                            <td className="p-2 font-bold text-slate-900">{acc.accessory_name}</td>
+                            <td className="p-2 text-center font-bold text-emerald-700">
+                              {acc.piece_consumption || 1}
+                            </td>
+                            <td className="p-2 text-center">
+                              <input
+                                type="number"
+                                min="0"
+                                disabled={!canEdit}
+                                value={accQuantities[acc.id] ?? acc.planned_quantity}
+                                onChange={(e) =>
+                                  setAccQuantities({
+                                    ...accQuantities,
+                                    [acc.id]: parseFloat(e.target.value) || 0
+                                  })
+                                }
+                                className="w-20 px-2 py-1 text-center font-black text-xs border rounded-lg"
+                              />
+                            </td>
+                            <td className="p-2 text-center text-slate-500">{acc.unit || 'قطعة'}</td>
+                            <td className="p-2 text-center">
+                              {canEdit && (
+                                <button
+                                  type="button"
+                                  onClick={() => deleteModelAccessory(acc.id)}
+                                  className="text-rose-500 hover:text-rose-700 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={5} className="text-center py-3 text-slate-400">
+                            لا توجد إكسسوارات محددة للجاكيت بعد.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              )}
+
+              {/* Subsection 4: Single-piece Accessories (for models whose unit is a single piece) */}
+              {(canAddSingle || singleAccessories.length > 0) && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-xs font-black text-violet-950 bg-violet-50/70 p-2 rounded-xl border border-violet-200">
+                  <span>👕 إكسسوارات ومستلزمات القطعة الواحدة ({singleAccessories.length}):</span>
+                </div>
+
+                <div className="overflow-x-auto border rounded-2xl">
+                  <table className="w-full text-xs text-start">
+                    <thead className="bg-slate-50 text-slate-600 font-bold">
+                      <tr>
+                        <th className="p-2">الإكسسوار</th>
+                        <th className="p-2 text-center">استهلاك القطعة</th>
+                        <th className="p-2 text-center">الكمية الإجمالية المطلوبة</th>
+                        <th className="p-2 text-center">الوحدة</th>
+                        <th className="p-2 text-center">إجراء</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {singleAccessories.length > 0 ? (
+                        singleAccessories.map((acc) => (
+                          <tr key={acc.id}>
+                            <td className="p-2 font-bold text-slate-900">{acc.accessory_name}</td>
+                            <td className="p-2 text-center font-bold text-violet-700">
+                              {acc.piece_consumption || 1}
+                            </td>
+                            <td className="p-2 text-center">
+                              <input
+                                type="number"
+                                min="0"
+                                disabled={!canEdit}
+                                value={accQuantities[acc.id] ?? acc.planned_quantity}
+                                onChange={(e) =>
+                                  setAccQuantities({
+                                    ...accQuantities,
+                                    [acc.id]: parseFloat(e.target.value) || 0
+                                  })
+                                }
+                                className="w-20 px-2 py-1 text-center font-black text-xs border rounded-lg"
+                              />
+                            </td>
+                            <td className="p-2 text-center text-slate-500">{acc.unit || 'قطعة'}</td>
+                            <td className="p-2 text-center">
+                              {canEdit && (
+                                <button
+                                  type="button"
+                                  onClick={() => deleteModelAccessory(acc.id)}
+                                  className="text-rose-500 hover:text-rose-700 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={5} className="text-center py-3 text-slate-400">
+                            لا توجد إكسسوارات محددة للقطعة الواحدة بعد.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              )}
             </div>
 
             {/* DESIGN & OPERATING NOTES (Gated by canAddDesignNotes permission - Task 4) */}
@@ -1060,6 +1349,23 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                     className="w-full p-3 rounded-2xl border border-slate-300 text-xs focus:ring-2 focus:ring-amber-500 focus:outline-hidden disabled:bg-slate-100 disabled:text-slate-400"
                   />
                 </div>
+
+                {/* Jacket Notes (only for models that include a jacket part) */}
+                {canAddJacket && (
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                      <span>🧥 ملاحظات تشغيل وقص الجاكيت (اختياري):</span>
+                    </label>
+                    <textarea
+                      rows={3}
+                      disabled={!canWriteNotes}
+                      value={notesJacket}
+                      onChange={(e) => setNotesJacket(e.target.value)}
+                      placeholder="تعليمات خاصة بسوستة الجاكيت، البطانة، الكاب، الجيوب، أو التطريز..."
+                      className="w-full p-3 rounded-2xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-hidden disabled:bg-slate-100 disabled:text-slate-400"
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Marker Codes */}

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { 
+import {
   Scissors, 
   Printer, 
   Search, 
@@ -12,9 +12,22 @@ import {
   Calendar,
   AlertTriangle,
   Clock,
-  Lock
+  Lock,
+  Package,
+  PackagePlus,
+  ClipboardList,
+  Plus
 } from 'lucide-react';
-import { Model, SewingDispatch, GarmentPart, PART_EMOJI, getPartLabel, PART_STAGE_LABELS, PartStage } from '../types';
+import {
+  Model,
+  SewingDispatch,
+  GarmentPart,
+  ModelAccessory,
+  PART_EMOJI,
+  getPartLabel,
+  PART_STAGE_LABELS,
+  PartStage
+} from '../types';
 import { SewingPrintModal } from './SewingPrintModal';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { stageBeyond } from '../utils/completedModels';
@@ -52,6 +65,9 @@ export const SewingView: React.FC = () => {
     dispatchModelToSewing, 
     receiveModelFromSewing,
     workshops,
+    accessories,
+    accessoryItems,
+    recordAccessoryTransaction,
     openWhatsAppOrder,
     logAction,
     globalSettings,
@@ -85,8 +101,78 @@ export const SewingView: React.FC = () => {
   // Modal State for Receiving from Sewing Workshop (with optional notes)
   const [receivingDispatch, setReceivingDispatch] = useState<SewingDispatch | null>(null);
   const [receiveNotes, setReceiveNotes] = useState('');
+  const [receiveQty, setReceiveQty] = useState<number>(0);
+
+  // صرف إكسسوار إضافي (بدل فاقد/تالف أو زيادة احتياج) لورشة الخياطة.
+  const [extraAccessoryDispatch, setExtraAccessoryDispatch] = useState<SewingDispatch | null>(null);
+  const [extraAccessoryId, setExtraAccessoryId] = useState('');
+  const [extraAccessoryQty, setExtraAccessoryQty] = useState<number>(1);
 
   const allowSewingNotes = canAddSewingNotes();
+
+  /** المتبقي داخل الورشة = الكمية المرسلة − الكمية المستلمة فعلياً. */
+  const getRemainingPieces = (dispatch: SewingDispatch) =>
+    Math.max(0, Number(dispatch.pieces_count || 0) - Number(dispatch.received_pieces || 0));
+
+  /** إكسسوارات الموديل المرتبطة بنوع القطعة (أو إكسسوارات القطعة الواحدة). */
+  const getModelAccessoriesForPart = (modelId?: string, part?: GarmentPart): ModelAccessory[] => {
+    if (!modelId) return [];
+    const target = part || 'shirt';
+    return accessories.filter(
+      (acc) =>
+        acc.model_id === modelId &&
+        (acc.target_type === target || acc.target_type === 'single')
+    );
+  };
+
+  /** رصيد صنف الإكسسوار في المخزن المقابل لسطر احتياج الموديل. */
+  const getAccessoryStock = (acc: ModelAccessory): number => {
+    const item = accessoryItems.find(
+      (it) =>
+        (acc.accessory_id && it.id === acc.accessory_id) ||
+        (acc.accessory_code && it.code === acc.accessory_code) ||
+        it.name === acc.accessory_name
+    );
+    return item?.quantity ?? 0;
+  };
+
+  /** أصناف المخزن المتاحة للصرف الإضافي لإرسالية معينة. */
+  const getDispensableAccessories = (dispatch: SewingDispatch | null) => {
+    if (!dispatch) return [] as { acc: ModelAccessory; itemId: string; stock: number }[];
+    const rows = getModelAccessoriesForPart(dispatch.model_id, dispatch.piece_type || 'shirt');
+    const linked = rows
+      .map((acc) => {
+        const item = accessoryItems.find(
+          (it) =>
+            (acc.accessory_id && it.id === acc.accessory_id) ||
+            (acc.accessory_code && it.code === acc.accessory_code) ||
+            it.name === acc.accessory_name
+        );
+        return item ? { acc, itemId: item.id, stock: item.quantity } : null;
+      })
+      .filter((row): row is { acc: ModelAccessory; itemId: string; stock: number } => !!row);
+    if (linked.length > 0) return linked;
+    // لا توجد إكسسوارات مرتبطة بالموديل → اسمح بالصرف من كل أصناف المخزن.
+    return accessoryItems.map((item) => ({
+      acc: {
+        id: item.id,
+        model_id: dispatch.model_id,
+        target_type: 'single',
+        piece_consumption: 1,
+        planned_quantity: 0,
+        accessory_id: item.id,
+        accessory_code: item.code,
+        accessory_name: item.name,
+        unit: item.unit
+      },
+      itemId: item.id,
+      stock: item.quantity
+    }));
+  };
+
+  // Accessories manifest of the model/piece currently selected in the dispatch modal.
+  const dispatchManifest = getModelAccessoriesForPart(selectedModelId, dispatchPieceType);
+  const extraAccessoryOptions = getDispensableAccessories(extraAccessoryDispatch);
 
   // ورش المكن / الخياطة فقط.
   const sewingWorkshops = workshops.filter((w) => (w.workshop_type || []).includes('sewing'));
@@ -232,23 +318,90 @@ export const SewingView: React.FC = () => {
   const handleReceive = (dispatch: SewingDispatch) => {
     setReceivingDispatch(dispatch);
     setReceiveNotes('');
+    // الكمية الافتراضية = كل المتبقي بالورشة (استلام كامل)، ويمكن تعديلها لدفعة جزئية.
+    setReceiveQty(getRemainingPieces(dispatch));
   };
 
   const confirmReceiveFromSewing = (e: React.FormEvent) => {
     e.preventDefault();
     if (!receivingDispatch) return;
+    const remaining = getRemainingPieces(receivingDispatch);
+    const qty = Math.floor(Number(receiveQty) || 0);
+    if (remaining <= 0) {
+      alert('تم استلام كامل كمية هذه التشغيلة مسبقاً');
+      return;
+    }
+    if (qty <= 0) {
+      alert('أدخل كمية استلام أكبر من صفر');
+      return;
+    }
+    if (qty > remaining) {
+      alert(`الكمية المتبقية بالورشة ${remaining} قطعة فقط — لا يمكن استلام أكثر منها`);
+      return;
+    }
     const m = models.find(mod => mod.id === receivingDispatch.model_id);
     const code = m?.model_code || 'الموديل';
     const label = receivingDispatch.piece_label || (receivingDispatch.piece_type === 'shirt' ? 'تيشرت' : 'بنطلون');
     const finalNotes = allowSewingNotes ? receiveNotes.trim() : '';
 
-    receiveModelFromSewing(receivingDispatch.id, receivingDispatch.model_id, finalNotes || undefined);
+    receiveModelFromSewing(
+      receivingDispatch.id,
+      receivingDispatch.model_id,
+      finalNotes || undefined,
+      qty
+    );
     logAction(
       'قسم المكن',
-      `استلام تشغيلة خياطة [${label}] موديل ${code} من ورشة ${receivingDispatch.workshop_name} (${receivingDispatch.pieces_count} قطعة)${finalNotes ? ` — ملاحظات: ${finalNotes}` : ''}`
+      `استلام دفعة (${qty} قطعة) من تشغيلة خياطة [${label}] موديل ${code} بورشة ${receivingDispatch.workshop_name}${finalNotes ? ` — ملاحظات: ${finalNotes}` : ''}`
     );
     setReceivingDispatch(null);
     setReceiveNotes('');
+    setReceiveQty(0);
+  };
+
+  /** صرف إكسسوار إضافي لورشة الخياطة (بدل فاقد/تالف أو احتياج زائد). */
+  const handleExtraAccessoryDispense = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!extraAccessoryDispatch || !extraAccessoryId) {
+      alert('اختر صنف الإكسسوار المطلوب صرفه');
+      return;
+    }
+    const qty = Math.floor(Number(extraAccessoryQty) || 0);
+    if (qty <= 0) {
+      alert('أدخل كمية صرف أكبر من صفر');
+      return;
+    }
+    const item = accessoryItems.find((it) => it.id === extraAccessoryId);
+    if (!item) {
+      alert('الصنف غير موجود في مخزن الإكسسوارات');
+      return;
+    }
+    const m = models.find((mod) => mod.id === extraAccessoryDispatch.model_id);
+    const label =
+      extraAccessoryDispatch.piece_label ||
+      getPartLabel(extraAccessoryDispatch.piece_type || 'shirt');
+    const notes = `صرف إضافي لورشة المكن: ${extraAccessoryDispatch.workshop_name} — موديل ${
+      m?.model_code || ''
+    } — قطعة ${label}`;
+
+    const result = recordAccessoryTransaction({
+      accessoryId: extraAccessoryId,
+      operation: 'deduct',
+      amount: qty,
+      modelCodeRef: m?.model_code,
+      notes
+    });
+    if (!result.success) {
+      alert(result.message);
+      return;
+    }
+    logAction(
+      'قسم المكن',
+      `صرف إكسسوار إضافي (${item.name} × ${qty} ${item.unit || ''}) لورشة ${extraAccessoryDispatch.workshop_name} — موديل ${m?.model_code || ''}`
+    );
+    setExtraAccessoryDispatch(null);
+    setExtraAccessoryId('');
+    setExtraAccessoryQty(1);
   };
 
   // Helper to compute date diff badge
@@ -736,6 +889,11 @@ export const SewingView: React.FC = () => {
                 filteredDispatches.map((disp) => {
                   const m = models.find((model) => model.id === disp.model_id);
                   const isShirt = disp.piece_type === 'shirt';
+                  const totalPieces = Math.max(0, Number(disp.pieces_count || 0));
+                  const receivedPieces = Math.max(0, Number(disp.received_pieces || 0));
+                  const remainingPieces = Math.max(0, totalPieces - receivedPieces);
+                  const progressPct =
+                    totalPieces > 0 ? Math.min(100, Math.round((receivedPieces / totalPieces) * 100)) : 0;
 
                   return (
                     <tr key={disp.id} className="hover:bg-slate-50/80 transition">
@@ -784,7 +942,35 @@ export const SewingView: React.FC = () => {
                       </td>
 
                       <td className="px-6 py-4 text-center font-black text-slate-900 text-sm">
-                        {disp.pieces_count.toLocaleString('ar-EG')} ق
+                        <div>{totalPieces.toLocaleString('ar-EG')} ق</div>
+                        <div className="mt-1.5 w-28 mx-auto">
+                          <div className="h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${
+                                remainingPieces === 0
+                                  ? 'bg-emerald-600'
+                                  : receivedPieces > 0
+                                    ? 'bg-amber-500'
+                                    : 'bg-slate-300'
+                              }`}
+                              style={{ width: `${progressPct}%` }}
+                            />
+                          </div>
+                          <div className="mt-1 flex items-center justify-between text-[10px] font-bold">
+                            <span className="text-emerald-700">
+                              مستلم {receivedPieces.toLocaleString('ar-EG')}
+                            </span>
+                            <span className={remainingPieces > 0 ? 'text-amber-700' : 'text-slate-400'}>
+                              متبقي {remainingPieces.toLocaleString('ar-EG')}
+                            </span>
+                          </div>
+                        </div>
+                        {disp.status === 'استلام جزئي' && (
+                          <span className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                            <Clock className="w-3 h-3" />
+                            استلام جزئي
+                          </span>
+                        )}
                       </td>
 
                       {canViewSewingPrices() && (
@@ -817,11 +1003,19 @@ export const SewingView: React.FC = () => {
                           {disp.status !== 'تم الاستلام' ? (
                             <button
                               onClick={() => handleReceive(disp)}
-                              className="px-3 py-1.5 rounded-xl bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs shadow-xs transition flex items-center gap-1 cursor-pointer"
-                              title="تسجيل استلام القطع وتوجيهها للعد بعد المكن"
+                              className={`px-3 py-1.5 rounded-xl font-bold text-xs shadow-xs transition flex items-center gap-1 cursor-pointer ${
+                                receivedPieces > 0
+                                  ? 'bg-amber-600 hover:bg-amber-700 text-white'
+                                  : 'bg-purple-700 hover:bg-purple-800 text-white'
+                              }`}
+                              title={
+                                receivedPieces > 0
+                                  ? `استلام الدفعة المتبقية (${remainingPieces} قطعة)`
+                                  : 'تسجيل استلام القطع وتوجيهها للعد بعد المكن'
+                              }
                             >
                               <CheckCircle className="w-3.5 h-3.5" />
-                              <span>استلام</span>
+                              <span>{receivedPieces > 0 ? 'استلام المتبقي' : 'استلام'}</span>
                             </button>
                           ) : (
                             <span className="text-emerald-700 font-bold text-xs flex items-center gap-1">
@@ -829,6 +1023,18 @@ export const SewingView: React.FC = () => {
                               <span>تم</span>
                             </span>
                           )}
+
+                          <button
+                            onClick={() => {
+                              setExtraAccessoryDispatch(disp);
+                              setExtraAccessoryId('');
+                              setExtraAccessoryQty(1);
+                            }}
+                            className="p-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-800 transition cursor-pointer"
+                            title="صرف إكسسوار إضافي للورشة (بدل فاقد/تالف)"
+                          >
+                            <PackagePlus className="w-4 h-4" />
+                          </button>
 
                           {m && (
                             <button
@@ -1013,6 +1219,62 @@ export const SewingView: React.FC = () => {
                 </div>
               </div>
 
+              {/* بيان إكسسوارات التشغيلة (المطلوب لكل قطعة × عدد القطع) */}
+              <div className="rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5 text-xs font-black text-indigo-900">
+                    <Package className="w-4 h-4" />
+                    بيان إكسسوارات هذه التشغيلة
+                  </div>
+                  <span className="text-[10px] font-bold text-indigo-700">
+                    {dispatchPieceLabel} • {piecesCount || 0} قطعة
+                  </span>
+                </div>
+                {dispatchManifest.length === 0 ? (
+                  <p className="text-[11px] text-indigo-500">
+                    لا توجد إكسسوارات مسجلة لهذه القطعة في الموديل.
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5 max-h-40 overflow-y-auto">
+                    {dispatchManifest.map((acc) => {
+                      const required = Math.ceil(
+                        Number(acc.piece_consumption || 1) * Math.max(0, piecesCount)
+                      );
+                      const stock = getAccessoryStock(acc);
+                      const short = required > stock;
+                      return (
+                        <li
+                          key={acc.id}
+                          className="flex items-center justify-between gap-2 rounded-xl bg-white border border-indigo-100 px-2.5 py-1.5 text-[11px]"
+                        >
+                          <span className="font-bold text-slate-700 truncate">
+                            {acc.accessory_name}
+                            {acc.unit ? ` (${acc.unit})` : ''}
+                          </span>
+                          <span className="flex items-center gap-2 shrink-0 font-bold">
+                            <span className="text-indigo-800">
+                              مطلوب: {required.toLocaleString('ar-EG')}
+                            </span>
+                            <span className={short ? 'text-red-600' : 'text-emerald-600'}>
+                              بالمخزن: {Number(stock).toLocaleString('ar-EG')}
+                            </span>
+                            {short && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
+                                نقص
+                              </span>
+                            )}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                <p className="mt-2 text-[10px] text-indigo-500 font-normal">
+                  تُصرف الإكسسوارات من مخزن الإكسسوارات مع التشغيلة. عند الحاجة لبدل فاقد/تالف استخدم زر
+                  «صرف إكسسوار إضافي» في جدول التشغيلات.
+                </p>
+              </div>
+
               {/* سعر تشغيل القطعة: يظهر فقط لمن يملك صلاحية تعديل أسعار المكن */}
               {canEditSewingPrices() && (
                 <div>
@@ -1109,6 +1371,84 @@ export const SewingView: React.FC = () => {
             </div>
 
             <form onSubmit={confirmReceiveFromSewing} className="space-y-4 mt-4">
+              {/* ملخص الكميات: المرسل / المستلم سابقاً / المتبقي */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center">
+                  <div className="text-[10px] font-bold text-slate-500">القطع المرسلة</div>
+                  <div className="text-lg font-black text-slate-800">
+                    {Number(receivingDispatch.pieces_count || 0).toLocaleString('ar-EG')}
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-center">
+                  <div className="text-[10px] font-bold text-emerald-700">المستلم سابقاً</div>
+                  <div className="text-lg font-black text-emerald-800">
+                    {Number(receivingDispatch.received_pieces || 0).toLocaleString('ar-EG')}
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-center">
+                  <div className="text-[10px] font-bold text-amber-700">المتبقي بالورشة</div>
+                  <div className="text-lg font-black text-amber-800">
+                    {getRemainingPieces(receivingDispatch).toLocaleString('ar-EG')}
+                  </div>
+                </div>
+              </div>
+
+              {/* كمية هذه الدفعة */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-600">
+                    كمية الاستلام في هذه الدفعة *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setReceiveQty(getRemainingPieces(receivingDispatch))}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200 text-[10px] font-bold cursor-pointer"
+                  >
+                    <CheckCircle className="w-3 h-3" />
+                    استلام الكل ({getRemainingPieces(receivingDispatch)})
+                  </button>
+                </div>
+                <input
+                  type="number"
+                  required
+                  min={1}
+                  max={getRemainingPieces(receivingDispatch)}
+                  value={receiveQty || ''}
+                  onChange={(e) => setReceiveQty(parseInt(e.target.value) || 0)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm text-center font-black text-purple-800 focus:ring-2 focus:ring-purple-600 focus:outline-hidden"
+                />
+                <p className="mt-1 text-[10px] text-slate-400 font-normal">
+                  يمكنك استلام التشغيلة على عدة دفعات — سيُسجَّل كل استلام في سجل الدفعات ويُوجَّه للفرز
+                  (العد بعد المكن) فوراً، ويبقى المتبقي مسؤولية الورشة.
+                </p>
+              </div>
+
+              {/* سجل الدفعات السابقة */}
+              {(receivingDispatch.receive_history || []).length > 0 && (
+                <div className="rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
+                    <ClipboardList className="w-3.5 h-3.5" />
+                    سجل دفعات الاستلام السابقة
+                  </div>
+                  <ul className="divide-y divide-slate-100 max-h-32 overflow-y-auto">
+                    {(receivingDispatch.receive_history || []).map((entry, idx) => (
+                      <li
+                        key={`${entry.date}-${idx}`}
+                        className="px-3 py-2 flex items-center justify-between gap-2 text-[11px]"
+                      >
+                        <span className="text-slate-500 font-mono">{entry.date}</span>
+                        <span className="font-black text-emerald-700">
+                          +{Number(entry.qty).toLocaleString('ar-EG')} قطعة
+                        </span>
+                        <span className="text-slate-500">
+                          إجمالي {Number(entry.total_received).toLocaleString('ar-EG')}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="block text-xs font-bold text-slate-600">
@@ -1146,9 +1486,123 @@ export const SewingView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2 rounded-full bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs shadow-md shadow-purple-700/20 cursor-pointer"
+                  disabled={getRemainingPieces(receivingDispatch) <= 0}
+                  className="px-6 py-2 rounded-full bg-purple-700 hover:bg-purple-800 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold text-xs shadow-md shadow-purple-700/20 cursor-pointer"
                 >
-                  تأكيد الاستلام وتحويل للفرز
+                  تأكيد استلام الدفعة ({receiveQty || 0}) وتحويلها للفرز
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* EXTRA ACCESSORY DISPENSE MODAL (بدل فاقد/تالف أو احتياج زائد) */}
+      {extraAccessoryDispatch && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-amber-600 text-white flex items-center justify-center">
+                  <PackagePlus className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-slate-900 text-base">
+                    صرف إكسسوار إضافي لورشة المكن
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    ورشة: {extraAccessoryDispatch.workshop_name} •{' '}
+                    {extraAccessoryDispatch.piece_label ||
+                      getPartLabel(extraAccessoryDispatch.piece_type || 'shirt')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setExtraAccessoryDispatch(null);
+                  setExtraAccessoryId('');
+                  setExtraAccessoryQty(1);
+                }}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleExtraAccessoryDispense} className="space-y-4 mt-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  صنف الإكسسوار *
+                </label>
+                <select
+                  required
+                  value={extraAccessoryId}
+                  onChange={(e) => setExtraAccessoryId(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs font-bold bg-white focus:ring-2 focus:ring-amber-600 focus:outline-hidden"
+                >
+                  <option value="">— اختر صنف الإكسسوار —</option>
+                  {extraAccessoryOptions.map((row) => (
+                    <option key={row.itemId} value={row.itemId}>
+                      {row.acc.accessory_name} — رصيد {Number(row.stock).toLocaleString('ar-EG')}{' '}
+                      {row.acc.unit || ''}
+                    </option>
+                  ))}
+                </select>
+                {extraAccessoryOptions.length === 0 && (
+                  <p className="mt-1.5 text-[11px] font-bold text-amber-600">
+                    لا توجد أصناف إكسسوارات متاحة للصرف — راجع مخزن الإكسسوارات.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  الكمية المصروفة *
+                </label>
+                <input
+                  type="number"
+                  required
+                  min={1}
+                  value={extraAccessoryQty || ''}
+                  onChange={(e) => setExtraAccessoryQty(parseInt(e.target.value) || 0)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm text-center font-black text-amber-800 focus:ring-2 focus:ring-amber-600 focus:outline-hidden"
+                />
+                {(() => {
+                  const selected = extraAccessoryOptions.find(
+                    (row) => row.itemId === extraAccessoryId
+                  );
+                  if (!selected) return null;
+                  return (
+                    <p className="mt-1 text-[10px] font-bold text-slate-500">
+                      الرصيد المتاح بالمخزن: {Number(selected.stock).toLocaleString('ar-EG')}{' '}
+                      {selected.acc.unit || ''}
+                    </p>
+                  );
+                })()}
+              </div>
+
+              <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800 leading-relaxed">
+                يُسجَّل الصرف على مخزن الإكسسوارات ويُربط بالموديل والورشة، ويُخصم من الرصيد فوراً.
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExtraAccessoryDispatch(null);
+                    setExtraAccessoryId('');
+                    setExtraAccessoryQty(1);
+                  }}
+                  className="px-4 py-2 rounded-full text-xs font-bold text-slate-600 hover:bg-slate-100"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="px-6 py-2 rounded-full bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shadow-md shadow-amber-600/20 cursor-pointer inline-flex items-center gap-1"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  تأكيد الصرف
                 </button>
               </div>
             </form>

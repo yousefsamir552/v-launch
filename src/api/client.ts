@@ -36,6 +36,13 @@ const getBaseUrl = (): string => {
 
 export const BASE_URL = getBaseUrl();
 
+/**
+ * طابور تحديثات خطة الموديل (update_plan) لكل موديل.
+ * يضمن وصول الطلبات بنفس ترتيب إرسالها حتى لا يكتب طلب قديم (مثلاً حفظ العدد
+ * المستهدف عند مغادرة الحقل) فوق طلب أحدث (مثلاً مطابقة المقصوص الفعلي).
+ */
+const modelPlanQueues = new Map<string, Promise<unknown>>();
+
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('factory_erp_auth_token') || '';
 
@@ -256,12 +263,23 @@ export const api = {
     }),
   deleteModel: (id: string) =>
     request<any>(`/models/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
-  updateModelPlan: (modelId: string, data: any, auditHeaders?: Record<string, string>) =>
-    request<any>(`/models/${encodeURIComponent(modelId)}/update_plan/`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-      ...(auditHeaders ? { headers: auditHeaders } : {})
-    }),
+  updateModelPlan: (modelId: string, data: any, auditHeaders?: Record<string, string>) => {
+    const send = () =>
+      request<any>(`/models/${encodeURIComponent(modelId)}/update_plan/`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+        ...(auditHeaders ? { headers: auditHeaders } : {})
+      });
+    const previous = modelPlanQueues.get(modelId) || Promise.resolve();
+    const queued = previous.catch(() => undefined).then(send);
+    modelPlanQueues.set(modelId, queued);
+    queued
+      .catch(() => undefined)
+      .then(() => {
+        if (modelPlanQueues.get(modelId) === queued) modelPlanQueues.delete(modelId);
+      });
+    return queued;
+  },
   createModelRequirement: (data: any) =>
     request<any>('/model-requirements/', { method: 'POST', body: JSON.stringify(data) }),
   updateModelRequirement: (id: string, data: any, auditHeaders?: Record<string, string>) =>
@@ -291,6 +309,27 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_name: userName, ...(extraData || {}) })
     }),
+  returnFabricFromCutting: (
+    modelId: string,
+    requirementId: string,
+    quantity: number,
+    userName?: string,
+    notes?: string
+  ) =>
+    request<{ message: string; model: any; requirement: any; color: any; transaction: any }>(
+      `/models/${encodeURIComponent(modelId)}/return_fabric_to_warehouse/`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          requirement_id: requirementId,
+          quantity,
+          user_name: userName,
+          notes
+        }),
+        // تسجيل الحركة في سجل تدقيق قسم القص بدلاً من قسم التصميم.
+        headers: { 'X-Audit-Section': 'القص' }
+      }
+    ),
   finishCuttingToQC: (modelId: string, userName?: string, notes?: string, parts?: string[]) =>
     request<any>(`/models/${encodeURIComponent(modelId)}/finish_cutting/`, {
       method: 'POST',
@@ -407,11 +446,18 @@ export const api = {
     id: string,
     status: string,
     userName?: string,
-    auditHeaders?: Record<string, string>
+    auditHeaders?: Record<string, string>,
+    receivedQty?: number,
+    notes?: string
   ) =>
     request<any>(`/dispatches/${encodeURIComponent(id)}/update_status/`, {
       method: 'POST',
-      body: JSON.stringify({ status, user_name: userName }),
+      body: JSON.stringify({
+        status,
+        user_name: userName,
+        received_qty: receivedQty,
+        notes
+      }),
       ...(auditHeaders ? { headers: auditHeaders } : {})
     }),
   skipPrintToSewing: (modelId: string, pieceType: string, userName?: string) =>
@@ -420,10 +466,10 @@ export const api = {
       body: JSON.stringify({ model_id: modelId, piece_type: pieceType, user_name: userName })
     }),
   getSewingDispatches: () => request<any[]>('/sewing-dispatches/'),
-  receiveFromSewing: (id: string, userName?: string, notes?: string) =>
+  receiveFromSewing: (id: string, userName?: string, notes?: string, receivedQty?: number) =>
     request<any>(`/sewing-dispatches/${encodeURIComponent(id)}/receive/`, {
       method: 'POST',
-      body: JSON.stringify({ user_name: userName, notes })
+      body: JSON.stringify({ user_name: userName, notes, received_qty: receivedQty })
     }),
 
   // التنبيهات، الرسائل الداخلية، وسجل المراقبة

@@ -42,6 +42,7 @@ import {
   AccessoryUsageType,
   ModelTimelineEvent,
   SewingDispatch,
+  SewingDispatchStatus,
   AppNotification,
   InternalMessage,
   PackagingRequirement,
@@ -391,6 +392,13 @@ interface AppContextType {
     custom_model_code?: string;
     target_quantity?: number;
     delivered_quantity?: number;
+    /** ربط تلقائي بجدول إكسسوارات الموديل بعد نجاح الإنشاء في الباك إند. */
+    link_model?: {
+      modelId: string;
+      target_type?: 'shirt' | 'pants' | 'jacket' | 'single';
+      piece_consumption?: number;
+      planned_quantity?: number;
+    };
   }) => { success: boolean; message: string; itemId: string };
   updateAccessoryItem: (id: string, updates: Partial<AccessoryItem>) => void;
   deleteAccessoryItem: (id: string) => { success: boolean; message: string };
@@ -414,8 +422,14 @@ interface AppContextType {
     designNotes?: string;
     notesShirt?: string;
     notesPants?: string;
+    notesJacket?: string;
     garmentComposition?: GarmentComposition;
   }) => { success: boolean; message: string; modelId?: string };
+  cloneDesignModel: (
+    sourceModelId: string,
+    newModelCode: string,
+    targetQuantity?: number
+  ) => Promise<{ success: boolean; message: string; modelId?: string }>;
   updateModelPlan: (data: {
     modelId: string;
     reqQuantities: Record<string, number>;
@@ -425,6 +439,7 @@ interface AppContextType {
     designNotes?: string;
     notesShirt?: string;
     notesPants?: string;
+    notesJacket?: string;
     targetCutQuantity?: number;
   }) => { success: boolean; message: string };
   updateModelNotesAndTarget: (
@@ -434,6 +449,7 @@ interface AppContextType {
       design_notes?: string;
       notes_shirt?: string;
       notes_pants?: string;
+      notes_jacket?: string;
       garment_composition?: GarmentComposition;
     }
   ) => void;
@@ -452,7 +468,7 @@ interface AppContextType {
       name: string;
       unit?: string;
       image?: string;
-      target_type?: 'shirt' | 'pants';
+      target_type?: 'shirt' | 'pants' | 'jacket' | 'single';
       piece_consumption?: number;
       planned_quantity?: number;
     }
@@ -462,6 +478,12 @@ interface AppContextType {
     modelId: string,
     extraData?: { reqQuantities?: Record<string, number>; accQuantities?: Record<string, number> }
   ) => { success: boolean; message: string };
+  returnFabricFromCutting: (
+    modelId: string,
+    requirementId: string,
+    quantity: number,
+    notes?: string
+  ) => Promise<{ success: boolean; message: string }>;
   deleteDesignModel: (modelId: string) => void;
 
   // Cutting Actions (Spreads / Lays System)
@@ -550,7 +572,12 @@ interface AppContextType {
     totalCost?: number;
     notes?: string;
   }) => void;
-  updateDispatchStatus: (dispatchId: string, status: DispatchStatus) => void;
+  updateDispatchStatus: (
+    dispatchId: string,
+    status: DispatchStatus,
+    receivedQty?: number,
+    notes?: string
+  ) => void;
   skipPrintToSewing: (modelId: string, part: GarmentPart) => void;
 
   // Sewing Actions
@@ -566,7 +593,12 @@ interface AppContextType {
     totalCost?: number;
     notes?: string;
   }) => void;
-  receiveModelFromSewing: (dispatchId: string, modelId?: string, notes?: string) => void;
+  receiveModelFromSewing: (
+    dispatchId: string,
+    modelId?: string,
+    notes?: string,
+    receivedQty?: number
+  ) => void;
   finishSewingToQC: (modelId: string, notes?: string) => void;
   finishQCToProduction: (modelId: string, notes?: string) => void;
 
@@ -1957,6 +1989,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     custom_model_code?: string;
     target_quantity?: number;
     delivered_quantity?: number;
+    link_model?: {
+      modelId: string;
+      target_type?: 'shirt' | 'pants' | 'jacket' | 'single';
+      piece_consumption?: number;
+      planned_quantity?: number;
+    };
   }) => {
     const cleanCode = data.code.trim().toUpperCase();
     const existing = accessoryItems.find((a) => a.code.toUpperCase() === cleanCode);
@@ -2002,6 +2040,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAccessoryItems((prev) => prev.map((it) => (it.id === newItemId ? saved : it)));
         logAction('مخزن الإكسسوارات', `إضافة إكسسوار جديد: ${newItem.name} (${newItem.code})`);
         addFlashMessage(`تم إضافة صنف الإكسسوار "${newItem.name}" بنجاح`);
+        // الربط بالموديل يتم بعد تأكيد إنشاء الإكسسوار في الباك إند حتى يُلتقط
+        // سعر الوحدة التاريخي وتُحدَّث الكميات المحجوزة بدون سباق بين الطلبين.
+        if (data.link_model) {
+          addModelAccessory(data.link_model.modelId, {
+            id: saved?.id || newItemId,
+            code: saved?.code || cleanCode,
+            name: saved?.name || newItem.name,
+            unit: saved?.unit || newItem.unit,
+            image: saved?.image || newItem.image,
+            target_type: data.link_model.target_type,
+            piece_consumption: data.link_model.piece_consumption,
+            planned_quantity: data.link_model.planned_quantity
+          });
+        }
       })
       .catch((err) => {
         refreshState();
@@ -2202,6 +2254,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     designNotes?: string;
     notesShirt?: string;
     notesPants?: string;
+    notesJacket?: string;
     garmentComposition?: GarmentComposition;
   }) => {
     const cleanCode = data.modelCode.trim().toUpperCase();
@@ -2219,6 +2272,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const allowedDesignNotes = canAddDesignNotes() ? (data.designNotes || '') : '';
     const allowedShirtNotes = canAddDesignNotes() ? (data.notesShirt || '') : '';
     const allowedPantsNotes = canAddDesignNotes() ? (data.notesPants || '') : '';
+    const allowedJacketNotes = canAddDesignNotes() ? (data.notesJacket || '') : '';
     const userName = currentUser?.real_name || 'مسؤول التصميم';
 
     const newModel: DesignModel = {
@@ -2238,6 +2292,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       design_notes: allowedDesignNotes,
       notes_shirt: allowedShirtNotes,
       notes_pants: allowedPantsNotes,
+      notes_jacket: allowedJacketNotes,
       created_at: new Date().toISOString(),
       is_deleted: false,
       timeline: [
@@ -2256,8 +2311,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             design_notes: allowedDesignNotes,
             notes_shirt: allowedShirtNotes,
             notes_pants: allowedPantsNotes,
+            notes_jacket: allowedJacketNotes,
             operator_name: userName,
-            worker_notes: allowedDesignNotes || allowedShirtNotes || allowedPantsNotes
+            worker_notes: allowedDesignNotes || allowedShirtNotes || allowedPantsNotes || allowedJacketNotes
           }
         }
       ]
@@ -2277,6 +2333,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         design_notes: allowedDesignNotes,
         notes_shirt: allowedShirtNotes,
         notes_pants: allowedPantsNotes,
+        notes_jacket: allowedJacketNotes,
         user_name: userName
       })
       .then((saved) => {
@@ -2292,6 +2349,117 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { success: true, message: 'تم إنشاء الموديل بنجاح', modelId: newModelId };
   };
 
+  /**
+   * نسخ موديل تصميم كامل (بيانات + أقمشة + إكسسوارات) إلى كود موديل جديد.
+   * تُنسخ كميات الأقمشة كما هي، بينما تُعاد كميات الإكسسوارات حسابياً حسب
+   * العدد المستهدف الجديد (استهلاك القطعة × العدد).
+   */
+  const cloneDesignModel = async (
+    sourceModelId: string,
+    newModelCode: string,
+    targetQuantity?: number
+  ): Promise<{ success: boolean; message: string; modelId?: string }> => {
+    const source = models.find((m) => m.id === sourceModelId && !m.is_deleted);
+    if (!source) {
+      addFlashMessage('الموديل الأصلي غير موجود', 'danger');
+      return { success: false, message: 'الموديل الأصلي غير موجود' };
+    }
+
+    const cleanCode = (newModelCode || '').trim().toUpperCase();
+    if (!cleanCode) {
+      addFlashMessage('أدخل كود الموديل الجديد', 'warning');
+      return { success: false, message: 'كود الموديل الجديد مطلوب' };
+    }
+    if (models.some((m) => !m.is_deleted && m.model_code.toUpperCase() === cleanCode)) {
+      addFlashMessage('كود الموديل مستخدم بالفعل!', 'danger');
+      return { success: false, message: 'كود الموديل مستخدم بالفعل!' };
+    }
+
+    const targetQty = Math.max(
+      1,
+      Number(targetQuantity) || Number(source.target_cut_quantity) || 100
+    );
+    const sourceReqs = requirements.filter((r) => r.model_id === sourceModelId);
+    const sourceAccs = accessories.filter((a) => a.model_id === sourceModelId);
+    const allowNotes = canAddDesignNotes();
+    const userName = currentUser?.real_name || 'مسؤول التصميم';
+    const composition: GarmentComposition =
+      (source.garment_composition as GarmentComposition) || DEFAULT_GARMENT_COMPOSITION;
+    const parts =
+      source.garment_parts && source.garment_parts.length > 0
+        ? source.garment_parts
+        : partsForComposition(composition);
+
+    try {
+      const savedModel = await api.createModel({
+        model_code: cleanCode,
+        model_type: source.model_type,
+        size_category_id: source.size_category_id,
+        image: source.image,
+        target_cut_quantity: targetQty,
+        garment_composition: composition,
+        garment_parts: parts,
+        design_notes: allowNotes ? source.design_notes || '' : '',
+        notes_shirt: allowNotes ? source.notes_shirt || '' : '',
+        notes_pants: allowNotes ? source.notes_pants || '' : '',
+        notes_jacket: allowNotes ? source.notes_jacket || '' : '',
+        user_name: userName
+      });
+
+      const newModelId = savedModel?.id;
+      if (!newModelId) {
+        throw new Error('لم يتم إرجاع كود الموديل الجديد من الباك إند');
+      }
+
+      // نسخ خامات وألوان الموديل مع الحفاظ على الكميات المخططة كما هي.
+      for (let i = 0; i < sourceReqs.length; i += 1) {
+        const req = sourceReqs[i];
+        await api.createModelRequirement({
+          id: `req-${Date.now()}-${i}`,
+          model_id: newModelId,
+          color_id: req.color_id,
+          part_name: req.part_name,
+          planned_quantity: req.planned_quantity
+        });
+      }
+
+      // نسخ الإكسسوارات مع إعادة حساب الكميات حسب العدد المستهدف الجديد.
+      for (let i = 0; i < sourceAccs.length; i += 1) {
+        const acc = sourceAccs[i];
+        const consumption = Number(acc.piece_consumption) || 1;
+        await api.createModelAccessory({
+          id: `macc-${Date.now()}-${i}`,
+          model_id: newModelId,
+          accessory_id: acc.accessory_id,
+          accessory_code: acc.accessory_code,
+          accessory_name: acc.accessory_name,
+          unit: acc.unit,
+          image: acc.image,
+          target_type: acc.target_type || 'shirt',
+          piece_consumption: consumption,
+          planned_quantity: Math.round(consumption * targetQty)
+        });
+      }
+
+      // الماركرات غير مدعومة في نقطة الإنشاء، لذا تُنسخ بتحديث لاحق.
+      if (source.main_marker_url || source.print_marker_url) {
+        await api.updateModel(newModelId, {
+          main_marker_url: source.main_marker_url || '',
+          print_marker_url: source.print_marker_url || ''
+        });
+      }
+
+      await refreshState();
+      logAction('التصميم', `نسخ الموديل ${source.model_code} إلى موديل جديد: ${cleanCode}`);
+      addFlashMessage(`تم نسخ الموديل ${source.model_code} إلى ${cleanCode} بنجاح`);
+      return { success: true, message: 'تم نسخ الموديل بنجاح', modelId: newModelId };
+    } catch (err: any) {
+      await refreshState();
+      addFlashMessage(err?.message || 'فشل نسخ الموديل', 'danger');
+      return { success: false, message: err?.message || 'فشل نسخ الموديل' };
+    }
+  };
+
   const updateModelPlan = (data: {
     modelId: string;
     reqQuantities: Record<string, number>;
@@ -2301,6 +2469,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     designNotes?: string;
     notesShirt?: string;
     notesPants?: string;
+    notesJacket?: string;
     targetCutQuantity?: number;
   }) => {
     const model = models.find((m) => m.id === data.modelId);
@@ -2371,7 +2540,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ? {
                 design_notes: data.designNotes ?? m.design_notes,
                 notes_shirt: data.notesShirt ?? m.notes_shirt,
-                notes_pants: data.notesPants ?? m.notes_pants
+                notes_pants: data.notesPants ?? m.notes_pants,
+                notes_jacket: data.notesJacket ?? m.notes_jacket
               }
             : {}),
           target_cut_quantity: data.targetCutQuantity ?? m.target_cut_quantity
@@ -2387,7 +2557,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : {
               designNotes: model.design_notes,
               notesShirt: model.notes_shirt,
-              notesPants: model.notes_pants
+              notesPants: model.notes_pants,
+              notesJacket: model.notes_jacket
             })
       }, auditHeadersForModel(model, 'التصميم'))
       .then((savedModel) => {
@@ -2410,6 +2581,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       design_notes?: string;
       notes_shirt?: string;
       notes_pants?: string;
+      notes_jacket?: string;
       garment_composition?: GarmentComposition;
     }
   ) => {
@@ -2419,7 +2591,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...(data.garment_composition !== undefined ? { garment_composition: data.garment_composition } : {}),
       ...(allowNotes && data.design_notes !== undefined ? { design_notes: data.design_notes } : {}),
       ...(allowNotes && data.notes_shirt !== undefined ? { notes_shirt: data.notes_shirt } : {}),
-      ...(allowNotes && data.notes_pants !== undefined ? { notes_pants: data.notes_pants } : {})
+      ...(allowNotes && data.notes_pants !== undefined ? { notes_pants: data.notes_pants } : {}),
+      ...(allowNotes && data.notes_jacket !== undefined ? { notes_jacket: data.notes_jacket } : {})
     };
 
     setModels((prev) =>
@@ -2517,7 +2690,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       name: string;
       unit?: string;
       image?: string;
-      target_type?: 'shirt' | 'pants';
+      target_type?: 'shirt' | 'pants' | 'jacket' | 'single';
       piece_consumption?: number;
       planned_quantity?: number;
     }
@@ -2546,7 +2719,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAccessories((prev) => prev.map((a) => (a.id === newAcc.id ? saved : a)));
         addFlashMessage(
           `تمت إضافة إكسسوار "${accessory.name}" إلى ${
-            accessory.target_type === 'pants' ? 'البنطلون' : 'التيشرت'
+            accessory.target_type === 'pants'
+              ? 'البنطلون'
+              : accessory.target_type === 'jacket'
+              ? 'الجاكيت'
+              : accessory.target_type === 'single'
+              ? 'القطعة الواحدة'
+              : 'التيشرت'
           }`
         );
       })
@@ -2678,6 +2857,68 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
 
     return { success: true, message: 'تم صرف الخامات والإكسسوارات وتحويل الموديل للقص.' };
+  };
+
+  const returnFabricFromCutting = async (
+    modelId: string,
+    requirementId: string,
+    quantity: number,
+    notes = ''
+  ): Promise<{ success: boolean; message: string }> => {
+    const targetModel = models.find((m) => m.id === modelId);
+    if (!targetModel) {
+      addFlashMessage('الموديل غير موجود', 'danger');
+      return { success: false, message: 'الموديل غير موجود' };
+    }
+
+    const req = requirements.find((r) => r.id === requirementId && r.model_id === modelId);
+    if (!req) {
+      addFlashMessage('متطلب القماش غير موجود أو لا يتبع هذا الموديل', 'danger');
+      return { success: false, message: 'متطلب القماش غير موجود أو لا يتبع هذا الموديل' };
+    }
+
+    const available = Math.max(0, Number(req.planned_quantity) || 0);
+    if (available <= 0) {
+      const message = 'لا توجد كمية مصروفة متبقية لهذا المتطلب لإرجاع فائض منها';
+      addFlashMessage(message, 'danger');
+      return { success: false, message };
+    }
+
+    const qty = Math.round((Number(quantity) || 0) * 100) / 100;
+    if (!Number.isFinite(qty) || qty <= 0) {
+      const message = 'كمية الإرجاع يجب أن تكون أكبر من صفر';
+      addFlashMessage(message, 'danger');
+      return { success: false, message };
+    }
+    if (qty > available + 0.000001) {
+      const message = `كمية الإرجاع (${qty}) أكبر من الكمية المصروفة المتبقية (${available})`;
+      addFlashMessage(message, 'danger');
+      return { success: false, message };
+    }
+
+    try {
+      const res = await api.returnFabricFromCutting(
+        modelId,
+        requirementId,
+        qty,
+        currentUser?.real_name || 'مسؤول القص',
+        notes.trim()
+      );
+      await refreshState();
+      const color = fabricColors.find((c) => c.id === req.color_id);
+      logAction(
+        'القص',
+        `إرجاع فائض ${qty} من القماش${color ? ` (${color.color_code})` : ''} للقطعة ${req.part_name} من الموديل ${targetModel.model_code} إلى مخزن القماش`
+      );
+      const message = res?.message || `تم إرجاع ${qty} من فائض القماش إلى المخزن بنجاح`;
+      addFlashMessage(message);
+      return { success: true, message };
+    } catch (err: any) {
+      await refreshState();
+      const message = err?.message || 'فشل إرجاع فائض القماش إلى المخزن';
+      addFlashMessage(message, 'danger');
+      return { success: false, message };
+    }
   };
 
   const deleteDesignModel = (modelId: string) => {
@@ -4253,22 +4494,67 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
-  const updateDispatchStatus = (dispatchId: string, status: DispatchStatus) => {
+  const updateDispatchStatus = (
+    dispatchId: string,
+    status: DispatchStatus,
+    receivedQty?: number,
+    notes?: string
+  ) => {
     const disp = printDispatches.find((d) => d.id === dispatchId);
     if (!disp) return;
+
+    const totalPieces = Math.max(0, Number(disp.pieces_count || 0));
+    const alreadyReceived = Math.max(0, Number(disp.received_pieces || 0));
+    const remainingBefore = Math.max(0, totalPieces - alreadyReceived);
+    const requestedQty = receivedQty && receivedQty > 0 ? Math.floor(Number(receivedQty)) : 0;
+    const isReceiving = status === 'تم الاستلام بالمصنع' || requestedQty > 0;
+    const cleanNotes = notes?.trim() || '';
+
+    if (isReceiving && requestedQty > 0 && remainingBefore === 0) {
+      addFlashMessage('تم استلام كامل كمية هذه التشغيلة مسبقاً', 'danger');
+      return;
+    }
+
+    // الاستلام الجزئي على دفعات: كل استلام يضيف الكمية المستلمة ويحفظ سجل الدفعة.
+    const batchQty = isReceiving
+      ? requestedQty > 0
+        ? Math.min(remainingBefore, requestedQty)
+        : remainingBefore || totalPieces
+      : 0;
+    const newReceived = isReceiving ? alreadyReceived + batchQty : alreadyReceived;
+    const isComplete = isReceiving && newReceived >= totalPieces;
+    const resolvedStatus: DispatchStatus = isReceiving
+      ? isComplete
+        ? 'تم الاستلام بالمصنع'
+        : 'استلام جزئي'
+      : status;
+    const nowStr = new Date().toLocaleString('ar-EG', { hour12: false });
 
     setPrintDispatches((prev) =>
       prev.map((d) => {
         if (d.id !== dispatchId) return d;
-        const receivedAt =
-          status === 'تم الاستلام بالمصنع'
-            ? new Date().toLocaleString('ar-EG', { hour12: false })
-            : d.received_at;
-        return { ...d, status, received_at: receivedAt };
+        if (!isReceiving) return { ...d, status };
+        return {
+          ...d,
+          status: resolvedStatus,
+          received_pieces: newReceived,
+          remaining_pieces: Math.max(0, totalPieces - newReceived),
+          receive_history: [
+            ...(d.receive_history || []),
+            {
+              date: nowStr,
+              qty: batchQty,
+              total_received: newReceived,
+              user: currentUser?.real_name || 'مسؤول المطابع',
+              notes: cleanNotes
+            }
+          ],
+          received_at: nowStr
+        };
       })
     );
 
-    if (status === 'تم الاستلام بالمصنع') {
+    if (isReceiving) {
       const receivedPart = (disp.piece_type || 'shirt') as GarmentPart;
       setModels((prev) =>
         prev.map((m) =>
@@ -4285,13 +4571,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         auditHeadersForModel(
           models.find((m) => m.id === disp.model_id),
           'المطابع والتطريز'
-        )
+        ),
+        isReceiving ? batchQty : undefined,
+        cleanNotes || undefined
       )
       .then((saved) => {
         setPrintDispatches((prev) => prev.map((d) => (d.id === dispatchId ? saved : d)));
         refreshState();
-        logAction('المطابع والتطريز', `تحديث حالة الإرسالية إلى: ${status}`);
-        addFlashMessage(`تم تحديث حالة التشغيل إلى "${status}" بنجاح`);
+        logAction(
+          'المطابع والتطريز',
+          isReceiving
+            ? `استلام دفعة (${batchQty} قطعة) من إرسالية ${disp.shop_name} — إجمالي المستلم ${newReceived} من ${totalPieces}`
+            : `تحديث حالة الإرسالية إلى: ${status}`
+        );
+        addFlashMessage(
+          isReceiving
+            ? `تم استلام دفعة (${batchQty} قطعة) — إجمالي المستلم ${newReceived} من ${totalPieces}${
+                isComplete ? ' واكتمال الاستلام' : ''
+              }`
+            : `تم تحديث حالة التشغيل إلى "${status}" بنجاح`
+        );
       })
       .catch((err) => {
         refreshState();
@@ -4425,7 +4724,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
-  const receiveModelFromSewing = (dispatchId: string, modelId?: string, notes?: string) => {
+  const receiveModelFromSewing = (
+    dispatchId: string,
+    modelId?: string,
+    notes?: string,
+    receivedQty?: number
+  ) => {
     const disp = sewingDispatches.find((d) => d.id === dispatchId);
     const targetModelId = modelId || disp?.model_id;
     if (!targetModelId) return;
@@ -4434,12 +4738,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const pieceLabel = disp?.piece_label || getPartLabel(pieceType);
     const cleanNotes = canAddSewingNotes() ? (notes?.trim() || '') : '';
 
+    // الاستلام الجزئي على دفعات: نحسب المتبقي قبل هذه الدفعة ثم نثبّت حدود الكمية.
+    const totalPieces = Math.max(0, Number(disp?.pieces_count || 0));
+    const alreadyReceived = Math.max(0, Number(disp?.received_pieces || 0));
+    const remainingBefore = Math.max(0, totalPieces - alreadyReceived);
+    const requestedQty = receivedQty && receivedQty > 0 ? Math.floor(Number(receivedQty)) : 0;
+
+    if (requestedQty > 0 && remainingBefore === 0) {
+      addFlashMessage('تم استلام كامل كمية هذه التشغيلة مسبقاً', 'danger');
+      return;
+    }
+
+    const batchQty =
+      requestedQty > 0 ? Math.min(remainingBefore, requestedQty) : remainingBefore || totalPieces;
+    const newReceived = Math.min(totalPieces, alreadyReceived + batchQty);
+    const isComplete = newReceived >= totalPieces;
+    const resolvedStatus: SewingDispatchStatus = isComplete ? 'تم الاستلام' : 'استلام جزئي';
+    const nowStr = new Date().toLocaleString('ar-EG', { hour12: false });
+
     const updatedDispatches = sewingDispatches.map((d) => {
       if (d.id !== dispatchId) return d;
       return {
         ...d,
-        status: 'تم الاستلام' as const,
-        received_at: new Date().toLocaleString('ar-EG', { hour12: false }),
+        status: resolvedStatus,
+        received_pieces: newReceived,
+        remaining_pieces: Math.max(0, totalPieces - newReceived),
+        receive_history: [
+          ...(d.receive_history || []),
+          {
+            date: nowStr,
+            qty: batchQty,
+            total_received: newReceived,
+            user: currentUser?.real_name || 'مسؤول الإنتاج',
+            notes: cleanNotes
+          }
+        ],
+        received_at: nowStr,
         ...(cleanNotes ? { notes: `${d.notes || ''} | استلام: ${cleanNotes}`.replace(/^\s*\|\s*/, '') } : {})
       };
     });
@@ -4460,9 +4794,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prev.map((m) => {
         if (m.id !== targetModelId) return m;
         const updates: Partial<DesignModel> = {};
-        if (pieceType === 'shirt') {
+        // لا نغلق مرحلة المكن للقطعة إلا عند اكتمال استلام كامل كميتها.
+        if (isComplete && pieceType === 'shirt') {
           updates.sewing_shirt_status = 'تم الاستلام';
-        } else if (pieceType === 'pants') {
+        } else if (isComplete && pieceType === 'pants') {
           updates.sewing_pants_status = 'تم الاستلام';
         }
         // Bug fix: only the received part leaves sewing; the sibling part stays put.
@@ -4471,18 +4806,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     api
-      .receiveFromSewing(dispatchId, currentUser?.real_name || 'مسؤول الإنتاج', cleanNotes)
+      .receiveFromSewing(dispatchId, currentUser?.real_name || 'مسؤول الإنتاج', cleanNotes, batchQty)
       .then((saved) => {
         setSewingDispatches((prev) => prev.map((d) => (d.id === dispatchId ? saved : d)));
         refreshState();
         logAction(
           'قسم المكن',
-          `استلام [${pieceLabel}] موديل ${targetModel?.model_code} من ورشة ${disp?.workshop_name}`
+          `استلام دفعة (${batchQty} قطعة) [${pieceLabel}] موديل ${targetModel?.model_code} من ورشة ${disp?.workshop_name} — إجمالي المستلم ${newReceived} من ${totalPieces}`
         );
         addFlashMessage(
-          `تم استلام [${pieceLabel}] بنجاح${
-            allPiecesReceived ? ' واكتمال القطع ونقل الموديل إلى العد بعد المكن بالفرز' : ''
-          }`
+          isComplete
+            ? `تم استلام كامل كمية [${pieceLabel}] بنجاح${
+                allPiecesReceived ? ' واكتمال القطع ونقل الموديل إلى العد بعد المكن بالفرز' : ''
+              }`
+            : `تم استلام دفعة (${batchQty} قطعة) من [${pieceLabel}] — المتبقي ${Math.max(
+                0,
+                totalPieces - newReceived
+              )} قطعة بورشة ${disp?.workshop_name || ''}`
         );
       })
       .catch((err) => {
@@ -6200,6 +6540,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         exportAccessoryInventoryCsv,
         markAccessoryWithdrawn,
         addDesignModel,
+        cloneDesignModel,
         updateModelPlan,
         updateModelNotesAndTarget,
         addModelRequirement,
@@ -6207,6 +6548,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addModelAccessory,
         deleteModelAccessory,
         issueFabricToCutting,
+        returnFabricFromCutting,
         deleteDesignModel,
         addCuttingRecord,
         finishCuttingToQC,

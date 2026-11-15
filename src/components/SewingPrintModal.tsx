@@ -93,7 +93,13 @@ export const SewingPrintModal: React.FC<SewingPrintModalProps> = ({
           : model.sewing_expected_date;
 
     const fallbackNotes =
-      piece === 'shirt' ? model.notes_shirt : piece === 'pants' ? model.notes_pants : '';
+      piece === 'shirt'
+        ? model.notes_shirt
+        : piece === 'pants'
+          ? model.notes_pants
+          : piece === 'jacket'
+            ? model.notes_jacket
+            : model.design_notes;
 
     return {
       pieceType: piece,

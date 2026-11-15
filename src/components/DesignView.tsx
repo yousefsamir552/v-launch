@@ -29,7 +29,17 @@ interface DesignViewProps {
 }
 
 export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) => {
-  const { models, sizeDefs, addDesignModel, hasPermission, canAddDesignNotes, exportDesignModelsCsv } = useApp();
+  const {
+    models,
+    sizeDefs,
+    requirements,
+    accessories,
+    addDesignModel,
+    cloneDesignModel,
+    hasPermission,
+    canAddDesignNotes,
+    exportDesignModelsCsv
+  } = useApp();
   const canEdit = hasPermission('design', true);
   const canWriteNotes = canAddDesignNotes();
 
@@ -52,6 +62,49 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
   const [garmentComposition, setGarmentComposition] = useState<GarmentComposition>(
     DEFAULT_GARMENT_COMPOSITION
   );
+
+  // Clone Model Modal State
+  const [cloneSourceId, setCloneSourceId] = useState('');
+  const [cloneCode, setCloneCode] = useState('');
+  const [cloneTargetQty, setCloneTargetQty] = useState<number>(500);
+  const [cloning, setCloning] = useState(false);
+  const cloneSource = models.find((m) => m.id === cloneSourceId && !m.is_deleted);
+  const cloneSourceReqCount = requirements.filter((r) => r.model_id === cloneSourceId).length;
+  const cloneSourceAccCount = accessories.filter((a) => a.model_id === cloneSourceId).length;
+
+  const openCloneModal = (sourceId: string, sourceCode: string, sourceQty?: number) => {
+    setCloneSourceId(sourceId);
+    setCloneCode(`${sourceCode}-COPY`);
+    setCloneTargetQty(Number(sourceQty) || 500);
+  };
+
+  const closeCloneModal = () => {
+    setCloneSourceId('');
+    setCloneCode('');
+    setCloneTargetQty(500);
+  };
+
+  const handleCloneSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cloneSource || !cloneCode.trim() || cloning) return;
+    setCloning(true);
+    try {
+      const res = await cloneDesignModel(
+        cloneSource.id,
+        cloneCode,
+        Number(cloneTargetQty) || undefined
+      );
+      if (res.success) {
+        closeCloneModal();
+        setCloning(false);
+        if (res.modelId) {
+          onOpenModelDetails(res.modelId);
+        }
+      }
+    } finally {
+      setCloning(false);
+    }
+  };
 
   // Filter models (Only display models in design stage)
   const filteredModels = models
@@ -256,19 +309,31 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                       {model.status}
                     </span>
                   </div>
-                  {(model.design_notes || model.notes_shirt || model.notes_pants) && (
+                  {(model.design_notes || model.notes_shirt || model.notes_pants || model.notes_jacket) && (
                     <p className="text-[11px] text-slate-500 line-clamp-1 mb-3 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-100">
-                      📝 {model.design_notes || model.notes_shirt || model.notes_pants}
+                      📝 {model.design_notes || model.notes_shirt || model.notes_pants || model.notes_jacket}
                     </p>
                   )}
                 </div>
 
-                <button
-                  onClick={() => onOpenModelDetails(model.id)}
-                  className="w-full py-2.5 px-4 rounded-full border border-slate-900 text-slate-900 hover:bg-slate-900 hover:text-white font-bold text-xs transition shadow-xs cursor-pointer"
-                >
-                  التفاصيل والتلوين
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => onOpenModelDetails(model.id)}
+                    className="flex-grow py-2.5 px-4 rounded-full border border-slate-900 text-slate-900 hover:bg-slate-900 hover:text-white font-bold text-xs transition shadow-xs cursor-pointer"
+                  >
+                    التفاصيل والتلوين
+                  </button>
+                  {canEdit && (
+                    <button
+                      type="button"
+                      onClick={() => openCloneModal(model.id, model.model_code, model.target_cut_quantity)}
+                      title="نسخ هذا الموديل إلى كود جديد مع كل الأقمشة والإكسسوارات"
+                      className="shrink-0 py-2.5 px-3 rounded-full border border-indigo-300 bg-indigo-50 text-indigo-800 hover:bg-indigo-600 hover:text-white font-bold text-xs transition shadow-xs cursor-pointer"
+                    >
+                      📋 نسخ
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           ))
@@ -370,6 +435,111 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
             <span>التالي</span>
             <ChevronLeft className="w-4 h-4" />
           </button>
+        </div>
+      )}
+
+      {/* Clone Model Modal */}
+      {cloneSourceId && cloneSource && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150 my-auto">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="font-extrabold text-lg text-slate-900">📋 نسخ الموديل</h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  إنشاء موديل جديد بنفس التصميم والأقمشة والإكسسوارات
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={cloning}
+                onClick={closeCloneModal}
+                className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer disabled:opacity-40"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCloneSubmit} className="space-y-4 mt-4">
+              <div className="rounded-2xl bg-indigo-50/70 border border-indigo-100 p-3.5 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold text-indigo-900">الموديل المصدر</span>
+                  <span className="text-sm font-black text-indigo-950">{cloneSource.model_code}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold text-indigo-800">
+                  <span className="px-2 py-0.5 rounded-full bg-white border border-indigo-200">
+                    النوع: {cloneSource.model_type || 'غير محدد'}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-white border border-indigo-200">
+                    التكوين: {GARMENT_COMPOSITION_LABELS[cloneSource.garment_composition || DEFAULT_GARMENT_COMPOSITION]}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-white border border-indigo-200">
+                    {cloneSourceReqCount} قماش/لون
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-white border border-indigo-200">
+                    {cloneSourceAccCount} إكسسوار
+                  </span>
+                </div>
+                <p className="text-[10px] text-indigo-700/80 leading-relaxed">
+                  تُنسخ الأقمشة والألوان والملاحظات والماركرات كما هي، وتُعاد كميات الإكسسوارات
+                  حسابياً حسب العدد المستهدف الجديد.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  كود الموديل الجديد *
+                </label>
+                <input
+                  type="text"
+                  required
+                  dir="ltr"
+                  disabled={cloning}
+                  value={cloneCode}
+                  onChange={(e) => setCloneCode(e.target.value.toUpperCase())}
+                  placeholder="مثال: MODEL-2026-B"
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm font-bold text-left focus:ring-2 focus:ring-indigo-600 focus:outline-hidden disabled:bg-slate-100"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  العدد المستهدف للقص (الكمية) *
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min={1}
+                    required
+                    disabled={cloning}
+                    value={cloneTargetQty}
+                    onChange={(e) => setCloneTargetQty(Number(e.target.value))}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm font-bold focus:ring-2 focus:ring-indigo-600 focus:outline-hidden disabled:bg-slate-100"
+                  />
+                  <span className="absolute end-4 top-1/2 -translate-y-1/2 text-xs font-black text-slate-400 pointer-events-none">
+                    قطعة
+                  </span>
+                </div>
+              </div>
+
+              <div className="pt-2 flex items-center gap-3">
+                <button
+                  type="submit"
+                  disabled={cloning || !cloneCode.trim()}
+                  className="flex-grow py-3 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm transition shadow-lg cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {cloning ? 'جارٍ نسخ الموديل...' : '📋 نسخ الموديل الآن'}
+                </button>
+                <button
+                  type="button"
+                  disabled={cloning}
+                  onClick={closeCloneModal}
+                  className="px-5 py-3 rounded-full border border-slate-300 text-slate-700 hover:bg-slate-50 font-bold text-sm transition cursor-pointer disabled:opacity-50"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

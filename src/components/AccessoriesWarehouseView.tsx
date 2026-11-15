@@ -32,9 +32,13 @@ export const AccessoriesWarehouseView: React.FC = () => {
     canSendWhatsApp,
     openWhatsAppOrder,
     addAccessoryType,
+    accessoryTransactions,
+    models,
     addAccessoryItem,
     updateAccessoryItem,
     deleteAccessoryItem,
+    canViewAccessoryPrices,
+    canEditAccessoryPrices,
     recordAccessoryTransaction,
     exportAccessoryInventoryCsv,
     exportAccessoryTransactionsCsv,
@@ -48,7 +52,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
   // Filter & Search states
   const [selectedTypeId, setSelectedTypeId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [showLowStockOnly] = useState<boolean>(false);
+  const [showLowStockOnly, setShowLowStockOnly] = useState<boolean>(false);
 
   // Modals state
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
@@ -57,6 +61,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const [showTransactionModal, setShowTransactionModal] = useState<boolean>(false);
   const [showPrintInventoryModal, setShowPrintInventoryModal] = useState<boolean>(false);
   const [showPrintAlertsModal, setShowPrintAlertsModal] = useState<boolean>(false);
+  const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
+
+  // Accessory transaction history filters
+  const [historyItemFilter, setHistoryItemFilter] = useState<string | null>(null);
+  const [historySearch, setHistorySearch] = useState<string>('');
 
   // Alert sidebar state
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
@@ -85,7 +94,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
     minThreshold: 10,
     usageType: 'stock' as AccessoryUsageType,
     customModelCode: '',
-    targetQuantity: 100
+    targetQuantity: 100,
+    pricePerUnit: 0
   });
 
   // Reorder modal state
@@ -99,7 +109,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const [reorderNotes, setReorderNotes] = useState<string>('');
   const [copiedOrder, setCopiedOrder] = useState<boolean>(false);
 
-  // New Accessory Form state (no price fields, dynamic minThreshold)
+  // New Accessory Form state (dynamic minThreshold + optional price for authorized users)
   const [addForm, setAddForm] = useState({
     typeId: accessoryTypes[0]?.id || '',
     newTypeName: '',
@@ -112,7 +122,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
     minThreshold: 10,
     usageType: 'stock' as AccessoryUsageType,
     customModelCode: '',
-    targetQuantity: 100
+    targetQuantity: 100,
+    pricePerUnit: 0,
+    linkToModelAccessories: true,
+    linkSection: 'shirt' as 'shirt' | 'pants' | 'jacket' | 'single',
+    pieceConsumption: 1
   });
 
   // New Type Form state
@@ -188,6 +202,36 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const totalItemsCount = accessoryItems.length;
   const totalQuantitySum = accessoryItems.reduce((acc, it) => acc + it.quantity, 0);
 
+  // Active (non-deleted) models used for linking model-specific accessories.
+  const activeModels = models.filter((m) => !m.is_deleted);
+
+  // Transaction history rows: filtered by the selected accessory + quick search, newest first.
+  const historyTransactions = accessoryTransactions
+    .filter((tx) => !historyItemFilter || tx.accessory_id === historyItemFilter)
+    .filter((tx) => {
+      const q = historySearch.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        (tx.accessory_code || '').toLowerCase().includes(q) ||
+        (tx.accessory_name || '').toLowerCase().includes(q) ||
+        (tx.model_code_ref || '').toLowerCase().includes(q) ||
+        (tx.notes || '').toLowerCase().includes(q)
+      );
+    })
+    .slice()
+    .sort((a, b) => {
+      const aTime = new Date(String(a.timestamp || '').replace(' ', 'T')).getTime();
+      const bTime = new Date(String(b.timestamp || '').replace(' ', 'T')).getTime();
+      if (!Number.isNaN(aTime) && !Number.isNaN(bTime) && aTime !== bTime) {
+        return bTime - aTime;
+      }
+      return String(b.timestamp || '').localeCompare(String(a.timestamp || ''));
+    });
+
+  const historyFilterItem = historyItemFilter
+    ? accessoryItems.find((item) => item.id === historyItemFilter)
+    : null;
+
   const handleOpenTransaction = (item: AccessoryItem, op: 'add' | 'deduct' = 'deduct') => {
     setActiveItem(item);
     setTransForm({
@@ -230,7 +274,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
       minThreshold: Number(item.min_threshold ?? 0),
       usageType: item.usage_type || 'stock',
       customModelCode: item.custom_model_code || '',
-      targetQuantity: Number(item.target_quantity ?? item.min_threshold ?? 0)
+      targetQuantity: Number(item.target_quantity ?? item.min_threshold ?? 0),
+      pricePerUnit: Number(item.price_per_unit ?? 0)
     });
     setShowEditModal(true);
   };
@@ -256,7 +301,10 @@ export const AccessoriesWarehouseView: React.FC = () => {
       min_threshold: nextThreshold,
       usage_type: editForm.usageType,
       custom_model_code: isCustom ? editForm.customModelCode.trim() : '',
-      target_quantity: nextTarget
+      target_quantity: nextTarget,
+      ...(canEditAccessoryPrices()
+        ? { price_per_unit: Math.max(0, Number(editForm.pricePerUnit) || 0) }
+        : {})
     });
 
     setShowEditModal(false);
@@ -338,6 +386,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
     const minThresh = Math.max(0, Number(addForm.minThreshold));
     const targetQty = addForm.usageType === 'custom_model' ? Math.max(0, Number(addForm.targetQuantity)) : minThresh;
+    const cleanModelCode = addForm.customModelCode.trim();
+    const linkedModel =
+      addForm.usageType === 'custom_model'
+        ? activeModels.find((m) => m.model_code === cleanModelCode)
+        : undefined;
 
     const res = addAccessoryItem({
       type_id: targetTypeId,
@@ -346,13 +399,29 @@ export const AccessoriesWarehouseView: React.FC = () => {
       image: addForm.image,
       unit: addForm.unit,
       quantity: Number(addForm.quantity),
-      price_per_unit: 0,
+      price_per_unit: canEditAccessoryPrices()
+        ? Math.max(0, Number(addForm.pricePerUnit) || 0)
+        : 0,
       supplier_id: addForm.supplierId,
       min_threshold: minThresh,
       usage_type: addForm.usageType,
-      custom_model_code: addForm.customModelCode,
+      custom_model_code: cleanModelCode,
       target_quantity: targetQty,
-      delivered_quantity: Number(addForm.quantity)
+      delivered_quantity: Number(addForm.quantity),
+      // يرتبط الإكسسوار بجدول إكسسوارات الموديل بعد نجاح الإنشاء في الباك إند
+      // (في AppContext) حتى يُلتقط سعر الوحدة وتُحدَّث الكميات المحجوزة بشكل صحيح.
+      ...(addForm.usageType === 'custom_model' &&
+      addForm.linkToModelAccessories &&
+      linkedModel
+        ? {
+            link_model: {
+              modelId: linkedModel.id,
+              target_type: addForm.linkSection,
+              piece_consumption: Math.max(0, Number(addForm.pieceConsumption) || 1),
+              ...(targetQty > 0 ? { planned_quantity: Math.round(targetQty) } : {})
+            }
+          }
+        : {})
     });
 
     if (res.success) {
@@ -369,7 +438,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
         minThreshold: 10,
         usageType: 'stock',
         customModelCode: '',
-        targetQuantity: 100
+        targetQuantity: 100,
+        pricePerUnit: 0,
+        linkToModelAccessories: true,
+        linkSection: 'shirt',
+        pieceConsumption: 1
       });
     }
   };
@@ -634,6 +707,19 @@ export const AccessoriesWarehouseView: React.FC = () => {
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
+              onClick={() => {
+                setHistoryItemFilter(null);
+                setHistorySearch('');
+                setShowHistoryModal(true);
+              }}
+              className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-full shadow-xs transition cursor-pointer"
+              title="عرض سجل جميع حركات الإكسسوارات (توريد وصرف)"
+            >
+              <span>📜 سجل حركات الإكسسوارات</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setShowPrintInventoryModal(true)}
               className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-full shadow-xs transition cursor-pointer"
               title="طباعة كشف جرد مفصل لمخزن الإكسسوارات"
@@ -729,15 +815,30 @@ export const AccessoriesWarehouseView: React.FC = () => {
             })}
           </div>
 
-          <div className="relative w-full sm:w-64">
-            <Search className="w-4 h-4 text-slate-400 absolute start-3 top-2.5" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="بحث بالاسم، الكود، أو الموديل..."
-              className="w-full ps-9 pe-3 py-1.5 bg-slate-50 border border-slate-200 rounded-full text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
-            />
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+            <button
+              type="button"
+              onClick={() => setShowLowStockOnly((prev) => !prev)}
+              className={`px-3 py-1.5 rounded-full text-xs font-black transition shrink-0 border cursor-pointer ${
+                showLowStockOnly
+                  ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-xs'
+                  : 'bg-white text-amber-900 border-amber-300 hover:bg-amber-50'
+              }`}
+              title="عرض الأصناف التي وصلت إلى حد التنبيه أو أقل فقط"
+            >
+              ⚠️ النواقص فقط ({lowStockCount})
+            </button>
+
+            <div className="relative w-full sm:w-64">
+              <Search className="w-4 h-4 text-slate-400 absolute start-3 top-2.5" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="بحث بالاسم، الكود، أو الموديل..."
+                className="w-full ps-9 pe-3 py-1.5 bg-slate-50 border border-slate-200 rounded-full text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -853,11 +954,33 @@ export const AccessoriesWarehouseView: React.FC = () => {
                       </div>
                     </div>
                   </div>
+
+                  {canViewAccessoryPrices() && (
+                    <div className="p-2.5 rounded-2xl bg-emerald-50/70 border border-emerald-200 text-[11px] font-bold text-emerald-900 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span>سعر الوحدة:</span>
+                        <strong className="font-black">
+                          {Number(item.price_per_unit || 0).toLocaleString('ar-EG')} ج.م
+                        </strong>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span>إجمالي قيمة الرصيد:</span>
+                        <strong className="font-black">
+                          {Number(
+                            (
+                              Number(item.price_per_unit || 0) * Number(item.quantity || 0)
+                            ).toFixed(2)
+                          ).toLocaleString('ar-EG')}{' '}
+                          ج.م
+                        </strong>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
               {/* Action Buttons */}
-              <div className="p-3 border-t border-slate-100 grid grid-cols-2 gap-2">
+              <div className="p-3 border-t border-slate-100 grid grid-cols-3 gap-2">
                 <button
                   type="button"
                   onClick={() => handleOpenTransaction(item, 'deduct')}
@@ -874,6 +997,19 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 >
                   <ShoppingCart className="w-3.5 h-3.5" />
                   <span>طلب توريد</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHistoryItemFilter(item.id);
+                    setHistorySearch('');
+                    setShowHistoryModal(true);
+                  }}
+                  className="py-2 px-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-xs font-bold rounded-xl transition flex items-center justify-center gap-1 cursor-pointer"
+                  title="عرض سجل حركات هذا الصنف فقط"
+                >
+                  <span>📜 الحركات</span>
                 </button>
               </div>
             </div>
@@ -984,28 +1120,112 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 </div>
 
                 {addForm.usageType === 'custom_model' && (
-                  <div className="pt-2 grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 mb-1">كود الموديل المخصص له *</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="مثال: M-101 أو SW-204"
-                        value={addForm.customModelCode}
-                        onChange={(e) => setAddForm({ ...addForm, customModelCode: e.target.value })}
-                        className="w-full px-3 py-1.5 text-xs bg-white rounded-xl border border-blue-300 focus:outline-hidden"
-                      />
+                  <div className="pt-2 space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">الموديل المخصص له *</label>
+                        <select
+                          required
+                          value={addForm.customModelCode}
+                          onChange={(e) => {
+                            const selectedCode = e.target.value;
+                            const selectedModel = activeModels.find(
+                              (m) => m.model_code === selectedCode
+                            );
+                            setAddForm({
+                              ...addForm,
+                              customModelCode: selectedCode,
+                              targetQuantity: selectedModel
+                                ? selectedModel.target_cut_quantity || 100
+                                : addForm.targetQuantity
+                            });
+                          }}
+                          className="w-full px-3 py-1.5 text-xs bg-white rounded-xl border border-blue-300 focus:outline-hidden"
+                        >
+                          <option value="">-- اختر الموديل --</option>
+                          {activeModels.map((m) => (
+                            <option key={m.id} value={m.model_code}>
+                              {m.model_code} ({m.model_type || 'موديل'} — الهدف:{' '}
+                              {m.target_cut_quantity})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">الكمية المطلوبة للموديل *</label>
+                        <input
+                          type="number"
+                          min="0"
+                          required
+                          value={addForm.targetQuantity}
+                          onChange={(e) => setAddForm({ ...addForm, targetQuantity: Number(e.target.value) })}
+                          className="w-full px-3 py-1.5 text-xs bg-white rounded-xl border border-blue-300 focus:outline-hidden font-bold"
+                        />
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 mb-1">الكمية المطلوبة للموديل *</label>
-                      <input
-                        type="number"
-                        min="0"
-                        required
-                        value={addForm.targetQuantity}
-                        onChange={(e) => setAddForm({ ...addForm, targetQuantity: Number(e.target.value) })}
-                        className="w-full px-3 py-1.5 text-xs bg-white rounded-xl border border-blue-300 focus:outline-hidden font-bold"
-                      />
+
+                    <div className="p-2.5 rounded-xl bg-white border border-blue-200 space-y-2">
+                      <label className="flex items-start gap-2 text-[11px] font-bold text-slate-800 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={addForm.linkToModelAccessories}
+                          onChange={(e) =>
+                            setAddForm({
+                              ...addForm,
+                              linkToModelAccessories: e.target.checked
+                            })
+                          }
+                          className="mt-0.5 text-blue-600"
+                        />
+                        <span>
+                          إضافة هذا الإكسسوار تلقائياً إلى جدول إكسسوارات الموديل في قسم التصميم
+                        </span>
+                      </label>
+
+                      {addForm.linkToModelAccessories && (
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-700 mb-1">القسم المستهدف</label>
+                            <select
+                              value={addForm.linkSection}
+                              onChange={(e) =>
+                                setAddForm({
+                                  ...addForm,
+                                  linkSection: e.target.value as 'shirt' | 'pants' | 'jacket' | 'single'
+                                })
+                              }
+                              className="w-full px-3 py-1.5 text-xs bg-white rounded-xl border border-blue-300 focus:outline-hidden"
+                            >
+                              <option value="shirt">تيشرت</option>
+                              <option value="pants">بنطلون</option>
+                              <option value="jacket">جاكيت</option>
+                              <option value="single">قطعة واحدة</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-700 mb-1">استهلاك القطعة الواحدة</label>
+                            <input
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              value={addForm.pieceConsumption}
+                              onChange={(e) =>
+                                setAddForm({
+                                  ...addForm,
+                                  pieceConsumption: Number(e.target.value)
+                                })
+                              }
+                              className="w-full px-3 py-1.5 text-xs bg-white rounded-xl border border-blue-300 focus:outline-hidden font-bold"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {!addForm.customModelCode.trim() && (
+                        <p className="text-[10px] font-bold text-amber-700">
+                          اختر الموديل أولاً ليتم ربط الإكسسوار بجدول إكسسوارات الموديل تلقائياً.
+                        </p>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1093,6 +1313,26 @@ export const AccessoriesWarehouseView: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {canEditAccessoryPrices() && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">سعر الوحدة (ج.م)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={addForm.pricePerUnit}
+                    onChange={(e) =>
+                      setAddForm({ ...addForm, pricePerUnit: Number(e.target.value) })
+                    }
+                    placeholder="مثال: 12.50"
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-emerald-300 bg-emerald-50/40 font-bold text-emerald-950 focus:outline-hidden"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    يُستخدم لحساب قيمة المخزون وتكلفة الإكسسوار داخل الموديل.
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">المورد المعتمد</label>
@@ -1308,6 +1548,25 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 </div>
               </div>
 
+              {canEditAccessoryPrices() && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">سعر الوحدة (ج.م)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={editForm.pricePerUnit}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, pricePerUnit: Number(e.target.value) })
+                    }
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-emerald-300 bg-emerald-50/40 font-bold text-emerald-950 focus:outline-hidden"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    تحديث السعر يؤثر على تقييم قيمة المخزون والتقارير المالية فقط.
+                  </p>
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">المورد المعتمد</label>
                 <select
@@ -1358,6 +1617,178 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 1B: ACCESSORY TRANSACTION HISTORY */}
+      {showHistoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-5xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 bg-indigo-50">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-indigo-600 text-white rounded-xl">
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-base text-indigo-950">📜 سجل حركات الإكسسوارات</h3>
+                  <p className="text-xs text-indigo-800 font-bold">
+                    {historyFilterItem
+                      ? `حركات الصنف: ${historyFilterItem.code} — ${historyFilterItem.name}`
+                      : 'كل حركات التوريد والصرف المسجلة على مخزن الإكسسوارات'}
+                    <span className="mx-1.5">•</span>
+                    عدد الحركات: {historyTransactions.length}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => exportAccessoryTransactionsCsv()}
+                  className="px-4 py-2 rounded-full bg-white border border-indigo-300 hover:bg-indigo-100 text-indigo-900 font-bold text-xs transition flex items-center gap-1.5 cursor-pointer"
+                  title="تصدير سجل الحركات إلى ملف CSV"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>تصدير CSV</span>
+                </button>
+                <button
+                  onClick={() => setShowHistoryModal(false)}
+                  className="text-indigo-400 hover:text-indigo-800 cursor-pointer"
+                  title="إغلاق"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 border-b border-slate-100 bg-slate-50 flex flex-wrap items-center gap-2">
+              <div className="relative flex-1 min-w-[220px]">
+                <Search className="w-4 h-4 text-slate-400 absolute start-3 top-2.5" />
+                <input
+                  type="text"
+                  value={historySearch}
+                  onChange={(e) => setHistorySearch(e.target.value)}
+                  placeholder="بحث بالكود، اسم الصنف، مرجع الموديل، أو الملاحظات..."
+                  className="w-full ps-9 pe-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              {historyItemFilter && (
+                <button
+                  type="button"
+                  onClick={() => setHistoryItemFilter(null)}
+                  className="px-3 py-2 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-bold transition cursor-pointer"
+                >
+                  عرض حركات كل الأصناف
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-auto p-4">
+              {historyTransactions.length === 0 ? (
+                <div className="text-center py-12 space-y-2">
+                  <p className="text-3xl">📭</p>
+                  <p className="text-sm font-black text-slate-800">لا توجد حركات مسجلة</p>
+                  <p className="text-xs text-slate-500 font-bold">
+                    لم يتم تسجيل أي توريد أو صرف مطابق للفلاتر الحالية.
+                  </p>
+                </div>
+              ) : (
+                <table className="w-full text-xs border-collapse">
+                  <thead className="bg-slate-100 text-slate-900 font-black">
+                    <tr>
+                      <th className="border border-slate-200 p-2 text-start">التاريخ والوقت</th>
+                      <th className="border border-slate-200 p-2 text-start">الكود</th>
+                      <th className="border border-slate-200 p-2 text-start">الصنف</th>
+                      <th className="border border-slate-200 p-2 text-center">نوع الحركة</th>
+                      <th className="border border-slate-200 p-2 text-center">الكمية</th>
+                      <th className="border border-slate-200 p-2 text-center">مرجع الموديل</th>
+                      {canViewAccessoryPrices() && (
+                        <>
+                          <th className="border border-slate-200 p-2 text-center">سعر الوحدة</th>
+                          <th className="border border-slate-200 p-2 text-center">قيمة الحركة</th>
+                        </>
+                      )}
+                      <th className="border border-slate-200 p-2 text-start">ملاحظات</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historyTransactions.map((tx) => {
+                      const isAdd = tx.operation === 'add';
+                      const snapshot = Number(tx.unit_price_snapshot || 0);
+                      const hasSnapshot =
+                        tx.unit_price_snapshot !== null && tx.unit_price_snapshot !== undefined;
+
+                      return (
+                        <tr key={tx.id} className="hover:bg-slate-50">
+                          <td className="border border-slate-200 p-2 font-mono text-[11px] text-slate-700 whitespace-nowrap">
+                            {tx.timestamp}
+                          </td>
+                          <td className="border border-slate-200 p-2 font-mono font-bold text-slate-900 whitespace-nowrap">
+                            {tx.accessory_code}
+                          </td>
+                          <td className="border border-slate-200 p-2 font-bold text-slate-900">
+                            {tx.accessory_name}
+                          </td>
+                          <td className="border border-slate-200 p-2 text-center">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${
+                                isAdd
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                  : 'bg-rose-50 text-rose-800 border-rose-200'
+                              }`}
+                            >
+                              {isAdd ? 'توريد / إضافة' : 'صرف / خصم'}
+                            </span>
+                          </td>
+                          <td
+                            className={`border border-slate-200 p-2 text-center font-black ${
+                              isAdd ? 'text-emerald-700' : 'text-rose-700'
+                            }`}
+                          >
+                            {isAdd ? '+' : '−'}
+                            {Number(tx.amount || 0).toLocaleString('ar-EG')}
+                          </td>
+                          <td className="border border-slate-200 p-2 text-center font-bold text-slate-700 whitespace-nowrap">
+                            {tx.model_code_ref || '—'}
+                          </td>
+                          {canViewAccessoryPrices() && (
+                            <>
+                              <td className="border border-slate-200 p-2 text-center font-bold text-slate-900">
+                                {hasSnapshot
+                                  ? `${snapshot.toLocaleString('ar-EG')} ج.م`
+                                  : '—'}
+                              </td>
+                              <td className="border border-slate-200 p-2 text-center font-black text-emerald-800">
+                                {hasSnapshot
+                                  ? `${Number(
+                                      (snapshot * Number(tx.amount || 0)).toFixed(2)
+                                    ).toLocaleString('ar-EG')} ج.م`
+                                  : '—'}
+                              </td>
+                            </>
+                          )}
+                          <td className="border border-slate-200 p-2 text-slate-600">
+                            {tx.notes || '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowHistoryModal(false)}
+                className="px-6 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-md shadow-indigo-500/20 cursor-pointer"
+              >
+                إغلاق
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1434,6 +1865,12 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     <th className="border border-slate-800 p-2.5 text-center">المتاح</th>
                     <th className="border border-slate-800 p-2.5 text-center">حد التنبيه / المطلوب</th>
                     <th className="border border-slate-800 p-2.5 text-center">الوحدة</th>
+                    {canViewAccessoryPrices() && (
+                      <>
+                        <th className="border border-slate-800 p-2.5 text-center">سعر الوحدة</th>
+                        <th className="border border-slate-800 p-2.5 text-center">قيمة الرصيد</th>
+                      </>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -1464,6 +1901,20 @@ export const AccessoriesWarehouseView: React.FC = () => {
                         {item.usage_type === 'custom_model' ? item.target_quantity ?? item.min_threshold : item.min_threshold}
                       </td>
                       <td className="border border-slate-800 p-2.5 text-center text-slate-700">{item.unit}</td>
+                      {canViewAccessoryPrices() && (
+                        <>
+                          <td className="border border-slate-800 p-2.5 text-center font-bold text-slate-900">
+                            {Number(item.price_per_unit || 0).toLocaleString('ar-EG')}
+                          </td>
+                          <td className="border border-slate-800 p-2.5 text-center font-black text-emerald-800">
+                            {Number(
+                              (
+                                Number(item.price_per_unit || 0) * Number(item.quantity || 0)
+                              ).toFixed(2)
+                            ).toLocaleString('ar-EG')}
+                          </td>
+                        </>
+                      )}
                     </tr>
                   ))}
                 </tbody>

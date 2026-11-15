@@ -1896,6 +1896,7 @@ class ModelItemViewSet(BasePermViewSet):
     MODEL_ACTION_SECTIONS = {
         'update_plan': 'design',
         'issue_fabric_to_cutting': 'design',
+        'return_fabric_to_warehouse': 'cutting',
         'finish_cutting': 'cutting',
         'record_qc_count': 'qc',
         'finish_qc_approval': 'qc',
@@ -1942,6 +1943,9 @@ class ModelItemViewSet(BasePermViewSet):
             return
 
         action_name = getattr(self, 'action', None)
+        # إرجاع فائض القماش للمخزن متاح لقسم القص أو لمخزن القماش (تعديل).
+        if action_name == 'return_fabric_to_warehouse' and profile.has_perm('fabric_warehouse_edit'):
+            return
         section = self.MODEL_ACTION_SECTIONS.get(action_name)
         if section:
             if not self._section_allowed(profile, section):
@@ -1975,6 +1979,7 @@ class ModelItemViewSet(BasePermViewSet):
         design_notes = (data.get('design_notes') or data.get('designNotes') or '') if can_design_notes else ''
         notes_shirt = (data.get('notes_shirt') or data.get('notesShirt') or '') if can_design_notes else ''
         notes_pants = (data.get('notes_pants') or data.get('notesPants') or '') if can_design_notes else ''
+        notes_jacket = (data.get('notes_jacket') or data.get('notesJacket') or '') if can_design_notes else ''
         user_name = data.get('user_name') or (profile.real_name if profile else 'مسؤول التصميم')
 
         model = ModelItem(
@@ -1993,6 +1998,7 @@ class ModelItemViewSet(BasePermViewSet):
             design_notes=design_notes,
             notes_shirt=notes_shirt,
             notes_pants=notes_pants,
+            notes_jacket=notes_jacket,
             garment_composition=garment_composition,
             garment_parts=garment_parts,
         )
@@ -2018,8 +2024,9 @@ class ModelItemViewSet(BasePermViewSet):
                 'design_notes': design_notes,
                 'notes_shirt': notes_shirt,
                 'notes_pants': notes_pants,
+                'notes_jacket': notes_jacket,
                 'operator_name': user_name,
-                'worker_notes': design_notes or notes_shirt or notes_pants,
+                'worker_notes': design_notes or notes_shirt or notes_pants or notes_jacket,
             }
         )
         return Response(ModelItemSerializer(model, context={'request': request}).data, status=status.HTTP_201_CREATED)
@@ -2042,7 +2049,7 @@ class ModelItemViewSet(BasePermViewSet):
                 'target_cut_quantity', 'image', 'garment_composition', 'garmentComposition',
             })
         if can_design_notes:
-            allowed_fields.update({'design_notes', 'notes_shirt', 'notes_pants', 'target_cut_quantity'})
+            allowed_fields.update({'design_notes', 'notes_shirt', 'notes_pants', 'notes_jacket', 'target_cut_quantity'})
         if can_cut:
             allowed_fields.add('actual_cut_count')
 
@@ -2065,7 +2072,7 @@ class ModelItemViewSet(BasePermViewSet):
         if 'image' in data:
             model.image = clean_image_value(data.get('image') or '', 'models', 'صورة الموديل')
 
-        for note_field in ['design_notes', 'notes_shirt', 'notes_pants']:
+        for note_field in ['design_notes', 'notes_shirt', 'notes_pants', 'notes_jacket']:
             if note_field in data:
                 setattr(model, note_field, data[note_field])
 
@@ -2125,6 +2132,10 @@ class ModelItemViewSet(BasePermViewSet):
                     model.notes_shirt = data['notesShirt'] or ''
                 if 'notesPants' in data:
                     model.notes_pants = data['notesPants'] or ''
+                if 'notesJacket' in data:
+                    model.notes_jacket = data['notesJacket'] or ''
+                if 'notes_jacket' in data:
+                    model.notes_jacket = data['notes_jacket'] or ''
             if 'targetCutQuantity' in data and data['targetCutQuantity'] is not None:
                 model.target_cut_quantity = int(data['targetCutQuantity'])
 
@@ -2219,6 +2230,12 @@ class ModelItemViewSet(BasePermViewSet):
                             # التقاط السعر التاريخي للإكسسوار إن لم يُلتقط وقت الربط.
                             m_acc.unit_price_snapshot = acc_item.price_per_unit or 0
                             m_acc.save(update_fields=['unit_price_snapshot'])
+                        target_label = (
+                            'جاكيت' if m_acc.target_type == 'jacket'
+                            else 'بنطلون' if m_acc.target_type == 'pants'
+                            else 'قطعة واحدة' if m_acc.target_type == 'single'
+                            else 'تيشرت'
+                        )
                         AccessoryTransaction.objects.create(
                             accessory=acc_item,
                             accessory_code=acc_item.code,
@@ -2226,7 +2243,7 @@ class ModelItemViewSet(BasePermViewSet):
                             operation='deduct',
                             amount=planned_qty,
                             model_code_ref=model.model_code,
-                            notes=f"صرف إكسسوار للتشغيل والقص ({'بنطلون' if m_acc.target_type == 'pants' else 'تيشرت'}) - موديل: {model.model_code}",
+                            notes=f"صرف إكسسوار للتشغيل والقص ({target_label}) - موديل: {model.model_code}",
                             timestamp=now_str,
                             # سعر الوحدة التاريخي وقت الصرف (يُستخدم في قسم الحسابات لاحقاً).
                             unit_price_snapshot=acc_item.price_per_unit or 0,
@@ -2281,6 +2298,155 @@ class ModelItemViewSet(BasePermViewSet):
             )
 
         return Response(ModelItemSerializer(model, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'])
+    def return_fabric_to_warehouse(self, request, pk=None):
+        """إرجاع فائض قماش غير مستخدم من قسم القص إلى مخزن القماش."""
+        model = self.get_object()
+        requirement_id = (
+            request.data.get('requirement_id')
+            or request.data.get('requirementId')
+            or request.data.get('req_id')
+        )
+        if not requirement_id:
+            return Response(
+                {'error': 'يجب تحديد متطلب القماش المراد إرجاع فائضه'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            quantity = round(float(request.data.get('quantity') or 0), 2)
+        except (TypeError, ValueError):
+            quantity = 0.0
+        if quantity <= 0:
+            return Response(
+                {'error': 'كمية الإرجاع يجب أن تكون أكبر من صفر'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        profile = getattr(request, 'user_profile', None)
+        notes = str(request.data.get('notes') or '').strip()
+        # ملاحظات القص تُحفظ فقط لمن يملك صلاحية كتابتها؛ حركة المخزن تُسجل دائماً.
+        if notes and profile is not None and not profile.has_perm('can_add_cutting_notes'):
+            notes = ''
+        user_name = request.data.get('user_name') or (
+            getattr(profile, 'real_name', '') if profile else ''
+        ) or 'مسؤول القص'
+        now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+
+        with transaction.atomic():
+            req = resolve_by_id(ModelRequirement, requirement_id)
+            if req is None or req.model_id != model.id:
+                return Response(
+                    {'error': 'متطلب القماش غير موجود أو لا يتبع هذا الموديل'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            req = (
+                ModelRequirement.objects.select_for_update()
+                .select_related('color', 'color__fabric')
+                .get(pk=req.pk)
+            )
+            planned = round(max(0.0, float(req.planned_quantity or 0.0)), 2)
+            if planned <= 0:
+                return Response(
+                    {'error': 'لا توجد كمية مخططة متبقية لهذا المتطلب لإرجاع فائض منها'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if quantity > planned + 0.000001:
+                return Response(
+                    {'error': f'كمية الإرجاع ({quantity:g}) أكبر من الكمية المتبقية بالموديل ({planned:g})'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not req.color_id:
+                return Response(
+                    {'error': 'متطلب القماش غير مرتبط بلون/صنف مخزني'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            col = (
+                FabricColor.objects.select_for_update()
+                .select_related('fabric')
+                .get(pk=req.color_id)
+            )
+            new_planned = round(max(0.0, planned - quantity), 2)
+            req.planned_quantity = new_planned
+            req.save(update_fields=['planned_quantity'])
+
+            col.quantity = round(float(col.quantity or 0.0) + quantity, 2)
+            col.save(update_fields=['quantity'])
+
+            # الحفاظ على حجوزات التصميم متوافقة مع الكميات المخططة بعد الإرجاع.
+            sync_reserved_quantities()
+
+            fabric = col.fabric
+            fabric_name = fabric.name if fabric else ''
+            unit = fabric.unit if fabric else ''
+            color_code = col.color_code or ''
+            color_name = col.color_name or ''
+
+            txn_note = f"إرجاع فائض قماش من القص - قطعة: {req.part_name}"
+            if notes:
+                txn_note += f" | ملاحظات: {notes}"
+            txn = FabricTransaction.objects.create(
+                color=col,
+                fabric=col.fabric,
+                operation='add',
+                amount=quantity,
+                unit_price_snapshot=float(
+                    req.unit_price_snapshot
+                    or getattr(col, 'price_per_unit', 0)
+                    or 0
+                ),
+                notes=txn_note,
+                model_code_ref=model.model_code or '',
+                timestamp=now_str,
+                supplier=resolve_supplier_link(
+                    None,
+                    getattr(col.fabric, 'supplier_id_ref', None),
+                    getattr(col.fabric, 'supplier', None),
+                ),
+            )
+
+            tl_notes = (
+                f"إرجاع {quantity:g} {unit} من لون {color_code or color_name} "
+                f"({req.part_name}) إلى مخزن القماش | المتبقي بالموديل: {new_planned:g} {unit}"
+            )
+            if notes:
+                tl_notes += f" | ملاحظات: {notes}"
+            ModelTimeline.objects.create(
+                model=model,
+                stage='القص',
+                title='إرجاع فائض قماش إلى المخزن',
+                notes=tl_notes,
+                user=user_name,
+                timestamp_str=now_str,
+                details={
+                    'phase_type': 'cutting_fabric_return',
+                    'requirement_id': get_ext_id(req),
+                    'color_id': get_ext_id(col),
+                    'fabric_name': fabric_name,
+                    'color_code': color_code,
+                    'color_name': color_name,
+                    'part_name': req.part_name,
+                    'unit': unit,
+                    'returned_quantity': quantity,
+                    'remaining_planned_quantity': new_planned,
+                    'warehouse_quantity_after': round(float(col.quantity or 0.0), 2),
+                    'operator_name': user_name,
+                    'worker_notes': notes,
+                },
+            )
+
+        # إظهار الحركة الجديدة داخل التايملاين المُعاد في نفس الاستجابة.
+        if hasattr(model, '_prefetched_objects_cache'):
+            model._prefetched_objects_cache = {}
+
+        return Response({
+            'message': f'تم إرجاع {quantity:g} {unit} من فائض القص إلى مخزن القماش',
+            'model': ModelItemSerializer(model, context={'request': request}).data,
+            'requirement': ModelRequirementSerializer(req, context={'request': request}).data,
+            'color': FabricColorSerializer(col, context={'request': request}).data,
+            'transaction': FabricTransactionSerializer(txn, context={'request': request}).data,
+        })
 
     @action(detail=True, methods=['post'])
     def finish_cutting(self, request, pk=None):
@@ -3516,27 +3682,81 @@ class PrintDispatchViewSet(BasePermViewSet):
     @action(detail=True, methods=['post'])
     def update_status(self, request, pk=None):
         disp = self.get_object()
-        new_status = request.data.get('status') or 'تم الاستلام بالمصنع'
-        user_name = request.data.get('user_name') or 'مسؤول المطابع'
+        data = request.data
+        new_status = data.get('status') or 'تم الاستلام بالمصنع'
+        user_name = data.get('user_name') or 'مسؤول المطابع'
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-        disp.status = new_status
-        if new_status in ('تم الاستلام', 'تم الاستلام بالمصنع'):
+        clean_notes = (data.get('notes') or '').strip()
+
+        received_qty_raw = data.get('received_qty')
+        if received_qty_raw is None:
+            received_qty_raw = data.get('receivedQty')
+        try:
+            requested_qty = int(received_qty_raw) if received_qty_raw not in (None, '') else 0
+        except (TypeError, ValueError):
+            requested_qty = 0
+
+        total_pieces = int(disp.pieces_count or 0)
+        already_received = int(disp.received_pieces or 0)
+        remaining_before = max(0, total_pieces - already_received)
+        is_receiving = (
+            new_status in ('تم الاستلام', 'تم الاستلام بالمصنع')
+            or requested_qty > 0
+        )
+
+        if is_receiving:
+            if requested_qty > 0:
+                if remaining_before == 0:
+                    return Response(
+                        {'detail': 'تم استلام كامل كمية هذه التشغيلة مسبقاً'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                batch_qty = min(remaining_before, requested_qty)
+            else:
+                batch_qty = remaining_before or total_pieces
+
+            disp.received_pieces = already_received + batch_qty
+            history = disp.receive_history if isinstance(disp.receive_history, list) else []
+            history.append({
+                'date': now_str,
+                'qty': batch_qty,
+                'total_received': disp.received_pieces,
+                'user': user_name,
+                'notes': clean_notes,
+            })
+            disp.receive_history = history
             disp.received_date = date.today()
             disp.received_at_str = now_str
+            if clean_notes:
+                disp.notes = f"{disp.notes} | استلام: {clean_notes}".strip(' |')
+            if disp.received_pieces >= total_pieces:
+                disp.status = 'تم الاستلام بالمصنع'
+            else:
+                disp.status = 'استلام جزئي'
+        else:
+            batch_qty = 0
+            disp.status = new_status
         disp.save()
 
-        if new_status in ('تم الاستلام', 'تم الاستلام بالمصنع'):
+        if is_receiving:
             m = disp.model
             # Only the returned part moves to "عد بعد الطباعة"; sibling parts stay put.
+            # Partial batches also open the counting stage so each delivered batch is
+            # counted as soon as it arrives.
             advance_parts_to_stage(m, 'qc_after_print', [disp.piece_type or 'shirt'])
             derive_pipeline_status(m)
             m._skip_timeline_signal = True
             m.save()
+            label = disp.piece_label or dict(PART_TYPE_CHOICES).get(disp.piece_type or 'shirt', disp.piece_type or '')
             ModelTimeline.objects.create(
                 model=m,
                 stage='العد بعد الطباعة',
                 title='استلام الموديل من المطبعة',
-                notes=f"تم استلام الشحنة ({disp.pieces_count} قطعة) من {disp.print_house} وتوجيه الموديل تلقائياً للعد بعد الطباعة",
+                notes=(
+                    f"استلام دفعة ({batch_qty} قطعة) [{label}] — إجمالي المستلم {disp.received_pieces} من {total_pieces} "
+                    f"من {disp.print_house} وتوجيه الموديل تلقائياً للعد بعد الطباعة"
+                    + (f" | ملاحظات: {clean_notes}" if clean_notes else '')
+                ),
                 user=user_name,
                 timestamp_str=now_str,
                 details={
@@ -3544,13 +3764,16 @@ class PrintDispatchViewSet(BasePermViewSet):
                     'record_id': get_ext_id(disp),
                     'shop_name': disp.print_house,
                     'piece_type': disp.piece_type or 'shirt',
-                    'piece_label': disp.piece_label or '',
+                    'piece_label': label,
                     'print_type': disp.print_type,
                     'print_location': disp.print_location or '',
                     'pieces_count': disp.pieces_count,
+                    'batch_qty': batch_qty,
+                    'received_pieces': disp.received_pieces,
+                    'remaining_pieces': max(0, total_pieces - disp.received_pieces),
                     'received_at': now_str,
-                    'status': new_status,
-                    'worker_notes': disp.notes or '',
+                    'status': disp.status,
+                    'worker_notes': clean_notes or (disp.notes or ''),
                     'operator_name': user_name,
                 }
             )
@@ -3623,7 +3846,15 @@ class SewingDispatchViewSet(BasePermViewSet):
         disp_obj = self.get_object()
         user = request.data.get('user') or request.data.get('user_name') or 'مراقب الجودة'
         notes = request.data.get('notes') or ''
-        disp = receive_model_from_sewing_service(get_ext_id(disp_obj), user, notes=notes)
+        received_qty = request.data.get('received_qty')
+        if received_qty is None:
+            received_qty = request.data.get('receivedQty')
+        try:
+            disp = receive_model_from_sewing_service(
+                get_ext_id(disp_obj), user, notes=notes, received_qty=received_qty
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(SewingDispatchSerializer(disp, context={'request': request}).data)
 
 
