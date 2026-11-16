@@ -531,6 +531,12 @@ class HRReportsViewSet(viewsets.ViewSet):
             window_loans=window_loans,
             available_years=available_years,
             weekly_off_index=weekly_off_index,
+            can_view_salaries=(
+                is_sudo_profile(profile)
+                or profile.has_perm('hr_payroll')
+                or profile.has_perm('can_manage_hr')
+                or profile.has_perm('manage_permissions')
+            ),
         ))
 
     # ------------------------------------------------------------------
@@ -552,7 +558,8 @@ class HRReportsViewSet(viewsets.ViewSet):
                        range_from_key, range_to_key, range_start, range_end,
                        employees, employee_rows, active_workers,
                        window_records, window_loans, available_years,
-                       weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY):
+                       weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY,
+                       can_view_salaries=True):
         # --- التقرير السنوي + تفصيل الأقسام لكل شهر ---
         months_payload = []
         monthly_departments = {}
@@ -634,6 +641,21 @@ class HRReportsViewSet(viewsets.ViewSet):
         for bucket in loans_by_day.values():
             bucket['total'] = round(bucket['total'], 2)
             bucket['items'].sort(key=lambda item: item['employee_name'])
+
+        if not can_view_salaries:
+            for m_row in months_payload:
+                m_row['earned_salary'] = 0.0
+                m_row['net_paid'] = 0.0
+            annual_kpis['net_salary_total'] = 0.0
+            annual_kpis['avg_monthly_labor_cost'] = 0.0
+            for c_row in comparison:
+                c_row['net'] = 0.0
+                c_row['net_change_pct'] = None
+            for d_row in department_breakdown:
+                d_row['net_salary'] = 0.0
+            for m_depts in monthly_departments.values():
+                for d_row in m_depts:
+                    d_row['net_salary'] = 0.0
 
         return {
             'available_years': available_years,

@@ -247,18 +247,18 @@ class StateViewSet(viewsets.ViewSet):
             'workshops': WorkshopSerializer(Workshop.objects.all(), many=True).data,
             'fabrics': FabricSerializer(Fabric.objects.filter(is_deleted=False), many=True, context=req_ctx).data,
             'fabricColors': FabricColorSerializer(FabricColor.objects.select_related('fabric').all(), many=True, context=req_ctx).data,
-            'fabricTransactions': FabricTransactionSerializer(FabricTransaction.objects.select_related('color', 'fabric').all()[:300], many=True).data,
+            'fabricTransactions': FabricTransactionSerializer(FabricTransaction.objects.select_related('color', 'fabric').all()[:300], many=True, context=req_ctx).data,
             'accessoryTypes': AccessoryTypeSerializer(AccessoryType.objects.all(), many=True).data,
             'accessoryItems': AccessorySerializer(Accessory.objects.all(), many=True, context=req_ctx).data,
-            'accessoryTransactions': AccessoryTransactionSerializer(AccessoryTransaction.objects.select_related('accessory').all()[:300], many=True).data,
+            'accessoryTransactions': AccessoryTransactionSerializer(AccessoryTransaction.objects.select_related('accessory').all()[:300], many=True, context=req_ctx).data,
             'models': ModelItemSerializer(
                 ModelItem.objects.filter(is_deleted=False).prefetch_related(
                     'timeline', 'accessories', 'requirements', 'requirements__color'
                 ),
                 many=True, context=req_ctx
             ).data,
-            'requirements': ModelRequirementSerializer(ModelRequirement.objects.select_related('model', 'color').all(), many=True).data,
-            'accessories': ModelAccessorySerializer(ModelAccessory.objects.select_related('model').all(), many=True).data,
+            'requirements': ModelRequirementSerializer(ModelRequirement.objects.select_related('model', 'color').all(), many=True, context=req_ctx).data,
+            'accessories': ModelAccessorySerializer(ModelAccessory.objects.select_related('model').all(), many=True, context=req_ctx).data,
             'cuttingRecords': CuttingRecordSerializer(CuttingRecord.objects.select_related('model').prefetch_related('color_layers').all(), many=True).data,
             'qcRecords': QCRecordSerializer(QCRecord.objects.select_related('model').all(), many=True).data,
             'printDispatches': PrintDispatchSerializer(PrintDispatch.objects.select_related('model').all(), many=True, context=req_ctx).data,
@@ -278,7 +278,7 @@ class StateViewSet(viewsets.ViewSet):
                 many=True, context=req_ctx
             ).data,
             'internalMessages': InternalMessageSerializer(visible_messages, many=True).data,
-            'auditLogs': AuditLogSerializer(visible_logs, many=True).data,
+            'auditLogs': AuditLogSerializer(visible_logs, many=True, context=req_ctx).data,
         }
         # كل قسم لا يملك المستخدم صلاحية عرضه يُعاد كقائمة فارغة (نفس الشكل، بلا بيانات).
         return Response(filter_state_by_sections(payload, visible_sections_for(current_profile)))

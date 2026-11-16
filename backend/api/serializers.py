@@ -120,6 +120,8 @@ def viewer_can_view(context, *permission_keys) -> bool:
     """
     profile = _viewer_profile(context)
     if profile is None:
+        if isinstance(context, dict) and ('request' in context or 'user_profile' in context):
+            return False
         return True
     if profile.is_sudo or (profile.username or '').lower() == 'sudo':
         return True
@@ -990,17 +992,59 @@ class AuditLogSerializer(serializers.ModelSerializer):
             ts = created.strftime('%Y-%m-%d %H:%M:%S')
         else:
             ts = ''
-        changes = instance.changes if isinstance(instance.changes, list) else []
+        raw_changes = instance.changes if isinstance(instance.changes, list) else []
+        section_text = instance.section or ''
+        details_text = instance.details or ''
+
+        def _can_see_change(field_name: str) -> bool:
+            if field_name == 'monthly_salary':
+                return viewer_can_view(self.context, 'hr_payroll', 'can_manage_hr')
+            if field_name == 'amount' and 'موارد' in section_text:
+                return viewer_can_view(self.context, 'hr_loans', 'hr_payroll', 'can_manage_hr')
+            if field_name in {'price', 'price_per_unit', 'unit_price_snapshot', 'cost_per_piece', 'print_cost_per_piece', 'total_cost'}:
+                if 'قماش' in section_text or 'أقمشة' in section_text:
+                    return viewer_can_view(self.context, 'view_fabric_prices')
+                if 'إكسسوار' in section_text:
+                    return viewer_can_view(self.context, 'view_accessory_prices')
+                if 'مطابع' in section_text or 'طباع' in section_text or field_name == 'print_cost_per_piece':
+                    return viewer_can_view(self.context, 'view_printing_prices', 'view_printing_costs')
+                if 'مكن' in section_text or 'خياط' in section_text:
+                    return viewer_can_view(self.context, 'view_sewing_prices')
+                if any(k in section_text for k in ('تشطيب', 'مكوا', 'أسمبلي', 'تعبئ', 'خامات التشغيل')):
+                    return viewer_can_view(self.context, 'view_assembly_prices')
+                return viewer_can_view(
+                    self.context,
+                    'view_fabric_prices', 'view_accessory_prices',
+                    'view_printing_prices', 'view_sewing_prices', 'view_assembly_prices',
+                )
+            return True
+
+        changes = []
+        masked_any = False
+        for ch in raw_changes:
+            if not isinstance(ch, dict):
+                continue
+            fname = str(ch.get('field') or '')
+            if _can_see_change(fname):
+                changes.append(ch)
+            else:
+                masked_any = True
+                changes.append({**ch, 'old': '🔒 محجوب', 'new': '🔒 محجوب'})
+
+        if masked_any:
+            import re as _re
+            details_text = _re.sub(r'[0-9]+(?:\.[0-9]+)?\s*→\s*[0-9]+(?:\.[0-9]+)?', '🔒 محجوب', details_text)
+
         return {
             'id': get_ext_id(instance),
             'userId': instance.user_id_ref or '',
             'userName': instance.user_name,
             'userFullName': instance.user_full_name or instance.user_name,
-            'section': instance.section or '',
+            'section': section_text,
             'actionType': instance.action_type or '',
             'action': instance.action,
             'targetName': instance.target_name or '',
-            'details': instance.details,
+            'details': details_text,
             'changes': changes,
             'ip_address': instance.ip_address or '127.0.0.1',
             'timestamp': ts,
@@ -1053,8 +1097,16 @@ class HREmployeeSerializer(serializers.ModelSerializer):
             ),
             'rule_application_mode': instance.rule_application_mode,
             'rule_application_mode_label': instance.get_rule_application_mode_display(),
-            'national_id': instance.national_id or '',
-            'birth_date': to_date_str(instance.birth_date) or None,
+            'national_id': (
+                (instance.national_id or '')
+                if viewer_can_view(self.context, 'hr_employees', 'hr_payroll', 'can_manage_hr', 'manage_permissions')
+                else ''
+            ),
+            'birth_date': (
+                (to_date_str(instance.birth_date) or None)
+                if viewer_can_view(self.context, 'hr_employees', 'hr_payroll', 'can_manage_hr', 'manage_permissions')
+                else None
+            ),
             'phone': instance.phone or '',
             'photo': instance.photo or '',
             'notes': instance.notes or '',

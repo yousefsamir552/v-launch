@@ -457,13 +457,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     };
 
-    if (cleanGroup) {
+    if (cleanGroup && /^https?:\/\//i.test(cleanGroup)) {
       copyText();
       addFlashMessage(
         '✅ تم نسخ نص الرسالة تلقائياً! اضغط لصق (Paste) داخل جروب الواتساب',
         'success'
       );
-      window.open(cleanGroup, '_blank');
+      window.open(cleanGroup, '_blank', 'noopener,noreferrer');
       return;
     }
 

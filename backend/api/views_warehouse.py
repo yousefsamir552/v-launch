@@ -120,7 +120,7 @@ class FabricViewSet(BasePermViewSet):
             supplier_id_ref=data.get('supplier_id') or '',
             image=clean_image_value(data.get('image') or '', 'fabrics', 'صورة الخامة'),
         )
-        return Response(FabricSerializer(fab).data, status=status.HTTP_201_CREATED)
+        return Response(FabricSerializer(fab, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['post'])
     def add_fabric_or_color(self, request):
@@ -171,7 +171,7 @@ class FabricViewSet(BasePermViewSet):
             )
 
         return Response({
-            'fabric': FabricSerializer(fab).data,
+            'fabric': FabricSerializer(fab, context={'request': request}).data,
             'color': FabricColorSerializer(color_obj, context={'request': request}).data,
         })
 

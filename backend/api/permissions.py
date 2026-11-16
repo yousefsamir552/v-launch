@@ -221,10 +221,13 @@ class CanManageHR(permissions.BasePermission):
                 return True
             # قراءة البيانات المساندة (وظائف/موظفين/إعدادات) متاحة لأي تبويب HR
             # حتى تعمل شاشات السلف/الجزاءات/المرتبات بشكل صحيح.
-            if request.method in permissions.SAFE_METHODS and any(
-                profile.has_perm(key) for key in HR_PERM_KEYS
-            ):
-                return True
+            if request.method in permissions.SAFE_METHODS:
+                if required_section == 'hr_loans':
+                    return any(profile.has_perm(k) for k in ('hr_loans', 'hr_payroll', 'hr_reports'))
+                if required_section == 'hr_penalties':
+                    return any(profile.has_perm(k) for k in ('hr_penalties', 'hr_loans', 'hr_payroll', 'hr_reports'))
+                if any(profile.has_perm(key) for key in HR_PERM_KEYS):
+                    return True
             return False
 
         return any(profile.has_perm(perm_key) for perm_key in HR_PERM_KEYS)

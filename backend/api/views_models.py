@@ -41,11 +41,14 @@ class ModelItemViewSet(BasePermViewSet):
         'sewing_edit', 'assembly_packaging_edit',
     )
 
-    def _section_allowed(self, profile, section) -> bool:
+    def _section_allowed(self, profile, section, require_edit: bool = False) -> bool:
         perm_field = HasDynamicSectionPermission.section_perm_map.get(section)
         if not perm_field:
             return False
-        return profile.has_perm(perm_field) or profile.has_perm(perm_field.replace('_view', '_edit'))
+        edit_field = perm_field.replace('_view', '_edit')
+        if require_edit:
+            return profile.has_perm(edit_field)
+        return profile.has_perm(perm_field) or profile.has_perm(edit_field)
 
     def initial(self, request, *args, **kwargs):
         """يمنع الوصول الكامل للموديلات لمن لا يملك أي قسم تشغيلي، ويمنع تنفيذ
@@ -68,7 +71,8 @@ class ModelItemViewSet(BasePermViewSet):
             return
         section = self.MODEL_ACTION_SECTIONS.get(action_name)
         if section:
-            if not self._section_allowed(profile, section):
+            require_edit = request.method not in permissions.SAFE_METHODS
+            if not self._section_allowed(profile, section, require_edit=require_edit):
                 raise PermissionDenied('ليس لديك صلاحية تنفيذ هذا الإجراء في هذا القسم')
             return
 
@@ -1309,7 +1313,7 @@ class ModelRequirementViewSet(BasePermViewSet):
             unit_price_snapshot=color.price_per_unit or 0,
         )
         sync_reserved_quantities()
-        return Response(ModelRequirementSerializer(req).data, status=status.HTTP_201_CREATED)
+        return Response(ModelRequirementSerializer(req, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
         req = self.get_object()
@@ -1325,7 +1329,7 @@ class ModelRequirementViewSet(BasePermViewSet):
             req.planned_quantity = max(0.0, float(data.get('planned_quantity') or data.get('plannedQuantity') or 0))
         req.save()
         sync_reserved_quantities()
-        return Response(ModelRequirementSerializer(req).data)
+        return Response(ModelRequirementSerializer(req, context={'request': request}).data)
 
     def destroy(self, request, *args, **kwargs):
         req = self.get_object()
@@ -1360,7 +1364,7 @@ class ModelAccessoryViewSet(BasePermViewSet):
             unit_price_snapshot=_accessory_price_snapshot(data.get('accessory_id')),
         )
         sync_reserved_quantities()
-        return Response(ModelAccessorySerializer(m_acc).data, status=status.HTTP_201_CREATED)
+        return Response(ModelAccessorySerializer(m_acc, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
         m_acc = self.get_object()
@@ -1380,7 +1384,7 @@ class ModelAccessoryViewSet(BasePermViewSet):
             )
         m_acc.save()
         sync_reserved_quantities()
-        return Response(ModelAccessorySerializer(m_acc).data)
+        return Response(ModelAccessorySerializer(m_acc, context={'request': request}).data)
 
     def destroy(self, request, *args, **kwargs):
         m_acc = self.get_object()
