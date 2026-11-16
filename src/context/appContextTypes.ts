@@ -659,6 +659,8 @@ export interface AppContextType {
   getPartStages: (modelId: string) => Partial<Record<GarmentPart, PartStage>>;
   /** True when every part of the model reached the packaging stage. */
   isPackagingReady: (modelId: string) => boolean;
+  /** مطبّع موحّد لمسميات القطع (تيشرت / بنطلون / جاكيت / قطعة واحدة). */
+  normalizePartKey: (value?: string | null) => GarmentPart;
 
   // Settings Actions
   addSizeDef: (name: string, values: string) => void;

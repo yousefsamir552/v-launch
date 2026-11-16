@@ -8,7 +8,8 @@ import {
   FileText,
   Lock,
   Grid,
-  Save
+  Save,
+  Sparkles
 } from 'lucide-react';
 import {
   QCStageType,
@@ -22,6 +23,9 @@ import {
 import { printManualCountSheet } from '../utils/printManualCountSheet';
 import { isImageLogo } from '../utils/printShared';
 import { stageBeyond } from '../utils/completedModels';
+import {
+  resolveDefaultGoodQtyForCell
+} from '../utils/qcCutDefaults';
 
 interface QCDetailsViewProps {
   modelId: string;
@@ -41,6 +45,8 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
     getModelColorList,
     getModelSizeList,
     qcRecords,
+    cuttingRecords,
+    normalizePartKey,
     saveQCMatrix,
     recordQCStageCount,
     exportQcCsv,
@@ -105,23 +111,65 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
   >({});
   const [defectNotes, setDefectNotes] = useState('');
 
+  /**
+   * العدد الافتراضي لخانة "السليم" في جدول العد لهذا (اللون × المقاس):
+   * العدد المقصوص الفعلي من فرشات القص، أو العدد المعتمد من المرحلة السابقة
+   * (بعد الطباعة / بعد المكن) إن وُجد أكبر من صفر.
+   */
+  const getDefaultGoodQtyForCell = (
+    targetModelId: string,
+    part: GarmentPart,
+    stage: QCStageType,
+    colorName: string,
+    sizeName: string,
+    allColors: string[],
+    allSizes: string[]
+  ): number =>
+    resolveDefaultGoodQtyForCell(
+      { cuttingRecords, qcRecords, normalizePartKey },
+      targetModelId,
+      part,
+      stage,
+      colorName,
+      sizeName,
+      allColors,
+      allSizes
+    );
+
   useEffect(() => {
     const stageRecs = qcRecords.filter(
       (r) =>
         r.model_id === modelId &&
         r.stage === selectedStage &&
-        (r.part_type || 'shirt') === selectedPart
+        normalizePartKey(r.part_type || r.partType) === selectedPart
     );
+    // الخلايا المحفوظة تظهر بقيمها المحفوظة، والخلايا التي لم تُعدّ بعد تُملأ تلقائياً
+    // بالعدد المقصوص (لون × مقاس) حتى يراجع المستخدم ويعتمد مباشرة.
     const nextMatrix: Record<string, { good: number; defect: number }> = {};
     let existingNote = '';
 
     colorList.forEach((col) => {
       sizeList.forEach((sz) => {
         const match = stageRecs.find((r) => r.color_name === col && r.size === sz);
-        nextMatrix[makeCellKey(col, sz)] = {
-          good: match ? Number(match.good_qty ?? match.counted_pieces ?? 0) : 0,
-          defect: match ? Number(match.defect_qty ?? match.defect_pieces ?? 0) : 0
-        };
+        if (match) {
+          nextMatrix[makeCellKey(col, sz)] = {
+            good: Number(match.good_qty ?? match.counted_pieces ?? 0),
+            defect: Number(match.defect_qty ?? match.defect_pieces ?? 0)
+          };
+        } else {
+          nextMatrix[makeCellKey(col, sz)] = {
+            good: getDefaultGoodQtyForCell(
+              modelId,
+              selectedPart,
+              selectedStage,
+              col,
+              sz,
+              colorList,
+              sizeList
+            ),
+            defect: 0
+          };
+        }
         if (match?.notes && !existingNote) {
           existingNote = match.notes;
         }
@@ -130,7 +178,39 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
 
     setMatrixState(nextMatrix);
     setDefectNotes(existingNote);
-  }, [modelId, selectedStage, selectedPart, qcRecords, colorList.join('|'), sizeList.join('|')]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    modelId,
+    selectedStage,
+    selectedPart,
+    qcRecords,
+    cuttingRecords,
+    colorList.join('|'),
+    sizeList.join('|')
+  ]);
+
+  // زر "ملء تلقائي من أعداد القص": يعيد ملء خانات السليم بالعدد المقصوص في أي وقت.
+  const handleFillGoodFromCutting = () => {
+    const nextMatrix: Record<string, { good: number; defect: number }> = {};
+    colorList.forEach((col) => {
+      sizeList.forEach((sz) => {
+        const key = makeCellKey(col, sz);
+        nextMatrix[key] = {
+          good: getDefaultGoodQtyForCell(
+            modelId,
+            selectedPart,
+            selectedStage,
+            col,
+            sz,
+            colorList,
+            sizeList
+          ),
+          defect: Number(matrixState[key]?.defect) || 0
+        };
+      });
+    });
+    setMatrixState(nextMatrix);
+  };
 
   // Build a per-part (color × size) snapshot from the saved QC records so the printed
   // worker sheet includes EVERY model part, not only the currently selected one.
@@ -640,6 +720,23 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
         </div>
 
         <form onSubmit={handleSaveMatrix} className="space-y-5">
+          {/* Auto-fill good cells from cutting spreads */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[11px] font-bold text-slate-500">
+              خانة "السليم" تُملأ تلقائياً بالعدد المقصوص الفعلي لكل لون ومقاس — راجع الأرقام ثم اعتمد.
+            </span>
+            <button
+              type="button"
+              onClick={handleFillGoodFromCutting}
+              disabled={!canEdit}
+              title="يملأ خانة السليم في كل الخلايا بالعدد المقصوص المحسوب من فرشات القص"
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold text-[11px] shadow-2xs transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>🔄 ملء تلقائي من أعداد القص</span>
+            </button>
+          </div>
+
           {/* Matrix Table */}
           <div className="rounded-2xl border border-slate-300 overflow-x-auto shadow-2xs">
             <table className="w-full text-xs border-collapse">

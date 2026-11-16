@@ -19,6 +19,7 @@ import { printManualCountSheet } from '../utils/printManualCountSheet';
 import { isImageLogo } from '../utils/printShared';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel, stageRank, stageBeyond } from '../utils/completedModels';
+import { resolveDefaultGoodQtyForCell } from '../utils/qcCutDefaults';
 
 type QCPartCard = { model: Model; part: GarmentPart };
 
@@ -33,6 +34,8 @@ export const QCView: React.FC = () => {
   const {
     models,
     qcRecords,
+    cuttingRecords,
+    normalizePartKey,
     getModelParts,
     getPartStages,
     getModelColorList,
@@ -134,6 +137,31 @@ export const QCView: React.FC = () => {
 
   const makeCellKey = (color: string, size: string) => `${color}___${size}`;
 
+  /**
+   * العدد الافتراضي لخانة "السليم" في جدول العد لهذا (اللون × المقاس):
+   * العدد المقصوص الفعلي من فرشات القص، أو العدد المعتمد من المرحلة السابقة
+   * (بعد الطباعة / بعد المكن) إن وُجد أكبر من صفر.
+   */
+  const getDefaultGoodQtyForCell = (
+    modelId: string,
+    part: GarmentPart,
+    stage: QCStageType,
+    colorName: string,
+    sizeName: string,
+    allColors: string[],
+    allSizes: string[]
+  ): number =>
+    resolveDefaultGoodQtyForCell(
+      { cuttingRecords, qcRecords, normalizePartKey },
+      modelId,
+      part,
+      stage,
+      colorName,
+      sizeName,
+      allColors,
+      allSizes
+    );
+
   const handleOpenCountModal = (model: Model, part: GarmentPart) => {
     setModalPart(part);
     setCountingModel(model);
@@ -148,9 +176,10 @@ export const QCView: React.FC = () => {
       (r) =>
         r.model_id === countingModel.id &&
         r.stage === activeTab &&
-        (r.part_type || 'shirt') === modalPart
+        normalizePartKey(r.part_type || r.partType) === modalPart
     );
-
+    // الخلايا المحفوظة تظهر بقيمها المحفوظة، والخلايا التي لم تُعدّ بعد تُملأ تلقائياً
+    // بالعدد المقصوص (لون × مقاس) حتى يراجع المستخدم ويعتمد مباشرة.
     const initialMatrix: Record<string, { good: number; defect: number }> = {};
     let existingNote = '';
 
@@ -159,10 +188,25 @@ export const QCView: React.FC = () => {
         const match = existingStageRecs.find(
           (r) => r.color_name === col && r.size === sz
         );
-        initialMatrix[makeCellKey(col, sz)] = {
-          good: match ? Number(match.good_qty ?? match.counted_pieces ?? 0) : 0,
-          defect: match ? Number(match.defect_qty ?? match.defect_pieces ?? 0) : 0
-        };
+        if (match) {
+          initialMatrix[makeCellKey(col, sz)] = {
+            good: Number(match.good_qty ?? match.counted_pieces ?? 0),
+            defect: Number(match.defect_qty ?? match.defect_pieces ?? 0)
+          };
+        } else {
+          initialMatrix[makeCellKey(col, sz)] = {
+            good: getDefaultGoodQtyForCell(
+              countingModel.id,
+              modalPart,
+              activeTab,
+              col,
+              sz,
+              colors,
+              sizes
+            ),
+            defect: 0
+          };
+        }
         if (match?.notes && !existingNote) {
           existingNote = match.notes;
         }
@@ -172,7 +216,33 @@ export const QCView: React.FC = () => {
     setMatrixState(initialMatrix);
     setQcNotes(existingNote);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [countingModel, modalPart, activeTab, qcRecords]);
+  }, [countingModel, modalPart, activeTab, qcRecords, cuttingRecords]);
+
+  // زر "ملء تلقائي من أعداد القص": يعيد ملء خانات السليم بالعدد المقصوص في أي وقت.
+  const handleFillGoodFromCutting = () => {
+    if (!countingModel) return;
+    const colors = getModelColorList(countingModel.id, modalPart);
+    const sizes = getModelSizeList(countingModel.id);
+    const nextMatrix: Record<string, { good: number; defect: number }> = {};
+    colors.forEach((col) => {
+      sizes.forEach((sz) => {
+        const key = makeCellKey(col, sz);
+        nextMatrix[key] = {
+          good: getDefaultGoodQtyForCell(
+            countingModel.id,
+            modalPart,
+            activeTab,
+            col,
+            sz,
+            colors,
+            sizes
+          ),
+          defect: Number(matrixState[key]?.defect) || 0
+        };
+      });
+    });
+    setMatrixState(nextMatrix);
+  };
 
   const handleCellChange = (
     color: string,
@@ -830,6 +900,23 @@ export const QCView: React.FC = () => {
                     {modalTotalDefect.toLocaleString('ar-EG')} قطعة
                   </strong>
                 </div>
+              </div>
+
+              {/* Auto-fill good cells from cutting spreads */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] font-bold text-slate-500">
+                  خانة "السليم" تُملأ تلقائياً بالعدد المقصوص الفعلي لكل لون ومقاس — راجع الأرقام ثم اعتمد.
+                </span>
+                <button
+                  type="button"
+                  onClick={handleFillGoodFromCutting}
+                  disabled={!canEdit}
+                  title="يملأ خانة السليم في كل الخلايا بالعدد المقصوص المحسوب من فرشات القص"
+                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold text-[11px] shadow-2xs transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>🔄 ملء تلقائي من أعداد القص</span>
+                </button>
               </div>
 
               {/* DYNAMIC MATRIX TABLE (Colors x Sizes) */}

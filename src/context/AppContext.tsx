@@ -959,6 +959,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         finishCuttingToQC,
         exportCuttingCsv,
         getModelParts,
+        normalizePartKey,
         getModelColorList,
         getModelSizeList,
         recordQCData,
