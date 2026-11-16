@@ -209,11 +209,11 @@ R2_ENDPOINT_URL = os.environ.get('R2_ENDPOINT_URL', '').strip() or (
 )
 
 R2_IMAGE_MAX_UPLOAD_BYTES = int(
-    os.environ.get('R2_IMAGE_MAX_UPLOAD_BYTES', str(10 * 1024 * 1024))
+    os.environ.get('R2_IMAGE_MAX_UPLOAD_BYTES', str(20 * 1024 * 1024))
 )
-# Up to this size an image is uploaded untouched; larger images are re-encoded
-# with Pillow until they fit (~1.5-2MB).
+# Up to this size an image is uploaded untouched (passthrough, no pixel decode);
+# larger images are re-encoded with Pillow until they fit (~1.5-3MB).
 R2_IMAGE_TARGET_BYTES = int(
-    os.environ.get('R2_IMAGE_TARGET_BYTES', str(2 * 1024 * 1024))
+    os.environ.get('R2_IMAGE_TARGET_BYTES', str(3 * 1024 * 1024))
 )
-R2_IMAGE_MAX_DIMENSION = int(os.environ.get('R2_IMAGE_MAX_DIMENSION', '3200'))
+R2_IMAGE_MAX_DIMENSION = int(os.environ.get('R2_IMAGE_MAX_DIMENSION', '4096'))

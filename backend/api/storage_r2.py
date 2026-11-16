@@ -10,7 +10,8 @@ Images are now written to a Cloudflare R2 bucket (S3-compatible) and only the
 short public URL is persisted in PostgreSQL. This module owns:
 
 * decoding a legacy Base64 payload (``data:image/...;base64,`` or a raw blob),
-* processing it in memory with Pillow (``<=2MB`` images are stored untouched),
+* processing it in memory with Pillow (``<=3MB`` images are stored untouched,
+  without ever decompressing their pixels),
 * uploading the bytes to R2 with an immutable cache header,
 * normalising a field value on write (Base64 -> URL, URLs pass through),
 * a ``save()`` guard so a Base64 payload can never be persisted by mistake.
@@ -36,9 +37,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Defaults (overridable through Django settings / environment variables)
 # ---------------------------------------------------------------------------
-DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-DEFAULT_TARGET_BYTES = 2 * 1024 * 1024
-DEFAULT_MAX_DIMENSION = 3200
+DEFAULT_MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+DEFAULT_TARGET_BYTES = 3 * 1024 * 1024       # 3 MB passthrough budget
+DEFAULT_MAX_DIMENSION = 4096                 # 4096px
 
 JPEG_QUALITIES = (92, 88, 85)
 WEBP_QUALITIES = (90, 85)
@@ -154,9 +155,9 @@ def get_client():
         region_name=(_setting('R2_REGION', 'auto') or 'auto').strip() or 'auto',
         config=Config(
             signature_version='s3v4',
-            retries={'max_attempts': 3, 'mode': 'standard'},
-            connect_timeout=10,
-            read_timeout=60,
+            retries={'max_attempts': 2, 'mode': 'standard'},
+            connect_timeout=8,
+            read_timeout=20,
             max_pool_connections=10,
         ),
     )
@@ -283,9 +284,11 @@ def _compress_alpha(image, target):
 def process_image(raw_bytes):
     """Validates and compresses an image, returning ``(bytes, content_type, ext)``.
 
-    Files already at or below 2MB (and within the max dimension) are uploaded
-    exactly as-is. Larger files are re-encoded with Pillow until they fit the
-    2MB budget.
+    Files already at or below the target budget (3MB) are uploaded exactly as-is,
+    without ever decompressing their pixels: only the file header is read to
+    detect the format and dimensions. Larger files (the rare case) are re-encoded
+    with Pillow until they fit the budget, and JPEGs are decoded with ``draft()``
+    so the downscale happens during decoding (much less RAM).
     """
     if not raw_bytes:
         raise ValidationError('ملف الصورة فارغ.')
@@ -296,12 +299,15 @@ def process_image(raw_bytes):
         )
 
     Image, ImageOps = _pillow()
+    # صور البانرات الكبيرة جداً مسموحة ما دامت ضمن حدود الحجم/الأبعاد أعلاه.
+    Image.MAX_IMAGE_PIXELS = 120_000_000
+
     try:
+        # قراءة ترويسة الملف فقط (Header-only): ممنوع probe.load() هنا حتى لا
+        # تُفكّ ضغط بكسلات الصورة كاملة في الرام لمجرد معرفة نوعها/أبعادها.
         with Image.open(io.BytesIO(raw_bytes)) as probe:
-            probe.load()
             fmt = (probe.format or '').upper()
             width, height = probe.size
-            alpha = _has_alpha(probe)
     except Exception as exc:
         logger.info('Rejected unreadable image upload: %s', exc)
         raise ValidationError(
@@ -310,19 +316,25 @@ def process_image(raw_bytes):
 
     target = target_bytes()
     boundary = max_dimension()
-    needs_resize = max(width, height) > boundary
 
-    if len(raw_bytes) <= target and not needs_resize and fmt in PASSTHROUGH_FORMATS:
+    # التمرير المباشر الفوري: أي صورة <= 3MB تُرفع كما هي بكامل دقتها وبكسلاتها
+    # دون النظر إلى أبعادها ودون أي استهلاك إضافي للرام.
+    if len(raw_bytes) <= target and fmt in PASSTHROUGH_FORMATS:
         content_type, extension = PASSTHROUGH_FORMATS[fmt]
         return raw_bytes, content_type, extension
 
+    needs_resize = max(width, height) > boundary
+
     try:
         with Image.open(io.BytesIO(raw_bytes)) as image:
+            # draft() يفكّ ترميز JPEG مباشرة بمقياس أصغر (توفير كبير في الرام).
+            if fmt == 'JPEG' and needs_resize:
+                image.draft('RGB', (boundary, boundary))
             image.load()
             work = ImageOps.exif_transpose(image) or image
             if max(work.size) > boundary:
                 work.thumbnail((boundary, boundary), Image.LANCZOS)
-            if _has_alpha(work) or alpha:
+            if _has_alpha(work):
                 return _compress_alpha(work, target)
             return _compress_jpeg(work, target)
     except ValidationError:

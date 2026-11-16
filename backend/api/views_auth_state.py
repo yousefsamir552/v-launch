@@ -1,6 +1,10 @@
 from .views_common import *
 from .views_common import _truthy_permission_keys, _accessory_price_snapshot
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 class AuthViewSet(viewsets.ViewSet):
     """
     Real backend authentication: login, session verification (me), and logout.
@@ -312,6 +316,12 @@ class ImageUploadViewSet(viewsets.ViewSet):
                     )
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except Exception as exc:  # noqa: BLE001 - أي خطأ غير متوقع يعود بترويسات CORS صحيحة
+            logger.exception('Unexpected failure while uploading image %s', uploaded.name)
+            return Response(
+                {'detail': 'تعذر رفع الصورة: {}'.format(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         log_action(
             request,

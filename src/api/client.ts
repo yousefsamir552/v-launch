@@ -100,11 +100,32 @@ async function requestBlob(endpoint: string): Promise<Blob> {
 
 /** رفع ملف بصيغة multipart/form-data (بدون تعيين Content-Type يدوياً). */
 async function requestForm<T>(endpoint: string, form: FormData): Promise<T> {
-  const res = await fetch(`${BASE_URL}${endpoint}`, {
-    method: 'POST',
-    headers: buildAuthHeaders(),
-    body: form
-  });
+  const send = () =>
+    fetch(`${BASE_URL}${endpoint}`, {
+      method: 'POST',
+      headers: buildAuthHeaders(),
+      body: form
+    });
+
+  let res: Response;
+  try {
+    res = await send();
+  } catch (error: any) {
+    // "Failed to fetch" غالباً اضطراب شبكة مؤقت (Render cold start / انقطاع لحظي)،
+    // لذلك نعيد المحاولة مرة واحدة فقط بعد 800ms قبل إظهار الخطأ للمستخدم.
+    if (!(error instanceof TypeError)) {
+      throw new Error(error?.message || 'تعذر الاتصال بالسيرفر. يرجى المحاولة مرة أخرى.');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    try {
+      res = await send();
+    } catch {
+      throw new Error(
+        'تعذر الاتصال بالسيرفر (Failed to fetch). يرجى التحقق من اتصال الإنترنت ثم إعادة المحاولة.'
+      );
+    }
+  }
+
   if (!res.ok) {
     throw new Error(await readErrorMessage(res));
   }
@@ -126,6 +147,108 @@ function buildQuery(params: Record<string, string | number | undefined | null>):
   return suffix ? `?${suffix}` : '';
 }
 
+/**
+ * ضغط ذكي عالي الدقة في المتصفح قبل الرفع:
+ * - أي ملف ليس صورة أو حجمه <= 2.2MB يُرفع كما هو بكامل بكسلاته ودقته (بدون أي تدخل).
+ * - الملفات الأكبر فقط تُعاد بناؤها على Canvas بأقصى بُعد 4096px للحفاظ على أدق
+ *   تفاصيل الرسمة/الطباعة عند التكبير (Zoom) في ملفات PDF للمطبعة، مع جودة عالية
+ *   تبدأ من 0.92 وتنخفض تدريجياً حتى الوصول لحد الحجم المستهدف.
+ */
+const TARGET_MAX_BYTES = 2.2 * 1024 * 1024;
+const MAX_DIMENSION = 4096;
+
+async function compressImageClientSide(file: File): Promise<File> {
+  // قاعدة عدم اللمس: الملفات الصغيرة أو غير الصور تبقى كما هي تماماً.
+  if (!file.type.startsWith('image/') || file.size <= TARGET_MAX_BYTES) {
+    return file;
+  }
+
+  const loadImage = () =>
+    new Promise<HTMLImageElement>((resolve, reject) => {
+      const objectUrl = URL.createObjectURL(file);
+      const image = new Image();
+      image.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        resolve(image);
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error('تعذر قراءة الصورة في المتصفح.'));
+      };
+      image.src = objectUrl;
+    });
+
+  const drawToCanvas = (
+    source: HTMLImageElement | HTMLCanvasElement,
+    width: number,
+    height: number
+  ): HTMLCanvasElement => {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('تعذر تهيئة Canvas لضغط الصورة.');
+    }
+    // خلفية بيضاء حتى لا تتحول الشفافية إلى أسود عند تحويلها إلى JPEG.
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(source, 0, 0, width, height);
+    return canvas;
+  };
+
+  const canvasToJpegBlob = (canvas: HTMLCanvasElement, quality: number) =>
+    new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error('تعذر ضغط الصورة.'))),
+        'image/jpeg',
+        quality
+      );
+    });
+
+  const toJpegFile = (blob: Blob) =>
+    new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+
+  try {
+    const image = await loadImage();
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    if (!sourceWidth || !sourceHeight) {
+      return file;
+    }
+
+    const longestSide = Math.max(sourceWidth, sourceHeight);
+    // إن كان أطول ضلع <= 4096 نُبقي الأبعاد الأصلية كما هي تماماً.
+    const scale = longestSide > MAX_DIMENSION ? MAX_DIMENSION / longestSide : 1;
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
+
+    let canvas = drawToCanvas(image, width, height);
+
+    // تدرج جودة عالٍ: نتوقف عند أول جودة تُنتج ملفاً في حدود الحجم المستهدف.
+    for (const quality of [0.92, 0.88, 0.84, 0.78]) {
+      const blob = await canvasToJpegBlob(canvas, quality);
+      if (blob.size <= TARGET_MAX_BYTES) {
+        return toJpegFile(blob);
+      }
+    }
+
+    // ما زال كبيراً بعد جودة 0.78: تصغير واحد بنسبة 0.85 ثم إخراج بجودة 0.85.
+    canvas = drawToCanvas(
+      canvas,
+      Math.max(1, Math.round(width * 0.85)),
+      Math.max(1, Math.round(height * 0.85))
+    );
+    const finalBlob = await canvasToJpegBlob(canvas, 0.85);
+    return toJpegFile(finalBlob);
+  } catch {
+    // أي خطأ غير متوقع في Canvas: نرفع الملف الأصلي بدلاً من إفشال الرفع.
+    return file;
+  }
+}
+
 export const api = {
   // المصادقة والجلسات (Authentication)
   login: (username: string, password: string) =>
@@ -141,9 +264,10 @@ export const api = {
   getState: () => request<any>('/state/'),
 
   // رفع صورة إلى التخزين السحابي (Cloudflare R2) وإرجاع رابطها العام فقط
-  uploadImage: (file: File, folder: string = 'general') => {
+  uploadImage: async (file: File, folder: string = 'general') => {
+    const preparedFile = await compressImageClientSide(file);
     const form = new FormData();
-    form.append('file', file);
+    form.append('file', preparedFile);
     form.append('folder', folder);
     return requestForm<{ url: string; key: string; size: number; content_type: string }>(
       '/upload-image/',

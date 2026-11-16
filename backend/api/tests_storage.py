@@ -23,6 +23,7 @@ from .storage_r2 import (
 )
 
 TWO_MEGABYTES = 2 * 1024 * 1024
+THREE_MEGABYTES = 3 * 1024 * 1024
 
 R2_TEST_SETTINGS = {
     'R2_ACCOUNT_ID': 'test-account',
@@ -54,6 +55,7 @@ def make_data_url(width=64, height=64):
     return 'data:image/jpeg;base64,' + base64.b64encode(raw).decode()
 
 
+@override_settings(**R2_TEST_SETTINGS)
 class ImageProcessingTests(TestCase):
     def test_small_image_is_passed_through_untouched(self):
         raw = make_jpeg(200, 200)
@@ -67,6 +69,30 @@ class ImageProcessingTests(TestCase):
         data, content_type, _extension = process_image(raw)
         self.assertLessEqual(len(data), TWO_MEGABYTES)
         self.assertEqual(content_type, 'image/jpeg')
+
+    def test_large_dimension_small_file_is_passed_through(self):
+        # ملف صغير الحجم لكن أبعاده > 4096px: يُرفع كما هو بكل بكسلاته.
+        raw = make_jpeg(5000, 200, quality=90)
+        self.assertLessEqual(len(raw), TWO_MEGABYTES)
+        data, content_type, extension = process_image(raw)
+        self.assertEqual(data, raw)
+        self.assertEqual((content_type, extension), ('image/jpeg', 'jpg'))
+
+    def test_passthrough_never_decodes_pixels(self):
+        # داخل حد الحجم: لا يجوز استدعاء Image.load() إطلاقاً (استهلاك رام = حجم الملف فقط).
+        raw = make_jpeg(3000, 256, quality=90)
+        with patch.object(Image.Image, 'load', side_effect=AssertionError('pixels decoded')):
+            data, content_type, _extension = process_image(raw)
+        self.assertEqual(data, raw)
+        self.assertEqual(content_type, 'image/jpeg')
+
+    @override_settings(R2_IMAGE_TARGET_BYTES=THREE_MEGABYTES)
+    def test_passthrough_budget_is_three_megabytes(self):
+        raw = make_jpeg(2000, 2000, quality=95)
+        self.assertGreater(len(raw), TWO_MEGABYTES)
+        self.assertLessEqual(len(raw), THREE_MEGABYTES)
+        data, _content_type, _extension = process_image(raw)
+        self.assertEqual(data, raw)
 
     def test_rejects_non_image_bytes(self):
         with self.assertRaises(ValidationError):
