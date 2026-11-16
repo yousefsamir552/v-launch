@@ -372,6 +372,11 @@ export interface AppContextType {
   }) => { success: boolean; message: string };
   exportWarehouseInventoryCsv: () => void;
   updateColorPrice: (colorId: string, price: number) => void;
+  /** تعديل بيانات لون القماش الأساسية (الكود، الاسم، الدرجة، والسعر حسب الصلاحية). */
+  updateFabricColorDetails: (
+    colorId: string,
+    updates: { color_code?: string; color_name?: string; hex_code?: string; price_per_unit?: number }
+  ) => { success: boolean; message: string };
 
   // Accessories Warehouse Actions
   accessoryTypes: AccessoryType[];

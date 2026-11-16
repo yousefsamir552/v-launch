@@ -39,6 +39,7 @@ import {
 } from 'recharts';
 import { api } from '../api/client';
 import { useApp } from '../context/AppContext';
+import { MaterialsReportSection, ModelConsumptionReportSection } from './MaterialsAndModelConsumptionReports';
 import { PRINT_LOGO_CSS, escapeHtml, renderLogoHtml } from '../utils/printShared';
 import type {
   DepartmentReportCard,
@@ -53,7 +54,7 @@ import type {
 /* Types & constants                                                   */
 /* ------------------------------------------------------------------ */
 
-type ReportTab = 'models' | 'production' | 'quality';
+type ReportTab = 'models' | 'production' | 'quality' | 'materials' | 'model_consumption';
 type MetricMode = 'models' | 'pieces';
 type PeriodKey = 'today' | 'week' | 'month' | 'custom';
 type SortKey = 'shortage' | 'percent' | 'cut' | 'code';
@@ -84,6 +85,18 @@ const TAB_META: Array<{
     label: 'المشاكل والعجز',
     description: 'الفاقد والعجز بين مراحل الإنتاج',
     icon: AlertTriangle
+  },
+  {
+    key: 'materials',
+    label: 'تقارير الخامات',
+    description: 'الأقمشة والإكسسوارات والاستهلاك',
+    icon: Layers
+  },
+  {
+    key: 'model_consumption',
+    label: 'استهلاك الموديل المفصل',
+    description: 'صفحة تشغيلية شاملة لكل موديل',
+    icon: Shirt
   }
 ];
 
@@ -740,7 +753,7 @@ export const ReportsView: React.FC = () => {
         <>
           {/* Tabs */}
           <div className="rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm">
-            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-5">
               {TAB_META.map((tab) => {
                 const Icon = tab.icon;
                 const active = activeTab === tab.key;
@@ -1411,6 +1424,9 @@ export const ReportsView: React.FC = () => {
             </div>
           )}
 
+
+          {activeTab === 'materials' && <MaterialsReportSection />}
+          {activeTab === 'model_consumption' && <ModelConsumptionReportSection />}
 
           {targetsOpen && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" dir="rtl">

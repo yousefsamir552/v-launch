@@ -796,7 +796,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const designActions = buildDesignActions(ctxWithPerms);
   const { addDesignModel, cloneDesignModel, updateModelPlan, updateModelNotesAndTarget, addModelRequirement, deleteModelRequirement, addModelAccessory, deleteModelAccessory, issueFabricToCutting, returnFabricFromCutting, deleteDesignModel } = designActions;
   const fullCtx: any = { ...ctxWithPerms, ...designActions };
-  const { addFabricOrColor, recordTransaction, exportWarehouseInventoryCsv, updateColorPrice, addAccessoryType, addAccessoryItem, updateAccessoryItem, deleteAccessoryItem, markAccessoryWithdrawn, recordAccessoryTransaction, exportAccessoryInventoryCsv } = buildWarehouseActions(fullCtx);
+  const { addFabricOrColor, recordTransaction, exportWarehouseInventoryCsv, updateColorPrice, updateFabricColorDetails, addAccessoryType, addAccessoryItem, updateAccessoryItem, deleteAccessoryItem, markAccessoryWithdrawn, recordAccessoryTransaction, exportAccessoryInventoryCsv } = buildWarehouseActions(fullCtx);
   const { addCuttingRecord, finishCuttingToQC, exportCuttingCsv, recordQCData, saveQCMatrix, recordQCStageCount, finishQCApproval, exportQcCsv } = buildCuttingQcActions(fullCtx);
   const { modelCodeOf, exportDesignModelsCsv, exportFabricTransactionsCsv, exportAccessoryTransactionsCsv, exportProductionWarehouseCsv, exportPrintDispatchesCsv, exportSewingDispatchesCsv, exportAssemblyPackagingCsv, exportPackagingMaterialsCsv, exportSuppliersCsv, exportWorkshopsCsv, exportAuditLogsCsv, buildHRSectionsSheets, exportHRSectionsZip, exportFullBackupZip } = buildExportActions(fullCtx);
   const { addPrintDispatch, updateDispatchStatus, skipPrintToSewing, dispatchModelToSewing, receiveModelFromSewing, finishSewingToQC, finishQCToProduction } = buildPrintSewingActions(fullCtx);
@@ -933,6 +933,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         recordTransaction,
         exportWarehouseInventoryCsv,
         updateColorPrice,
+        updateFabricColorDetails,
         accessoryTypes,
         accessoryItems,
         accessoryTransactions,

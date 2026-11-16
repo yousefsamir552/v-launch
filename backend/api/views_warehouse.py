@@ -202,6 +202,8 @@ class FabricColorViewSet(BasePermViewSet):
                 col.quantity = max(0.0, float(data['quantity'] or 0))
             if 'reserved_quantity' in data:
                 col.reserved_quantity = max(0.0, float(data['reserved_quantity'] or 0))
+            if 'color_code' in data and str(data['color_code']).strip():
+                col.color_code = str(data['color_code']).strip()
             if 'color_name' in data:
                 col.color_name = data['color_name']
             if 'hex_code' in data:

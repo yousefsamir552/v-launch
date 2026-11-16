@@ -24,15 +24,109 @@ import {
   Filter,
   Palette,
   RotateCcw,
-  ChevronDown
+  ChevronDown,
+  Pencil,
+  ClipboardList,
+  Scissors,
+  Shirt,
+  Ruler,
+  Tag
 } from 'lucide-react';
-import { Fabric, FabricColor, Supplier } from '../types';
+import { DesignModel, Fabric, FabricColor, FabricTransaction, ModelRequirement, Supplier } from '../types';
 import { isImageLogo } from '../utils/printShared';
 import { AccessoriesWarehouseView } from './AccessoriesWarehouseView';
 import { ProductionWarehouseView } from './ProductionWarehouseView';
 
 type WarehouseSectionTab = 'fabric' | 'accessories' | 'production';
-type FabricViewSubTab = 'inventory' | 'alerts';
+type FabricViewSubTab = 'inventory' | 'alerts' | 'audit';
+
+type FabricUsageBreakdownItem = {
+  label: string;
+  quantity: number;
+  percent: number;
+};
+
+/** صف جرد واحد لكل لون: الوارد الكلي مقابل المستهلك والمتبقي + توزيع الاستهلاك. */
+type FabricAuditRow = {
+  fabricId: string;
+  fabricName: string;
+  unit: string;
+  colorId: string;
+  colorCode: string;
+  colorName: string;
+  hexCode: string;
+  supplierName: string;
+  totalReceived: number;
+  totalConsumed: number;
+  totalReturned: number;
+  remaining: number;
+  reserved: number;
+  available: number;
+  sizeBreakdown: FabricUsageBreakdownItem[];
+  typeBreakdown: FabricUsageBreakdownItem[];
+  modelCodes: string[];
+  unlinkedConsumed: number;
+};
+
+/** بطاقة إحصائية صغيرة تُستخدم داخل تبويب جرد القماش. */
+const AuditStatCard: React.FC<{
+  label: string;
+  value: number;
+  unit: string;
+  tone: 'emerald' | 'rose' | 'sky' | 'amber' | 'slate';
+}> = ({ label, value, unit, tone }) => {
+  const tones: Record<string, string> = {
+    emerald: 'bg-emerald-50 border-emerald-200 text-emerald-900',
+    rose: 'bg-rose-50 border-rose-200 text-rose-900',
+    sky: 'bg-sky-50 border-sky-200 text-sky-900',
+    amber: 'bg-amber-50 border-amber-200 text-amber-900',
+    slate: 'bg-slate-50 border-slate-200 text-slate-900'
+  };
+  return (
+    <div className={`rounded-2xl border px-3 py-2 ${tones[tone] || tones.slate}`}>
+      <span className="block text-[10px] font-bold opacity-70">{label}</span>
+      <strong className="text-base font-black font-mono">{value}</strong>
+      <span className="text-[10px] font-bold opacity-70 ms-1">{unit}</span>
+    </div>
+  );
+};
+
+/** شريط توزيع استهلاك (فئات المقاسات / أنواع الموديلات). */
+const AuditBreakdownChips: React.FC<{
+  label: string;
+  icon: React.ReactNode;
+  items: FabricUsageBreakdownItem[];
+  unit: string;
+  tone: 'blue' | 'violet';
+}> = ({ label, icon, items, unit, tone }) => {
+  if (items.length === 0) return null;
+  const toneClass =
+    tone === 'blue'
+      ? 'bg-blue-50 border-blue-200 text-blue-900'
+      : 'bg-violet-50 border-violet-200 text-violet-900';
+  return (
+    <div className="space-y-1.5">
+      <span className="text-[11px] font-black text-slate-500 flex items-center gap-1.5">
+        {icon}
+        {label}
+      </span>
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((item) => (
+          <span
+            key={`${label}-${item.label}`}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-bold ${toneClass}`}
+          >
+            <span>{item.label}</span>
+            <strong className="font-mono">
+              {item.quantity} {unit}
+            </strong>
+            <span className="opacity-70">({item.percent}%)</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 export const WarehouseView: React.FC = () => {
   const {
@@ -40,12 +134,16 @@ export const WarehouseView: React.FC = () => {
     fabricColors,
     fabricTransactions,
     suppliers,
+    models,
+    requirements,
+    sizeDefs,
     accessoryItems,
     addFabricOrColor,
     recordTransaction,
     exportWarehouseInventoryCsv,
     exportFabricTransactionsCsv,
     updateColorPrice,
+    updateFabricColorDetails,
     hasPermission,
     canViewFabricPrices,
     canEditFabricPrices,
@@ -94,10 +192,13 @@ export const WarehouseView: React.FC = () => {
   // Advanced Search Filters (Task 1.1)
   const [colorSearchFilter, setColorSearchFilter] = useState<string>('');
   const [maxAvailableQtyFilter, setMaxAvailableQtyFilter] = useState<string>('');
+  const [supplierFilter, setSupplierFilter] = useState<string>('');
   const [searchAllFabrics, setSearchAllFabrics] = useState<boolean>(false);
 
   const hasActiveAdvancedFilters =
-    colorSearchFilter.trim() !== '' || maxAvailableQtyFilter.trim() !== '';
+    colorSearchFilter.trim() !== '' ||
+    maxAvailableQtyFilter.trim() !== '' ||
+    supplierFilter.trim() !== '';
 
   // Fallback if selected fabric was removed or not set
   const currentFabricId =
@@ -108,6 +209,65 @@ export const WarehouseView: React.FC = () => {
     currentFabricId === 'all'
       ? undefined
       : fabrics.find((f) => f.id === currentFabricId) || fabrics[0];
+
+  /**
+   * تحديد المورد المرتبط بلون القماش بترتيب الأولوية:
+   * 1) مورد الخامة المسجل (fabric.supplier_id)
+   * 2) الاسم النصي القديم للخامة (fabric.supplier)
+   * 3) أحدث حركة توريد (add) مسجلة على هذا اللون (supplier_id / supplier_name)
+   */
+  const resolveColorSupplier = (color: FabricColor): { id: string; name: string } | null => {
+    const fabric = fabrics.find((f) => f.id === color.fabric_id);
+    const fabricSupplierId = String(fabric?.supplier_id || '').trim();
+    if (fabricSupplierId) {
+      const registered = suppliers.find((s) => s.id === fabricSupplierId);
+      if (registered) return { id: registered.id, name: registered.name };
+    }
+
+    const legacyFabricSupplier = String(
+      (fabric as (Fabric & { supplier?: string }) | undefined)?.supplier || ''
+    ).trim();
+    if (legacyFabricSupplier) {
+      const registered = suppliers.find(
+        (s) => s.name.trim().toLowerCase() === legacyFabricSupplier.toLowerCase()
+      );
+      return { id: registered?.id || '', name: registered?.name || legacyFabricSupplier };
+    }
+
+    // fabricTransactions مرتبة من الأحدث للأقدم، لذا أول حركة توريد مطابقة هي الأحدث.
+    const receipt = fabricTransactions.find((t) => {
+      if (t.color_id !== color.id || t.operation !== 'add') return false;
+      const legacyName = String(
+        (t as FabricTransaction & { supplier_name?: string }).supplier_name || ''
+      ).trim();
+      return Boolean(String(t.supplier_id || '').trim()) || Boolean(legacyName);
+    });
+    if (!receipt) return null;
+
+    const receiptSupplierId = String(receipt.supplier_id || '').trim();
+    if (receiptSupplierId) {
+      const registered = suppliers.find((s) => s.id === receiptSupplierId);
+      if (registered) return { id: registered.id, name: registered.name };
+    }
+    const receiptSupplierName = String(
+      (receipt as FabricTransaction & { supplier_name?: string }).supplier_name || ''
+    ).trim();
+    if (!receiptSupplierName) return null;
+    const registered = suppliers.find(
+      (s) => s.name.trim().toLowerCase() === receiptSupplierName.toLowerCase()
+    );
+    return { id: registered?.id || '', name: registered?.name || receiptSupplierName };
+  };
+
+  const selectedSupplierOption = suppliers.find((s) => s.id === supplierFilter) || null;
+
+  const colorMatchesSupplierFilter = (color: FabricColor): boolean => {
+    if (!supplierFilter.trim() || !selectedSupplierOption) return true;
+    const supplier = resolveColorSupplier(color);
+    if (!supplier) return false;
+    if (supplier.id && supplier.id === selectedSupplierOption.id) return true;
+    return supplier.name.trim().toLowerCase() === selectedSupplierOption.name.trim().toLowerCase();
+  };
 
   // Base colors before advanced filters (if user searches across all fabrics or selected "all", include all fabrics)
   const baseColorsForView =
@@ -123,7 +283,8 @@ export const WarehouseView: React.FC = () => {
 
   // Apply Advanced Filters:
   // 1. Filter by Available Quantity less than user-specified number
-  // 2. Filter by Color (Color Name, Color Code, or Hex Code)
+  // 2. Search by Color (name/code/hex) + Fabric name + Supplier name/code
+  // 3. Filter by Supplier
   const filteredColorsForDisplay = baseColorsForView.filter((c) => {
     const availableQty = Number((c.quantity - c.reserved_quantity).toFixed(2));
 
@@ -137,7 +298,12 @@ export const WarehouseView: React.FC = () => {
       }
     }
 
-    // Filter 2: Search by color name, color code, or Hex code
+    // Filter 2: Supplier filter (موديل/مورد)
+    if (!colorMatchesSupplierFilter(c)) {
+      return false;
+    }
+
+    // Filter 3: Text search across color, fabric and supplier data
     if (colorSearchFilter.trim() !== '') {
       const q = colorSearchFilter.trim().toLowerCase();
       const qNoHash = q.replace(/^#/, '');
@@ -146,8 +312,12 @@ export const WarehouseView: React.FC = () => {
       const hexRaw = (c.hex_code || '').toLowerCase();
       const hexNoHash = hexRaw.replace(/^#/, '');
       const hexMatch = hexRaw.includes(q) || (qNoHash !== '' && hexNoHash.includes(qNoHash));
+      const fabric = fabrics.find((f) => f.id === c.fabric_id);
+      const fabricNameMatch = (fabric?.name || '').toLowerCase().includes(q);
+      const supplier = resolveColorSupplier(c);
+      const supplierNameMatch = (supplier?.name || '').toLowerCase().includes(q);
 
-      if (!nameMatch && !codeMatch && !hexMatch) {
+      if (!nameMatch && !codeMatch && !hexMatch && !fabricNameMatch && !supplierNameMatch) {
         return false;
       }
     }
@@ -220,6 +390,15 @@ export const WarehouseView: React.FC = () => {
     modelCodeRef: '',
     amount: 1,
     notes: ''
+  });
+
+  // Edit Color Details Modal State (تعديل كود/اسم/درجة/سعر اللون)
+  const [editingColor, setEditingColor] = useState<FabricColor | null>(null);
+  const [editColorForm, setEditColorForm] = useState({
+    color_code: '',
+    color_name: '',
+    hex_code: '#64748b',
+    price_per_unit: '0'
   });
 
   // Automatic low stock calculation across all warehouse fabrics (Strictly < minThreshold as requested: "تقل كميتها عن هذا الرقم")
@@ -372,6 +551,243 @@ export const WarehouseView: React.FC = () => {
   const handleClearAdvancedFilters = () => {
     setColorSearchFilter('');
     setMaxAvailableQtyFilter('');
+    setSupplierFilter('');
+  };
+
+  const handleOpenEditColor = (color: FabricColor) => {
+    setEditingColor(color);
+    setEditColorForm({
+      color_code: color.color_code || '',
+      color_name: color.color_name || '',
+      hex_code: /^#[0-9A-Fa-f]{6}$/.test(color.hex_code || '') ? color.hex_code : '#64748b',
+      price_per_unit: String(color.price_per_unit ?? 0)
+    });
+  };
+
+  const handleEditColorSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingColor) return;
+
+    const updates: {
+      color_code?: string;
+      color_name?: string;
+      hex_code?: string;
+      price_per_unit?: number;
+    } = {
+      color_code: editColorForm.color_code,
+      color_name: editColorForm.color_name,
+      hex_code: editColorForm.hex_code
+    };
+
+    // السعر يُعدّل فقط لمن يملك صلاحية تعديل أسعار الأقمشة.
+    if (canEditFabricPrices()) {
+      updates.price_per_unit = Math.max(0, parseFloat(editColorForm.price_per_unit) || 0);
+    }
+
+    const res = updateFabricColorDetails(editingColor.id, updates);
+    if (res.success) {
+      setEditingColor(null);
+    } else {
+      addFlashMessage(res.message, 'danger');
+    }
+  };
+
+  // ============================================================
+  // جرد القماش الشامل (وارد / مستهلك / متبقي + توزيع الاستهلاك)
+  // ============================================================
+  const roundQty = (value: number) => Math.round((Number(value) || 0) * 100) / 100;
+
+  const modelById = new Map<string, DesignModel>();
+  models.forEach((model) => modelById.set(model.id, model));
+  const modelByCode = new Map<string, DesignModel>();
+  models.forEach((model) => {
+    const code = (model.model_code || '').trim().toUpperCase();
+    if (code) modelByCode.set(code, model);
+  });
+
+  const fabricAuditRows: FabricAuditRow[] = [];
+
+  const buildAuditRowForColor = (fabric: Fabric, color: FabricColor) => {
+    const colorTransactions = fabricTransactions.filter((t) => t.color_id === color.id);
+    const deductTransactions = colorTransactions.filter((t) => t.operation === 'deduct');
+    const returnTransactions = colorTransactions.filter(
+      (t) => t.operation === 'add' && (t.notes || '').includes('إرجاع فائض')
+    );
+
+    const totalDeducted = roundQty(
+      deductTransactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
+    );
+    const totalReturned = roundQty(
+      returnTransactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
+    );
+    // المستهلك الصافي = إجمالي الصرف − مرتجعات فائض القص
+    const totalConsumed = roundQty(Math.max(0, totalDeducted - totalReturned));
+    // الرصيد الحالي هو المتبقي، وبالتالي إجمالي الوارد = المتبقي + المستهلك الصافي
+    const totalReceived = roundQty(color.quantity + totalConsumed);
+
+    const colorRequirements = requirements.filter((req) => req.color_id === color.id);
+    const requirementModelIds = Array.from(
+      new Set(colorRequirements.map((req) => req.model_id).filter(Boolean))
+    );
+
+    const usageByModelId = new Map<string, number>();
+    const usageByModelCode = new Map<string, number>();
+    let unlinkedConsumed = 0;
+
+    const attributeUsage = (transaction: FabricTransaction, signedAmount: number) => {
+      const modelCode = (transaction.model_code_ref || '').trim();
+      const model = modelCode ? modelByCode.get(modelCode.toUpperCase()) : undefined;
+
+      if (model) {
+        usageByModelId.set(model.id, (usageByModelId.get(model.id) || 0) + signedAmount);
+        return;
+      }
+
+      // لو الحركة غير مربوطة بكود موديل معروف: نوزعها على موديلات متطلبات هذا اللون.
+      if (requirementModelIds.length === 1) {
+        const modelId = requirementModelIds[0];
+        usageByModelId.set(modelId, (usageByModelId.get(modelId) || 0) + signedAmount);
+        return;
+      }
+      if (requirementModelIds.length > 1) {
+        const weights = requirementModelIds.map((modelId) => ({
+          modelId,
+          planned: colorRequirements
+            .filter((req) => req.model_id === modelId)
+            .reduce((sum, req) => sum + (Number(req.planned_quantity) || 0), 0)
+        }));
+        const totalPlanned = weights.reduce((sum, item) => sum + item.planned, 0);
+        weights.forEach(({ modelId, planned }) => {
+          const share = totalPlanned > 0 ? planned / totalPlanned : 1 / weights.length;
+          usageByModelId.set(modelId, (usageByModelId.get(modelId) || 0) + signedAmount * share);
+        });
+        return;
+      }
+
+      if (modelCode) {
+        usageByModelCode.set(modelCode, (usageByModelCode.get(modelCode) || 0) + signedAmount);
+      } else {
+        unlinkedConsumed += signedAmount;
+      }
+    };
+
+    deductTransactions.forEach((t) => attributeUsage(t, Number(t.amount) || 0));
+    returnTransactions.forEach((t) => attributeUsage(t, -(Number(t.amount) || 0)));
+
+    // تقسيم الاستهلاك على فئات المقاسات وأنواع الموديلات وأكواد الموديلات.
+    const sizeCategoryLabel = (model?: DesignModel) =>
+      (model?.size_category_id
+        ? sizeDefs.find((def) => def.id === model.size_category_id)?.name
+        : '') || 'فئة مقاس غير محددة';
+
+    const sizeTotals = new Map<string, number>();
+    const typeTotals = new Map<string, number>();
+    const usedModelCodes = new Set<string>();
+    let attributedConsumed = 0;
+
+    usageByModelId.forEach((rawQty, modelId) => {
+      const qty = roundQty(Math.max(0, rawQty));
+      if (qty <= 0) return;
+      const model = modelById.get(modelId);
+      attributedConsumed += qty;
+      if (model?.model_code) usedModelCodes.add(model.model_code);
+      const sizeLabel = sizeCategoryLabel(model);
+      const typeLabel = (model?.model_type || '').trim() || 'نوع موديل غير محدد';
+      sizeTotals.set(sizeLabel, (sizeTotals.get(sizeLabel) || 0) + qty);
+      typeTotals.set(typeLabel, (typeTotals.get(typeLabel) || 0) + qty);
+    });
+
+    usageByModelCode.forEach((rawQty, code) => {
+      const qty = roundQty(Math.max(0, rawQty));
+      if (qty <= 0) return;
+      attributedConsumed += qty;
+      usedModelCodes.add(code);
+      sizeTotals.set('فئة مقاس غير محددة', (sizeTotals.get('فئة مقاس غير محددة') || 0) + qty);
+      typeTotals.set('نوع موديل غير محدد', (typeTotals.get('نوع موديل غير محدد') || 0) + qty);
+    });
+
+    const unlinkedQty = roundQty(Math.max(0, unlinkedConsumed));
+    if (unlinkedQty > 0) {
+      sizeTotals.set('غير مرتبط بموديل', (sizeTotals.get('غير مرتبط بموديل') || 0) + unlinkedQty);
+      typeTotals.set('غير مرتبط بموديل', (typeTotals.get('غير مرتبط بموديل') || 0) + unlinkedQty);
+    }
+
+    // إظهار أكواد موديلات المتطلبات المرتبطة باللون حتى لو لم تُصرف كمياتها بعد.
+    requirementModelIds.forEach((modelId) => {
+      const code = modelById.get(modelId)?.model_code;
+      if (code) usedModelCodes.add(code);
+    });
+
+    const denominator = totalConsumed > 0 ? totalConsumed : attributedConsumed + unlinkedQty;
+    const toBreakdown = (totals: Map<string, number>): FabricUsageBreakdownItem[] =>
+      Array.from(totals.entries())
+        .map(([label, quantity]) => ({
+          label,
+          quantity: roundQty(quantity),
+          percent: denominator > 0 ? Math.round((quantity / denominator) * 1000) / 10 : 0
+        }))
+        .sort((a, b) => b.quantity - a.quantity);
+
+    const resolvedSupplier = resolveColorSupplier(color);
+
+    fabricAuditRows.push({
+      fabricId: fabric.id,
+      fabricName: fabric.name,
+      unit: fabric.unit || 'كيلو',
+      colorId: color.id,
+      colorCode: color.color_code,
+      colorName: color.color_name || '',
+      hexCode: color.hex_code || '#64748b',
+      supplierName: resolvedSupplier?.name || 'غير محدد',
+      totalReceived,
+      totalConsumed,
+      totalReturned,
+      remaining: roundQty(color.quantity),
+      reserved: roundQty(color.reserved_quantity),
+      available: roundQty(color.quantity - color.reserved_quantity),
+      sizeBreakdown: toBreakdown(sizeTotals),
+      typeBreakdown: toBreakdown(typeTotals),
+      modelCodes: Array.from(usedModelCodes).sort(),
+      unlinkedConsumed: unlinkedQty
+    });
+  };
+
+  fabrics.forEach((fabric) => {
+    fabricColors
+      .filter((color) => color.fabric_id === fabric.id)
+      .forEach((color) => buildAuditRowForColor(fabric, color));
+  });
+
+  // ألوان مرتبطة بخامة غير موجودة (بيانات قديمة/محذوفة) حتى لا تختفي من الجرد.
+  const registeredFabricIds = new Set(fabrics.map((f) => f.id));
+  fabricColors
+    .filter((color) => !registeredFabricIds.has(color.fabric_id))
+    .forEach((color) =>
+      buildAuditRowForColor(
+        { id: color.fabric_id, name: 'خامة غير محددة', description: '', unit: 'كيلو' } as Fabric,
+        color
+      )
+    );
+
+  const auditRowsByColorId = new Map(fabricAuditRows.map((row) => [row.colorId, row]));
+
+  const auditFabricOrder: { id: string; name: string; unit: string }[] = [];
+  fabricAuditRows.forEach((row) => {
+    if (!auditFabricOrder.some((f) => f.id === row.fabricId)) {
+      auditFabricOrder.push({ id: row.fabricId, name: row.fabricName, unit: row.unit });
+    }
+  });
+
+  const fabricAuditGroups = auditFabricOrder.map((fabric) => ({
+    fabric,
+    rows: fabricAuditRows.filter((row) => row.fabricId === fabric.id)
+  }));
+
+  const auditTotals = {
+    totalReceived: roundQty(fabricAuditRows.reduce((sum, row) => sum + row.totalReceived, 0)),
+    totalConsumed: roundQty(fabricAuditRows.reduce((sum, row) => sum + row.totalConsumed, 0)),
+    totalRemaining: roundQty(fabricAuditRows.reduce((sum, row) => sum + row.remaining, 0)),
+    totalAvailable: roundQty(fabricAuditRows.reduce((sum, row) => sum + row.available, 0))
   };
 
   return (
@@ -604,6 +1020,21 @@ export const WarehouseView: React.FC = () => {
                 </span>
               </button>
 
+              {/* Comprehensive Fabric Audit Page Button (جرد القماش والاستهلاك) */}
+              <button
+                type="button"
+                onClick={() => setFabricSubView(fabricSubView === 'audit' ? 'inventory' : 'audit')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-full border text-xs font-bold transition shadow-xs cursor-pointer ${
+                  fabricSubView === 'audit'
+                    ? 'bg-indigo-600 text-white border-indigo-700 shadow-indigo-500/20'
+                    : 'bg-indigo-50 text-indigo-900 border-indigo-300 hover:bg-indigo-100'
+                }`}
+                title="جرد شامل: إجمالي الوارد مقابل المستهلك والمتبقي + توزيع الاستهلاك"
+              >
+                <ClipboardList className="w-4 h-4" />
+                <span>📋 جرد القماش والاستهلاك</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setShowHistoryModal(true)}
@@ -825,6 +1256,211 @@ export const WarehouseView: React.FC = () => {
             </div>
           )}
 
+          {/* SUB-VIEW 3: COMPREHENSIVE FABRIC AUDIT (جرد القماش والاستهلاك) */}
+          {fabricSubView === 'audit' && (
+            <div className="space-y-6 animate-in fade-in duration-150">
+              {/* Audit Header + Warehouse Totals */}
+              <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-900 text-white rounded-3xl p-6 shadow-lg">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/15 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-2xl bg-white/15 flex items-center justify-center shrink-0">
+                      <ClipboardList className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h2 className="text-lg sm:text-xl font-black">جرد القماش والاستهلاك</h2>
+                      <p className="text-xs text-slate-300 mt-0.5 max-w-2xl">
+                        مقارنة إجمالي الوارد بالمستهلك الفعلي والمتبقي، مع توزيع الاستهلاك حسب فئة المقاس ونوع
+                        الموديل وأكواد الموديلات المستخدمة في كل لون.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowPrintInventoryModal(true)}
+                    className="flex items-center gap-2 px-4 py-2 rounded-full bg-white text-slate-900 hover:bg-slate-100 text-xs font-black transition shadow-sm cursor-pointer shrink-0"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>🖨️ طباعة تقرير الجرد</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
+                  {[
+                    { label: 'إجمالي الوارد', value: auditTotals.totalReceived, cls: 'text-emerald-300' },
+                    { label: 'إجمالي المستهلك', value: auditTotals.totalConsumed, cls: 'text-rose-300' },
+                    { label: 'المتبقي بالمخزن', value: auditTotals.totalRemaining, cls: 'text-sky-300' },
+                    { label: 'المتاح للتصميم', value: auditTotals.totalAvailable, cls: 'text-amber-300' }
+                  ].map((item) => (
+                    <div
+                      key={item.label}
+                      className="bg-white/10 border border-white/15 rounded-2xl px-3.5 py-2.5 backdrop-blur-xs"
+                    >
+                      <span className="block text-[10px] font-bold text-slate-300">{item.label}</span>
+                      <strong className={`text-xl font-black font-mono ${item.cls}`}>{item.value}</strong>
+                      <span className="text-[10px] font-bold text-slate-300 ms-1">كجم / وحدة</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {fabricAuditGroups.length === 0 ? (
+                <div className="bg-white rounded-3xl border border-slate-200 p-12 text-center text-slate-400">
+                  <ClipboardList className="w-12 h-12 mx-auto mb-2 text-slate-300" />
+                  <p className="font-semibold text-slate-600">لا توجد ألوان مسجلة بالمخزن لعرض الجرد.</p>
+                </div>
+              ) : (
+                fabricAuditGroups.map((group) => {
+                  const groupReceived = roundQty(
+                    group.rows.reduce((sum, row) => sum + row.totalReceived, 0)
+                  );
+                  const groupConsumed = roundQty(
+                    group.rows.reduce((sum, row) => sum + row.totalConsumed, 0)
+                  );
+                  const groupRemaining = roundQty(
+                    group.rows.reduce((sum, row) => sum + row.remaining, 0)
+                  );
+
+                  return (
+                    <div
+                      key={group.fabric.id}
+                      className="bg-white rounded-3xl border border-slate-200/90 shadow-xs overflow-hidden"
+                    >
+                      {/* رأس مجموعة الخامة: الإجماليات وعدد الألوان */}
+                      <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                          <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
+                          <h3 className="font-black text-sm text-slate-900">{group.fabric.name}</h3>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">
+                            {group.rows.length} لون • الوحدة: {group.fabric.unit}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-4 text-[11px] font-black">
+                          <span className="text-emerald-700">وارد: {groupReceived}</span>
+                          <span className="text-rose-700">مستهلك: {groupConsumed}</span>
+                          <span className="text-blue-700">متبقي: {groupRemaining}</span>
+                        </div>
+                      </div>
+
+                      <div className="divide-y divide-slate-100">
+                        {group.rows.map((row) => (
+                          <div key={row.colorId} className="p-4 sm:p-5 space-y-3">
+                            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <span
+                                  className="w-9 h-9 rounded-xl border border-slate-300 shrink-0 shadow-2xs"
+                                  style={{ backgroundColor: row.hexCode }}
+                                  title={row.hexCode}
+                                />
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <strong className="text-sm font-black text-slate-900">
+                                      {row.colorCode}
+                                    </strong>
+                                    {row.colorName && (
+                                      <span className="text-[11px] text-slate-500">({row.colorName})</span>
+                                    )}
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-100">
+                                      <Tag className="w-3 h-3" />
+                                      {row.supplierName}
+                                    </span>
+                                  </div>
+                                  <span className="block text-[10px] font-mono text-slate-400 mt-0.5">
+                                    {row.hexCode}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                <AuditStatCard
+                                  label="إجمالي الوارد"
+                                  value={row.totalReceived}
+                                  unit={group.fabric.unit}
+                                  tone="emerald"
+                                />
+                                <AuditStatCard
+                                  label="إجمالي المستهلك"
+                                  value={row.totalConsumed}
+                                  unit={group.fabric.unit}
+                                  tone="rose"
+                                />
+                                <AuditStatCard
+                                  label="المتبقي الفعلي"
+                                  value={row.remaining}
+                                  unit={group.fabric.unit}
+                                  tone="sky"
+                                />
+                                <AuditStatCard
+                                  label="المتاح بعد الحجز"
+                                  value={row.available}
+                                  unit={group.fabric.unit}
+                                  tone="amber"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Consumption Breakdown */}
+                            {row.totalConsumed > 0 ? (
+                              <div className="space-y-2.5 bg-slate-50/70 border border-slate-100 rounded-2xl p-3">
+                                <AuditBreakdownChips
+                                  label="توزيع الاستهلاك حسب فئة المقاس"
+                                  icon={<Ruler className="w-3.5 h-3.5 text-blue-600" />}
+                                  items={row.sizeBreakdown}
+                                  unit={group.fabric.unit}
+                                  tone="blue"
+                                />
+                                <AuditBreakdownChips
+                                  label="توزيع الاستهلاك حسب نوع الموديل"
+                                  icon={<Shirt className="w-3.5 h-3.5 text-violet-600" />}
+                                  items={row.typeBreakdown}
+                                  unit={group.fabric.unit}
+                                  tone="violet"
+                                />
+                                <div className="space-y-1.5">
+                                  <span className="text-[11px] font-black text-slate-500 flex items-center gap-1.5">
+                                    <Scissors className="w-3.5 h-3.5 text-slate-500" />
+                                    أكواد الموديلات المرتبطة بهذا اللون
+                                  </span>
+                                  {row.modelCodes.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {row.modelCodes.map((code) => (
+                                        <span
+                                          key={`${row.colorId}-${code}`}
+                                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white border border-slate-200 text-[11px] font-bold text-slate-700 font-mono"
+                                        >
+                                          <Boxes className="w-3 h-3 text-slate-400" />
+                                          {code}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <span className="text-[11px] text-slate-400 font-semibold">
+                                      لا توجد أكواد موديلات مرتبطة
+                                    </span>
+                                  )}
+                                </div>
+                                {row.unlinkedConsumed > 0 && (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-[11px] font-bold text-amber-900">
+                                    <AlertTriangle className="w-3 h-3" />
+                                    استهلاك غير مرتبط بموديل: {row.unlinkedConsumed} {group.fabric.unit}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-400">
+                                <Scissors className="w-3.5 h-3.5" />
+                                لا يوجد استهلاك مسجل على هذا اللون حتى الآن
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
           {/* SUB-VIEW 2: MAIN FABRIC INVENTORY & ADVANCED FILTERS */}
           {fabricSubView === 'inventory' && (
             <>
@@ -840,7 +1476,7 @@ export const WarehouseView: React.FC = () => {
                         فلاتر البحث المتقدمة في مخزن القماش
                       </h3>
                       <p className="text-[11px] text-slate-500">
-                        ابحث باللون (اسم اللون، كود اللون، أو Hex Code) أو اعرض الأقمشة التي تقل كميتها المتاحة عن رقم محدد
+                        ابحث باللون (اسم اللون، كود اللون، أو Hex Code) أو باسم الخامة أو اسم المورد، وفلتر حسب المورد أو حسب الكمية المتاحة
                       </p>
                     </div>
                   </div>
@@ -875,7 +1511,7 @@ export const WarehouseView: React.FC = () => {
                   <div className="lg:col-span-2">
                     <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
                       <Palette className="w-3.5 h-3.5 text-blue-600" />
-                      <span>فلتر البحث باللون (اسم اللون / كود اللون / Hex Code):</span>
+                      <span>فلتر البحث باللون (اسم اللون / كود اللون / Hex Code / اسم الخامة / اسم المورد):</span>
                     </label>
                     <div className="relative flex items-center gap-2">
                       <div className="relative flex-grow">
@@ -883,7 +1519,7 @@ export const WarehouseView: React.FC = () => {
                           type="text"
                           value={colorSearchFilter}
                           onChange={(e) => setColorSearchFilter(e.target.value)}
-                          placeholder="اكتب اسم اللون (مثال: أسود، كحلي) أو الكود (C-101) أو Hex (#3b82f6)..."
+                          placeholder="اكتب اسم اللون (مثال: أسود، كحلي) أو الكود (C-101) أو Hex (#3b82f6) أو اسم المورد..."
                           className="w-full ps-11 pe-9 py-3 rounded-2xl border-2 border-slate-200 bg-white text-sm font-semibold text-slate-800 shadow-xs placeholder:text-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-500/40 focus:outline-hidden"
                         />
                         <Search className="w-5 h-5 text-blue-500 absolute start-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -938,17 +1574,48 @@ export const WarehouseView: React.FC = () => {
                       )}
                     </div>
                   </div>
+
+                  {/* Filter 3: Supplier (المورد) */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
+                      <Tag className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>فلتر حسب المورد:</span>
+                    </label>
+                    <div className="relative">
+                      <select
+                        value={supplierFilter}
+                        onChange={(e) => setSupplierFilter(e.target.value)}
+                        className="w-full appearance-none px-4 py-3 rounded-2xl border-2 border-slate-200 bg-white text-sm font-bold text-slate-800 shadow-xs focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/40 focus:outline-hidden pe-10 cursor-pointer"
+                      >
+                        <option value="">كل الموردين</option>
+                        {suppliers.map((supplier) => (
+                          <option key={supplier.id} value={supplier.id}>
+                            {supplier.name}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown className="w-4 h-4 text-slate-400 absolute end-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+                  </div>
                 </div>
 
                 {hasActiveAdvancedFilters && (
-                  <div className="flex items-center justify-between bg-blue-50/80 border border-blue-200 px-4 py-2 rounded-xl text-xs font-bold text-blue-900">
+                  <div className="flex items-center justify-between bg-blue-50/80 border border-blue-200 px-4 py-2 rounded-xl text-xs font-bold text-blue-900 gap-3 flex-wrap">
                     <span>
                       نتائج الفلترة الحالية: تم العثور على ({filteredColorsForDisplay.length}) لون/قماش مطابق
                     </span>
-                    <span className="text-[11px] text-blue-700">
-                      {currentFabricId === 'all' || searchAllFabrics
-                        ? 'نطاق البحث: جميع الخامات بالمخزن'
-                        : `نطاق البحث: خامة ${selectedFabric?.name || ''}`}
+                    <span className="flex items-center gap-3 text-[11px] text-blue-700">
+                      {selectedSupplierOption && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-indigo-200 text-indigo-800">
+                          <Tag className="w-3 h-3" />
+                          المورد: {selectedSupplierOption.name}
+                        </span>
+                      )}
+                      <span>
+                        {currentFabricId === 'all' || searchAllFabrics
+                          ? 'نطاق البحث: جميع الخامات بالمخزن'
+                          : `نطاق البحث: خامة ${selectedFabric?.name || ''}`}
+                      </span>
                     </span>
                   </div>
                 )}
@@ -1047,7 +1714,15 @@ export const WarehouseView: React.FC = () => {
                           ({ id: color.fabric_id, name: 'خامة', unit: 'كيلو' } as Fabric);
                         const availableQty = Number((color.quantity - color.reserved_quantity).toFixed(2));
                         const isLow = availableQty < minThreshold;
-                        const currentSupplier = suppliers.find((s) => s.id === colorFabric?.supplier_id);
+                        const resolvedSupplier = resolveColorSupplier(color);
+                        const currentSupplier =
+                          suppliers.find(
+                            (s) =>
+                              (Boolean(resolvedSupplier?.id) && s.id === resolvedSupplier?.id) ||
+                              (Boolean(resolvedSupplier?.name) &&
+                                s.name.trim().toLowerCase() ===
+                                  (resolvedSupplier?.name || '').trim().toLowerCase())
+                          ) || undefined;
 
                         return (
                           <div
@@ -1095,6 +1770,17 @@ export const WarehouseView: React.FC = () => {
                                   {colorFabric?.name}
                                 </span>
                               )}
+                              {canEdit && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEditColor(color)}
+                                  className="absolute top-2 end-2 w-8 h-8 rounded-full bg-white/90 hover:bg-white text-slate-800 shadow-sm flex items-center justify-center transition cursor-pointer"
+                                  title="تعديل بيانات اللون (الكود / الاسم / الدرجة / السعر)"
+                                  aria-label={`تعديل بيانات اللون ${color.color_code}`}
+                                >
+                                  <Pencil className="w-4 h-4" />
+                                </button>
+                              )}
                             </div>
 
                             {/* Card Body */}
@@ -1138,6 +1824,17 @@ export const WarehouseView: React.FC = () => {
                                       (محجوز لموديلات بالتصميم: {color.reserved_quantity} {colorFabric?.unit})
                                     </span>
                                   )}
+                                </div>
+
+                                {/* Supplier Badge (المورد المرتبط بالخامة/حركة التوريد) */}
+                                <div className="mb-3 flex items-center justify-center gap-1.5 text-[11px] font-bold text-slate-600 bg-indigo-50/60 py-1.5 px-3 rounded-xl border border-indigo-100">
+                                  <Tag className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                                  <span className="truncate">
+                                    المورد:{' '}
+                                    <strong className={resolvedSupplier?.name ? 'text-indigo-900' : 'text-slate-400'}>
+                                      {resolvedSupplier?.name || 'غير محدد'}
+                                    </strong>
+                                  </span>
                                 </div>
 
                                 {/* Price per unit - Restricted by Permission */}
@@ -1486,6 +2183,155 @@ export const WarehouseView: React.FC = () => {
             </div>
           )}
 
+          {/* Modal: Edit Fabric Color Details (تعديل كود/اسم/درجة/سعر اللون) */}
+          {editingColor && (
+            <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto">
+                <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-xl bg-blue-50 text-blue-600">
+                      <Pencil className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-base text-slate-900">تعديل بيانات اللون</h3>
+                      <span className="block text-[11px] text-slate-500">
+                        الخامة:{' '}
+                        {fabrics.find((f) => f.id === editingColor.fabric_id)?.name || 'خامة غير محددة'}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEditingColor(null)}
+                    className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
+                    aria-label="إغلاق"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <form onSubmit={handleEditColorSubmit} className="space-y-4 mt-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1">كود اللون *</label>
+                      <input
+                        type="text"
+                        required
+                        value={editColorForm.color_code}
+                        onChange={(e) =>
+                          setEditColorForm({ ...editColorForm, color_code: e.target.value })
+                        }
+                        placeholder="مثال: C-101"
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm font-bold focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1">اسم اللون</label>
+                      <input
+                        type="text"
+                        value={editColorForm.color_name}
+                        onChange={(e) =>
+                          setEditColorForm({ ...editColorForm, color_name: e.target.value })
+                        }
+                        placeholder="مثال: كحلي"
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1">
+                      درجة اللون (Hex Code)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={
+                          /^#[0-9A-Fa-f]{6}$/.test(editColorForm.hex_code)
+                            ? editColorForm.hex_code
+                            : '#64748b'
+                        }
+                        onChange={(e) =>
+                          setEditColorForm({ ...editColorForm, hex_code: e.target.value })
+                        }
+                        title="اختر درجة اللون"
+                        className="w-12 h-11 p-1 rounded-xl border border-slate-300 bg-white cursor-pointer shrink-0"
+                      />
+                      <input
+                        type="text"
+                        required
+                        pattern="^#[0-9A-Fa-f]{6}$"
+                        title="اكتب كود اللون بصيغة Hex مثل #3b82f6"
+                        value={editColorForm.hex_code}
+                        onChange={(e) =>
+                          setEditColorForm({ ...editColorForm, hex_code: e.target.value })
+                        }
+                        placeholder="#3b82f6"
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm font-mono font-bold focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                      />
+                    </div>
+                    {/* معاينة حية للدرجة */}
+                    <div className="mt-2 flex items-center gap-2">
+                      <span
+                        className="w-full h-9 rounded-xl border border-slate-300 shadow-inner"
+                        style={{
+                          backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(editColorForm.hex_code)
+                            ? editColorForm.hex_code
+                            : '#e2e8f0'
+                        }}
+                      />
+                      <span className="text-[11px] font-mono font-bold text-slate-500 shrink-0">
+                        {/^#[0-9A-Fa-f]{6}$/.test(editColorForm.hex_code)
+                          ? editColorForm.hex_code
+                          : '#N/A'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* السعر متاح فقط لمن يملك صلاحية تعديل أسعار الأقمشة */}
+                  {canEditFabricPrices() && (
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1">
+                        سعر الوحدة (ج.م /{' '}
+                        {fabrics.find((f) => f.id === editingColor.fabric_id)?.unit || 'كيلو'})
+                      </label>
+                      <div className="relative">
+                        <Coins className="w-4 h-4 text-amber-600 absolute start-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={editColorForm.price_per_unit}
+                          onChange={(e) =>
+                            setEditColorForm({ ...editColorForm, price_per_unit: e.target.value })
+                          }
+                          className="w-full ps-10 pe-4 py-2.5 rounded-xl border border-slate-300 text-sm font-bold focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                          placeholder="0.00"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <button
+                      type="submit"
+                      className="flex-1 py-3 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm transition shadow-lg shadow-blue-500/20 cursor-pointer"
+                    >
+                      حفظ التعديلات
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingColor(null)}
+                      className="px-5 py-3 rounded-full border border-slate-300 text-slate-700 hover:bg-slate-50 font-bold text-sm transition cursor-pointer"
+                    >
+                      إلغاء
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
           {/* Modal 3: Transaction History Drawer */}
           {showHistoryModal && (
             <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1769,7 +2615,7 @@ export const WarehouseView: React.FC = () => {
                         معاينة تقرير جرد مخزن الأقمشة والخامات
                       </h3>
                       <p className="text-xs text-slate-500">
-                        كشف جرد مفصل لجميع الخامات والألوان والأرصدة الفعلية والمحجوزة
+                        كشف جرد مفصل لجميع الخامات والألوان: الوارد مقابل المستهلك والرصيد الفعلي والمحجوز
                       </p>
                     </div>
                   </div>
@@ -1824,7 +2670,7 @@ export const WarehouseView: React.FC = () => {
                   </div>
 
                   {/* Summary Bar */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-center">
                     <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
                       <span className="text-[11px] text-slate-600 block font-bold">عدد أصناف الأقمشة</span>
                       <strong className="text-lg text-slate-900 font-black">{fabrics.length}</strong>
@@ -1832,6 +2678,14 @@ export const WarehouseView: React.FC = () => {
                     <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
                       <span className="text-[11px] text-slate-600 block font-bold">إجمالي ألوان القماش</span>
                       <strong className="text-lg text-slate-900 font-black">{fabricColors.length}</strong>
+                    </div>
+                    <div className="p-2.5 bg-emerald-50 rounded-md border border-emerald-400">
+                      <span className="text-[11px] text-emerald-800 block font-bold">إجمالي الوارد</span>
+                      <strong className="text-lg text-emerald-900 font-black">{auditTotals.totalReceived}</strong>
+                    </div>
+                    <div className="p-2.5 bg-rose-50 rounded-md border border-rose-400">
+                      <span className="text-[11px] text-rose-800 block font-bold">إجمالي المستهلك</span>
+                      <strong className="text-lg text-rose-900 font-black">{auditTotals.totalConsumed}</strong>
                     </div>
                     <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
                       <span className="text-[11px] text-slate-600 block font-bold">إجمالي الرصيد الفعلي (كجم/توب)</span>
@@ -1857,6 +2711,8 @@ export const WarehouseView: React.FC = () => {
                           <th className="border border-slate-800 px-3 py-2">كود اللون</th>
                           <th className="border border-slate-800 px-3 py-2">اسم اللون</th>
                           <th className="border border-slate-800 px-3 py-2 text-center">الرصيد الفعلي</th>
+                          <th className="border border-slate-800 px-3 py-2 text-center">إجمالي الوارد</th>
+                          <th className="border border-slate-800 px-3 py-2 text-center">إجمالي المستهلك</th>
                           <th className="border border-slate-800 px-3 py-2 text-center">المحجوز</th>
                           <th className="border border-slate-800 px-3 py-2 text-center">المتاح للتصميم</th>
                           <th className="border border-slate-800 px-3 py-2 text-center">الوحدة</th>
@@ -1873,6 +2729,7 @@ export const WarehouseView: React.FC = () => {
                           const fab = fabrics.find((f) => f.id === color.fabric_id);
                           const avail = Number((color.quantity - color.reserved_quantity).toFixed(2));
                           const totalVal = (color.price_per_unit || 0) * color.quantity;
+                          const auditRow = auditRowsByColorId.get(color.id);
 
                           return (
                             <tr key={color.id} className="hover:bg-slate-50 transition">
@@ -1889,6 +2746,12 @@ export const WarehouseView: React.FC = () => {
                               <td className="border border-slate-800 px-3 py-2 font-mono font-bold text-slate-900">{color.color_code}</td>
                               <td className="border border-slate-800 px-3 py-2 text-slate-700">{color.color_name || '-'}</td>
                               <td className="border border-slate-800 px-3 py-2 text-center font-bold text-slate-900">{color.quantity}</td>
+                              <td className="border border-slate-800 px-3 py-2 text-center font-bold text-emerald-800">
+                                {auditRow ? auditRow.totalReceived : color.quantity}
+                              </td>
+                              <td className="border border-slate-800 px-3 py-2 text-center font-bold text-rose-800">
+                                {auditRow ? auditRow.totalConsumed : 0}
+                              </td>
                               <td className="border border-slate-800 px-3 py-2 text-center font-bold text-slate-900">{color.reserved_quantity}</td>
                               <td className="border border-slate-800 px-3 py-2 text-center font-black text-slate-900">{avail}</td>
                               <td className="border border-slate-800 px-3 py-2 text-center text-slate-700">{fab?.unit || 'كيلو'}</td>

@@ -620,7 +620,8 @@ def get_models_report(metric='models', date_from=None, date_to=None, composition
     start = _parse_iso_date(date_from)
     end = _parse_iso_date(date_to)
 
-    qs = ModelItem.objects.all()
+    # الموديلات المحذوفة (حذفاً ناعماً) لا تظهر في أي تقرير.
+    qs = ModelItem.objects.filter(is_deleted=False)
     if start:
         qs = qs.filter(created_at__date__gte=start)
     if end:
@@ -636,7 +637,14 @@ def get_models_report(metric='models', date_from=None, date_to=None, composition
         'size_category_id', 'model_type', 'status', 'total_cut_pieces', 'garment_composition',
     ))
 
-    size_defs = {str(item.id): item for item in SizeDef.objects.all()}
+    # فئة المقاس تُخزَّن في الموديل بالمعرف الخارجي (client_id) بينما قد يقارن
+    # التقرير بالمعرف الداخلي (pk)؛ لذا نفهرس الفئتين معاً حتى لا تسقط الفئات
+    # الحقيقية في خانة "بدون فئة مقاس".
+    size_defs = {}
+    for item in SizeDef.objects.all():
+        size_defs[str(item.id)] = item
+        if item.client_id:
+            size_defs[str(item.client_id)] = item
     buckets = {}
 
     def _bucket(key, name, values):
@@ -698,7 +706,8 @@ def get_models_report(metric='models', date_from=None, date_to=None, composition
     stage_breakdown.sort(key=lambda item: item['models_count'], reverse=True)
 
     model_types = list(
-        ModelItem.objects.exclude(model_type__isnull=True).exclude(model_type='')
+        ModelItem.objects.filter(is_deleted=False)
+        .exclude(model_type__isnull=True).exclude(model_type='')
         .values_list('model_type', flat=True).distinct().order_by('model_type')
     )
 
@@ -975,7 +984,8 @@ def get_quality_shortage_report(search=None, sort='shortage', date_from=None, da
     start = _parse_iso_date(date_from)
     end = _parse_iso_date(date_to)
 
-    qs = ModelItem.objects.all()
+    # استبعاد الموديلات المحذوفة من تقرير العجز أيضاً.
+    qs = ModelItem.objects.filter(is_deleted=False)
     if search:
         qs = qs.filter(model_code__icontains=search.strip())
     if start:

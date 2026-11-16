@@ -227,6 +227,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ price_per_unit: price })
     }),
+  updateFabricColor: (
+    colorId: string,
+    data: { color_code?: string; color_name?: string; hex_code?: string; price_per_unit?: number }
+  ) =>
+    request<any>(`/fabric-colors/${encodeURIComponent(colorId)}/`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    }),
 
   // الإكسسوارات والتصنيفات وحركات الصرف (Accessories)
   getAccessoryTypes: () => request<any[]>('/accessory-types/'),

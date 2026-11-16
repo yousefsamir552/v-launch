@@ -284,6 +284,86 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
       });
   };
 
+  /**
+   * تعديل بيانات لون القماش الأساسية (كود اللون، اسم اللون، درجة اللون، وسعر الوحدة).
+   * يتم التحديث محلياً فوراً (Optimistic) ثم يُثبّت في الباك إند، مع الرجوع للحالة السابقة عند الفشل.
+   */
+  const updateFabricColorDetails = (
+    colorId: string,
+    updates: { color_code?: string; color_name?: string; hex_code?: string; price_per_unit?: number }
+  ) => {
+    const current = fabricColors.find((c) => c.id === colorId);
+    if (!current) return { success: false, message: 'اللون غير موجود' };
+
+    const payload: {
+      color_code?: string;
+      color_name?: string;
+      hex_code?: string;
+      price_per_unit?: number;
+    } = {};
+
+    if (updates.color_code !== undefined) {
+      const cleanCode = updates.color_code.trim();
+      if (!cleanCode) return { success: false, message: 'كود اللون مطلوب ولا يمكن تركه فارغاً' };
+      const duplicate = fabricColors.find(
+        (c) =>
+          c.id !== colorId &&
+          c.fabric_id === current.fabric_id &&
+          c.color_code.trim().toLowerCase() === cleanCode.toLowerCase()
+      );
+      if (duplicate) {
+        return { success: false, message: `كود اللون (${cleanCode}) مسجل بالفعل على نفس الخامة` };
+      }
+      payload.color_code = cleanCode;
+    }
+    if (updates.color_name !== undefined) payload.color_name = updates.color_name.trim();
+    if (updates.hex_code !== undefined) payload.hex_code = updates.hex_code.trim() || '#64748b';
+    if (updates.price_per_unit !== undefined) {
+      payload.price_per_unit = Math.max(0, Number(updates.price_per_unit) || 0);
+    }
+
+    if (Object.keys(payload).length === 0) {
+      return { success: false, message: 'لا توجد بيانات جديدة لتحديثها' };
+    }
+
+    setFabricColors((prev) => prev.map((c) => (c.id === colorId ? { ...c, ...payload } : c)));
+
+    api
+      .updateFabricColor(colorId, payload)
+      .then((saved) => {
+        setFabricColors((prev) =>
+          prev.map((c) =>
+            c.id === colorId
+              ? {
+                  ...c,
+                  color_code: saved?.color_code ?? payload.color_code ?? c.color_code,
+                  color_name: saved?.color_name ?? payload.color_name ?? c.color_name,
+                  hex_code: saved?.hex_code ?? payload.hex_code ?? c.hex_code,
+                  price_per_unit: saved?.price_per_unit ?? payload.price_per_unit ?? c.price_per_unit
+                }
+              : c
+          )
+        );
+        const label = saved?.color_code || payload.color_code || current.color_code;
+        const changedParts: string[] = [];
+        if (payload.color_code !== undefined) changedParts.push(`الكود: ${payload.color_code}`);
+        if (payload.color_name !== undefined) changedParts.push(`الاسم: ${payload.color_name || 'بدون'}`);
+        if (payload.hex_code !== undefined) changedParts.push(`الدرجة: ${payload.hex_code}`);
+        if (payload.price_per_unit !== undefined) changedParts.push(`السعر: ${payload.price_per_unit}`);
+        logAction(
+          'مخزن الأقمشة',
+          `تعديل بيانات اللون ${label}${changedParts.length ? ` (${changedParts.join(' • ')})` : ''}`
+        );
+        addFlashMessage(`تم تحديث بيانات اللون ${label} بنجاح`);
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل تحديث بيانات اللون في الباك إند', 'danger');
+      });
+
+    return { success: true, message: 'تم تحديث بيانات اللون بنجاح' };
+  };
+
   // Accessories Actions
   const addAccessoryType = (name: string, description: string = '') => {
     const trimmed = name.trim();
@@ -587,6 +667,7 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
     recordTransaction,
     exportWarehouseInventoryCsv,
     updateColorPrice,
+    updateFabricColorDetails,
     addAccessoryType,
     addAccessoryItem,
     updateAccessoryItem,
