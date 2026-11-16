@@ -2,6 +2,8 @@
 في المراسلات، فرض قسم كل إجراء على الموديلات، تدوير رمز الجلسة عند الخروج،
 وحماية مرتب الموظفين.
 """
+from datetime import date
+
 from django.http import Http404
 from django.test import TestCase
 from django.utils import timezone
@@ -29,6 +31,7 @@ from .serializers import (
     ModelItemSerializer, HREmployeeSerializer,
 )
 from .services import dispatch_model_to_sewing_service
+from .hr_reports import HRReportsViewSet
 from .views import (
     AuthViewSet, StateViewSet, InternalMessageViewSet, ModelItemViewSet,
     FabricColorViewSet, AccessoryViewSet, resolve_supplier_link,
@@ -709,5 +712,140 @@ class FabricSectionViewOnlyPermissionTests(PermissionTestBase):
         response = client.post('/api/fabrics/', {'name': 'قماش مصرح'}, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertTrue(Fabric.objects.filter(name='قماش مصرح').exists())
+
+
+
+class HRLoansPenaltiesReadIsolationTests(PermissionTestBase):
+    """قراءة السلف/الجزاءات محصورة على تبويباتها + المرتبات/التقارير.
+
+    ``required_hr_section`` يأتي بصيغة 'loans'/'penalties' بينما مفاتيح الصلاحيات
+    'hr_loans'/'hr_penalties'؛ يضمن هذا الاختبار أن القيود مُطبّقة فعلياً وليست
+    كوداً ميتاً (أي أن مستخدم تبويب الموظفين لا يقرأ السلف/الجزاءات).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+
+    def _get_as(self, user, path):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {user.auth_token}')
+        return self.client.get(path)
+
+    def test_employees_only_viewer_cannot_read_loans_or_penalties(self):
+        self.assertEqual(
+            self._get_as(self.accounts_user, '/api/hr-loans/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self._get_as(self.accounts_user, '/api/hr-penalties/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_payroll_viewer_can_read_loans_and_penalties(self):
+        user = make_user('payroll-reader', make_role('payroll-sections', hr_payroll=True))
+        self.assertEqual(
+            self._get_as(user, '/api/hr-loans/').status_code, status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self._get_as(user, '/api/hr-penalties/').status_code, status.HTTP_200_OK,
+        )
+
+    def test_reports_viewer_can_read_loans_and_penalties(self):
+        user = make_user('reports-reader', make_role('reports-sections', hr_reports=True))
+        self.assertEqual(
+            self._get_as(user, '/api/hr-loans/').status_code, status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self._get_as(user, '/api/hr-penalties/').status_code, status.HTTP_200_OK,
+        )
+
+    def test_loans_viewer_can_read_penalties(self):
+        # قراءة الجزاءات مسموحة أيضاً لتبويب السلف (خصم مشترك في المرتب).
+        user = make_user('loans-reader', make_role('loans-only', hr_loans=True))
+        self.assertEqual(
+            self._get_as(user, '/api/hr-loans/').status_code, status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self._get_as(user, '/api/hr-penalties/').status_code, status.HTTP_200_OK,
+        )
+
+    def test_attendance_only_viewer_cannot_read_loans_or_penalties(self):
+        user = make_user('attendance-reader', make_role('attendance-only', hr_attendance=True))
+        self.assertEqual(
+            self._get_as(user, '/api/hr-loans/').status_code, status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self._get_as(user, '/api/hr-penalties/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_penalties_viewer_cannot_read_loans(self):
+        user = make_user('penalties-reader', make_role('penalties-only', hr_penalties=True))
+        self.assertEqual(
+            self._get_as(user, '/api/hr-penalties/').status_code, status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self._get_as(user, '/api/hr-loans/').status_code, status.HTTP_403_FORBIDDEN,
+        )
+
+
+class HRReportsSalaryMaskingTests(PermissionTestBase):
+    """من يملك hr_reports فقط لا يرى أي رقم رواتب في تقرير HR."""
+
+    MONTH_KEY = '2026-01'
+
+    def _payload(self, can_view_salaries):
+        row = {
+            'earned_base': 5000.0,
+            'overtime_pay': 100.0,
+            'loan_amount': 50.0,
+            'deductions': 20.0,
+            'net_pay': 5030.0,
+        }
+        return HRReportsViewSet._build_payload(
+            year=2026,
+            today=date(2026, 1, 15),
+            year_months=[self.MONTH_KEY],
+            range_months=[self.MONTH_KEY],
+            range_from_key=self.MONTH_KEY,
+            range_to_key=self.MONTH_KEY,
+            range_start=date(2026, 1, 1),
+            range_end=date(2026, 1, 31),
+            employees=[self.employee],
+            employee_rows={self.employee.id: {self.MONTH_KEY: row}},
+            active_workers=1,
+            window_records=[],
+            window_loans=[],
+            available_years=[2026],
+            can_view_salaries=can_view_salaries,
+        )
+
+    def test_reports_only_viewer_gets_zeroed_salary_fields(self):
+        payload = self._payload(can_view_salaries=False)
+        month_row = payload['annual']['months'][0]
+        self.assertEqual(month_row['earned_salary'], 0.0)
+        self.assertEqual(month_row['net_paid'], 0.0)
+        self.assertEqual(payload['annual']['kpis']['net_salary_total'], 0.0)
+        self.assertEqual(payload['annual']['kpis']['avg_monthly_labor_cost'], 0.0)
+        self.assertEqual(payload['range']['comparison'][0]['net'], 0.0)
+        self.assertIsNone(payload['range']['comparison'][0]['net_change_pct'])
+        for dept_row in payload['range']['department_breakdown']:
+            self.assertEqual(dept_row['earned'], 0.0)
+            self.assertEqual(dept_row['net'], 0.0)
+            self.assertEqual(dept_row['percent'], 0.0)
+        for dept_rows in payload['annual']['monthly_departments'].values():
+            for dept_row in dept_rows:
+                self.assertEqual(dept_row['earned'], 0.0)
+                self.assertEqual(dept_row['net'], 0.0)
+
+    def test_payroll_viewer_keeps_salary_fields(self):
+        payload = self._payload(can_view_salaries=True)
+        month_row = payload['annual']['months'][0]
+        self.assertEqual(month_row['earned_salary'], 5000.0)
+        self.assertEqual(month_row['net_paid'], 5030.0)
+        self.assertEqual(payload['annual']['kpis']['net_salary_total'], 5030.0)
+        dept_row = payload['range']['department_breakdown'][0]
+        self.assertEqual(dept_row['earned'], 5000.0)
+        self.assertEqual(dept_row['net'], 5030.0)
 
 

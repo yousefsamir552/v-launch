@@ -216,15 +216,19 @@ class CanManageHR(permissions.BasePermission):
 
         required_section = getattr(view, 'required_hr_section', None)
         if required_section:
+            # الـ views تعلن القسم بصيغة 'loans'/'penalties' بينما مفاتيح الصلاحيات
+            # هي 'hr_loans'/'hr_penalties' — نوحّدها قبل أي مقارنة، وإلا صارت
+            # قيود القراءة أدناه مجرد كود ميت لا يُنفَّذ أبداً.
             perm_key = HR_SECTION_PERM_MAP.get(required_section, required_section)
             if profile.has_perm(perm_key):
                 return True
             # قراءة البيانات المساندة (وظائف/موظفين/إعدادات) متاحة لأي تبويب HR
-            # حتى تعمل شاشات السلف/الجزاءات/المرتبات بشكل صحيح.
+            # حتى تعمل شاشات السلف/الجزاءات/المرتبات بشكل صحيح، لكن بيانات
+            # السلف/الجزاءات المالية نفسها لا تُقرأ إلا من التبويبات المخوّلة بها.
             if request.method in permissions.SAFE_METHODS:
-                if required_section == 'hr_loans':
+                if perm_key == 'hr_loans':
                     return any(profile.has_perm(k) for k in ('hr_loans', 'hr_payroll', 'hr_reports'))
-                if required_section == 'hr_penalties':
+                if perm_key == 'hr_penalties':
                     return any(profile.has_perm(k) for k in ('hr_penalties', 'hr_loans', 'hr_payroll', 'hr_reports'))
                 if any(profile.has_perm(key) for key in HR_PERM_KEYS):
                     return True

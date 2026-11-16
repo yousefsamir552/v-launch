@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Users, Briefcase, Clock, Wallet, Scale, Banknote, RefreshCw,
-  Download, UsersRound, BarChart3
+  Download, UsersRound, BarChart3, FileSpreadsheet
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { HRReportsView } from './HRReportsView';

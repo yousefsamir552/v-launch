@@ -651,11 +651,19 @@ class HRReportsViewSet(viewsets.ViewSet):
             for c_row in comparison:
                 c_row['net'] = 0.0
                 c_row['net_change_pct'] = None
-            for d_row in department_breakdown:
-                d_row['net_salary'] = 0.0
+
+            # صفوف الأقسام تُرجع المفاتيح earned/overtime/loans/deductions/net/percent
+            # (ولا يوجد مفتاح اسمه net_salary)، لذا نُصفّر حقول الرواتب الفعلية كلها
+            # وإلا بقيت تكلفة العمالة مكشوفة لمن لا يملك صلاحية الرواتب.
+            def _scrub_department_rows(rows):
+                for d_row in rows:
+                    for field in ('earned', 'overtime', 'loans', 'deductions', 'net', 'percent'):
+                        if field in d_row:
+                            d_row[field] = 0.0
+
+            _scrub_department_rows(department_breakdown)
             for m_depts in monthly_departments.values():
-                for d_row in m_depts:
-                    d_row['net_salary'] = 0.0
+                _scrub_department_rows(m_depts)
 
         return {
             'available_years': available_years,
