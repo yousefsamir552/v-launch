@@ -19,7 +19,7 @@ import { printManualCountSheet } from '../utils/printManualCountSheet';
 import { isImageLogo } from '../utils/printShared';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel, stageRank, stageBeyond } from '../utils/completedModels';
-import { resolveDefaultGoodQtyForCell } from '../utils/qcCutDefaults';
+import { resolveDefaultGoodQtyForCell, findSavedQcCell } from '../utils/qcCutDefaults';
 
 type QCPartCard = { model: Model; part: GarmentPart };
 
@@ -185,9 +185,8 @@ export const QCView: React.FC = () => {
 
     colors.forEach((col) => {
       sizes.forEach((sz) => {
-        const match = existingStageRecs.find(
-          (r) => r.color_name === col && r.size === sz
-        );
+        const match = findSavedQcCell(existingStageRecs, col, sz);
+
         if (match) {
           initialMatrix[makeCellKey(col, sz)] = {
             good: Number(match.good_qty ?? match.counted_pieces ?? 0),

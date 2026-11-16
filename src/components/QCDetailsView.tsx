@@ -24,7 +24,8 @@ import { printManualCountSheet } from '../utils/printManualCountSheet';
 import { isImageLogo } from '../utils/printShared';
 import { stageBeyond } from '../utils/completedModels';
 import {
-  resolveDefaultGoodQtyForCell
+  resolveDefaultGoodQtyForCell,
+  findSavedQcCell
 } from '../utils/qcCutDefaults';
 
 interface QCDetailsViewProps {
@@ -150,7 +151,8 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
 
     colorList.forEach((col) => {
       sizeList.forEach((sz) => {
-        const match = stageRecs.find((r) => r.color_name === col && r.size === sz);
+        const match = findSavedQcCell(stageRecs, col, sz);
+
         if (match) {
           nextMatrix[makeCellKey(col, sz)] = {
             good: Number(match.good_qty ?? match.counted_pieces ?? 0),
@@ -225,12 +227,12 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
         (r) =>
           r.model_id === modelId &&
           r.stage === selectedStage &&
-          (r.part_type || 'shirt') === part
+          normalizePartKey(r.part_type || r.partType || 'shirt') === part
       );
       const matrix: Record<string, { good: number; defect: number }> = {};
       partColors.forEach((col) => {
         sizeList.forEach((sz) => {
-          const match = partRecs.find((r) => r.color_name === col && r.size === sz);
+          const match = findSavedQcCell(partRecs, col, sz);
           matrix[makeCellKey(col, sz)] = {
             good: match ? Number(match.good_qty ?? match.counted_pieces ?? 0) : 0,
             defect: match ? Number(match.defect_qty ?? match.defect_pieces ?? 0) : 0

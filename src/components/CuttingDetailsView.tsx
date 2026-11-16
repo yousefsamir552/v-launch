@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   Scissors,
@@ -29,6 +29,15 @@ interface CuttingDetailsViewProps {
   onFinishedToQC: () => void;
 }
 
+/** قيمة خيار "كتابة لون آخر يدوياً" في قائمة اختيار ألوان الفرشة. */
+const CUSTOM_COLOR_OPTION = '__custom_color__';
+
+/**
+ * صف ألوان الفرشة + علم محلي يوضح أن العامل اختار كتابة لون يدوياً.
+ * العلم محلي فقط ولا يُرسل للباك إند (طبقات الفرشة تُعاد بناؤها صراحةً عند الحفظ).
+ */
+type SpreadLayerRow = CuttingSpreadLayer & { isCustomColor?: boolean };
+
 export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   modelId,
   onBack,
@@ -52,7 +61,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     hasPermission,
     hasSpecificPermission,
     canAddCuttingNotes,
-    globalSettings
+    globalSettings,
+    normalizePartKey
   } = useApp();
 
   const canEdit = hasPermission('cutting', true);
@@ -78,24 +88,29 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     () => modelParts[0] || 'shirt'
   );
   const partRecords = modelCuttingRecords.filter(
-    (r) => (r.part_type || r.partType || 'shirt') === selectedPart
+    (r) => normalizePartKey(r.part_type || r.partType || 'shirt') === selectedPart
   );
 
-  // Build available color options for the selected part (no "(part)" suffix).
-  const availableColors: string[] = getModelColorList(modelId, selectedPart);
-  if (availableColors.length === 0 && model) {
-    availableColors.push(`اللون الأساسي (${model.model_code})`);
-  }
+  // ألوان هذه القطعة وحدها (لا تُخلط مطلقاً مع ألوان قطعة أخرى في نفس الموديل).
+  const partColors = getModelColorList(modelId, selectedPart);
+  const hasRegisteredColors = partColors.length > 0;
+  const availableColors: string[] = hasRegisteredColors
+    ? partColors
+    : model
+      ? [`اللون الأساسي (${model.model_code})`]
+      : [];
 
   const handleSelectPart = (part: GarmentPart) => {
     setSelectedPart(part);
     const colors = getModelColorList(modelId, part);
+    const firstColor = colors[0] || (model ? `اللون الأساسي (${model.model_code})` : '');
     setSpreadLayers([
       {
-        color_name: colors[0] || '',
+        color_name: firstColor,
         layers_count: 50,
         layer_weight: 0,
-        shade_degree: ''
+        shade_degree: '',
+        isCustomColor: false
       }
     ]);
   };
@@ -103,12 +118,13 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   // State for "Add Spread" (إضافة فرشة) panel
   const [isAddingSpread, setIsAddingSpread] = useState<boolean>(true);
   const [spreaderName, setSpreaderName] = useState<string>('');
-  const [spreadLayers, setSpreadLayers] = useState<CuttingSpreadLayer[]>([
+  const [spreadLayers, setSpreadLayers] = useState<SpreadLayerRow[]>([
     {
       color_name: availableColors[0] || '',
       layers_count: 50,
       layer_weight: 0,
-      shade_degree: ''
+      shade_degree: '',
+      isCustomColor: false
     }
   ]);
   const [customColorInput, setCustomColorInput] = useState<string>('');
@@ -117,6 +133,15 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   const [cutterName, setCutterName] = useState<string>('');
   const [shadeDegree, setShadeDegree] = useState<string>('');
   const [cuttingNotes, setCuttingNotes] = useState<string>('');
+
+  // إبقاء القطعة المختارة ضمن قطع الموديل الفعلية (بعد أي تعديل في التصميم)
+  // وإعادة ضبط ألوان الفرشة على ألوان هذه القطعة فقط.
+  useEffect(() => {
+    if (modelParts.length > 0 && !modelParts.includes(selectedPart)) {
+      handleSelectPart(modelParts[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelParts.join('|'), selectedPart]);
 
   // حالة نافذة إرجاع فائض القماش إلى المخزن
   const [surplusReqId, setSurplusReqId] = useState<string | null>(null);
@@ -187,6 +212,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   };
 
   const handleAddColorRow = () => {
+    // يختار تلقائياً أول لون من ألوان القطعة المختارة لم يُستخدم في الصفوف السابقة.
     const nextColor =
       availableColors.find((c) => !spreadLayers.some((l) => l.color_name === c)) ||
       availableColors[0] ||
@@ -197,9 +223,27 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
         color_name: nextColor,
         layers_count: 40,
         layer_weight: 0,
-        shade_degree: ''
+        shade_degree: '',
+        isCustomColor: false
       }
     ]);
+  };
+
+  /** اختيار لون من القائمة الصريحة أو تفعيل الكتابة اليدوية للون غير المسجل. */
+  const handleColorSelectChange = (index: number, value: string) => {
+    if (value === CUSTOM_COLOR_OPTION) {
+      setSpreadLayers((prev) =>
+        prev.map((row, idx) =>
+          idx === index ? { ...row, isCustomColor: true, color_name: '' } : row
+        )
+      );
+      return;
+    }
+    setSpreadLayers((prev) =>
+      prev.map((row, idx) =>
+        idx === index ? { ...row, isCustomColor: false, color_name: value } : row
+      )
+    );
   };
 
   const handleAddCustomColorRow = () => {
@@ -210,7 +254,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
         color_name: customColorInput.trim(),
         layers_count: 40,
         layer_weight: 0,
-        shade_degree: ''
+        shade_degree: '',
+        isCustomColor: true
       }
     ]);
     setCustomColorInput('');
@@ -273,7 +318,15 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
       partType: selectedPart,
       spreaderName: spreaderName.trim(),
       cutterName: cutterName.trim(),
-      colorLayers: validLayers,
+      // لا نحفظ علم isCustomColor (خاص بالواجهة فقط).
+      colorLayers: validLayers.map(
+        ({ color_name, layers_count, layer_weight, shade_degree }) => ({
+          color_name,
+          layers_count,
+          layer_weight,
+          shade_degree
+        })
+      ),
       layersCount: currentSpreadTotalLayers,
       piecesPerLayer: Number(piecesPerLayer),
       layerWeight: Number(layerWeight),
@@ -288,7 +341,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
         color_name: availableColors[0] || '',
         layers_count: 50,
         layer_weight: 0,
-        shade_degree: ''
+        shade_degree: '',
+        isCustomColor: false
       }
     ]);
     setShadeDegree('');
@@ -736,19 +790,68 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                           <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                             <div className="sm:col-span-7">
                               <label className="block text-[10px] font-bold text-slate-500 mb-1">
-                                اللون / القطعة
+                                اللون / القطعة ({getPartLabel(selectedPart)})
                               </label>
-                              <input
-                                type="text"
-                                list={`spread-color-options-${modelId}`}
-                                required
-                                value={layerRow.color_name}
-                                onChange={(e) =>
-                                  handleLayerChange(idx, 'color_name', e.target.value)
-                                }
-                                placeholder="اختر أو اكتب اللون (مثال: أحمر، أخضر)..."
-                                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-bold focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
-                              />
+                              {(layerRow.isCustomColor ||
+                                (!!layerRow.color_name &&
+                                  !availableColors.includes(layerRow.color_name))) ? (
+                                <div className="flex items-center gap-1.5">
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    required
+                                    value={layerRow.color_name}
+                                    onChange={(e) =>
+                                      handleLayerChange(idx, 'color_name', e.target.value)
+                                    }
+                                    placeholder="اكتب اللون يدوياً (مثال: كحلي غامق)..."
+                                    className="w-full px-3 py-2 rounded-lg border border-amber-300 bg-amber-50/40 text-xs font-bold focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setSpreadLayers((prev) =>
+                                        prev.map((row, i) =>
+                                          i === idx
+                                            ? {
+                                                ...row,
+                                                isCustomColor: false,
+                                                color_name: availableColors[0] || ''
+                                              }
+                                            : row
+                                        )
+                                      )
+                                    }
+                                    title="الرجوع لألوان هذه القطعة"
+                                    className="shrink-0 px-2 py-2 rounded-lg bg-white border border-slate-300 text-slate-500 hover:text-rose-600 text-[10px] font-bold cursor-pointer"
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              ) : (
+                                <select
+                                  required
+                                  value={layerRow.color_name}
+                                  onChange={(e) => handleColorSelectChange(idx, e.target.value)}
+                                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-bold focus:ring-2 focus:ring-rose-500 focus:outline-hidden bg-white"
+                                >
+                                  <option value="">-- اختر لون من ألوان هذه القطعة --</option>
+                                  {availableColors.map((colOption) => (
+                                    <option key={colOption} value={colOption}>
+                                      {colOption}
+                                    </option>
+                                  ))}
+                                  <option value={CUSTOM_COLOR_OPTION}>
+                                    ✏️ كتابة لون آخر يدوياً...
+                                  </option>
+                                </select>
+                              )}
+                              {!hasRegisteredColors && (
+                                <span className="block mt-1 text-[10px] font-bold text-amber-700">
+                                  ⚠️ لا توجد ألوان مسجلة لهذه القطعة في التصميم — أضفها من شاشة
+                                  الموديل أو اكتب اللون يدوياً.
+                                </span>
+                              )}
                             </div>
 
                             <div className="sm:col-span-5">
@@ -774,12 +877,6 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                           </div>
                         </div>
                       ))}
-
-                      <datalist id={`spread-color-options-${modelId}`}>
-                        {availableColors.map((colOption) => (
-                          <option key={colOption} value={colOption} />
-                        ))}
-                      </datalist>
                     </div>
 
                     {/* Quick Add Custom Color bar */}

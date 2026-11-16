@@ -17,14 +17,65 @@ import {
 import {
   AccessoryItem,
   GarmentComposition,
+  GarmentPart,
   GARMENT_COMPOSITION_ORDER,
   GARMENT_COMPOSITION_LABELS,
   DEFAULT_GARMENT_COMPOSITION,
+  PART_EMOJI,
   partsForComposition,
   getPartLabel
 } from '../types';
+import { FabricColorPicker } from './FabricColorPicker';
 import { EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel } from '../utils/completedModels';
+
+/** ألوان شارات القطع في جدول الأقمشة المخصصة للموديل. */
+const PART_BADGE_STYLES: Record<GarmentPart, string> = {
+  shirt: 'bg-blue-50 text-blue-900 border-blue-200',
+  pants: 'bg-amber-50 text-amber-900 border-amber-200',
+  jacket: 'bg-emerald-50 text-emerald-900 border-emerald-200',
+  single: 'bg-violet-50 text-violet-900 border-violet-200'
+};
+
+/** أسماء القطع الأساسية كما قد تُكتب في بند قديم بدون قصة فرعية. */
+const PART_NAME_SYNONYMS: Record<GarmentPart, string[]> = {
+  shirt: ['تيشرت', 'تيشيرت', 'قميص', 'shirt', 't-shirt', 'tshirt'],
+  pants: ['بنطلون', 'بنطال', 'pants', 'trouser', 'trousers'],
+  jacket: ['جاكيت', 'jacket'],
+  single: ['قطعة واحدة', 'single', 'كامل']
+};
+
+/**
+ * يفصل اسم بند القماش إلى القطعة الأساسية والقصة الفرعية:
+ * "تيشرت - الصدر" → { part: 'shirt', subPart: 'الصدر' }
+ * "الصدر" (بند قديم حر) → { part: 'shirt', subPart: 'الصدر' }
+ */
+const splitRequirementPartName = (
+  rawName: string | undefined | null,
+  normalize: (value?: string | null) => GarmentPart
+): { part: GarmentPart; subPart: string } => {
+  const raw = (rawName || '').trim();
+  const part = normalize(raw);
+  const label = getPartLabel(part);
+  if (!raw) return { part, subPart: '' };
+
+  const separatorMatch = raw.match(/^(.+?)\s*[-–—:|]\s*(.+)$/);
+  if (separatorMatch && normalize(separatorMatch[1]) === part) {
+    return { part, subPart: separatorMatch[2].trim() };
+  }
+
+  if (raw.startsWith(label)) {
+    const subPart = raw.slice(label.length).replace(/^[\s\-–—:|]+/, '').trim();
+    return { part, subPart: subPart === label ? '' : subPart };
+  }
+
+  // اسم القطعة الأساسية فقط (بصيغة أخرى) لا يُعد قصة فرعية.
+  if (PART_NAME_SYNONYMS[part].includes(raw.toLowerCase())) {
+    return { part, subPart: '' };
+  }
+
+  return { part, subPart: raw };
+};
 
 interface ModelDetailsViewProps {
   modelId: string;
@@ -41,6 +92,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     models,
     fabrics,
     fabricColors,
+    suppliers,
     requirements,
     accessories,
     accessoryItems,
@@ -53,6 +105,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     updateModelNotesAndTarget,
     issueFabricToCutting,
     deleteDesignModel,
+    normalizePartKey,
     hasPermission,
     canAddDesignNotes
   } = useApp();
@@ -77,6 +130,9 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   const [selectedAccessoryId, setSelectedAccessoryId] = useState('');
   const [accTargetType, setAccTargetType] = useState<'shirt' | 'pants' | 'jacket' | 'single'>('shirt');
   const [accPieceConsumption, setAccPieceConsumption] = useState<number>(1);
+
+  // القطعة التي يُضاف لها القماش/اللون (تتزامن مع تكوين قطع الموديل مثل accTargetType).
+  const [reqTargetPart, setReqTargetPart] = useState<GarmentPart>('shirt');
 
   // Local Form state for Section 2 (Planning quantities, markers, notes)
   const [reqQuantities, setReqQuantities] = useState<Record<string, number>>({});
@@ -133,6 +189,27 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   // Arabic label for the currently selected accessory section (تيشرت / بنطلون / جاكيت / قطعة واحدة).
   const accTargetLabel = getPartLabel(accTargetType);
 
+  // عدد بنود الأقمشة المسجلة لكل قطعة — يُعرض على أزرار اختيار القطعة.
+  const reqCountByPart: Partial<Record<GarmentPart, number>> = {};
+  modelReqs.forEach((r) => {
+    const key = normalizePartKey(r.part_name);
+    reqCountByPart[key] = (reqCountByPart[key] || 0) + 1;
+  });
+
+  /**
+   * يبني اسم بند القماش النهائي: "القطعة" أو "القطعة - القصة الفرعية".
+   * القصة الفرعية اختيارية، وتُحذف بادئة القطعة منها لو كتبها المستخدم بنفسه
+   * حتى لا يتكرر الاسم مثل "تيشرت - تيشرت - الصدر".
+   */
+  const buildRequirementPartName = (part: GarmentPart, subPartRaw: string): string => {
+    const label = getPartLabel(part);
+    const sub = subPartRaw.trim();
+    const cleanSub = sub.startsWith(label)
+      ? sub.slice(label.length).replace(/^[\s\-–—:|]+/, '').trim()
+      : sub;
+    return cleanSub && cleanSub !== label ? `${label} - ${cleanSub}` : label;
+  };
+
   useEffect(() => {
     const availableTargets: Array<'shirt' | 'pants' | 'jacket' | 'single'> = [
       ...(canAddShirt ? (['shirt'] as const) : []),
@@ -145,6 +222,20 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accTargetType, canAddShirt, canAddPants, canAddJacket, canAddSingle]);
+
+  // مزامنة قطعة نموذج إضافة القماش مع قطع الموديل المتاحة.
+  useEffect(() => {
+    const availableTargets: GarmentPart[] = [
+      ...(canAddShirt ? (['shirt'] as const) : []),
+      ...(canAddPants ? (['pants'] as const) : []),
+      ...(canAddJacket ? (['jacket'] as const) : []),
+      ...(canAddSingle ? (['single'] as const) : [])
+    ];
+    if (availableTargets.length > 0 && !availableTargets.includes(reqTargetPart)) {
+      setReqTargetPart(availableTargets[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reqTargetPart, canAddShirt, canAddPants, canAddJacket, canAddSingle]);
 
   if (!model) {
     return (
@@ -296,9 +387,10 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
 
   const handleAddColorSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedColorId || !partName.trim()) return;
+    if (!selectedColorId) return;
     const qtyNum = Math.max(0, parseFloat(partPlannedQty) || 0);
-    const res = addModelRequirement(modelId, selectedColorId, partName.trim(), qtyNum);
+    const finalPartName = buildRequirementPartName(reqTargetPart, partName);
+    const res = addModelRequirement(modelId, selectedColorId, finalPartName, qtyNum);
     if (res.success) {
       setPartName('');
       setSelectedColorId('');
@@ -524,25 +616,100 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
             <form onSubmit={handleAddColorSubmit} className="space-y-3">
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
+                  لأي قطعة من الموديل تضيف هذا القماش؟ *
+                </label>
+                <div
+                  className={`grid gap-2 ${
+                    [canAddShirt, canAddPants, canAddJacket, canAddSingle].filter(Boolean).length >= 3
+                      ? 'grid-cols-3'
+                      : canAddShirt && canAddPants
+                        ? 'grid-cols-2'
+                        : 'grid-cols-1'
+                  }`}
+                >
+                  {canAddShirt && (
+                    <button
+                      type="button"
+                      onClick={() => setReqTargetPart('shirt')}
+                      className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                        reqTargetPart === 'shirt'
+                          ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      <span>👕 قماش تيشرت</span>
+                      <span className="text-[10px] font-black opacity-70">
+                        ({reqCountByPart.shirt || 0})
+                      </span>
+                    </button>
+                  )}
+                  {canAddPants && (
+                    <button
+                      type="button"
+                      onClick={() => setReqTargetPart('pants')}
+                      className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                        reqTargetPart === 'pants'
+                          ? 'bg-amber-50 border-amber-400 text-amber-900 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      <span>👖 قماش بنطلون</span>
+                      <span className="text-[10px] font-black opacity-70">
+                        ({reqCountByPart.pants || 0})
+                      </span>
+                    </button>
+                  )}
+                  {canAddJacket && (
+                    <button
+                      type="button"
+                      onClick={() => setReqTargetPart('jacket')}
+                      className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                        reqTargetPart === 'jacket'
+                          ? 'bg-emerald-50 border-emerald-400 text-emerald-900 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      <span>🧥 قماش جاكيت</span>
+                      <span className="text-[10px] font-black opacity-70">
+                        ({reqCountByPart.jacket || 0})
+                      </span>
+                    </button>
+                  )}
+                  {canAddSingle && (
+                    <button
+                      type="button"
+                      onClick={() => setReqTargetPart('single')}
+                      className={`py-2 px-3 text-xs font-bold rounded-xl border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                        reqTargetPart === 'single'
+                          ? 'bg-violet-50 border-violet-400 text-violet-900 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      <span>🧵 قماش قطعة واحدة</span>
+                      <span className="text-[10px] font-black opacity-70">
+                        ({reqCountByPart.single || 0})
+                      </span>
+                    </button>
+                  )}
+                </div>
+                <span className="text-[10px] text-slate-400 block mt-1">
+                  يُضاف القماش لقطعة <strong className="text-slate-700">{getPartLabel(reqTargetPart)}</strong>{' '}
+                  فقط، وتظهر ألوانها وحدها في القص والفرز والعد.
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
                   اللون والخامة من المخزن *
                 </label>
-                <select
-                  disabled={!canEdit}
+                <FabricColorPicker
+                  colors={fabricColors}
+                  fabrics={fabrics}
+                  suppliers={suppliers}
                   value={selectedColorId}
-                  onChange={(e) => setSelectedColorId(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden"
-                >
-                  <option value="">-- اختر لون قماش --</option>
-                  {fabricColors.map((col) => {
-                    const fab = fabrics.find((f) => f.id === col.fabric_id);
-                    const avail = Number((col.quantity - col.reserved_quantity).toFixed(2));
-                    return (
-                      <option key={col.id} value={col.id}>
-                        {fab?.name} - {col.color_code} ({col.color_name || 'لون'}) [المتاح للتصميم: {avail} {fab?.unit} | الفعلي الكلي: {col.quantity}]
-                      </option>
-                    );
-                  })}
-                </select>
+                  onChange={setSelectedColorId}
+                  disabled={!canEdit}
+                />
                 {selectedColorObj && (
                   <div className="mt-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between text-[11px]">
                     <span className="text-slate-600">
@@ -564,17 +731,19 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-600 mb-1">
-                    اسم القطعة أو الجزء *
+                    اسم الجزء / القصة (اختياري)
                   </label>
                   <input
                     type="text"
-                    required
                     disabled={!canEdit}
-                    placeholder="مثال: الصدر والظهر، كابيشو..."
+                    placeholder="اختياري: الصدر، الكم، الكابيشو... (اتركه فارغاً للقطعة كاملة)"
                     value={partName}
                     onChange={(e) => setPartName(e.target.value)}
                     className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden"
                   />
+                  <span className="text-[10px] text-slate-400 block mt-1">
+                    سيُحفظ البند باسم: {buildRequirementPartName(reqTargetPart, partName)}
+                  </span>
                 </div>
 
                 <div>
@@ -598,10 +767,15 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
               {canEdit && (
                 <button
                   type="submit"
-                  className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
+                  disabled={!selectedColorId}
+                  className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 disabled:cursor-not-allowed text-white font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>تحديد القماش للموديل (حجز من المتاح للتصميم)</span>
+                  <span>
+                    {selectedColorId
+                      ? `تحديد قماش ${getPartLabel(reqTargetPart)} للموديل (حجز من المتاح للتصميم)`
+                      : 'اختر اللون أولاً لتحديد القماش للموديل'}
+                  </span>
                 </button>
               )}
             </form>
@@ -894,7 +1068,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 <table className="w-full text-xs text-start">
                   <thead className="bg-slate-50 text-slate-600 font-bold">
                     <tr>
-                      <th className="p-2">القطعة</th>
+                      <th className="p-2">القطعة / القصة</th>
                       <th className="p-2">الخامة واللون</th>
                       <th className="p-2 text-center">المخزون الفعلي الكلي</th>
                       <th className="p-2 text-center">المتاح للتصميم</th>
@@ -916,10 +1090,26 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                         const liveAvail = Number(
                           Math.max(0, baseAvail + savedPlanned - (Number(planned) || 0)).toFixed(2)
                         );
+                        // شارة القطعة التابع لها البند + القصة الفرعية إن وجدت.
+                        const partInfo = splitRequirementPartName(req.part_name, normalizePartKey);
 
                         return (
                           <tr key={req.id}>
-                            <td className="p-2 font-bold text-slate-900">{req.part_name}</td>
+                            <td className="p-2">
+                              <div className="flex flex-col items-start gap-1">
+                                <span
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-black ${PART_BADGE_STYLES[partInfo.part]}`}
+                                >
+                                  <span>{PART_EMOJI[partInfo.part]}</span>
+                                  <span>{getPartLabel(partInfo.part)}</span>
+                                </span>
+                                {partInfo.subPart && (
+                                  <span className="text-[10px] font-bold text-slate-500">
+                                    القصة: {partInfo.subPart}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
                             <td className="p-2 text-slate-600">
                               <div className="flex items-center gap-1.5">
                                 {color && (

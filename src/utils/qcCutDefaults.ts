@@ -46,6 +46,50 @@ export const qcColorNamesMatch = (a?: string | null, b?: string | null): boolean
   );
 };
 
+/**
+ * مطابقة اسم لون محفوظ في سجل فرز/كنترول مع اسم اللون المعروض حالياً في المصفوفة.
+ * أسماء الألوان أصبحت تُعرض لكل قطعة على حِدة بدون لاحقة اسم القطعة، بينما السجلات
+ * القديمة قد تكون محفوظة بصيغة "C-101 - أحمر (تيشرت - الصدر)"، لذا نطابق الاسم
+ * مباشرةً أو بعد حذف اللاحقة بين قوسين من نهاية الاسم المحفوظ.
+ */
+export const qcSavedColorMatches = (
+  savedColor?: string | null,
+  currentColor?: string | null
+): boolean => {
+  const saved = normalizeLabel(savedColor);
+  const current = normalizeLabel(currentColor);
+  if (!saved || !current) return false;
+  if (saved === current) return true;
+  const withoutPartSuffix = saved.replace(/\s*\([^()]*\)\s*$/, '').trim();
+  return withoutPartSuffix === current;
+};
+
+/**
+ * يبحث عن خلية (لون × مقاس) محفوظة داخل سجلات مرحلة معينة.
+ * يُفضّل التطابق المباشر لاسم اللون (أحدث السجلات) على التطابق مع سجل قديم
+ * يحمل لاحقة اسم القطعة بين قوسين، حتى لا تظهر قيمة قديمة بعد الحفظ.
+ */
+export const findSavedQcCell = <
+  T extends { color_name?: string | null; size?: string | null }
+>(
+  records: T[],
+  colorName: string,
+  sizeName: string
+): T | undefined => {
+  const targetSize = (sizeName || '').trim();
+  const targetColor = (colorName || '').trim();
+  const candidates = records.filter(
+    (r) =>
+      (r.size || '').trim() === targetSize &&
+      qcSavedColorMatches(r.color_name, targetColor)
+  );
+  if (candidates.length === 0) return undefined;
+  return (
+    candidates.find((r) => (r.color_name || '').trim() === targetColor) ||
+    candidates[candidates.length - 1]
+  );
+};
+
 /** عدد القطع في الراق الواحد لفرشة معينة (قطعة واحدة على الأقل). */
 const piecesPerLayerOf = (record: CuttingRecord): number =>
   Math.max(1, Number(record.pieces_per_layer ?? record.piecesPerLayer ?? 1) || 1);
@@ -72,14 +116,20 @@ const resolveInheritedGoodQty = (
 ): number => {
   const previousStages = PREVIOUS_QC_STAGES[stage] || [];
   for (const previousStage of previousStages) {
-    const matches = qcRecords.filter(
-      (r) =>
-        r.model_id === modelId &&
-        r.stage === previousStage &&
-        normalizePartKey(r.part_type || r.partType) === part &&
-        qcColorNamesMatch(r.color_name, colorName) &&
-        (r.size || '').trim() === (sizeName || '').trim()
+    const isSameCell = (r: (typeof qcRecords)[number]) =>
+      r.model_id === modelId &&
+      r.stage === previousStage &&
+      normalizePartKey(r.part_type || r.partType) === part &&
+      (r.size || '').trim() === (sizeName || '').trim();
+    // نُفضّل السجلات التي تحمل اسم اللون نفسه تماماً؛ فإن وُجدت لا نضمّ إليها
+    // سجلات قديمة بنفس اللون مع لاحقة اسم القطعة حتى لا تتضاعف الكمية.
+    const exactMatches = qcRecords.filter(
+      (r) => isSameCell(r) && normalizeLabel(r.color_name) === normalizeLabel(colorName)
     );
+    const matches =
+      exactMatches.length > 0
+        ? exactMatches
+        : qcRecords.filter((r) => isSameCell(r) && qcColorNamesMatch(r.color_name, colorName));
     const totalGood = matches.reduce(
       (sum, r) => sum + (Number(r.good_qty ?? r.counted_pieces ?? 0) || 0),
       0

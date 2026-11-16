@@ -82,6 +82,27 @@ import { buildAppNotifications } from './appNotificationsBuilder';
 
 const AppContext = createContext<AppContextType | null>(null);
 
+/**
+ * البادئات المعروفة لكل قطعة. تُستخدم لمعرفة ما إذا كان اسم البند يبدأ بقطعة
+ * أساسية صريحة (مثل "تيشرت - الصدر") أو أنه اسم حر قديم (مثل "الصدر").
+ */
+const KNOWN_PART_PREFIXES: Record<GarmentPart, string[]> = {
+  shirt: ['تيشرت', 'تيشيرت', 'قميص', 'shirt', 'tshirt', 't-shirt'],
+  pants: ['بنطلون', 'بنطال', 'بنطل', 'pants', 'trouser'],
+  jacket: ['جاكيت', 'jacket'],
+  single: ['قطعة واحدة', 'single']
+};
+
+/** هل يبدأ اسم البند بقطعة أساسية معروفة (تيشرت / بنطلون / جاكيت / قطعة واحدة)؟ */
+const hasKnownPartPrefix = (value?: string | null): boolean => {
+  const raw = (value || '').trim().toLowerCase();
+  if (!raw) return false;
+  if ((PART_ORDER as string[]).includes(raw)) return true;
+  return PART_ORDER.some((part) =>
+    KNOWN_PART_PREFIXES[part].some((prefix) => raw.startsWith(prefix))
+  );
+};
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   useEffect(() => {
     try {
@@ -569,6 +590,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const raw = (value || '').trim().toLowerCase();
     if (!raw) return 'shirt';
     if ((PART_ORDER as string[]).includes(raw)) return raw as GarmentPart;
+    // فحص بداية النص أولاً: اسم القطعة الأساسية قد تتبعه قصة فرعية
+    // مثل "تيشرت - الصدر" أو "تيشرت - الكم" فيجب أن يُنسب للقطعة الأساسية.
+    for (const part of PART_ORDER) {
+      if (KNOWN_PART_PREFIXES[part].some((prefix) => raw.startsWith(prefix))) return part;
+    }
+    // احتياطي للبنود الحرة القديمة التي تحمل اسم القطعة داخل النص.
     if (raw.includes('بنطل') || raw.includes('pants') || raw.includes('trouser')) return 'pants';
     if (raw.includes('جاكيت') || raw.includes('jacket')) return 'jacket';
     if (raw.includes('كامل') || raw.includes('قطعة واحدة') || raw.includes('single')) return 'single';
@@ -604,12 +631,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     (modelId: string, part?: GarmentPart): string[] => {
       const model = models.find((m) => m.id === modelId);
       const allModelReqs = requirements.filter((r) => r.model_id === modelId);
+      // الموديلات القديمة فقط: كل بنودها أسماء حرة بلا بادئة قطعة معروفة (مثل "الصدر").
+      const isLegacyFreeTextModel =
+        allModelReqs.length > 0 &&
+        allModelReqs.every((r) => !hasKnownPartPrefix(r.part_name));
       let modelReqs = part
         ? allModelReqs.filter((r) => normalizePartKey(r.part_name) === part)
         : allModelReqs;
-      // Legacy rows store free-text part names that mostly infer 'shirt'; fall back to
-      // all model colors so every part tab still shows the fabric colors.
-      if (part && modelReqs.length === 0) {
+      // الاختلاط بين ألوان القطع ممنوع في القص والفرز والعد.
+      // الرجوع لكل ألوان الموديل مسموح فقط للموديلات القديمة التي لا تحمل
+      // أي بند فيها بادئة قطعة معروفة، حتى لا تظهر ألوان التيشرت داخل البنطلون.
+      if (part && modelReqs.length === 0 && isLegacyFreeTextModel) {
         modelReqs = allModelReqs;
       }
       const colors: string[] = [];
@@ -619,6 +651,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const baseLabel = col?.color_name
           ? `${col.color_code} - ${col.color_name}`
           : `${col?.color_code || 'لون'}`;
+        // مع تحديد القطعة نعرض اسم اللون الأساسي فقط: نفس اللون المستخدم في
+        // أكثر من قصة فرعية (الصدر والكم) يظهر مرة واحدة بدون تكرار.
         const colorLabel = part ? baseLabel : `${baseLabel} (${req.part_name})`;
         if (!colors.includes(colorLabel)) {
           colors.push(colorLabel);

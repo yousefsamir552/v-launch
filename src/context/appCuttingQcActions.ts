@@ -64,6 +64,7 @@ import {
 import { buildPackagingDemandMap } from '../utils/packagingMaterials';
 import { finishedSetsOf, photographyOutstandingOf } from '../utils/completedModels';
 import { exportCsv, exportZipCsv, datedFileName, CsvValue, CsvSheet } from '../utils/exportExcel';
+import { qcSavedColorMatches } from '../utils/qcCutDefaults';
 
 /**
  * ربط مرحلة التنبيه بمفتاح الصلاحية المطلوبة لرؤيته.
@@ -382,14 +383,18 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
     };
 
     setQcRecords((prev) => {
-      const existingIdx = prev.findIndex(
-        (q) =>
-          q.model_id === data.modelId &&
-          q.stage === stage &&
-          (q.part_type || 'shirt') === partType &&
-          q.color_name === data.colorName &&
-          q.size === data.size
+      const isSameCell = (q: (typeof prev)[number]) =>
+        q.model_id === data.modelId &&
+        q.stage === stage &&
+        normalizePartKey(q.part_type || 'shirt') === partType &&
+        qcSavedColorMatches(q.color_name, data.colorName) &&
+        q.size === data.size;
+      // نُفضّل السجل الذي يحمل نفس اسم اللون بالضبط (الأحدث) حتى لا نحدّث سجلاً قديماً
+      // كان يحمل اسم القطعة بجانب اللون ونترك النسخة الجديدة مكررة.
+      let existingIdx = prev.findIndex(
+        (q) => isSameCell(q) && (q.color_name || '').trim() === data.colorName.trim()
       );
+      if (existingIdx < 0) existingIdx = prev.findIndex(isSameCell);
       if (existingIdx >= 0) {
         const updated = [...prev];
         updated[existingIdx] = { ...updated[existingIdx], ...newQC, id: updated[existingIdx].id };
@@ -419,7 +424,8 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
               !(
                 q.model_id === data.modelId &&
                 q.stage === stage &&
-                q.color_name === data.colorName &&
+                normalizePartKey(q.part_type || 'shirt') === partType &&
+                qcSavedColorMatches(q.color_name, data.colorName) &&
                 q.size === data.size &&
                 q.id !== saved.id
               )
