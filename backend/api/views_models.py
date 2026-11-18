@@ -441,11 +441,30 @@ class ModelItemViewSet(BasePermViewSet):
             quantity = round(float(request.data.get('quantity') or 0), 2)
         except (TypeError, ValueError):
             quantity = 0.0
-        if quantity <= 0:
+        try:
+            defect_quantity = round(
+                float(
+                    request.data.get('defect_quantity')
+                    or request.data.get('defectQuantity')
+                    or request.data.get('defects_quantity')
+                    or request.data.get('defects')
+                    or 0
+                ),
+                2,
+            )
+        except (TypeError, ValueError):
+            defect_quantity = 0.0
+        if quantity < 0 or defect_quantity < 0:
             return Response(
-                {'error': 'كمية الإرجاع يجب أن تكون أكبر من صفر'},
+                {'error': 'كمية الإرجاع وكمية العيوب لا يمكن أن تكون سالبة'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if quantity <= 0 and defect_quantity <= 0:
+            return Response(
+                {'error': 'يجب إدخال كمية إرجاع أو كمية عيوب أكبر من صفر'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        total_settled = round(quantity + defect_quantity, 2)
 
         profile = getattr(request, 'user_profile', None)
         notes = str(request.data.get('notes') or '').strip()
@@ -475,9 +494,14 @@ class ModelItemViewSet(BasePermViewSet):
                     {'error': 'لا توجد كمية مخططة متبقية لهذا المتطلب لإرجاع فائض منها'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if quantity > planned + 0.000001:
+            if total_settled > planned + 0.000001:
                 return Response(
-                    {'error': f'كمية الإرجاع ({quantity:g}) أكبر من الكمية المتبقية بالموديل ({planned:g})'},
+                    {
+                        'error': (
+                            f'إجمالي المرتجع والعيوب ({total_settled:g}) '
+                            f'أكبر من الكمية المتبقية بالموديل ({planned:g})'
+                        )
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             if not req.color_id:
@@ -491,10 +515,11 @@ class ModelItemViewSet(BasePermViewSet):
                 .select_related('fabric')
                 .get(pk=req.color_id)
             )
-            new_planned = round(max(0.0, planned - quantity), 2)
+            new_planned = round(max(0.0, planned - total_settled), 2)
             req.planned_quantity = new_planned
             req.save(update_fields=['planned_quantity'])
 
+            # الكمية السليمة فقط تعود للرصيد الفعلي؛ العيوب تُسجل كهدر ولا تُضاف للمخزن.
             col.quantity = round(float(col.quantity or 0.0) + quantity, 2)
             col.save(update_fields=['quantity'])
 
@@ -507,33 +532,62 @@ class ModelItemViewSet(BasePermViewSet):
             color_code = col.color_code or ''
             color_name = col.color_name or ''
 
-            txn_note = f"إرجاع فائض قماش من القص - قطعة: {req.part_name}"
-            if notes:
-                txn_note += f" | ملاحظات: {notes}"
-            txn = FabricTransaction.objects.create(
-                color=col,
-                fabric=col.fabric,
-                operation='add',
-                amount=quantity,
-                unit_price_snapshot=float(
-                    req.unit_price_snapshot
-                    or getattr(col, 'price_per_unit', 0)
-                    or 0
-                ),
-                notes=txn_note,
-                model_code_ref=model.model_code or '',
-                timestamp=now_str,
-                supplier=resolve_supplier_link(
-                    None,
-                    getattr(col.fabric, 'supplier_id_ref', None),
-                    getattr(col.fabric, 'supplier', None),
-                ),
-            )
+            txn = None
+            if quantity > 0:
+                txn_note = f"إرجاع فائض قماش من القص - قطعة: {req.part_name}"
+                if notes:
+                    txn_note += f" | ملاحظات: {notes}"
+                txn = FabricTransaction.objects.create(
+                    color=col,
+                    fabric=col.fabric,
+                    operation='add',
+                    amount=quantity,
+                    unit_price_snapshot=float(
+                        req.unit_price_snapshot
+                        or getattr(col, 'price_per_unit', 0)
+                        or 0
+                    ),
+                    notes=txn_note,
+                    model_code_ref=model.model_code or '',
+                    timestamp=now_str,
+                    supplier=resolve_supplier_link(
+                        None,
+                        getattr(col.fabric, 'supplier_id_ref', None),
+                        getattr(col.fabric, 'supplier', None),
+                    ),
+                )
+
+            # العيوب تُسجل كحركة مستقلة (لا تُضاف للرصيد) لتظهر في الجرد والتقارير.
+            defect_txn = None
+            if defect_quantity > 0:
+                defect_note = (
+                    f"عيب قماش / نسيج - قطعة: {req.part_name} "
+                    f"(لم يُعد للمخزن لوجود عيوب)"
+                )
+                if notes:
+                    defect_note += f" | ملاحظات: {notes}"
+                defect_txn = FabricTransaction.objects.create(
+                    color=col,
+                    fabric=col.fabric,
+                    operation='defect',
+                    amount=defect_quantity,
+                    unit_price_snapshot=float(
+                        req.unit_price_snapshot
+                        or getattr(col, 'price_per_unit', 0)
+                        or 0
+                    ),
+                    notes=defect_note,
+                    model_code_ref=model.model_code or '',
+                    timestamp=now_str,
+                    supplier=None,
+                )
 
             tl_notes = (
                 f"إرجاع {quantity:g} {unit} من لون {color_code or color_name} "
                 f"({req.part_name}) إلى مخزن القماش | المتبقي بالموديل: {new_planned:g} {unit}"
             )
+            if defect_quantity > 0:
+                tl_notes += f" | عيوب قماش مسجلة: {defect_quantity:g} {unit}"
             if notes:
                 tl_notes += f" | ملاحظات: {notes}"
             ModelTimeline.objects.create(
@@ -553,6 +607,7 @@ class ModelItemViewSet(BasePermViewSet):
                     'part_name': req.part_name,
                     'unit': unit,
                     'returned_quantity': quantity,
+                    'defect_quantity': defect_quantity,
                     'remaining_planned_quantity': new_planned,
                     'warehouse_quantity_after': round(float(col.quantity or 0.0), 2),
                     'operator_name': user_name,
@@ -564,12 +619,26 @@ class ModelItemViewSet(BasePermViewSet):
         if hasattr(model, '_prefetched_objects_cache'):
             model._prefetched_objects_cache = {}
 
+        if defect_quantity > 0:
+            message = (
+                f'تم إرجاع {quantity:g} {unit} من فائض القص إلى مخزن القماش '
+                f'وتسجيل {defect_quantity:g} {unit} عيوب قماش'
+            )
+        else:
+            message = f'تم إرجاع {quantity:g} {unit} من فائض القص إلى مخزن القماش'
         return Response({
-            'message': f'تم إرجاع {quantity:g} {unit} من فائض القص إلى مخزن القماش',
+            'message': message,
             'model': ModelItemSerializer(model, context={'request': request}).data,
             'requirement': ModelRequirementSerializer(req, context={'request': request}).data,
             'color': FabricColorSerializer(col, context={'request': request}).data,
-            'transaction': FabricTransactionSerializer(txn, context={'request': request}).data,
+            'transaction': (
+                FabricTransactionSerializer(txn, context={'request': request}).data
+                if txn else None
+            ),
+            'defect_transaction': (
+                FabricTransactionSerializer(defect_txn, context={'request': request}).data
+                if defect_txn else None
+            ),
         })
 
     @action(detail=True, methods=['post'])

@@ -140,6 +140,58 @@ class ReturnFabricSuccessTests(ReturnFabricBase):
         timeline = ModelTimeline.objects.get(title='إرجاع فائض قماش إلى المخزن')
         self.assertEqual(timeline.details['worker_notes'], 'متبقي من الرول')
 
+    def test_return_with_defects_records_defect_movement(self):
+        response = self._call(
+            {
+                'requirement_id': str(self.req.pk),
+                'quantity': 3,
+                'defect_quantity': 2,
+                'user_name': 'عامل القص',
+            }
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.req.refresh_from_db()
+        self.color.refresh_from_db()
+        # المتبقي = 10 - (3 مرتجع + 2 عيب) = 5، والمخزن يستقبل 3 فقط.
+        self.assertEqual(self.req.planned_quantity, 5)
+        self.assertEqual(self.color.quantity, 8)
+
+        add_txn = FabricTransaction.objects.get(operation='add')
+        self.assertEqual(add_txn.amount, 3)
+        defect_txn = FabricTransaction.objects.get(operation='defect')
+        self.assertEqual(defect_txn.amount, 2)
+        self.assertEqual(defect_txn.color_id, self.color.pk)
+        self.assertEqual(defect_txn.fabric_id, self.fabric.pk)
+        self.assertEqual(defect_txn.model_code_ref, 'RET-CUT-1')
+        self.assertIsNone(defect_txn.supplier_id)
+
+        timeline = ModelTimeline.objects.get(title='إرجاع فائض قماش إلى المخزن')
+        self.assertEqual(timeline.details['returned_quantity'], 3)
+        self.assertEqual(timeline.details['defect_quantity'], 2)
+        self.assertEqual(timeline.details['remaining_planned_quantity'], 5)
+
+        self.assertEqual(response.data['defect_transaction']['operation'], 'defect')
+        self.assertEqual(response.data['defect_transaction']['amount'], 2)
+
+    def test_defects_only_does_not_change_warehouse_quantity(self):
+        response = self._call(
+            {
+                'requirement_id': str(self.req.pk),
+                'quantity': 0,
+                'defect_quantity': 4,
+            }
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.req.refresh_from_db()
+        self.color.refresh_from_db()
+        # 10 - 4 = 6، والمخزن لا يتغير لأن الكمية كلها عيوب.
+        self.assertEqual(self.req.planned_quantity, 6)
+        self.assertEqual(self.color.quantity, 5)
+        self.assertFalse(FabricTransaction.objects.filter(operation='add').exists())
+        defect_txn = FabricTransaction.objects.get(operation='defect')
+        self.assertEqual(defect_txn.amount, 4)
+        self.assertIsNone(response.data['transaction'])
+
 
 class ReturnFabricValidationTests(ReturnFabricBase):
     def test_quantity_above_remaining_plan_is_rejected(self):
@@ -179,3 +231,26 @@ class ReturnFabricValidationTests(ReturnFabricBase):
         self.color.refresh_from_db()
         self.assertEqual(self.color.quantity, 5)
         self.assertFalse(FabricTransaction.objects.exists())
+
+    def test_return_plus_defects_above_remaining_is_rejected(self):
+        response = self._call(
+            {'requirement_id': str(self.req.pk), 'quantity': 6, 'defect_quantity': 6}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('أكبر من الكمية المتبقية', response.data['error'])
+        self.assert_nothing_moved()
+
+    def test_zero_quantity_and_zero_defects_is_rejected(self):
+        response = self._call(
+            {'requirement_id': str(self.req.pk), 'quantity': 0, 'defect_quantity': 0}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('أكبر من صفر', response.data['error'])
+        self.assert_nothing_moved()
+
+    def test_negative_defects_is_rejected(self):
+        response = self._call(
+            {'requirement_id': str(self.req.pk), 'quantity': 2, 'defect_quantity': -1}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assert_nothing_moved()
