@@ -15,6 +15,7 @@ import {
   Star
 } from 'lucide-react';
 import { ZoomableImage } from './ZoomableImage';
+import { EditModelModal } from './EditModelModal';
 import {
   AccessoryItem,
   GarmentComposition,
@@ -114,6 +115,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   const canEdit = hasPermission('design', true);
   const canWriteNotes = canAddDesignNotes();
   const model = models.find((m) => m.id === modelId && !m.is_deleted);
+  const [editModalOpen, setEditModalOpen] = useState(false);
 
   const modelReqs = requirements.filter((r) => r.model_id === modelId);
   const modelAccs = accessories.filter((a) => a.model_id === modelId);
@@ -581,6 +583,16 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                   <span>✂️ صرف القماش والتوجيه للقص</span>
                 </button>
               )
+            )}
+
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => setEditModalOpen(true)}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-full border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-600 hover:text-white font-bold text-xs shadow-xs transition cursor-pointer"
+              >
+                ✏️ <span>تعديل بيانات الموديل</span>
+              </button>
             )}
 
             {canEdit && (
@@ -1599,6 +1611,14 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
           </form>
         </div>
       </div>
+
+      {editModalOpen && model && (
+        <EditModelModal
+          key={model.id}
+          model={model}
+          onClose={() => setEditModalOpen(false)}
+        />
+      )}
     </div>
   );
 };

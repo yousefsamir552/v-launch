@@ -171,6 +171,7 @@ class ModelItemViewSet(BasePermViewSet):
             allowed_fields.update({
                 'model_type', 'size_category_id', 'main_marker_url', 'print_marker_url',
                 'target_cut_quantity', 'image', 'garment_composition', 'garmentComposition',
+                'model_code', 'modelCode',
             })
         if can_design_notes:
             allowed_fields.update({'design_notes', 'notes_shirt', 'notes_pants', 'notes_jacket', 'target_cut_quantity'})
@@ -185,6 +186,44 @@ class ModelItemViewSet(BasePermViewSet):
             raise PermissionDenied(
                 'لا يمكن تعديل الحقول التالية من هذه الشاشة: ' + ', '.join(sorted(forbidden))
             )
+
+        # تعديل كود الموديل: تنظيفه، منع التكرار مع الموديلات النشطة، ومزامنة
+        # حركات المخزن المرتبطة بالكود القديم حتى لا تفقد ارتباطها بالموديل.
+        if 'model_code' in data or 'modelCode' in data:
+            clean_code = str(data.get('model_code') or data.get('modelCode') or '').strip().upper()
+            if not clean_code:
+                return Response(
+                    {'detail': 'كود الموديل مطلوب ولا يمكن أن يكون فارغاً'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(clean_code) > 100:
+                return Response(
+                    {'detail': 'كود الموديل يجب ألا يتجاوز 100 حرف'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if ModelItem.objects.filter(
+                model_code__iexact=clean_code, is_deleted=False
+            ).exclude(pk=model.pk).exists():
+                return Response(
+                    {'detail': 'كود الموديل مستخدم بالفعل لموديل آخر!'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # تعارض محتمل مع موديل محذوف مؤقتاً يحمل نفس الكود (unique constraint):
+            # يُحذف نهائياً تماماً كما يفعل إنشاء الموديل، لتفادي خطأ حفظ غير واضح.
+            soft_deleted_collision = ModelItem.objects.filter(
+                model_code__iexact=clean_code, is_deleted=True
+            ).exclude(pk=model.pk).first()
+            if soft_deleted_collision:
+                soft_deleted_collision.delete()
+            if clean_code != model.model_code:
+                old_code = model.model_code
+                FabricTransaction.objects.filter(model_code_ref__iexact=old_code).update(
+                    model_code_ref=clean_code
+                )
+                AccessoryTransaction.objects.filter(model_code_ref__iexact=old_code).update(
+                    model_code_ref=clean_code
+                )
+                model.model_code = clean_code
 
         for field in [
             'model_type', 'size_category_id', 'main_marker_url', 'print_marker_url',

@@ -451,6 +451,90 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
       });
   };
 
+  /**
+   * تعديل البيانات الأساسية للموديل من قسم التصميم (الصورة، الكود، النوع،
+   * فئة المقاسات، تكوين القطع، العدد المستهدف، وملاحظات التصميم).
+   * يتحقق من الكود محلياً، ويحدّث الحالة فوراً، ثم يزامن مع الباك إند.
+   */
+  const updateDesignModelBasicInfo = async (
+    modelId: string,
+    data: {
+      model_code?: string;
+      image?: string;
+      model_type?: string;
+      size_category_id?: string;
+      garment_composition?: GarmentComposition;
+      target_cut_quantity?: number;
+      design_notes?: string;
+    }
+  ): Promise<{ success: boolean; message: string }> => {
+    const target = models.find((m) => m.id === modelId && !m.is_deleted);
+    if (!target) {
+      addFlashMessage('الموديل غير موجود', 'danger');
+      return { success: false, message: 'الموديل غير موجود' };
+    }
+
+    const allowNotes = canAddDesignNotes();
+    const cleanCode = (data.model_code || '').trim().toUpperCase();
+
+    if (data.model_code !== undefined) {
+      if (!cleanCode) {
+        const message = 'كود الموديل مطلوب ولا يمكن أن يكون فارغاً';
+        addFlashMessage(message, 'warning');
+        return { success: false, message };
+      }
+      if (
+        models.some(
+          (m) => !m.is_deleted && m.id !== modelId && m.model_code.toUpperCase() === cleanCode
+        )
+      ) {
+        const message = 'كود الموديل مستخدم بالفعل لموديل آخر!';
+        addFlashMessage(message, 'danger');
+        return { success: false, message };
+      }
+    }
+
+    const updates: Record<string, any> = {};
+    if (data.model_code !== undefined) updates.model_code = cleanCode;
+    if (data.image !== undefined) updates.image = data.image;
+    if (data.model_type !== undefined) updates.model_type = data.model_type;
+    if (data.size_category_id !== undefined) updates.size_category_id = data.size_category_id;
+    if (data.garment_composition !== undefined) {
+      updates.garment_composition = data.garment_composition;
+    }
+    if (data.target_cut_quantity !== undefined) {
+      updates.target_cut_quantity = data.target_cut_quantity;
+    }
+    if (allowNotes && data.design_notes !== undefined) updates.design_notes = data.design_notes;
+
+    // تحديث تفاؤلي فوري للحالة المحلية.
+    setModels((prev) => prev.map((m) => (m.id === modelId ? { ...m, ...updates } : m)));
+    const codeChanged =
+      updates.model_code !== undefined && updates.model_code !== target.model_code;
+
+    try {
+      const saved = await api.updateModel(
+        modelId,
+        updates,
+        auditHeadersForModel(target, 'التصميم')
+      );
+      setModels((prev) => prev.map((m) => (m.id === modelId ? saved : m)));
+      if (codeChanged) {
+        // إعادة مزامنة حركات المخزن المرتبطة بكود الموديل القديم.
+        await refreshState();
+      }
+      const codeLabel = updates.model_code || target.model_code;
+      logAction('التصميم', `تعديل البيانات الأساسية للموديل ${codeLabel}`);
+      addFlashMessage(`تم تحديث بيانات الموديل ${codeLabel} بنجاح`);
+      return { success: true, message: 'تم تحديث بيانات الموديل بنجاح' };
+    } catch (err: any) {
+      await refreshState();
+      const message = err?.message || 'فشل تحديث بيانات الموديل في الباك إند';
+      addFlashMessage(message, 'danger');
+      return { success: false, message };
+    }
+  };
+
   const addModelRequirement = (
     modelId: string,
     colorId: string,
@@ -784,6 +868,7 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
     cloneDesignModel,
     updateModelPlan,
     updateModelNotesAndTarget,
+    updateDesignModelBasicInfo,
     addModelRequirement,
     deleteModelRequirement,
     addModelAccessory,

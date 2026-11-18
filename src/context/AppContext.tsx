@@ -828,7 +828,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const ctxWithPerms: any = { ...baseCtx, ...permHelpers, addRole, updateRole, deleteRole };
   const designActions = buildDesignActions(ctxWithPerms);
-  const { addDesignModel, cloneDesignModel, updateModelPlan, updateModelNotesAndTarget, addModelRequirement, deleteModelRequirement, addModelAccessory, deleteModelAccessory, issueFabricToCutting, returnFabricFromCutting, deleteDesignModel } = designActions;
+  const { addDesignModel, cloneDesignModel, updateModelPlan, updateModelNotesAndTarget, updateDesignModelBasicInfo, addModelRequirement, deleteModelRequirement, addModelAccessory, deleteModelAccessory, issueFabricToCutting, returnFabricFromCutting, deleteDesignModel } = designActions;
   const fullCtx: any = { ...ctxWithPerms, ...designActions };
   const { addFabricOrColor, recordTransaction, exportWarehouseInventoryCsv, updateColorPrice, updateFabricColorDetails, addAccessoryType, addAccessoryItem, updateAccessoryItem, deleteAccessoryItem, markAccessoryWithdrawn, recordAccessoryTransaction, exportAccessoryInventoryCsv } = buildWarehouseActions(fullCtx);
   const { addCuttingRecord, finishCuttingToQC, exportCuttingCsv, recordQCData, saveQCMatrix, recordQCStageCount, finishQCApproval, exportQcCsv } = buildCuttingQcActions(fullCtx);
@@ -982,6 +982,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         cloneDesignModel,
         updateModelPlan,
         updateModelNotesAndTarget,
+        updateDesignModelBasicInfo,
         addModelRequirement,
         deleteModelRequirement,
         addModelAccessory,

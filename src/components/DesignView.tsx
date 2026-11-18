@@ -15,8 +15,10 @@ import {
   Layers
 } from 'lucide-react';
 import { ZoomableImage } from './ZoomableImage';
+import { EditModelModal } from './EditModelModal';
 
 import {
+  DesignModel,
   GarmentComposition,
   GARMENT_COMPOSITION_ORDER,
   GARMENT_COMPOSITION_LABELS,
@@ -51,6 +53,7 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
 
   // Add Model Modal State
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editModel, setEditModel] = useState<DesignModel | null>(null);
   const [modelCode, setModelCode] = useState('');
   const [modelType, setModelType] = useState('أولادي');
   const [sizeCategoryId, setSizeCategoryId] = useState('');
@@ -314,13 +317,23 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                   )}
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     onClick={() => onOpenModelDetails(model.id)}
                     className="flex-grow py-2.5 px-4 rounded-full border border-slate-900 text-slate-900 hover:bg-slate-900 hover:text-white font-bold text-xs transition shadow-xs cursor-pointer"
                   >
                     التفاصيل والتلوين
                   </button>
+                  {canEdit && (
+                    <button
+                      type="button"
+                      onClick={() => setEditModel(model)}
+                      title="تعديل الصورة والكود والنوع والمقاسات وتكوين القطع والعدد المستهدف والملاحظات"
+                      className="shrink-0 py-2.5 px-3 rounded-full border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-600 hover:text-white font-bold text-xs transition shadow-xs cursor-pointer"
+                    >
+                      ✏️ تعديل
+                    </button>
+                  )}
                   {canEdit && (
                     <button
                       type="button"
@@ -394,6 +407,15 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                     >
                       التفاصيل والتعديل
                     </button>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        onClick={() => setEditModel(model)}
+                        className="w-full py-2 px-4 rounded-full border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-600 hover:text-white font-bold text-xs transition cursor-pointer"
+                      >
+                        ✏️ تعديل البيانات الأساسية
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -431,6 +453,11 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
             <ChevronLeft className="w-4 h-4" />
           </button>
         </div>
+      )}
+
+      {/* Edit Model Basic Info Modal */}
+      {editModel && (
+        <EditModelModal key={editModel.id} model={editModel} onClose={() => setEditModel(null)} />
       )}
 
       {/* Clone Model Modal */}

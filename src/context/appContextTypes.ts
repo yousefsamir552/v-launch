@@ -459,6 +459,18 @@ export interface AppContextType {
       garment_composition?: GarmentComposition;
     }
   ) => void;
+  updateDesignModelBasicInfo: (
+    modelId: string,
+    data: {
+      model_code?: string;
+      image?: string;
+      model_type?: string;
+      size_category_id?: string;
+      garment_composition?: GarmentComposition;
+      target_cut_quantity?: number;
+      design_notes?: string;
+    }
+  ) => Promise<{ success: boolean; message: string }>;
   addModelRequirement: (
     modelId: string,
     colorId: string,
