@@ -375,7 +375,8 @@ export interface FabricTransaction {
   fabric_id: string;
   model_code_ref?: string;
   notes?: string;
-  operation: 'add' | 'deduct';
+  /** defect = عيوب قماش مسجلة أثناء قص/إرجاع الفائض (لا تُضاف للرصيد). */
+  operation: 'add' | 'deduct' | 'defect';
   amount: number;
   timestamp: string;
   /** سعر الوحدة التاريخي وقت الحركة — يُعاد null لمن لا يملك صلاحية عرض أسعار الخامات. */

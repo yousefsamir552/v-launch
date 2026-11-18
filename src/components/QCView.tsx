@@ -20,6 +20,7 @@ import { isImageLogo } from '../utils/printShared';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel, stageRank, stageBeyond } from '../utils/completedModels';
 import { resolveDefaultGoodQtyForCell, findSavedQcCell } from '../utils/qcCutDefaults';
+import { ZoomableImage } from './ZoomableImage';
 
 type QCPartCard = { model: Model; part: GarmentPart };
 
@@ -606,14 +607,11 @@ export const QCView: React.FC = () => {
               >
                 <div className="h-52 w-full overflow-hidden bg-slate-100 relative">
                   {model.image ? (
-                    <img
+                    <ZoomableImage
                       src={model.image}
                       alt={model.model_code}
+                      downloadName={`${model.model_code}.jpg`}
                       className="w-full h-full object-contain bg-slate-50 group-hover:scale-105 transition-transform duration-300"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src =
-                          'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60';
-                      }}
                     />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-slate-400">
@@ -753,14 +751,11 @@ export const QCView: React.FC = () => {
                 >
                   <div className="h-40 w-full overflow-hidden bg-slate-100 relative">
                     {model.image ? (
-                      <img
+                      <ZoomableImage
                         src={model.image}
                         alt={model.model_code}
+                        downloadName={`${model.model_code}.jpg`}
                         className="w-full h-full object-contain bg-white grayscale-[55%] opacity-90"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src =
-                            'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60';
-                        }}
                       />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-slate-400">

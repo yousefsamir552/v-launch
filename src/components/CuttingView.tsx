@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { Scissors, Lock } from 'lucide-react';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel, stageBeyond } from '../utils/completedModels';
+import { ZoomableImage } from './ZoomableImage';
 
 interface CuttingViewProps {
   onOpenCuttingDetails: (modelId: string) => void;
@@ -64,14 +65,11 @@ export const CuttingView: React.FC<CuttingViewProps> = ({ onOpenCuttingDetails }
             >
               <div className="h-56 w-full overflow-hidden bg-slate-100 relative">
                 {model.image ? (
-                  <img
+                  <ZoomableImage
                     src={model.image}
                     alt={model.model_code}
+                    downloadName={`${model.model_code}.jpg`}
                     className="w-full h-full object-contain bg-slate-50 group-hover:scale-105 transition-transform duration-300"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src =
-                        'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60';
-                    }}
                   />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center text-slate-400">
@@ -133,14 +131,11 @@ export const CuttingView: React.FC<CuttingViewProps> = ({ onOpenCuttingDetails }
                 >
                   <div className="h-44 w-full overflow-hidden bg-slate-100 relative">
                     {model.image ? (
-                      <img
+                      <ZoomableImage
                         src={model.image}
                         alt={model.model_code}
+                        downloadName={`${model.model_code}.jpg`}
                         className="w-full h-full object-contain bg-white grayscale-[55%] opacity-90"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src =
-                            'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60';
-                        }}
                       />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-slate-400 text-xs">

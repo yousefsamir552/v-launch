@@ -14,6 +14,7 @@ import {
   Lock,
   Star
 } from 'lucide-react';
+import { ZoomableImage } from './ZoomableImage';
 import {
   AccessoryItem,
   GarmentComposition,
@@ -505,14 +506,11 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
       {/* TOP HEADER CARD */}
       <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs flex flex-col md:flex-row items-start gap-6">
         <div className="w-40 h-40 rounded-2xl overflow-hidden bg-slate-100 shrink-0 border border-slate-200 shadow-xs">
-          <img
+          <ZoomableImage
             src={model.image}
             alt={model.model_code}
+            downloadName={`${model.model_code}.jpg`}
             className="w-full h-full object-contain bg-white"
-            onError={(e) => {
-              (e.target as HTMLImageElement).src =
-                'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60';
-            }}
           />
         </div>
 

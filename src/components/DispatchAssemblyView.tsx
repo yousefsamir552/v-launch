@@ -13,6 +13,7 @@ import { DispatchStatus, GarmentPart, PART_EMOJI, getPartLabel, PrintDispatch, P
 import { PrintShopOrderModal } from './PrintShopOrderModal';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { stageBeyond } from '../utils/completedModels';
+import { ZoomableImage } from './ZoomableImage';
 
 /** نوع تشغيل افتراضي يُرسل للباك إند بعد إخفاء حقل "نوع التشغيل" من الواجهة. */
 const DEFAULT_PRINT_TYPE = 'سلك سكرين مائي';
@@ -284,14 +285,11 @@ export const DispatchAssemblyView: React.FC = () => {
                   className="p-4 rounded-2xl border border-teal-200 bg-teal-50/40 hover:bg-teal-50 transition flex flex-col gap-3 shadow-2xs"
                 >
                   <div className="flex items-center gap-3">
-                    <img
+                    <ZoomableImage
                       src={m.image}
                       alt={m.model_code}
+                      downloadName={`${m.model_code}.jpg`}
                       className="w-12 h-12 rounded-xl object-contain bg-white border shrink-0 p-0.5"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src =
-                          'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
-                      }}
                     />
                     <div className="flex-grow min-w-0">
                       <h4 className="font-black text-sm text-slate-900 truncate">
@@ -365,14 +363,11 @@ export const DispatchAssemblyView: React.FC = () => {
                     className="p-4 rounded-2xl border-2 border-dashed border-slate-300 bg-white/70 flex flex-col gap-3 shadow-2xs"
                   >
                     <div className="flex items-center gap-3">
-                      <img
+                      <ZoomableImage
                         src={m.image}
                         alt={m.model_code}
+                        downloadName={`${m.model_code}.jpg`}
                         className="w-12 h-12 rounded-xl object-contain bg-white border shrink-0 p-0.5 grayscale-[55%] opacity-90"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src =
-                            'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
-                        }}
                       />
                       <div className="flex-grow min-w-0">
                         <h4 className="font-black text-sm text-slate-700 truncate">
@@ -458,14 +453,11 @@ export const DispatchAssemblyView: React.FC = () => {
                     <tr key={disp.id} className="hover:bg-slate-50 transition">
                       <td className="px-6 py-4 font-bold text-slate-900 flex items-center gap-2">
                         {m && (
-                          <img
+                          <ZoomableImage
                             src={m.image}
                             alt={m.model_code}
+                            downloadName={`${m.model_code}.jpg`}
                             className="w-9 h-9 rounded-lg object-contain bg-white border p-0.5"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).src =
-                                'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
-                            }}
                           />
                         )}
                         <span>{m?.model_code || 'موديل'}</span>

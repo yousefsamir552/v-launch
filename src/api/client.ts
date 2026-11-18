@@ -446,15 +446,24 @@ export const api = {
     requirementId: string,
     quantity: number,
     userName?: string,
-    notes?: string
+    notes?: string,
+    defectQuantity?: number
   ) =>
-    request<{ message: string; model: any; requirement: any; color: any; transaction: any }>(
+    request<{
+      message: string;
+      model: any;
+      requirement: any;
+      color: any;
+      transaction: any;
+      defect_transaction?: any;
+    }>(
       `/models/${encodeURIComponent(modelId)}/return_fabric_to_warehouse/`,
       {
         method: 'POST',
         body: JSON.stringify({
           requirement_id: requirementId,
           quantity,
+          defect_quantity: defectQuantity || 0,
           user_name: userName,
           notes
         }),

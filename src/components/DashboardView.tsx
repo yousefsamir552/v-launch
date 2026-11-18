@@ -31,6 +31,7 @@ import {
   Bell,
   Truck
 } from 'lucide-react';
+import { ZoomableImage } from './ZoomableImage';
 
 interface DashboardViewProps {
   onNavigate: (tab: string, modelId?: string) => void;
@@ -659,14 +660,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 recentModels.map((m) => (
                   <tr key={m.id} className="hover:bg-slate-50/80 transition">
                     <td className="px-6 py-4 font-bold text-slate-900 flex items-center gap-3">
-                      <img
+                      <ZoomableImage
                         src={m.image}
                         alt={m.model_code}
+                        downloadName={`${m.model_code}.jpg`}
                         className="w-10 h-10 rounded-xl object-contain bg-white border border-slate-200 p-0.5"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src =
-                            'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
-                        }}
                       />
                       <span>{m.model_code}</span>
                     </td>

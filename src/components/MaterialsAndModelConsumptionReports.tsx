@@ -217,6 +217,8 @@ type FabricColorAudit = {
   totalReceived: number;
   totalConsumed: number;
   totalReturned: number;
+  /** عيوب القماش المسجلة عند إرجاع الفائض (لا تُضاف للرصيد ولا تُحسب استهلاكاً). */
+  totalDefects: number;
   netConsumed: number;
   remaining: number;
   reserved: number;
@@ -415,9 +417,15 @@ export const MaterialsReportSection: React.FC = () => {
             const codes = new Set<string>();
             let consumed = 0;
             let returned = 0;
+            let defects = 0;
             let net = 0;
 
             txns.forEach((txn) => {
+              if (txn.operation === 'defect') {
+                // العيوب تُسجل كهدر مستقل: لا تُضاف للرصيد ولا تُحسب استهلاكاً.
+                defects += Number(txn.amount || 0);
+                return;
+              }
               const netQty = netFabricQty(txn);
               if (!netQty) return;
               net += netQty;
@@ -467,6 +475,7 @@ export const MaterialsReportSection: React.FC = () => {
               totalReceived: round2(Number(color.quantity || 0) + netConsumed),
               totalConsumed: round2(consumed),
               totalReturned: round2(returned),
+              totalDefects: round2(defects),
               netConsumed,
               remaining: round2(color.quantity || 0),
               reserved: round2(color.reserved_quantity || 0),
@@ -617,12 +626,14 @@ export const MaterialsReportSection: React.FC = () => {
   const fabricTotals = useMemo(() => {
     const received = new Map<string, number>();
     const consumed = new Map<string, number>();
+    const defects = new Map<string, number>();
     const remaining = new Map<string, number>();
     const reserved = new Map<string, number>();
     filteredFabricGroups.forEach((group) => {
       group.colors.forEach((color) => {
         addUnitQty(received, color.unit, color.totalReceived);
         addUnitQty(consumed, color.unit, color.netConsumed);
+        addUnitQty(defects, color.unit, color.totalDefects);
         addUnitQty(remaining, color.unit, color.remaining);
         addUnitQty(reserved, color.unit, color.reserved);
       });
@@ -630,6 +641,7 @@ export const MaterialsReportSection: React.FC = () => {
     return {
       received: unitQtyList(received),
       consumed: unitQtyList(consumed),
+      defects: unitQtyList(defects),
       remaining: unitQtyList(remaining),
       reserved: unitQtyList(reserved),
       colors: filteredFabricGroups.reduce((sum, group) => sum + group.colors.length, 0),
@@ -683,6 +695,7 @@ export const MaterialsReportSection: React.FC = () => {
                 <td class="num">${fmt(color.totalReceived)}</td>
                 <td class="num">${fmt(color.totalConsumed)}</td>
                 <td class="num">${fmt(color.totalReturned)}</td>
+                <td class="num">${fmt(color.totalDefects)}</td>
                 <td class="num">${fmt(color.netConsumed)}</td>
                 <td class="num">${fmt(color.remaining)}</td>
                 <td class="num">${fmt(color.reserved)}</td>
@@ -697,6 +710,7 @@ export const MaterialsReportSection: React.FC = () => {
             <table>
               <thead><tr>
                 <th>اللون</th><th>المورد</th><th>الوارد</th><th>المستهلك</th><th>المرتجع</th>
+                <th>العيوب</th>
                 <th>الصافي</th><th>المتبقي</th><th>المحجوز</th><th>فئات المقاسات</th><th>نوع الموديل</th>
                 <th>الموديلات المستخدمة</th>${priceHeads}
               </tr></thead>
@@ -711,6 +725,7 @@ export const MaterialsReportSection: React.FC = () => {
           <div class="card">عدد الأقمشة<b>${fmt(fabricTotals.fabrics)}</b></div>
           <div class="card">عدد الألوان<b>${fmt(fabricTotals.colors)}</b></div>
           <div class="card">إجمالي المستهلك<b>${escapeHtml(formatUnitQty(fabricTotals.consumed))}</b></div>
+          <div class="card">إجمالي العيوب<b>${escapeHtml(formatUnitQty(fabricTotals.defects))}</b></div>
           <div class="card">إجمالي المتبقي<b>${escapeHtml(formatUnitQty(fabricTotals.remaining))}</b></div>
         </div>
         ${groupHtml || '<p class="muted">لا توجد بيانات مطابقة للفلاتر الحالية.</p>'}`,
@@ -889,7 +904,7 @@ export const MaterialsReportSection: React.FC = () => {
             <StatTile
               label="صافي المستهلك"
               value={formatUnitQty(fabricTotals.consumed)}
-              hint="الصرف بعد خصم المرتجعات"
+              hint={`الصرف بعد خصم المرتجعات • عيوب: ${formatUnitQty(fabricTotals.defects)}`}
               icon={<Scissors size={16} />}
               tone="rose"
             />
@@ -1005,6 +1020,12 @@ export const MaterialsReportSection: React.FC = () => {
                         {color.totalReturned > 0 ? (
                           <p className="mt-2 inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700">
                             <RotateCcw size={11} /> مرتجع من القص: {fmt(color.totalReturned)} {color.unit}
+                          </p>
+                        ) : null}
+
+                        {color.totalDefects > 0 ? (
+                          <p className="mt-2 inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-800">
+                            <AlertTriangle size={11} /> عيوب قماش مسجلة: {fmt(color.totalDefects)} {color.unit}
                           </p>
                         ) : null}
 

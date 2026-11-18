@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { Boxes, Printer, X, CheckCircle2, Factory, Package, AlertTriangle } from 'lucide-react';
 import { isImageLogo } from '../utils/printShared';
 import { finishedSetsOf, photographyHoldLabel, photographyOutstandingOf } from '../utils/completedModels';
+import { ZoomableImage } from './ZoomableImage';
 import type { DesignModel } from '../types';
 
 /**
@@ -110,14 +111,11 @@ export const ProductionWarehouseView: React.FC = () => {
                   return (
                     <tr key={m.id} className="hover:bg-slate-50 transition">
                       <td className="px-6 py-4 font-bold text-slate-900 flex items-center gap-2">
-                        <img
+                        <ZoomableImage
                           src={m.image}
                           alt={m.model_code}
+                          downloadName={`${m.model_code}.jpg`}
                           className="w-10 h-10 rounded-lg object-contain bg-white border p-0.5 shrink-0"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).src =
-                              'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
-                          }}
                         />
                         <span className="font-black text-sm text-indigo-700">{m.model_code}</span>
                       </td>

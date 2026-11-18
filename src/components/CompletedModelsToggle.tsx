@@ -59,7 +59,9 @@ export const CompletedModelsToggle: React.FC<CompletedModelsToggleProps> = ({
           {count}
         </span>
       )}
+      {/* dir="ltr" يثبّت اتجاه مسار السويتش ليبقى طرفا التفعيل/الإيقاف داخل المسار مهما كان اتجاه الصفحة */}
       <span
+        dir="ltr"
         className={`relative inline-flex h-4 w-7 items-center rounded-full transition ${
           enabled ? 'bg-white/40' : 'bg-slate-300'
         }`}

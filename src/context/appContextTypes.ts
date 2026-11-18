@@ -488,7 +488,8 @@ export interface AppContextType {
     modelId: string,
     requirementId: string,
     quantity: number,
-    notes?: string
+    notes?: string,
+    defectQuantity?: number
   ) => Promise<{ success: boolean; message: string }>;
   deleteDesignModel: (modelId: string) => void;
 

@@ -18,6 +18,7 @@ import {
   ClipboardList,
   Plus
 } from 'lucide-react';
+import { ZoomableImage } from './ZoomableImage';
 import {
   Model,
   SewingDispatch,
@@ -684,14 +685,11 @@ export const SewingView: React.FC = () => {
                   {/* Thumbnail and Info */}
                   <div className="flex items-center gap-3 mb-3">
                     <div className="w-14 h-14 rounded-xl border border-white/30 bg-white p-1 shrink-0 overflow-hidden flex items-center justify-center">
-                      <img
+                      <ZoomableImage
                         src={item.model.image}
                         alt={item.model.model_code}
+                        downloadName={`${item.model.model_code}.jpg`}
                         className="w-full h-full object-contain"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src =
-                            'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
-                        }}
                       />
                     </div>
                     <div className="min-w-0 flex-grow">
@@ -809,14 +807,11 @@ export const SewingView: React.FC = () => {
 
                       <div className="flex items-center gap-3">
                         <div className="w-12 h-12 rounded-xl border border-slate-200 bg-white p-1 shrink-0 overflow-hidden flex items-center justify-center">
-                          <img
+                          <ZoomableImage
                             src={m.image}
                             alt={m.model_code}
+                            downloadName={`${m.model_code}.jpg`}
                             className="w-full h-full object-contain grayscale-[55%] opacity-90"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).src =
-                                'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
-                            }}
                           />
                         </div>
                         <div className="min-w-0 flex-grow">
@@ -901,14 +896,11 @@ export const SewingView: React.FC = () => {
                         <div className="flex items-center gap-3">
                           {m && (
                             <div className="w-12 h-12 rounded-xl bg-white border border-slate-200 p-1 shrink-0 flex items-center justify-center overflow-hidden">
-                              <img
+                              <ZoomableImage
                                 src={m.image}
                                 alt={m.model_code}
+                                downloadName={`${m.model_code}.jpg`}
                                 className="w-full h-full object-contain"
-                                onError={(e) => {
-                                  (e.target as HTMLImageElement).src =
-                                    'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
-                                }}
                               />
                             </div>
                           )}

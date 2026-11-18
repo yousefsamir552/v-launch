@@ -23,6 +23,7 @@ import {
 import { printManualCountSheet } from '../utils/printManualCountSheet';
 import { isImageLogo } from '../utils/printShared';
 import { stageBeyond } from '../utils/completedModels';
+import { ZoomableImage } from './ZoomableImage';
 import {
   resolveDefaultGoodQtyForCell,
   findSavedQcCell
@@ -442,14 +443,11 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
       <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
         <div className="flex items-center gap-6">
           <div className="w-28 h-28 rounded-2xl overflow-hidden bg-slate-100 shrink-0 border border-slate-200">
-            <img
+            <ZoomableImage
               src={model.image}
               alt={model.model_code}
+              downloadName={`${model.model_code}.jpg`}
               className="w-full h-full object-contain bg-white"
-              onError={(e) => {
-                (e.target as HTMLImageElement).src =
-                  'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60';
-              }}
             />
           </div>
 

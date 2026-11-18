@@ -14,6 +14,7 @@ import {
   Lock,
   Layers
 } from 'lucide-react';
+import { ZoomableImage } from './ZoomableImage';
 
 import {
   GarmentComposition,
@@ -274,14 +275,11 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
               {/* Model Image */}
               <div className="h-60 w-full overflow-hidden bg-slate-100 relative">
                 {model.image ? (
-                  <img
+                  <ZoomableImage
                     src={model.image}
                     alt={model.model_code}
+                    downloadName={`${model.model_code}.jpg`}
                     className="w-full h-full object-contain bg-white group-hover:scale-105 transition-transform duration-300"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src =
-                        'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60';
-                    }}
                   />
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">
@@ -368,14 +366,11 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                 >
                   <div className="h-44 w-full overflow-hidden bg-slate-100 relative">
                     {model.image ? (
-                      <img
+                      <ZoomableImage
                         src={model.image}
                         alt={model.model_code}
+                        downloadName={`${model.model_code}.jpg`}
                         className="w-full h-full object-contain bg-white grayscale-[55%] opacity-90"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src =
-                            'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=60';
-                        }}
                       />
                     ) : (
                       <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">

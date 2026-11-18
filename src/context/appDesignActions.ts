@@ -694,7 +694,8 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
     modelId: string,
     requirementId: string,
     quantity: number,
-    notes = ''
+    notes = '',
+    defectQuantity = 0
   ): Promise<{ success: boolean; message: string }> => {
     const targetModel = models.find((m) => m.id === modelId);
     if (!targetModel) {
@@ -716,13 +717,19 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
     }
 
     const qty = Math.round((Number(quantity) || 0) * 100) / 100;
-    if (!Number.isFinite(qty) || qty <= 0) {
-      const message = 'كمية الإرجاع يجب أن تكون أكبر من صفر';
+    const defectQty = Math.round((Number(defectQuantity) || 0) * 100) / 100;
+    if (!Number.isFinite(qty) || !Number.isFinite(defectQty) || qty < 0 || defectQty < 0) {
+      const message = 'كمية الإرجاع وكمية العيوب لا يمكن أن تكون سالبة';
       addFlashMessage(message, 'danger');
       return { success: false, message };
     }
-    if (qty > available + 0.000001) {
-      const message = `كمية الإرجاع (${qty}) أكبر من الكمية المصروفة المتبقية (${available})`;
+    if (qty <= 0 && defectQty <= 0) {
+      const message = 'يجب إدخال كمية إرجاع أو كمية عيوب أكبر من صفر';
+      addFlashMessage(message, 'danger');
+      return { success: false, message };
+    }
+    if (qty + defectQty > available + 0.000001) {
+      const message = `إجمالي المرتجع والعيوب (${Math.round((qty + defectQty) * 100) / 100}) أكبر من الكمية المصروفة المتبقية (${available})`;
       addFlashMessage(message, 'danger');
       return { success: false, message };
     }
@@ -733,13 +740,15 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
         requirementId,
         qty,
         currentUser?.real_name || 'مسؤول القص',
-        notes.trim()
+        notes.trim(),
+        defectQty
       );
       await refreshState();
       const color = fabricColors.find((c) => c.id === req.color_id);
+      const defectSuffix = defectQty > 0 ? ` وتسجيل ${defectQty} عيوب قماش` : '';
       logAction(
         'القص',
-        `إرجاع فائض ${qty} من القماش${color ? ` (${color.color_code})` : ''} للقطعة ${req.part_name} من الموديل ${targetModel.model_code} إلى مخزن القماش`
+        `إرجاع فائض ${qty} من القماش${color ? ` (${color.color_code})` : ''} للقطعة ${req.part_name} من الموديل ${targetModel.model_code} إلى مخزن القماش${defectSuffix}`
       );
       const message = res?.message || `تم إرجاع ${qty} من فائض القماش إلى المخزن بنجاح`;
       addFlashMessage(message);

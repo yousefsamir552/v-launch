@@ -21,6 +21,7 @@ import {
   PackageCheck,
   Rocket
 } from 'lucide-react';
+import { ZoomableImage } from './ZoomableImage';
 import {
   Model,
   CuttingRecord,
@@ -1266,9 +1267,10 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                         <div className="flex items-center gap-3">
                           <div className="w-11 h-11 rounded-xl bg-slate-100 overflow-hidden shrink-0 border border-slate-200/80">
                             {model.image ? (
-                              <img
+                              <ZoomableImage
                                 src={model.image}
                                 alt={model.model_code}
+                                downloadName={`${model.model_code}.jpg`}
                                 className="w-full h-full object-contain bg-white"
                               />
                             ) : (

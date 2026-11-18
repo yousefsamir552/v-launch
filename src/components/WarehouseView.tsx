@@ -59,6 +59,8 @@ type FabricAuditRow = {
   totalReceived: number;
   totalConsumed: number;
   totalReturned: number;
+  /** إجمالي عيوب القماش المسجلة (لا تُضاف للرصيد ولا تُحسب استهلاكاً). */
+  totalDefect: number;
   remaining: number;
   reserved: number;
   available: number;
@@ -613,12 +615,16 @@ export const WarehouseView: React.FC = () => {
     const returnTransactions = colorTransactions.filter(
       (t) => t.operation === 'add' && (t.notes || '').includes('إرجاع فائض')
     );
+    const defectTransactions = colorTransactions.filter((t) => t.operation === 'defect');
 
     const totalDeducted = roundQty(
       deductTransactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
     );
     const totalReturned = roundQty(
       returnTransactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
+    );
+    const totalDefect = roundQty(
+      defectTransactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
     );
     // المستهلك الصافي = إجمالي الصرف − مرتجعات فائض القص
     const totalConsumed = roundQty(Math.max(0, totalDeducted - totalReturned));
@@ -742,6 +748,7 @@ export const WarehouseView: React.FC = () => {
       totalReceived,
       totalConsumed,
       totalReturned,
+      totalDefect,
       remaining: roundQty(color.quantity),
       reserved: roundQty(color.reserved_quantity),
       available: roundQty(color.quantity - color.reserved_quantity),
@@ -786,6 +793,7 @@ export const WarehouseView: React.FC = () => {
   const auditTotals = {
     totalReceived: roundQty(fabricAuditRows.reduce((sum, row) => sum + row.totalReceived, 0)),
     totalConsumed: roundQty(fabricAuditRows.reduce((sum, row) => sum + row.totalConsumed, 0)),
+    totalDefect: roundQty(fabricAuditRows.reduce((sum, row) => sum + row.totalDefect, 0)),
     totalRemaining: roundQty(fabricAuditRows.reduce((sum, row) => sum + row.remaining, 0)),
     totalAvailable: roundQty(fabricAuditRows.reduce((sum, row) => sum + row.available, 0))
   };
@@ -882,9 +890,9 @@ export const WarehouseView: React.FC = () => {
       {activeWarehouseTab === 'fabric' && (
         <div className="space-y-6">
           {/* Top Bar with Fabric Filter Pills & Action Buttons */}
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex flex-col gap-3">
             {/* Fabric Filter – Custom Dropdown (with yellow low-stock indicators) */}
-            <div className="relative w-full lg:flex-1 lg:max-w-md">
+            <div className="relative w-full lg:max-w-sm">
               <button
                 type="button"
                 onClick={() => setFabricDropdownOpen((v) => !v)}
@@ -994,8 +1002,8 @@ export const WarehouseView: React.FC = () => {
               )}
             </div>
 
-            {/* Action Buttons */}
-            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            {/* Section Tabs / Action Buttons */}
+            <div className="flex flex-wrap items-center gap-2">
               {/* Dedicated Fabric Alerts Page Button */}
               <button
                 type="button"
@@ -1058,7 +1066,10 @@ export const WarehouseView: React.FC = () => {
                   <span>+ استلام قماش</span>
                 </button>
               )}
+            </div>
 
+            {/* Export & Print Action Buttons */}
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={exportWarehouseInventoryCsv}
@@ -1284,12 +1295,13 @@ export const WarehouseView: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
+                <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mt-4">
                   {[
                     { label: 'إجمالي الوارد', value: auditTotals.totalReceived, cls: 'text-emerald-300' },
                     { label: 'إجمالي المستهلك', value: auditTotals.totalConsumed, cls: 'text-rose-300' },
+                    { label: 'عيوب القماش', value: auditTotals.totalDefect, cls: 'text-amber-300' },
                     { label: 'المتبقي بالمخزن', value: auditTotals.totalRemaining, cls: 'text-sky-300' },
-                    { label: 'المتاح للتصميم', value: auditTotals.totalAvailable, cls: 'text-amber-300' }
+                    { label: 'المتاح للتصميم', value: auditTotals.totalAvailable, cls: 'text-violet-300' }
                   ].map((item) => (
                     <div
                       key={item.label}
@@ -1370,7 +1382,7 @@ export const WarehouseView: React.FC = () => {
                                 </div>
                               </div>
 
-                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                                 <AuditStatCard
                                   label="إجمالي الوارد"
                                   value={row.totalReceived}
@@ -1384,6 +1396,12 @@ export const WarehouseView: React.FC = () => {
                                   tone="rose"
                                 />
                                 <AuditStatCard
+                                  label="عيوب القماش"
+                                  value={row.totalDefect}
+                                  unit={group.fabric.unit}
+                                  tone="amber"
+                                />
+                                <AuditStatCard
                                   label="المتبقي الفعلي"
                                   value={row.remaining}
                                   unit={group.fabric.unit}
@@ -1393,7 +1411,7 @@ export const WarehouseView: React.FC = () => {
                                   label="المتاح بعد الحجز"
                                   value={row.available}
                                   unit={group.fabric.unit}
-                                  tone="amber"
+                                  tone="slate"
                                 />
                               </div>
                             </div>
@@ -2366,19 +2384,24 @@ export const WarehouseView: React.FC = () => {
                         fabricTransactions.map((tr) => {
                           const color = fabricColors.find((c) => c.id === tr.color_id);
                           const isAdd = tr.operation === 'add';
+                          const isDefect = tr.operation === 'defect';
+                          const badgeClass = isDefect
+                            ? 'bg-amber-100 text-amber-800'
+                            : isAdd
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-rose-100 text-rose-800';
+                          const badgeLabel = isDefect
+                            ? '⚠️ عيوب قماش'
+                            : isAdd
+                              ? '+ إضافة / مرتجع'
+                              : '- صرف للمقص';
 
                           return (
                             <tr key={tr.id} className="hover:bg-slate-50 transition">
                               <td className="px-4 py-3 text-slate-500">{tr.timestamp}</td>
                               <td className="px-4 py-3">
-                                <span
-                                  className={`px-2.5 py-0.5 rounded-full font-bold ${
-                                    isAdd
-                                      ? 'bg-emerald-100 text-emerald-800'
-                                      : 'bg-rose-100 text-rose-800'
-                                  }`}
-                                >
-                                  {isAdd ? '+ إضافة / مرتجع' : '- صرف للمقص'}
+                                <span className={`px-2.5 py-0.5 rounded-full font-bold ${badgeClass}`}>
+                                  {badgeLabel}
                                 </span>
                               </td>
                               <td className="px-4 py-3 font-bold text-slate-900">
@@ -2670,7 +2693,7 @@ export const WarehouseView: React.FC = () => {
                   </div>
 
                   {/* Summary Bar */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-center">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 text-center">
                     <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
                       <span className="text-[11px] text-slate-600 block font-bold">عدد أصناف الأقمشة</span>
                       <strong className="text-lg text-slate-900 font-black">{fabrics.length}</strong>
@@ -2686,6 +2709,10 @@ export const WarehouseView: React.FC = () => {
                     <div className="p-2.5 bg-rose-50 rounded-md border border-rose-400">
                       <span className="text-[11px] text-rose-800 block font-bold">إجمالي المستهلك</span>
                       <strong className="text-lg text-rose-900 font-black">{auditTotals.totalConsumed}</strong>
+                    </div>
+                    <div className="p-2.5 bg-amber-50 rounded-md border border-amber-400">
+                      <span className="text-[11px] text-amber-800 block font-bold">إجمالي عيوب القماش</span>
+                      <strong className="text-lg text-amber-900 font-black">{auditTotals.totalDefect}</strong>
                     </div>
                     <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
                       <span className="text-[11px] text-slate-600 block font-bold">إجمالي الرصيد الفعلي (كجم/توب)</span>
@@ -2713,6 +2740,7 @@ export const WarehouseView: React.FC = () => {
                           <th className="border border-slate-800 px-3 py-2 text-center">الرصيد الفعلي</th>
                           <th className="border border-slate-800 px-3 py-2 text-center">إجمالي الوارد</th>
                           <th className="border border-slate-800 px-3 py-2 text-center">إجمالي المستهلك</th>
+                          <th className="border border-slate-800 px-3 py-2 text-center">عيوب القماش</th>
                           <th className="border border-slate-800 px-3 py-2 text-center">المحجوز</th>
                           <th className="border border-slate-800 px-3 py-2 text-center">المتاح للتصميم</th>
                           <th className="border border-slate-800 px-3 py-2 text-center">الوحدة</th>
@@ -2751,6 +2779,9 @@ export const WarehouseView: React.FC = () => {
                               </td>
                               <td className="border border-slate-800 px-3 py-2 text-center font-bold text-rose-800">
                                 {auditRow ? auditRow.totalConsumed : 0}
+                              </td>
+                              <td className="border border-slate-800 px-3 py-2 text-center font-bold text-amber-800">
+                                {auditRow ? auditRow.totalDefect : 0}
                               </td>
                               <td className="border border-slate-800 px-3 py-2 text-center font-bold text-slate-900">{color.reserved_quantity}</td>
                               <td className="border border-slate-800 px-3 py-2 text-center font-black text-slate-900">{avail}</td>

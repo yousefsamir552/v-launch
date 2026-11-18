@@ -125,7 +125,11 @@ export const buildExportActions = (ctx: AppInternalContext) => {
         fabric?.name || 'غير معروف',
         color?.color_code || '-',
         color?.color_name || '-',
-        tx.operation === 'add' ? 'وارد (إضافة)' : 'منصرف (خصم)',
+        tx.operation === 'add'
+          ? 'وارد (إضافة)'
+          : tx.operation === 'defect'
+            ? 'عيب قماش / نسيج'
+            : 'منصرف (خصم)',
         tx.amount,
         tx.model_code_ref || '-',
         tx.notes || '-'
@@ -560,7 +564,7 @@ export const buildExportActions = (ctx: AppInternalContext) => {
           tx.timestamp || '-',
           fabric?.name || 'غير معروف',
           color?.color_code || '-',
-          tx.operation === 'add' ? 'وارد' : 'منصرف',
+          tx.operation === 'add' ? 'وارد' : tx.operation === 'defect' ? 'عيب قماش / نسيج' : 'منصرف',
           tx.amount,
           tx.model_code_ref || '-',
           tx.notes || '-'

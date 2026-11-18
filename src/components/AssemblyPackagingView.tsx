@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   Lock
 } from 'lucide-react';
+import { ZoomableImage } from './ZoomableImage';
 import {
   DesignModel,
   GarmentPart,
@@ -211,14 +212,11 @@ const CurrentStageBadge: React.FC<{ status?: string }> = ({ status }) => {
 const ModelHeader: React.FC<{ model: DesignModel }> = ({ model }) => (
   <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100">
     <div className="flex items-center gap-3">
-      <img
+      <ZoomableImage
         src={model.image}
         alt={model.model_code}
+        downloadName={`${model.model_code}.jpg`}
         className="w-11 h-11 rounded-xl object-contain bg-white border border-slate-200 p-0.5"
-        onError={(e) => {
-          (e.target as HTMLImageElement).src =
-            'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=100&auto=format&fit=crop&q=60';
-        }}
       />
       <div>
         <h4 className="font-black text-sm text-slate-900">{model.model_code}</h4>
