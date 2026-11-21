@@ -524,6 +524,9 @@ def get_accessory_deficits():
 
     for item in accessories:
         ext_id = item.client_id or str(item.id)
+        # بضاعة الرصيد السابق / المرحّل لا تدخل قائمة النواقص أو التنبيهات أبداً.
+        if item.usage_type == 'carryover':
+            continue
         if item.usage_type == 'custom_model':
             if item.withdrawn_for_model:
                 continue
@@ -543,6 +546,9 @@ def get_accessory_deficits():
                     'supplier': item.supplier
                 })
         else:
+            # حد تنبيه صفر (أو أقل) يعني أن التنبيهات معطّلة لهذا الصنف.
+            if item.min_threshold <= 0:
+                continue
             deficit = max(0, item.min_threshold - item.current_stock)
             if item.current_stock <= item.min_threshold:
                 stock_deficits.append({

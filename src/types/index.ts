@@ -1152,7 +1152,7 @@ export const SNOOZE_OPTIONS: { hours: SnoozeHours; label: string }[] = [
 export const SNOOZED_NOTIFICATIONS_STORAGE_KEY = 'erp_snoozed_notifications';
 
 export type AccessoryUnit = 'قطعة' | 'دستة' | 'متر' | 'باكو' | 'كيس' | 'كيلو' | 'بكرة';
-export type AccessoryUsageType = 'stock' | 'custom_model';
+export type AccessoryUsageType = 'stock' | 'custom_model' | 'carryover';
 
 export interface AccessoryType {
   id: string;

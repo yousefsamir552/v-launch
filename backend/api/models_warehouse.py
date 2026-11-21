@@ -181,6 +181,7 @@ class Accessory(models.Model):
     USAGE_TYPES = [
         ('stock', 'رصيد مستمر (Stock)'),
         ('custom_model', 'استخدام واحد لموديل معين'),
+        ('carryover', 'رصيد سابق / مرحّل (من موسم سابق)'),
     ]
 
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
@@ -209,10 +210,16 @@ class Accessory(models.Model):
 
     @property
     def deficit_quantity(self):
+        # بضاعة "الرصيد السابق / المرحّل" تُصفّى فقط ولا تُحسب ضمن النواقص أبداً.
+        if self.usage_type == 'carryover':
+            return 0
         if self.usage_type == 'custom_model':
             if self.withdrawn_for_model:
                 return 0
             return max(0, self.target_quantity - self.delivered_quantity)
+        # حد تنبيه صفر (أو أقل) يعني أن التنبيهات معطّلة لهذا الصنف.
+        if self.min_threshold <= 0:
+            return 0
         return max(0, self.min_threshold - self.current_stock)
 
     def save(self, *args, **kwargs):

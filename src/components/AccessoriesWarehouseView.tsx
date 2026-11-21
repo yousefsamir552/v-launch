@@ -14,6 +14,7 @@ import {
   ChevronUp,
   Search,
   Image as ImageIcon,
+  Upload,
   FolderPlus,
   Trash2,
   Printer,
@@ -143,6 +144,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
       const sup = suppliers.find((s) => s.id === item.supplier_id);
       const available = Number((item.quantity - item.reserved_quantity).toFixed(2));
 
+      // بضاعة الرصيد السابق / المرحّل تُصفّى فقط ولا تُحسب ضمن النواقص أبداً.
+      if (item.usage_type === 'carryover') {
+        return { item, supplier: sup, available, threshold: 0, deficit: 0, isLow: false };
+      }
+
       if (item.usage_type === 'custom_model') {
         if (item.withdrawn_for_model) {
           return { item, supplier: sup, available, threshold: 0, deficit: 0, isLow: false };
@@ -162,7 +168,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
       } else {
         const threshold = Number(item.min_threshold ?? 0);
         const deficit = Math.max(0, threshold - available);
-        const isLow = available <= threshold;
+        // حد التنبيه = 0 يعني أن التنبيهات معطّلة لهذا الصنف (لا نقص أبداً).
+        const isLow = threshold > 0 && available <= threshold;
         return {
           item,
           supplier: sup,
@@ -176,7 +183,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
     .filter((entry) => entry.isLow);
 
   const lowStockCount = lowStockItems.length;
-  const stockDeficits = lowStockItems.filter((e) => e.item.usage_type !== 'custom_model');
+  const stockDeficits = lowStockItems.filter((e) => e.item.usage_type === 'stock');
   const modelDeficits = lowStockItems.filter((e) => e.item.usage_type === 'custom_model');
 
   // Filtered accessories for the main list/grid
@@ -286,8 +293,14 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
     const matchedType = accessoryTypes.find((t) => t.id === editForm.typeId);
     const isCustom = editForm.usageType === 'custom_model';
-    const nextThreshold = Math.max(0, Number(editForm.minThreshold));
-    const nextTarget = isCustom ? Math.max(0, Number(editForm.targetQuantity)) : nextThreshold;
+    const isCarryover = editForm.usageType === 'carryover';
+    // الرصيد السابق/المرحّل: لا حد تنبيه ولا بيانات موديل مخصص.
+    const nextThreshold = isCarryover ? 0 : Math.max(0, Number(editForm.minThreshold));
+    const nextTarget = isCarryover
+      ? 0
+      : isCustom
+      ? Math.max(0, Number(editForm.targetQuantity))
+      : nextThreshold;
 
     updateAccessoryItem(editingItem.id, {
       type_id: editForm.typeId,
@@ -300,8 +313,9 @@ export const AccessoriesWarehouseView: React.FC = () => {
       supplier_id: editForm.supplierId,
       min_threshold: nextThreshold,
       usage_type: editForm.usageType,
-      custom_model_code: isCustom ? editForm.customModelCode.trim() : '',
+      custom_model_code: isCarryover ? '' : isCustom ? editForm.customModelCode.trim() : '',
       target_quantity: nextTarget,
+      ...(isCarryover ? { delivered_quantity: 0, withdrawn_for_model: false } : {}),
       ...(canEditAccessoryPrices()
         ? { price_per_unit: Math.max(0, Number(editForm.pricePerUnit) || 0) }
         : {})
@@ -384,9 +398,15 @@ export const AccessoriesWarehouseView: React.FC = () => {
     }
     if (!targetTypeId) return;
 
-    const minThresh = Math.max(0, Number(addForm.minThreshold));
-    const targetQty = addForm.usageType === 'custom_model' ? Math.max(0, Number(addForm.targetQuantity)) : minThresh;
-    const cleanModelCode = addForm.customModelCode.trim();
+    const isCarryover = addForm.usageType === 'carryover';
+    // الرصيد السابق/المرحّل: لا حد تنبيه ولا بيانات موديل مخصص.
+    const minThresh = isCarryover ? 0 : Math.max(0, Number(addForm.minThreshold));
+    const targetQty = isCarryover
+      ? 0
+      : addForm.usageType === 'custom_model'
+      ? Math.max(0, Number(addForm.targetQuantity))
+      : minThresh;
+    const cleanModelCode = isCarryover ? '' : addForm.customModelCode.trim();
     const linkedModel =
       addForm.usageType === 'custom_model'
         ? activeModels.find((m) => m.model_code === cleanModelCode)
@@ -407,7 +427,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
       usage_type: addForm.usageType,
       custom_model_code: cleanModelCode,
       target_quantity: targetQty,
-      delivered_quantity: Number(addForm.quantity),
+      delivered_quantity: isCarryover ? 0 : Number(addForm.quantity),
       // يرتبط الإكسسوار بجدول إكسسوارات الموديل بعد نجاح الإنشاء في الباك إند
       // (في AppContext) حتى يُلتقط سعر الوحدة وتُحدَّث الكميات المحجوزة بشكل صحيح.
       ...(addForm.usageType === 'custom_model' &&
@@ -849,10 +869,14 @@ export const AccessoriesWarehouseView: React.FC = () => {
           const supplier = suppliers.find((s) => s.id === item.supplier_id);
           const available = Number((item.quantity - item.reserved_quantity).toFixed(2));
           const isCustom = item.usage_type === 'custom_model';
+          const isCarryover = item.usage_type === 'carryover';
           const threshold = Number(item.min_threshold ?? 0);
-          const isLow = isCustom
-            ? !item.withdrawn_for_model && (item.target_quantity ?? threshold) > (item.delivered_quantity ?? item.quantity)
-            : available <= threshold;
+          const isLow =
+            !isCarryover &&
+            (isCustom
+              ? !item.withdrawn_for_model &&
+                (item.target_quantity ?? threshold) > (item.delivered_quantity ?? item.quantity)
+              : threshold > 0 && available <= threshold);
 
           return (
             <div
@@ -862,12 +886,12 @@ export const AccessoriesWarehouseView: React.FC = () => {
               }`}
             >
               <div>
-                <div className="h-40 w-full overflow-hidden bg-slate-100 relative">
+                <div className="h-40 w-full overflow-hidden bg-slate-100 border-b border-slate-100 relative">
                   {item.image ? (
                     <img
                       src={item.image}
                       alt={item.name}
-                      className="w-full h-full object-contain bg-white group-hover:scale-105 transition-transform duration-300"
+                      className="w-full h-full object-contain bg-white p-2 group-hover:scale-105 transition-transform duration-300"
                     />
                   ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 gap-1 bg-slate-50">
@@ -887,6 +911,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     {isCustom && (
                       <span className="px-2 py-0.5 text-[10px] font-black bg-amber-500 text-slate-950 rounded-md shadow-2xs">
                         خاص بموديل {item.custom_model_code}
+                      </span>
+                    )}
+                    {isCarryover && (
+                      <span className="px-2 py-0.5 text-[10px] font-black bg-slate-500 text-white rounded-md shadow-2xs">
+                        📦 رصيد سابق / مرحّل
                       </span>
                     )}
                   </div>
@@ -939,7 +968,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
                       </span>
                       <div className="flex items-center gap-1 justify-end">
                         <span className="text-xs font-bold text-slate-700">
-                          {isCustom ? item.target_quantity ?? threshold : threshold} {item.unit}
+                          {isCustom
+                            ? `${item.target_quantity ?? threshold} ${item.unit}`
+                            : isCarryover || threshold <= 0
+                            ? 'ملغي (0)'
+                            : `${threshold} ${item.unit}`}
                         </span>
                         {canEdit && (
                           <button
@@ -1089,13 +1122,19 @@ export const AccessoriesWarehouseView: React.FC = () => {
               {/* Usage Type Selection */}
               <div className="p-3.5 bg-blue-50/70 rounded-2xl border border-blue-200 space-y-2">
                 <label className="block text-xs font-black text-blue-950">نوع استخدام الإكسسوار:</label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <label className="flex items-center gap-2 p-2.5 bg-white rounded-xl border border-blue-200 cursor-pointer">
                     <input
                       type="radio"
                       name="usageType"
                       checked={addForm.usageType === 'stock'}
-                      onChange={() => setAddForm({ ...addForm, usageType: 'stock' })}
+                      onChange={() =>
+                        setAddForm({
+                          ...addForm,
+                          usageType: 'stock',
+                          minThreshold: addForm.minThreshold > 0 ? addForm.minThreshold : 10
+                        })
+                      }
                       className="text-blue-600"
                     />
                     <div>
@@ -1115,6 +1154,22 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     <div>
                       <span className="font-bold text-xs text-slate-900 block">استخدام واحد لموديل معين</span>
                       <span className="text-[10px] text-slate-500">ينتهي طلبه بمجرد توريد وسحب الكمية</span>
+                    </div>
+                  </label>
+
+                  <label className="flex items-center gap-2 p-2.5 bg-white rounded-xl border border-blue-200 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="usageType"
+                      checked={addForm.usageType === 'carryover'}
+                      onChange={() =>
+                        setAddForm({ ...addForm, usageType: 'carryover', minThreshold: 0 })
+                      }
+                      className="text-blue-600"
+                    />
+                    <div>
+                      <span className="font-bold text-xs text-slate-900 block">📦 رصيد سابق / مرحّل</span>
+                      <span className="text-[10px] text-slate-500">بضاعة موسم سابق تُصفّى (بدون تنبيهات)</span>
                     </div>
                   </label>
                 </div>
@@ -1302,17 +1357,46 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-amber-800 mb-1">حد التنبيه (الأمان) *</label>
-                  <input
-                    type="number"
-                    min="0"
-                    required
-                    value={addForm.minThreshold}
-                    onChange={(e) => setAddForm({ ...addForm, minThreshold: Number(e.target.value) })}
-                    className="w-full px-3 py-2 text-xs rounded-xl border border-amber-300 bg-amber-50/40 font-black text-amber-950 focus:outline-hidden"
-                  />
+                  <label className="block text-xs font-bold text-amber-800 mb-1">حد التنبيه (الأمان)</label>
+                  {addForm.usageType === 'carryover' ? (
+                    <div className="px-3 py-2 text-xs rounded-xl border border-slate-300 bg-slate-100 font-black text-slate-500">
+                      ملغي (0)
+                    </div>
+                  ) : (
+                    <input
+                      type="number"
+                      min="0"
+                      required
+                      value={addForm.minThreshold}
+                      onChange={(e) => setAddForm({ ...addForm, minThreshold: Number(e.target.value) })}
+                      className="w-full px-3 py-2 text-xs rounded-xl border border-amber-300 bg-amber-50/40 font-black text-amber-950 focus:outline-hidden"
+                    />
+                  )}
                 </div>
               </div>
+
+              {addForm.usageType === 'stock' && (
+                <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 space-y-1">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Number(addForm.minThreshold) <= 0}
+                      onChange={(e) =>
+                        setAddForm({ ...addForm, minThreshold: e.target.checked ? 0 : 10 })
+                      }
+                      className="rounded text-amber-600"
+                    />
+                    <span className="text-xs font-bold text-amber-950">
+                      إلغاء حد تنبيه الأمان (لا تنبهني عند نفاد هذا الصنف)
+                    </span>
+                  </label>
+                  {Number(addForm.minThreshold) <= 0 && (
+                    <p className="text-[10px] font-bold text-amber-700">
+                      🔕 التنبيهات معطّلة لهذا الصنف لأن حد التنبيه = 0. اكتب رقماً أكبر من صفر لإعادة تفعيلها.
+                    </p>
+                  )}
+                </div>
+              )}
 
               {canEditAccessoryPrices() && (
                 <div>
@@ -1353,19 +1437,49 @@ export const AccessoriesWarehouseView: React.FC = () => {
               {/* Image upload / URL */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">صورة الإكسسوار</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  disabled={imageUploading}
-                  onChange={(e) => handleImageFileUpload(e, false)}
-                  className="w-full text-xs text-slate-500 file:me-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-60"
-                />
-                {imageUploading && (
-                  <p className="text-[10px] font-bold text-slate-500 mt-1">جارٍ رفع الصورة...</p>
-                )}
-                {imageUploadError && (
-                  <p className="text-[10px] font-bold text-rose-600 mt-1">{imageUploadError}</p>
-                )}
+                <div className="relative border-2 border-dashed border-slate-300 rounded-2xl p-4 text-center hover:bg-slate-50 hover:border-blue-400 transition">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    disabled={imageUploading}
+                    onChange={(e) => handleImageFileUpload(e, false)}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                  />
+                  {imageUploading ? (
+                    <div className="flex flex-col items-center justify-center py-6 gap-1">
+                      <span className="text-xs font-bold text-slate-600">جارٍ رفع الصورة...</span>
+                    </div>
+                  ) : addForm.image ? (
+                    <div className="flex flex-col items-center gap-1">
+                      <img
+                        src={addForm.image}
+                        alt="معاينة صورة الإكسسوار"
+                        className="w-28 h-28 object-contain bg-white rounded-xl border border-slate-200 p-1"
+                      />
+                      <span className="text-[10px] font-bold text-slate-500">اضغط لتغيير الصورة</span>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-6">
+                      <Upload className="w-7 h-7 text-slate-400 mb-1" />
+                      <span className="text-xs font-bold text-slate-600">
+                        اضغط لرفع صورة الإكسسوار من جهازك
+                      </span>
+                      <span className="text-[10px] text-slate-400 mt-0.5">PNG أو JPG</span>
+                    </div>
+                  )}
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-bold text-rose-600">{imageUploadError}</p>
+                  {addForm.image && !imageUploading && (
+                    <button
+                      type="button"
+                      onClick={() => setAddForm((prev) => ({ ...prev, image: '' }))}
+                      className="text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
+                    >
+                      إزالة الصورة
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
@@ -1410,13 +1524,19 @@ export const AccessoriesWarehouseView: React.FC = () => {
             <form onSubmit={handleConfirmEdit} className="p-6 overflow-y-auto space-y-4">
               <div className="p-3.5 bg-blue-50/70 rounded-2xl border border-blue-200 space-y-2">
                 <label className="block text-xs font-black text-blue-950">نوع استخدام الإكسسوار:</label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <label className="flex items-center gap-2 p-2.5 bg-white rounded-xl border border-blue-200 cursor-pointer">
                     <input
                       type="radio"
                       name="editUsageType"
                       checked={editForm.usageType === 'stock'}
-                      onChange={() => setEditForm({ ...editForm, usageType: 'stock' })}
+                      onChange={() =>
+                        setEditForm({
+                          ...editForm,
+                          usageType: 'stock',
+                          minThreshold: editForm.minThreshold > 0 ? editForm.minThreshold : 10
+                        })
+                      }
                       className="text-blue-600"
                     />
                     <div>
@@ -1436,6 +1556,22 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     <div>
                       <span className="font-bold text-xs text-slate-900 block">استخدام واحد لموديل معين</span>
                       <span className="text-[10px] text-slate-500">ينتهي طلبه بمجرد توريد وسحب الكمية</span>
+                    </div>
+                  </label>
+
+                  <label className="flex items-center gap-2 p-2.5 bg-white rounded-xl border border-blue-200 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="editUsageType"
+                      checked={editForm.usageType === 'carryover'}
+                      onChange={() =>
+                        setEditForm({ ...editForm, usageType: 'carryover', minThreshold: 0 })
+                      }
+                      className="text-blue-600"
+                    />
+                    <div>
+                      <span className="font-bold text-xs text-slate-900 block">📦 رصيد سابق / مرحّل</span>
+                      <span className="text-[10px] text-slate-500">بضاعة موسم سابق تُصفّى (بدون تنبيهات)</span>
                     </div>
                   </label>
                 </div>
@@ -1536,17 +1672,46 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-amber-800 mb-1">حد التنبيه (الأمان) *</label>
-                  <input
-                    type="number"
-                    min="0"
-                    required
-                    value={editForm.minThreshold}
-                    onChange={(e) => setEditForm({ ...editForm, minThreshold: Number(e.target.value) })}
-                    className="w-full px-3 py-2 text-xs rounded-xl border border-amber-300 bg-amber-50/40 font-black text-amber-950 focus:outline-hidden"
-                  />
+                  <label className="block text-xs font-bold text-amber-800 mb-1">حد التنبيه (الأمان)</label>
+                  {editForm.usageType === 'carryover' ? (
+                    <div className="px-3 py-2 text-xs rounded-xl border border-slate-300 bg-slate-100 font-black text-slate-500">
+                      ملغي (0)
+                    </div>
+                  ) : (
+                    <input
+                      type="number"
+                      min="0"
+                      required
+                      value={editForm.minThreshold}
+                      onChange={(e) => setEditForm({ ...editForm, minThreshold: Number(e.target.value) })}
+                      className="w-full px-3 py-2 text-xs rounded-xl border border-amber-300 bg-amber-50/40 font-black text-amber-950 focus:outline-hidden"
+                    />
+                  )}
                 </div>
               </div>
+
+              {editForm.usageType === 'stock' && (
+                <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 space-y-1">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Number(editForm.minThreshold) <= 0}
+                      onChange={(e) =>
+                        setEditForm({ ...editForm, minThreshold: e.target.checked ? 0 : 10 })
+                      }
+                      className="rounded text-amber-600"
+                    />
+                    <span className="text-xs font-bold text-amber-950">
+                      إلغاء حد تنبيه الأمان (لا تنبهني عند نفاد هذا الصنف)
+                    </span>
+                  </label>
+                  {Number(editForm.minThreshold) <= 0 && (
+                    <p className="text-[10px] font-bold text-amber-700">
+                      🔕 التنبيهات معطّلة لهذا الصنف لأن حد التنبيه = 0. اكتب رقماً أكبر من صفر لإعادة تفعيلها.
+                    </p>
+                  )}
+                </div>
+              )}
 
               {canEditAccessoryPrices() && (
                 <div>
@@ -1585,19 +1750,49 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">تحديث صورة الإكسسوار</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  disabled={imageUploading}
-                  onChange={(e) => handleImageFileUpload(e, true)}
-                  className="w-full text-xs text-slate-500 file:me-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer disabled:opacity-60"
-                />
-                {imageUploading && (
-                  <p className="text-[10px] font-bold text-slate-500 mt-1">جارٍ رفع الصورة...</p>
-                )}
-                {imageUploadError && (
-                  <p className="text-[10px] font-bold text-rose-600 mt-1">{imageUploadError}</p>
-                )}
+                <div className="relative border-2 border-dashed border-slate-300 rounded-2xl p-4 text-center hover:bg-slate-50 hover:border-blue-400 transition">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    disabled={imageUploading}
+                    onChange={(e) => handleImageFileUpload(e, true)}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                  />
+                  {imageUploading ? (
+                    <div className="flex flex-col items-center justify-center py-6 gap-1">
+                      <span className="text-xs font-bold text-slate-600">جارٍ رفع الصورة...</span>
+                    </div>
+                  ) : editForm.image ? (
+                    <div className="flex flex-col items-center gap-1">
+                      <img
+                        src={editForm.image}
+                        alt="معاينة صورة الإكسسوار"
+                        className="w-28 h-28 object-contain bg-white rounded-xl border border-slate-200 p-1"
+                      />
+                      <span className="text-[10px] font-bold text-slate-500">اضغط لتغيير الصورة</span>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-6">
+                      <Upload className="w-7 h-7 text-slate-400 mb-1" />
+                      <span className="text-xs font-bold text-slate-600">
+                        اضغط لرفع صورة الإكسسوار من جهازك
+                      </span>
+                      <span className="text-[10px] text-slate-400 mt-0.5">PNG أو JPG</span>
+                    </div>
+                  )}
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-bold text-rose-600">{imageUploadError}</p>
+                  {editForm.image && !imageUploading && (
+                    <button
+                      type="button"
+                      onClick={() => setEditForm((prev) => ({ ...prev, image: '' }))}
+                      className="text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
+                    >
+                      إزالة الصورة
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
@@ -1890,7 +2085,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
                       <td className="border border-slate-800 p-2.5 font-semibold text-slate-700">{item.type_name}</td>
                       <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{item.name}</td>
                       <td className="border border-slate-800 p-2.5 text-slate-700 text-[11px]">
-                        {item.usage_type === 'custom_model' ? `خاص بموديل ${item.custom_model_code}` : 'رصيد مستمر'}
+                        {item.usage_type === 'custom_model'
+                          ? `خاص بموديل ${item.custom_model_code}`
+                          : item.usage_type === 'carryover'
+                          ? 'رصيد سابق / مرحّل'
+                          : 'رصيد مستمر'}
                       </td>
                       <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900">{item.quantity}</td>
                       <td className="border border-slate-800 p-2.5 text-center font-bold text-slate-900">{item.reserved_quantity}</td>
@@ -1898,7 +2097,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
                         {item.quantity - item.reserved_quantity}
                       </td>
                       <td className="border border-slate-800 p-2.5 text-center font-bold text-slate-900">
-                        {item.usage_type === 'custom_model' ? item.target_quantity ?? item.min_threshold : item.min_threshold}
+                        {item.usage_type === 'custom_model'
+                          ? item.target_quantity ?? item.min_threshold
+                          : item.usage_type === 'carryover' || Number(item.min_threshold ?? 0) <= 0
+                          ? '0 (ملغي)'
+                          : item.min_threshold}
                       </td>
                       <td className="border border-slate-800 p-2.5 text-center text-slate-700">{item.unit}</td>
                       {canViewAccessoryPrices() && (

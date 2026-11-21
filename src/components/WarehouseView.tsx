@@ -429,7 +429,10 @@ export const WarehouseView: React.FC = () => {
 
   const lowAccessoryCount =
     accessoryItems?.filter(
-      (it) => it.quantity - it.reserved_quantity <= (it.min_threshold ?? 30)
+      (it) =>
+        it.usage_type === 'stock' &&
+        (it.min_threshold ?? 0) > 0 &&
+        it.quantity - it.reserved_quantity <= (it.min_threshold ?? 0)
     ).length || 0;
 
   const activeColor = fabricColors.find((c) => c.id === activeColorId);

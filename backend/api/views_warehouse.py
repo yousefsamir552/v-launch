@@ -302,6 +302,12 @@ class AccessoryViewSet(BasePermViewSet):
         min_thresh = int(float(data.get('min_threshold', 10) or 0))
         target_qty = int(float(data.get('target_quantity', min_thresh) or 0))
         delivered_qty = int(float(data.get('delivered_quantity', qty) or 0))
+        # "الرصيد السابق / المرحّل" بضاعة قديمة تُصفّى فقط:
+        # لا حد تنبيه، ولا شروط custom_model (الكمية المستهدفة/الموردة بلا معنى).
+        if usage_type == 'carryover':
+            min_thresh = 0
+            target_qty = 0
+            delivered_qty = 0
         profile = getattr(request, 'user_profile', None)
         can_edit_price = is_sudo_account(profile) or (
             profile is not None and (
@@ -324,10 +330,10 @@ class AccessoryViewSet(BasePermViewSet):
             supplier_id_ref=data.get('supplier_id') or '',
             min_threshold=max(0, min_thresh),
             usage_type=usage_type,
-            custom_model_code=data.get('custom_model_code') or '',
+            custom_model_code='' if usage_type == 'carryover' else (data.get('custom_model_code') or ''),
             target_quantity=target_qty,
             delivered_quantity=delivered_qty,
-            withdrawn_for_model=bool(data.get('withdrawn_for_model', False)),
+            withdrawn_for_model=False if usage_type == 'carryover' else bool(data.get('withdrawn_for_model', False)),
             created_at_str=data.get('created_at') or date.today().isoformat(),
         )
         return Response(
@@ -378,6 +384,13 @@ class AccessoryViewSet(BasePermViewSet):
                 acc.delivered_quantity = max(0, int(float(data['delivered_quantity'] or 0)))
             if 'withdrawn_for_model' in data:
                 acc.withdrawn_for_model = bool(data['withdrawn_for_model'])
+            # تطبيع "الرصيد السابق / المرحّل": لا حد تنبيه ولا بيانات موديل مخصص.
+            if acc.usage_type == 'carryover':
+                acc.min_threshold = 0
+                acc.custom_model_code = ''
+                acc.target_quantity = 0
+                acc.delivered_quantity = 0
+                acc.withdrawn_for_model = False
             acc.save()
             response_data = AccessorySerializer(acc, context={'request': request}).data
         return Response(response_data)

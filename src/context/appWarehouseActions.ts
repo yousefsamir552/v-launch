@@ -421,10 +421,18 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
     const matchedType = accessoryTypes.find((t) => t.id === data.type_id);
     const newItemId = 'acc-' + Date.now();
     const usageType = data.usage_type || 'stock';
-    const targetQty =
-      usageType === 'custom_model' ? data.target_quantity || data.min_threshold : data.min_threshold;
-    const deliveredQty =
-      usageType === 'custom_model' ? data.delivered_quantity ?? data.quantity : data.quantity;
+    const isCarryover = usageType === 'carryover';
+    // الرصيد السابق/المرحّل: لا حد تنبيه ولا بيانات موديل مخصص.
+    const targetQty = isCarryover
+      ? 0
+      : usageType === 'custom_model'
+      ? data.target_quantity || data.min_threshold
+      : data.min_threshold;
+    const deliveredQty = isCarryover
+      ? 0
+      : usageType === 'custom_model'
+      ? data.delivered_quantity ?? data.quantity
+      : data.quantity;
 
     const newItem: AccessoryItem = {
       id: newItemId,
@@ -440,9 +448,9 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
       reserved_quantity: 0,
       price_per_unit: Math.max(0, data.price_per_unit),
       supplier_id: data.supplier_id,
-      min_threshold: Math.max(0, data.min_threshold),
+      min_threshold: isCarryover ? 0 : Math.max(0, data.min_threshold),
       usage_type: usageType,
-      custom_model_code: data.custom_model_code?.trim(),
+      custom_model_code: isCarryover ? '' : data.custom_model_code?.trim(),
       target_quantity: targetQty,
       delivered_quantity: deliveredQty,
       withdrawn_for_model: false,
@@ -640,11 +648,19 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
       a.type_name,
       a.code,
       a.name,
-      a.usage_type === 'custom_model' ? `خاص بموديل ${a.custom_model_code || ''}` : 'رصيد مستمر',
+      a.usage_type === 'custom_model'
+        ? `خاص بموديل ${a.custom_model_code || ''}`
+        : a.usage_type === 'carryover'
+        ? 'رصيد سابق / مرحّل'
+        : 'رصيد مستمر',
       a.quantity,
       a.reserved_quantity,
       a.quantity - a.reserved_quantity,
-      a.usage_type === 'custom_model' ? a.target_quantity || a.min_threshold : a.min_threshold,
+      a.usage_type === 'custom_model'
+        ? a.target_quantity || a.min_threshold
+        : a.usage_type === 'carryover' || Number(a.min_threshold ?? 0) <= 0
+        ? '0 (ملغي)'
+        : a.min_threshold,
       a.unit,
       ...(showPrices
         ? [
