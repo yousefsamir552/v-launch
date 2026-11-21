@@ -592,10 +592,25 @@ class HRSalaryGatingTests(PermissionTestBase):
         view.request = request
         view.kwargs = {'pk': str(self.employee.pk)}
         response = view.update(request, pk=str(self.employee.pk))
+        # إرسال مرتب بدون صلاحية يُرفض صراحةً (403) ولا يُحدَّث أي حقل جزئياً.
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.name, 'موظف')
+        self.assertEqual(self.employee.monthly_salary, 5000)
+
+    def test_update_other_fields_without_salary_still_allowed(self):
+        # تعديل بيانات غير مالية لا يتطلب صلاحية الرواتب (لا يُرسل حقل المرتب).
+        view = HREmployeeViewSet()
+        view.format_kwarg = None
+        request = self._request(self.accounts_user, 'patch', {'name': 'اسم جديد'})
+        view.request = request
+        view.kwargs = {'pk': str(self.employee.pk)}
+        response = view.update(request, pk=str(self.employee.pk))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.employee.refresh_from_db()
-        self.assertEqual(self.employee.name, 'موظف معدل')
+        self.assertEqual(self.employee.name, 'اسم جديد')
         self.assertEqual(self.employee.monthly_salary, 5000)
+        # المرتب يبقى محجوباً في الاستجابة لأنه لا يملك صلاحية الرواتب.
         self.assertIsNone(response.data['monthly_salary'])
 
     def test_create_is_forbidden_without_payroll_permission(self):
@@ -629,6 +644,45 @@ class HRSalaryGatingTests(PermissionTestBase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.employee.refresh_from_db()
         self.assertEqual(self.employee.monthly_salary, 6500)
+
+    def test_can_manage_hr_allows_salary_read_and_edit(self):
+        hr_manager_role = make_role('hr-manager', hr_employees=True, can_manage_hr=True)
+        hr_manager = make_user('hr-manager', hr_manager_role, rank=RANK_LEVEL_ONE)
+
+        data = HREmployeeSerializer(
+            self.employee, context={'request': self._request(hr_manager)}
+        ).data
+        self.assertEqual(data['monthly_salary'], 5000.0)
+
+        view = HREmployeeViewSet()
+        view.format_kwarg = None
+        request = self._request(hr_manager, 'patch', {'monthly_salary': 7200})
+        view.request = request
+        view.kwargs = {'pk': str(self.employee.pk)}
+        response = view.update(request, pk=str(self.employee.pk))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.monthly_salary, 7200)
+        self.assertEqual(response.data['monthly_salary'], 7200.0)
+
+    def test_manage_permissions_allows_salary_read_and_edit(self):
+        admin_role = make_role('perms-admin', hr_employees=True, manage_permissions=True)
+        admin = make_user('perms-admin', admin_role, rank=RANK_LEVEL_ONE)
+
+        data = HREmployeeSerializer(
+            self.employee, context={'request': self._request(admin)}
+        ).data
+        self.assertEqual(data['monthly_salary'], 5000.0)
+
+        view = HREmployeeViewSet()
+        view.format_kwarg = None
+        request = self._request(admin, 'patch', {'monthly_salary': 8100})
+        view.request = request
+        view.kwargs = {'pk': str(self.employee.pk)}
+        response = view.update(request, pk=str(self.employee.pk))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.monthly_salary, 8100)
 
 
 class UserSerializerContextTests(PermissionTestBase):

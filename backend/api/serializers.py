@@ -14,7 +14,7 @@ from .models import (
     HRJobTitle, HREmployee, HRAttendanceSettings,
     HRAttendanceRecord, HRPenalty, HRLoan,
     RANK_SUDO, RANK_LEVEL_THREE, DEFAULT_RANK_LEVEL,
-    coerce_rank_level, rank_visibility_label,
+    coerce_rank_level, rank_visibility_label, SALARY_PERMISSION_KEYS,
 )
 from .storage_r2 import normalize_image_field
 
@@ -998,7 +998,7 @@ class AuditLogSerializer(serializers.ModelSerializer):
 
         def _can_see_change(field_name: str) -> bool:
             if field_name == 'monthly_salary':
-                return viewer_can_view(self.context, 'hr_payroll', 'can_manage_hr')
+                return viewer_can_view(self.context, *SALARY_PERMISSION_KEYS)
             if field_name == 'amount' and 'موارد' in section_text:
                 return viewer_can_view(self.context, 'hr_loans', 'hr_payroll', 'can_manage_hr')
             if field_name in {'price', 'price_per_unit', 'unit_price_snapshot', 'cost_per_piece', 'print_cost_per_piece', 'total_cost'}:
@@ -1090,9 +1090,11 @@ class HREmployeeSerializer(serializers.ModelSerializer):
             'department': instance.department,
             'department_label': instance.department_label,
             # المرتب يُخفى (None) لمن لا يملك صلاحية الرواتب.
+            # نفحص المفاتيح الثلاثة صراحةً (مطابقة لـ canAccessHRSection('payroll'))
+            # بدلاً من الاعتماد على ترقية has_perm الضمنية للصلاحية العامة.
             'monthly_salary': (
                 float(instance.monthly_salary or 0)
-                if viewer_can_view(self.context, 'hr_payroll')
+                if viewer_can_view(self.context, *SALARY_PERMISSION_KEYS)
                 else None
             ),
             'rule_application_mode': instance.rule_application_mode,

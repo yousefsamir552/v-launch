@@ -205,11 +205,21 @@ export const EmployeesPanel: React.FC<{
 
     try {
       if (editing) {
-        await api.updateHREmployee(editing.id, payload);
+        const saved = await api.updateHREmployee(editing.id, payload);
+        // تحقق دفاعي: إن رجّع السيرفر المرتب محجوباً (null) بينما المستخدم
+        // يملك صلاحية عرضه، فلا نُظهر نجاحاً زائفاً — بل نُبقى النموذج مفتوحاً.
+        if (canViewSalary && (saved?.monthly_salary === null || saved?.monthly_salary === undefined)) {
+          setFormError('لم يُحفظ المرتب: رفض السيرفر حفظ المرتب لعدم توفر صلاحية الرواتب لديك.');
+          return;
+        }
         addFlashMessage('تم تعديل بيانات الموظف بنجاح');
         logAction('الموارد البشرية', `تعديل بيانات موظف: ${name}`);
       } else {
-        await api.createHREmployee(payload);
+        const created = await api.createHREmployee(payload);
+        if (canViewSalary && (created?.monthly_salary === null || created?.monthly_salary === undefined)) {
+          setFormError('لم يُحفظ المرتب: رفض السيرفر حفظ المرتب لعدم توفر صلاحية الرواتب لديك.');
+          return;
+        }
         addFlashMessage('تم إضافة الموظف بنجاح');
         logAction('الموارد البشرية', `إضافة موظف: ${name}`);
       }
@@ -355,8 +365,14 @@ export const EmployeesPanel: React.FC<{
                     </span>
                   </td>
                   {canViewSalary && (
-                    <td className="px-3 py-2.5 font-mono font-black text-emerald-700 whitespace-nowrap">
-                      {formatMoney(emp.monthly_salary || 0)}
+                    <td className="px-3 py-2.5 font-mono font-black whitespace-nowrap">
+                      {emp.monthly_salary === null || emp.monthly_salary === undefined ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-black">
+                          🔒 محجوب
+                        </span>
+                      ) : (
+                        <span className="text-emerald-700">{formatMoney(emp.monthly_salary)}</span>
+                      )}
                     </td>
                   )}
                   <td className="px-3 py-2.5">

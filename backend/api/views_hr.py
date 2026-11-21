@@ -131,9 +131,13 @@ class HREmployeeViewSet(BasePermViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
         data = request.data.copy()
-        if not can_edit_employee_salary(request):
-            # من لا يملك صلاحية الرواتب لا يستطيع تغيير المرتب (الحقل مخفي عنه أصلاً).
-            data.pop('monthly_salary', None)
+        if 'monthly_salary' in data and not can_edit_employee_salary(request):
+            # رفض صريح بدلاً من الإسقاط الصامت: لا نُظهر نجاحاً زائفاً للمستخدم
+            # ولا نسمح بتعديل جزئي يوهم بحفظ المرتب بينما لم يُحفظ فعلاً.
+            return Response(
+                {'detail': 'لا تملك صلاحية تعديل المرتب الشهري (صلاحية الرواتب مطلوبة).'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         if data.get('name') is not None:
             name = str(data.get('name') or '').strip()

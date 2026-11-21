@@ -34,7 +34,7 @@ from .models import (
     HR_DEPARTMENT_LABELS, WEEK_DAY_LABELS, HR_ATTENDANCE_STATUS_CHOICES,
     HR_REVIEW_STATUS_CHOICES, HR_PENALTY_TYPE_CHOICES,
     RANK_SUDO, RANK_LEVEL_ONE, RANK_LEVEL_TWO, RANK_LEVEL_THREE,
-    DEFAULT_RANK_LEVEL, RANK_LEVEL_KEYS, HR_PERM_KEYS,
+    DEFAULT_RANK_LEVEL, RANK_LEVEL_KEYS, HR_PERM_KEYS, SALARY_PERMISSION_KEYS,
     coerce_rank_level, visible_rank_levels, grantable_rank_levels,
     can_manage_rank, rank_visibility_label,
 )
@@ -221,13 +221,17 @@ def can_manage_target(request, target_rank) -> bool:
 
 
 def can_edit_employee_salary(request) -> bool:
-    """المرتب الشهري لا يُقرأ ولا يُعدَّل إلا بصلاحية الرواتب (أو تصريح عام)."""
+    """المرتب الشهري لا يُقرأ ولا يُعدَّل إلا بصلاحية الرواتب (أو تصريح عام).
+
+    مطابقة لواجهة canAccessHRSection('payroll') في الفرونت إند:
+    sudo أو hr_payroll أو can_manage_hr أو manage_permissions.
+    """
     profile = get_viewer_profile(request)
     if profile is None:
         return False
-    if is_sudo_profile(profile) or profile.has_perm('manage_permissions'):
+    if is_sudo_profile(profile):
         return True
-    return profile.has_perm('hr_payroll')
+    return any(profile.has_perm(key) for key in SALARY_PERMISSION_KEYS)
 
 
 # ---------------------------------------------------------------------------

@@ -48,6 +48,10 @@ HR_PERM_KEYS = (
     'hr_reports',
 )
 
+# صلاحيات قراءة/تعديل المرتب الشهري — مطابقة لواجهة canAccessHRSection('payroll')
+# في الفرونت إند (hr_payroll أو can_manage_hr أو manage_permissions) مع تجاوز sudo.
+SALARY_PERMISSION_KEYS = ('hr_payroll', 'can_manage_hr', 'manage_permissions')
+
 
 def coerce_rank_level(value, default: int = DEFAULT_RANK_LEVEL) -> int:
     """إرجاع رتبة صحيحة ضمن 0/1/2/3 أو القيمة الافتراضية."""
