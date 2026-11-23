@@ -198,6 +198,10 @@ class CuttingRecord(models.Model):
     model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, related_name="cutting_records", verbose_name="الموديل")
     spread_number = models.IntegerField(default=1, verbose_name="رقم الفرشة")
     part_type = models.CharField(max_length=20, choices=PART_TYPE_CHOICES, default='shirt', verbose_name="نوع القطعة")
+    # فرشة "قصة / جزء فرعي" (مثل قصة الأورنج أو الكم): تُستهلك قماشها وتُحسب أوزانها،
+    # لكنها لا تُجمع على عدد القطع المقصوصة للقطعة الأساسية.
+    is_sub_cut = models.BooleanField(default=False, verbose_name="قصة / جزء فرعي (لا تُجمع على عدد القطع)")
+    sub_cut_label = models.CharField(max_length=150, blank=True, default='', verbose_name="اسم القصة / الجزء الفرعي")
     spreader_name = models.CharField(max_length=150, blank=True, default='', verbose_name="اسم الفَرّاش (من قام بالفرش)")
     cutter_name = models.CharField(max_length=150, verbose_name="اسم المقصدار / القاصص")
     fabric_color = models.CharField(max_length=255, blank=True, default='', verbose_name="ملخص ألوان الفرشة")

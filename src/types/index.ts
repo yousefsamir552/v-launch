@@ -560,6 +560,10 @@ export interface CuttingRecord {
   part?: 'shirt' | 'pants' | string;
   part_type?: GarmentPart;
   partType?: GarmentPart;
+  is_sub_cut?: boolean;
+  isSubCut?: boolean;
+  sub_cut_label?: string;
+  subCutLabel?: string;
   recorded_by?: string;
   layers_count: number;
   layersCount?: number;

@@ -91,6 +91,8 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
     shadeDegree?: string;
     notes?: string;
     partType?: GarmentPart;
+    isSubCut?: boolean;
+    subCutLabel?: string;
   }) => {
     const recId = 'cut-' + Date.now();
     const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
@@ -98,6 +100,10 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
     const existingModelSpreads = cuttingRecords.filter((r) => r.model_id === data.modelId);
     const spreadNumber = data.spreadNumber || existingModelSpreads.length + 1;
     const partType: GarmentPart = normalizePartKey(data.partType || 'shirt');
+    // فرشة "قصة / جزء فرعي": تُستهلك قماشها وتُحسب أوزانها، لكنها لا تُجمع على عدد القطع.
+    const isSubCut = Boolean(data.isSubCut);
+    const subCutLabel =
+      (data.subCutLabel || '').trim() || (isSubCut ? `قصة ${getPartLabel(partType)}` : '');
 
     const piecesPerLayer = Math.max(1, Number(data.piecesPerLayer) || 1);
     const layerWeight = Math.max(0, Number(data.layerWeight) || 0);
@@ -146,6 +152,10 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
       spreadNumber: spreadNumber,
       part_type: partType,
       partType: partType,
+      is_sub_cut: isSubCut,
+      isSubCut: isSubCut,
+      sub_cut_label: subCutLabel,
+      subCutLabel: subCutLabel,
       spreader_name: cleanSpreader,
       spreaderName: cleanSpreader,
       cutter_name: cleanCutter,
@@ -179,7 +189,7 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
             : partType === 'jacket'
             ? Number(m.cut_jacket_pieces || 0)
             : Number(m.cut_shirt_pieces || 0);
-        const newPartCut = prevPartCut + totalPieces;
+        const newPartCut = isSubCut ? prevPartCut : prevPartCut + totalPieces;
         const cutSummary = {
           ...(m.cut_summary || {}),
           [partType]: newPartCut
@@ -198,6 +208,8 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
         const newTotal =
           m.garment_parts && m.garment_parts.length > 0 && partValues.length > 0
             ? Math.min(...partValues)
+            : isSubCut
+            ? m.actual_cut_count || 0
             : (m.actual_cut_count || 0) + totalPieces;
         const tlEvent: ModelTimelineEvent = {
           id: 'tl-' + Date.now(),
@@ -218,6 +230,8 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
             pieces_per_layer: piecesPerLayer,
             layer_weight: layerWeight,
             pieces_count: totalPieces,
+            is_sub_cut: isSubCut,
+            sub_cut_label: subCutLabel,
             total_cut_pieces_so_far: newTotal,
             shade_degree: data.shadeDegree?.trim() || '',
             worker_notes: cleanNotes,
@@ -247,6 +261,8 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
         model_id: data.modelId,
         spread_number: spreadNumber,
         part_type: partType,
+        is_sub_cut: isSubCut,
+        sub_cut_label: subCutLabel,
         spreader_name: cleanSpreader,
         cutter_name: cleanCutter,
         color_name: colorsSummary,
@@ -261,12 +277,135 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
       })
       .then((saved) => {
         setCuttingRecords((prev) => prev.map((r) => (r.id === recId ? saved : r)));
-        logAction('القص', `تسجيل فرشة قص #${spreadNumber} للموديل: ${totalPieces} قطعة (${totalLayersCount} راق × ${piecesPerLayer} قطعة/راق | إجمالي وزن الراق: ${layerWeight} كجم)`);
-        addFlashMessage(`تم تسجيل الفرشة رقم #${spreadNumber} بنجاح (${totalPieces} قطعة مقصوصة)`);
+        if (isSubCut) {
+          logAction('القص', `تسجيل قصة فرعية #${spreadNumber} (${subCutLabel}) للموديل: ${totalPieces} قطعة — تُحسب قماشاً فقط ولا تُضاف لعدد القطع`);
+          addFlashMessage(`تم تسجيل القصة الفرعية #${spreadNumber} (${subCutLabel}) بنجاح — لا تُضاف لعدد القطع المقصوصة`);
+        } else {
+          logAction('القص', `تسجيل فرشة قص #${spreadNumber} للموديل: ${totalPieces} قطعة (${totalLayersCount} راق × ${piecesPerLayer} قطعة/راق | إجمالي وزن الراق: ${layerWeight} كجم)`);
+          addFlashMessage(`تم تسجيل الفرشة رقم #${spreadNumber} بنجاح (${totalPieces} قطعة مقصوصة)`);
+        }
       })
       .catch((err) => {
         refreshState();
         addFlashMessage(err.message || 'فشل تسجيل الفرشة في الباك إند', 'danger');
+      });
+  };
+
+  /**
+   * إعادة حساب مجاميع القطع للموديل من سجلات الفرشات بعد أي تعديل على نوعها.
+   * القصّات/الأجزاء الفرعية تُستثنى من عدّاد القطع، مع بقاء كل الراقات والأوزان
+   * محسوبة لاستهلاك القماش (الباك إند يحسبها من السجلات نفسها).
+   */
+  const computeCutTotalsPatch = (
+    targetModel: DesignModel,
+    records: CuttingRecord[]
+  ): Partial<DesignModel> => {
+    const modelParts = (
+      targetModel.parts && targetModel.parts.length > 0
+        ? targetModel.parts
+        : targetModel.garment_parts && targetModel.garment_parts.length > 0
+        ? targetModel.garment_parts
+        : getModelParts(targetModel.id)
+    ) as GarmentPart[];
+
+    const cutByPart: Record<string, number> = { shirt: 0, pants: 0, jacket: 0, single: 0 };
+    let totalCutAll = 0;
+    records.forEach((rec) => {
+      if (rec.model_id !== targetModel.id) return;
+      if (rec.is_sub_cut ?? rec.isSubCut ?? false) return;
+      const part = normalizePartKey(rec.part_type || rec.partType || 'shirt');
+      const qty = Number(rec.pieces_count ?? rec.piecesCount ?? 0) || 0;
+      cutByPart[part] = (cutByPart[part] || 0) + qty;
+      totalCutAll += qty;
+    });
+
+    const isLegacy = !(targetModel.garment_parts && targetModel.garment_parts.length > 0);
+    const activeCut = modelParts
+      .filter((part) => part === 'shirt' || part === 'pants' || part === 'jacket')
+      .map((part) => cutByPart[part] || 0);
+    let newTotal = 0;
+    if (isLegacy) {
+      newTotal = totalCutAll;
+    } else if (modelParts.includes('single')) {
+      newTotal = cutByPart.single || totalCutAll;
+    } else if (activeCut.length > 0) {
+      newTotal = activeCut.length > 1 ? Math.min(...activeCut) : activeCut[0];
+    }
+
+    return {
+      actual_cut_count: newTotal,
+      total_cut_pieces: newTotal,
+      completed_sets: newTotal,
+      cut_shirt_pieces: cutByPart.shirt || 0,
+      cut_pants_pieces: cutByPart.pants || 0,
+      cut_jacket_pieces: cutByPart.jacket || 0,
+      cut_summary: {
+        shirt: cutByPart.shirt || 0,
+        pants: cutByPart.pants || 0,
+        jacket: cutByPart.jacket || 0
+      },
+      parts: modelParts
+    };
+  };
+
+  /**
+   * تحويل فرشة قائمة بين "قطعة أساسية" و"قصة / جزء فرعي".
+   * الفرشة الفرعية تبقى محسوبة في القماش والأوزان، لكنها تُستبعد من عدّاد القطع.
+   */
+  const updateCuttingRecord = (
+    recordId: string,
+    updates: { isSubCut?: boolean; subCutLabel?: string }
+  ) => {
+    const record = cuttingRecords.find((r) => r.id === recordId);
+    if (!record) return;
+
+    const partType = normalizePartKey(record.part_type || record.partType || 'shirt');
+    const nextIsSubCut =
+      typeof updates.isSubCut === 'boolean'
+        ? updates.isSubCut
+        : !(record.is_sub_cut ?? record.isSubCut ?? false);
+    const nextLabel =
+      (updates.subCutLabel ?? record.sub_cut_label ?? record.subCutLabel ?? '').trim() ||
+      (nextIsSubCut ? `قصة ${getPartLabel(partType)}` : '');
+
+    const patchedRecords = cuttingRecords.map((r) =>
+      r.id === recordId
+        ? {
+            ...r,
+            is_sub_cut: nextIsSubCut,
+            isSubCut: nextIsSubCut,
+            sub_cut_label: nextLabel,
+            subCutLabel: nextLabel
+          }
+        : r
+    );
+
+    setCuttingRecords(patchedRecords);
+    setModels((prev) =>
+      prev.map((m) =>
+        m.id === record.model_id ? { ...m, ...computeCutTotalsPatch(m, patchedRecords) } : m
+      )
+    );
+
+    api
+      .updateCuttingRecord(recordId, {
+        is_sub_cut: nextIsSubCut,
+        sub_cut_label: nextLabel
+      })
+      .then((saved) => {
+        setCuttingRecords((prev) => prev.map((r) => (r.id === recordId ? saved : r)));
+        const spreadNo = record.spread_number ?? record.spreadNumber ?? '';
+        if (nextIsSubCut) {
+          logAction('القص', `تحويل فرشة القص #${spreadNo} إلى قصة فرعية (${nextLabel}) — لا تُجمع على عدد القطع`);
+          addFlashMessage(`تم تحويل الفرشة #${spreadNo} إلى قصة فرعية (${nextLabel}) — تُحسب قماشاً فقط`);
+        } else {
+          logAction('القص', `إرجاع الفرشة #${spreadNo} إلى قطعة أساسية — أُعيد جمع قطعها على عدّاد الموديل`);
+          addFlashMessage(`تم إرجاع الفرشة #${spreadNo} إلى قطعة أساسية وحُسبت قطعها من جديد`);
+        }
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل تعديل فرشة القص في الباك إند', 'danger');
       });
   };
 
@@ -309,6 +448,7 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
     const headers = [
       'كود الموديل',
       'رقم الفرشة',
+      'نوع الفرشة (أساسية / قصة فرعية)',
       'اسم الفراش (Spreader)',
       'الألوان والراقات داخل الفرشة',
       'إجمالي الراقات',
@@ -323,6 +463,9 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
     const rows: CsvValue[][] = records.map((r, idx) => [
       targetModel?.model_code || modelId,
       r.spread_number || idx + 1,
+      (r.is_sub_cut ?? r.isSubCut ?? false)
+        ? `قصة فرعية${(r.sub_cut_label || r.subCutLabel || '').trim() ? ` (${(r.sub_cut_label || r.subCutLabel || '').trim()})` : ''}`
+        : 'قطعة أساسية',
       r.spreader_name || r.spreaderName || '-',
       r.color_name || '-',
       r.layers_count,
@@ -730,6 +873,7 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
 
   return {
     addCuttingRecord,
+    updateCuttingRecord,
     finishCuttingToQC,
     exportCuttingCsv,
     recordQCData,

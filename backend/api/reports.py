@@ -123,7 +123,9 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
                 continue
             bucket = buckets[bucket_date]
             bucket['records'].append(rec)
-            bucket['total_pieces'] += int(rec.pieces_count or 0)
+            # قصّات/أجزاء فرعية: استهلاك قماش وراقات فقط، لا تُجمع على القطع المقصوصة.
+            if not bool(getattr(rec, 'is_sub_cut', False)):
+                bucket['total_pieces'] += int(rec.pieces_count or 0)
             bucket['total_layers'] += int(rec.layers_count or 0)
             model_code = rec.model.model_code if rec.model else ''
             if model_code and model_code not in bucket['model_codes']:
@@ -163,6 +165,8 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
                         'cutter': rec.cutter_name,
                         'pieces': rec.pieces_count,
                         'layers': rec.layers_count,
+                        'is_sub_cut': bool(getattr(rec, 'is_sub_cut', False)),
+                        'sub_cut_label': getattr(rec, 'sub_cut_label', '') or '',
                         'notes': rec.notes or '',
                         'time': rec.created_at.strftime('%H:%M') if rec.created_at else ''
                     }
@@ -946,7 +950,7 @@ def get_production_departments_report(period='today', date_from=None, date_to=No
     targets = get_department_targets()
 
     simple_sources = {
-        'cutting': (CuttingRecord.objects.all(), 'created_at', 'pieces_count', True),
+        'cutting': (CuttingRecord.objects.filter(is_sub_cut=False), 'created_at', 'pieces_count', True),
         'printing': (PrintDispatch.objects.all(), 'dispatch_date', 'pieces_count', False),
         'qc': (QCRecord.objects.all(), 'created_at', 'counted_pieces', True),
         'sewing': (SewingDispatch.objects.all(), 'dispatched_date', 'pieces_count', False),

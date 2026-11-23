@@ -155,7 +155,11 @@ const resolveCutQtyForCell = (
   allSizes: string[]
 ): number => {
   const partSpreads = cuttingRecords.filter(
-    (r) => r.model_id === modelId && normalizePartKey(r.part_type || r.partType) === part
+    (r) =>
+      r.model_id === modelId &&
+      // القصّات/الأجزاء الفرعية لا تُملأ بها خانات العد التلقائية.
+      !(r.is_sub_cut ?? r.isSubCut ?? false) &&
+      normalizePartKey(r.part_type || r.partType) === part
   );
 
   const colorCount = Math.max(1, allColors.length);

@@ -112,7 +112,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     stageStats.counts.dest;
   const finishedCount = stageStats.counts.completed;
 
-  const totalCutPieces = cuttingRecords.reduce((sum, c) => sum + c.pieces_count, 0);
+  const totalCutPieces = cuttingRecords.reduce(
+    (sum, c) => sum + ((c.is_sub_cut ?? c.isSubCut ?? false) ? 0 : c.pieces_count),
+    0
+  );
   const totalQcGoodPieces = qcRecords.reduce((sum, q) => sum + q.good_qty, 0);
   const totalDispatchedPieces = printDispatches.reduce((sum, d) => sum + d.pieces_count, 0);
 

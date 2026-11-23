@@ -62,6 +62,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     getModelSizeList,
     sizeDefs,
     addCuttingRecord,
+    updateCuttingRecord,
     finishCuttingToQC,
     exportCuttingCsv,
     returnFabricFromCutting,
@@ -97,6 +98,11 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   const partRecords = modelCuttingRecords.filter(
     (r) => normalizePartKey(r.part_type || r.partType || 'shirt') === selectedPart
   );
+  const isSubCutRecord = (rec: (typeof modelCuttingRecords)[number]) =>
+    Boolean(rec.is_sub_cut ?? rec.isSubCut ?? false);
+  // الفرشات الأساسية وحدها تُجمع على عدد القطع؛ القصّات/الأجزاء الفرعية للقماش فقط.
+  const basicPartRecords = partRecords.filter((rec) => !isSubCutRecord(rec));
+  const subCutPartRecords = partRecords.filter((rec) => isSubCutRecord(rec));
 
   // ألوان هذه القطعة وحدها (لا تُخلط مطلقاً مع ألوان قطعة أخرى في نفس الموديل).
   const partColors = getModelColorList(modelId, selectedPart);
@@ -109,6 +115,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
 
   const handleSelectPart = (part: GarmentPart) => {
     setSelectedPart(part);
+    setSubCutLabel('');
     const colors = getModelColorList(modelId, part);
     const firstColor = colors[0] || (model ? `اللون الأساسي (${model.model_code})` : '');
     setSpreadLayers([
@@ -140,6 +147,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   const [cutterName, setCutterName] = useState<string>('');
   const [shadeDegree, setShadeDegree] = useState<string>('');
   const [cuttingNotes, setCuttingNotes] = useState<string>('');
+  // نوع الفرشة: قطعة أساسية (تُجمع على العدد) أو قصة / جزء فرعي (قماش ووزن فقط).
+  const [isSubCut, setIsSubCut] = useState<boolean>(false);
+  const [subCutLabel, setSubCutLabel] = useState<string>('');
 
   // إبقاء القطعة المختارة ضمن قطع الموديل الفعلية (بعد أي تعديل في التصميم)
   // وإعادة ضبط ألوان الفرشة على ألوان هذه القطعة فقط.
@@ -381,6 +391,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
       modelId,
       spreadNumber: partRecords.length + 1,
       partType: selectedPart,
+      isSubCut,
+      subCutLabel: subCutLabel.trim(),
       spreaderName: spreaderName.trim(),
       cutterName: cutterName.trim(),
       // لا نحفظ علم isCustomColor (خاص بالواجهة فقط).
@@ -423,8 +435,10 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
       return;
     }
 
-    const scopedRecords = modelCuttingRecords.filter((r) =>
-      targetParts.includes((r.part_type || r.partType || 'shirt') as GarmentPart)
+    const scopedRecords = modelCuttingRecords.filter(
+      (r) =>
+        targetParts.includes((r.part_type || r.partType || 'shirt') as GarmentPart) &&
+        !isSubCutRecord(r)
     );
     if (scopedRecords.length === 0) {
       alert('يجب تسجيل فرشة قص واحدة على الأقل قبل التحويل للفرز!');
@@ -467,7 +481,12 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   };
 
   // Totals are per selected part — parts are never summed into one number.
-  const totalPiecesProduced = partRecords.reduce(
+  // القطع المقصوصة من الفرشات الأساسية فقط؛ القصّات الفرعية تُحسب قماشاً ووزناً.
+  const totalPiecesProduced = basicPartRecords.reduce(
+    (sum, r) => sum + (r.pieces_count || 0),
+    0
+  );
+  const subCutPieces = subCutPartRecords.reduce(
     (sum, r) => sum + (r.pieces_count || 0),
     0
   );
@@ -644,7 +663,13 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             </span>
             <span>
               عدد الفرشات:{' '}
-              <strong className="text-rose-800">{partRecords.length}</strong>
+              <strong className="text-rose-800">{basicPartRecords.length}</strong>
+              {subCutPartRecords.length > 0 && (
+                <span className="text-amber-700 font-black">
+                  {' '}
+                  (+{subCutPartRecords.length} فرعية)
+                </span>
+              )}
             </span>
             <span>
               الإنجاز:{' '}
@@ -848,6 +873,52 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                       </div>
                     </div>
                   )}
+
+                  {/* Step 0.5: نوع الفرشة — قطعة أساسية أم قصة / جزء فرعي */}
+                  <div className="p-3.5 rounded-2xl bg-amber-50/70 border border-amber-300 space-y-2">
+                    <label className="block text-xs font-extrabold text-amber-950">
+                      نوع هذه الفرشة
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsSubCut(false)}
+                        className={`px-3 py-2 rounded-xl text-xs font-extrabold border transition cursor-pointer ${
+                          !isSubCut
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                            : 'bg-white text-slate-600 border-slate-300 hover:border-emerald-400'
+                        }`}
+                      >
+                        🧵 قطعة أساسية (تُجمع على العدد)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsSubCut(true)}
+                        className={`px-3 py-2 rounded-xl text-xs font-extrabold border transition cursor-pointer ${
+                          isSubCut
+                            ? 'bg-amber-500 text-white border-amber-500 shadow-xs'
+                            : 'bg-white text-slate-600 border-slate-300 hover:border-amber-400'
+                        }`}
+                      >
+                        🧩 قصة / جزء فرعي (قماش فقط)
+                      </button>
+                    </div>
+                    {isSubCut && (
+                      <>
+                        <input
+                          type="text"
+                          value={subCutLabel}
+                          onChange={(e) => setSubCutLabel(e.target.value)}
+                          placeholder={`اسم القصة الفرعية (مثال: قصة ${getPartLabel(selectedPart)})`}
+                          className="w-full px-3 py-2 rounded-xl bg-white border border-amber-300 text-xs font-bold focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
+                        />
+                        <p className="text-[10px] font-bold text-amber-800 leading-relaxed">
+                          ⚠️ قماش ووزن هذه الفرشة يُحسبان في مخزون القماش والتكلفة، لكن قطعها
+                          لا تُضاف إلى العدد المقصوص ولا إلى تقارير الإنتاج ولا خانات العد التلقائي.
+                        </p>
+                      </>
+                    )}
+                  </div>
 
                   {/* Step 1: Spreader Name (اسم الشخص الذي قام بالفرش) */}
                   <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/90 space-y-2">
@@ -1068,8 +1139,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                       <div className="flex items-center gap-2">
                         <Calculator className="w-4 h-4 text-rose-400 shrink-0" />
                         <span>
-                          عدد القطع المقصوصة (تلقائي = {currentSpreadTotalLayers}{' '}
-                          راق × {piecesPerLayer || 0} قطع بالراق):
+                          {isSubCut
+                            ? `قطع القصة الفرعية (قماش فقط = ${currentSpreadTotalLayers} راق × ${piecesPerLayer || 0}):`
+                            : `عدد القطع المقصوصة (تلقائي = ${currentSpreadTotalLayers} راق × ${piecesPerLayer || 0} قطع بالراق):`}
                         </span>
                       </div>
                       <span className="px-3 py-1 rounded-full bg-rose-600 text-white font-black text-sm">
@@ -1146,7 +1218,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                       className="w-full py-3.5 rounded-full bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs transition shadow-lg shadow-rose-500/20 cursor-pointer flex items-center justify-center gap-2"
                     >
                       <Plus className="w-4 h-4" />
-                      <span>حفظ الفرشة بالكامل وإضافتها للسجل</span>
+                      <span>
+                        {isSubCut ? 'حفظ القصة الفرعية وإضافتها للسجل' : 'حفظ الفرشة بالكامل وإضافتها للسجل'}
+                      </span>
                     </button>
                   </div>
                 </form>
@@ -1168,12 +1242,16 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             )}
           </div>
 
-          <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+          <div className="mt-6 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
             <span>
               إجمالي فرشات {getPartLabel(selectedPart)}:{' '}
-              <strong className="text-slate-900">
-                {partRecords.length}
-              </strong>
+              <strong className="text-slate-900">{partRecords.length}</strong>
+              {subCutPartRecords.length > 0 && (
+                <span className="text-amber-700 font-bold">
+                  {' '}
+                  (أساسية {basicPartRecords.length} + قصص فرعية {subCutPartRecords.length})
+                </span>
+              )}
             </span>
             <span>
               مجموع الراقات:{' '}
@@ -1181,10 +1259,14 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
             </span>
             <span>
               إجمالي القطع:{' '}
-              <strong className="text-rose-600 font-bold">
-                {totalPiecesProduced}
-              </strong>
+              <strong className="text-rose-600 font-bold">{totalPiecesProduced}</strong>
             </span>
+            {subCutPartRecords.length > 0 && (
+              <span className="text-amber-700">
+                قطع القصص الفرعية:{' '}
+                <strong className="font-black">{subCutPieces}</strong> (قماش فقط)
+              </span>
+            )}
           </div>
         </div>
 
@@ -1199,6 +1281,12 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                 </h2>
                 <span className="text-xs text-slate-500 font-semibold">
                   إجمالي فرشات {getPartLabel(selectedPart)} المسجلة: {partRecords.length} فرشة
+                  {subCutPartRecords.length > 0 && (
+                    <span className="text-amber-700 font-black">
+                      {' '}
+                      (أساسية {basicPartRecords.length} + قصص فرعية {subCutPartRecords.length})
+                    </span>
+                  )}
                 </span>
               </div>
 
@@ -1246,6 +1334,14 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                               {spreader}
                             </strong>
                           </span>
+                          {isSubCutRecord(rec) && (
+                            <span className="px-3 py-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-black">
+                              🧩 قصة فرعية
+                              {(rec.sub_cut_label || rec.subCutLabel)
+                                ? `: ${rec.sub_cut_label || rec.subCutLabel}`
+                                : ''}
+                            </span>
+                          )}
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -1267,8 +1363,15 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                             إجمالي وزن الراق:{' '}
                             <strong>{rec.layer_weight} كجم</strong>
                           </span>
-                          <span className="px-3 py-1 rounded-lg bg-emerald-100 text-emerald-900 font-black border border-emerald-300">
-                            القطع المقصوصة: {rec.pieces_count} قطعة
+                          <span
+                            className={`px-3 py-1 rounded-lg font-black border ${
+                              isSubCutRecord(rec)
+                                ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                : 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                            }`}
+                          >
+                            {isSubCutRecord(rec) ? 'قطع القصة (قماش فقط): ' : 'القطع المقصوصة: '}
+                            {rec.pieces_count} قطعة
                           </span>
                         </div>
                       </div>
@@ -1309,6 +1412,30 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                               <Scissors className="w-3.5 h-3.5 text-emerald-700" />
                               <span>المقصدار (القاصص): {cutter}</span>
                             </span>
+                            {canEdit && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateCuttingRecord(rec.id, {
+                                    isSubCut: !isSubCutRecord(rec)
+                                  })
+                                }
+                                title={
+                                  isSubCutRecord(rec)
+                                    ? 'إرجاع هذه الفرشة إلى قطعة أساسية وجمع قطعها على العدد'
+                                    : 'تحويل هذه الفرشة إلى قصة / جزء فرعي (قماش فقط دون جمع قطعها)'
+                                }
+                                className={`inline-flex items-center gap-1 px-3 py-1 rounded-full border font-black text-[11px] transition cursor-pointer ${
+                                  isSubCutRecord(rec)
+                                    ? 'bg-white text-emerald-800 border-emerald-300 hover:bg-emerald-50'
+                                    : 'bg-white text-amber-800 border-amber-300 hover:bg-amber-50'
+                                }`}
+                              >
+                                {isSubCutRecord(rec)
+                                  ? '↩️ إرجاع لقطعة أساسية'
+                                  : '🧩 تحويل إلى قصة فرعية'}
+                              </button>
+                            )}
                             <span className="px-2.5 py-0.5 rounded-lg bg-blue-50 text-blue-800 border border-blue-200 font-bold text-[11px]">
                               إجمالي وزن الراق: {rec.layer_weight} كجم
                             </span>
@@ -1353,7 +1480,9 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                 <div className="flex flex-wrap gap-2">
                   {modelParts.map((part) => {
                     const partSpreadCount = modelCuttingRecords.filter(
-                      (r) => (r.part_type || r.partType || 'shirt') === part
+                      (r) =>
+                        !isSubCutRecord(r) &&
+                        normalizePartKey(r.part_type || r.partType || 'shirt') === part
                     ).length;
                     const isCompleted = isPartCuttingCompleted(part);
                     return (

@@ -110,6 +110,11 @@ def ensure_schema_columns():
                     cursor.execute('ALTER TABLE api_cuttingrecord ADD COLUMN pieces_per_layer integer NOT NULL DEFAULT 0;')
                 if 'part_type' not in cols:
                     cursor.execute("ALTER TABLE api_cuttingrecord ADD COLUMN part_type varchar(20) NOT NULL DEFAULT 'shirt';")
+                # فرشات "القصة / الجزء الفرعي" — ترقية آمنة لقواعد البيانات القائمة.
+                if 'is_sub_cut' not in cols:
+                    cursor.execute('ALTER TABLE api_cuttingrecord ADD COLUMN is_sub_cut boolean NOT NULL DEFAULT false;')
+                if 'sub_cut_label' not in cols:
+                    cursor.execute("ALTER TABLE api_cuttingrecord ADD COLUMN sub_cut_label varchar(150) NOT NULL DEFAULT '';")
 
             if 'api_qcrecord' in table_names:
                 cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_qcrecord')]

@@ -416,6 +416,14 @@ const CuttingSpreadsTable: React.FC<{ records: CuttingRecord[] }> = ({ records }
                   <span className="px-2 py-0.5 rounded-md bg-slate-900 text-white font-bold text-[10px]">
                     {getPartLabel(partOf(rec))}
                   </span>
+                  {(rec.is_sub_cut ?? rec.isSubCut ?? false) && (
+                    <span className="ms-1 px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-300 font-bold text-[10px]">
+                      🧩 قصة فرعية
+                      {(rec.sub_cut_label || rec.subCutLabel)
+                        ? `: ${rec.sub_cut_label || rec.subCutLabel}`
+                        : ''}
+                    </span>
+                  )}
                 </td>
                 <td className="py-2 px-3 font-semibold text-slate-800">
                   {rec.spreader_name || rec.spreaderName || '-'}
@@ -830,10 +838,12 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
     const qcPostSewEvent = findTimelineEvent(model, ['qc_after_sewing']);
 
     const cutByPart = sumByPart(
-      cutRecs.map((r) => ({
-        part: partOf(r),
-        qty: Number(r.pieces_count ?? r.piecesCount ?? r.cut_pieces ?? 0)
-      }))
+      cutRecs
+        .filter((r) => !(r.is_sub_cut ?? r.isSubCut ?? false))
+        .map((r) => ({
+          part: partOf(r),
+          qty: Number(r.pieces_count ?? r.piecesCount ?? r.cut_pieces ?? 0)
+        }))
     );
     const goodByPart = (recs: QCRecord[]) =>
       sumByPart(
@@ -1226,10 +1236,12 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                   const sizes = getModelSizes(model);
                   const modelCutRecs = cuttingRecords.filter((r) => r.model_id === model.id);
                   const cutByPart = sumByPart(
-                    modelCutRecs.map((r) => ({
-                      part: partOf(r),
-                      qty: Number(r.pieces_count ?? r.piecesCount ?? r.cut_pieces ?? 0)
-                    }))
+                    modelCutRecs
+                      .filter((r) => !(r.is_sub_cut ?? r.isSubCut ?? false))
+                      .map((r) => ({
+                        part: partOf(r),
+                        qty: Number(r.pieces_count ?? r.piecesCount ?? r.cut_pieces ?? 0)
+                      }))
                   );
                   const workshopsByPart = getSewingWorkshopsByPart(model).filter((w) => w.count > 0);
                   const qcPostPrintRecs = qcRecords.filter(
@@ -1524,7 +1536,11 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                     {formatPartsQty(
                       sumByPart(
                         cuttingRecords
-                          .filter((r) => r.model_id === model.id)
+                          .filter(
+                            (r) =>
+                              r.model_id === model.id &&
+                              !(r.is_sub_cut ?? r.isSubCut ?? false)
+                          )
                           .map((r) => ({
                             part: partOf(r),
                             qty: Number(r.pieces_count ?? r.piecesCount ?? r.cut_pieces ?? 0)

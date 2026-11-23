@@ -62,6 +62,11 @@ class CuttingRecordViewSet(BasePermViewSet):
         notes = (data.get('notes') or '').strip() if can_cutting_notes else ''
         now_str = data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
         part_type = normalize_part_key(data.get('part_type') or data.get('partType') or 'shirt')
+        # فرشة "قصة / جزء فرعي": تُستهلك قماشها وتُحسب أوزانها فقط ولا تُجمع على عدد القطع.
+        is_sub_cut = bool(data.get('is_sub_cut') if 'is_sub_cut' in data else data.get('isSubCut', False))
+        sub_cut_label = (data.get('sub_cut_label') or data.get('subCutLabel') or '').strip()[:150]
+        if is_sub_cut and not sub_cut_label:
+            sub_cut_label = 'قصة ' + {'shirt': 'تيشرت', 'pants': 'بنطلون', 'jacket': 'جاكيت', 'single': 'قطعة'}.get(part_type, 'فرعية')
 
         with transaction.atomic():
             # اقفل سجل الموديل أولاً ثم احسب رقم الفرشة، حتى لا تحصل فرشتان
@@ -78,6 +83,8 @@ class CuttingRecordViewSet(BasePermViewSet):
                 model=model,
                 spread_number=spread_num,
                 part_type=part_type,
+                is_sub_cut=is_sub_cut,
+                sub_cut_label=sub_cut_label,
                 spreader_name=spreader,
                 cutter_name=cutter,
                 fabric_color=color_name,
@@ -113,15 +120,23 @@ class CuttingRecordViewSet(BasePermViewSet):
             recompute_model_part_totals(model)
 
             tl_notes = f"فرشة رقم #{spread_num} | الفَرّاش: {spreader or '-'} | المقصدار: {cutter or '-'} | الألوان والراقات: {color_name} | إجمالي الراقات: {layers} | عدد القطع في الراق: {pieces_per_layer} | إجمالي وزن الراق: {weight} كجم | القطع المقصوصة: {pieces}"
+            if is_sub_cut:
+                prefix = f"🧩 قصة / جزء فرعي: {sub_cut_label or 'بدون اسم'} | تُحسب قماشاً ووزناً فقط ولا تُجمع على عدد القطع | "
+                tl_notes = prefix + tl_notes
             if shade:
                 tl_notes += f" | درجة الصبغة: {shade}"
             if notes:
                 tl_notes += f" | ملاحظات: {notes}"
 
+            tl_title = (
+                f"تسجيل قصة فرعية #{spread_num} ({sub_cut_label or 'بدون اسم'}) — {pieces} قطعة (لا تُجمع على العدد)"
+                if is_sub_cut
+                else f"تسجيل فرشة قص #{spread_num} ({pieces} قطعة)"
+            )
             ModelTimeline.objects.create(
                 model=model,
                 stage='في القص',
-                title=f"تسجيل فرشة قص #{spread_num} ({pieces} قطعة)",
+                title=tl_title,
                 notes=tl_notes,
                 user=cutter or spreader or 'مسؤول القص',
                 timestamp_str=now_str,
@@ -137,6 +152,8 @@ class CuttingRecordViewSet(BasePermViewSet):
                     'pieces_per_layer': pieces_per_layer,
                     'layer_weight': weight,
                     'pieces_count': pieces,
+                    'is_sub_cut': is_sub_cut,
+                    'sub_cut_label': sub_cut_label,
                     'total_cut_pieces_so_far': model.total_cut_pieces,
                     'shade_degree': shade,
                     'worker_notes': notes,
@@ -146,6 +163,95 @@ class CuttingRecordViewSet(BasePermViewSet):
 
         rec_refreshed = CuttingRecord.objects.select_related('model').prefetch_related('color_layers').get(pk=rec.pk)
         return Response(CuttingRecordSerializer(rec_refreshed).data, status=status.HTTP_201_CREATED)
+
+    # --- تعديل / حذف الفرشة (يشمل تحويلها بين "قطعة أساسية" و"قصة فرعية") ---
+    def update(self, request, *args, **kwargs):
+        return self._update_record(request)
+
+    def partial_update(self, request, *args, **kwargs):
+        return self._update_record(request)
+
+    def _update_record(self, request):
+        rec = self.get_object()
+        data = request.data or {}
+
+        def has(*keys):
+            return any(key in data for key in keys)
+
+        def val(*keys):
+            for key in keys:
+                if key in data:
+                    return data.get(key)
+            return None
+
+        profile = getattr(request, 'user_profile', None)
+        can_cutting_notes = True if not profile else profile.has_perm('can_add_cutting_notes')
+
+        if has('part_type', 'partType'):
+            rec.part_type = normalize_part_key(val('part_type', 'partType') or 'shirt')
+        if has('spread_number', 'spreadNumber'):
+            try:
+                rec.spread_number = max(1, int(val('spread_number', 'spreadNumber') or 1))
+            except (TypeError, ValueError):
+                pass
+        if has('spreader_name', 'spreaderName'):
+            rec.spreader_name = str(val('spreader_name', 'spreaderName') or '').strip()[:150]
+        if has('cutter_name', 'cutterName'):
+            rec.cutter_name = str(val('cutter_name', 'cutterName') or '').strip()[:150]
+        if has('fabric_color', 'color_name', 'colorName'):
+            rec.fabric_color = str(val('fabric_color', 'color_name', 'colorName') or '').strip()[:255]
+        if has('layers_count', 'layersCount'):
+            try:
+                rec.layers_count = max(0, int(val('layers_count', 'layersCount') or 0))
+            except (TypeError, ValueError):
+                pass
+        if has('pieces_per_layer', 'piecesPerLayer'):
+            try:
+                rec.pieces_per_layer = max(0, int(val('pieces_per_layer', 'piecesPerLayer') or 0))
+            except (TypeError, ValueError):
+                pass
+        if has('layer_weight', 'layerWeight'):
+            try:
+                rec.layer_weight = max(0.0, float(val('layer_weight', 'layerWeight') or 0))
+            except (TypeError, ValueError):
+                pass
+        if has('pieces_count', 'piecesCount'):
+            try:
+                rec.pieces_count = max(0, int(val('pieces_count', 'piecesCount') or 0))
+            except (TypeError, ValueError):
+                pass
+        if has('shade_degree', 'shadeDegree'):
+            rec.shade_degree = str(val('shade_degree', 'shadeDegree') or '').strip()[:100]
+        if has('notes') and can_cutting_notes:
+            rec.notes = str(data.get('notes') or '').strip()
+        if has('is_sub_cut', 'isSubCut'):
+            raw_sub_cut = val('is_sub_cut', 'isSubCut')
+            if isinstance(raw_sub_cut, str):
+                rec.is_sub_cut = raw_sub_cut.strip().lower() in ('1', 'true', 'yes', 'on')
+            else:
+                rec.is_sub_cut = bool(raw_sub_cut)
+        if has('sub_cut_label', 'subCutLabel'):
+            rec.sub_cut_label = str(val('sub_cut_label', 'subCutLabel') or '').strip()[:150]
+        if rec.is_sub_cut and not rec.sub_cut_label:
+            rec.sub_cut_label = 'قصة ' + {
+                'shirt': 'تيشرت', 'pants': 'بنطلون', 'jacket': 'جاكيت', 'single': 'قطعة',
+            }.get(rec.part_type, 'فرعية')
+
+        rec.save()
+        recompute_model_part_totals(rec.model)
+        rec = CuttingRecord.objects.select_related('model').prefetch_related('color_layers').get(pk=rec.pk)
+        return Response(CuttingRecordSerializer(rec, context={'request': request}).data, status=status.HTTP_200_OK)
+
+    def destroy(self, request, *args, **kwargs):
+        rec = self.get_object()
+        model = rec.model
+        spread_number = rec.spread_number
+        rec.delete()
+        recompute_model_part_totals(model)
+        return Response(
+            {'detail': f'تم حذف فرشة القص #{spread_number} وإعادة حساب أعداد القطع'},
+            status=status.HTTP_200_OK,
+        )
 
 
 class QCRecordViewSet(BasePermViewSet):

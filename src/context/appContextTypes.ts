@@ -520,7 +520,13 @@ export interface AppContextType {
     shadeDegree?: string;
     notes?: string;
     partType?: GarmentPart;
+    isSubCut?: boolean;
+    subCutLabel?: string;
   }) => void;
+  updateCuttingRecord: (
+    recordId: string,
+    updates: { isSubCut?: boolean; subCutLabel?: string }
+  ) => void;
   finishCuttingToQC: (modelId: string, notes?: string, parts?: GarmentPart[]) => void;
   exportCuttingCsv: (modelId: string) => void;
 

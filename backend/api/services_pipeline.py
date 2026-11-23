@@ -132,6 +132,10 @@ def recompute_model_part_totals(model):
     cut_by_part = {key: 0 for key in part_keys}
     total_cut_all = 0
     for rec in CuttingRecord.objects.filter(model=model):
+        # فرشات "القصة / الجزء الفرعي" تُستهلك قماشها وتُحسب أوزانها فقط،
+        # ولا تدخل في عدّاد القطع المقصوصة للقطعة الأساسية.
+        if getattr(rec, 'is_sub_cut', False):
+            continue
         key = normalize_part_key(getattr(rec, 'part_type', '') or 'shirt')
         qty = int(rec.pieces_count or 0)
         cut_by_part[key] = cut_by_part.get(key, 0) + qty

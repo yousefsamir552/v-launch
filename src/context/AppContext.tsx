@@ -831,7 +831,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const { addDesignModel, cloneDesignModel, updateModelPlan, updateModelNotesAndTarget, updateDesignModelBasicInfo, addModelRequirement, deleteModelRequirement, addModelAccessory, deleteModelAccessory, issueFabricToCutting, returnFabricFromCutting, deleteDesignModel } = designActions;
   const fullCtx: any = { ...ctxWithPerms, ...designActions };
   const { addFabricOrColor, recordTransaction, exportWarehouseInventoryCsv, updateColorPrice, updateFabricColorDetails, addAccessoryType, addAccessoryItem, updateAccessoryItem, deleteAccessoryItem, markAccessoryWithdrawn, recordAccessoryTransaction, exportAccessoryInventoryCsv } = buildWarehouseActions(fullCtx);
-  const { addCuttingRecord, finishCuttingToQC, exportCuttingCsv, recordQCData, saveQCMatrix, recordQCStageCount, finishQCApproval, exportQcCsv } = buildCuttingQcActions(fullCtx);
+  const { addCuttingRecord, updateCuttingRecord, finishCuttingToQC, exportCuttingCsv, recordQCData, saveQCMatrix, recordQCStageCount, finishQCApproval, exportQcCsv } = buildCuttingQcActions(fullCtx);
   const { modelCodeOf, exportDesignModelsCsv, exportFabricTransactionsCsv, exportAccessoryTransactionsCsv, exportProductionWarehouseCsv, exportPrintDispatchesCsv, exportSewingDispatchesCsv, exportAssemblyPackagingCsv, exportPackagingMaterialsCsv, exportSuppliersCsv, exportWorkshopsCsv, exportAuditLogsCsv, buildHRSectionsSheets, exportHRSectionsZip, exportFullBackupZip } = buildExportActions(fullCtx);
   const { addPrintDispatch, updateDispatchStatus, skipPrintToSewing, dispatchModelToSewing, receiveModelFromSewing, finishSewingToQC, finishQCToProduction } = buildPrintSewingActions(fullCtx);
   const { setPackagingStep, startFinishing, receiveFinishing, startIroning, receiveIroning, ASSEMBLY_STAGE_STATUS_MAP, ASSEMBLY_STAGE_NEXT_STATUS_MAP, startAssemblyStage, receiveAssemblyStage, savePackagingMaterialRule, deletePackagingMaterialRule, recordPackagingMaterialTransaction } = buildAssemblyActions(fullCtx);
@@ -991,6 +991,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         returnFabricFromCutting,
         deleteDesignModel,
         addCuttingRecord,
+        updateCuttingRecord,
         finishCuttingToQC,
         exportCuttingCsv,
         getModelParts,

@@ -1284,7 +1284,11 @@ export const ModelConsumptionReportSection: React.FC = () => {
       const fieldValue = Number((model[partQtyFields[part]] as number | undefined) || 0);
       if (fieldValue > 0) return fieldValue;
       const fromRecords = modelCuts
-        .filter((record) => resolveDispatchPart(record.part_type || record.part, null) === part)
+        .filter(
+          (record) =>
+            !(record.is_sub_cut ?? record.isSubCut ?? false) &&
+            resolveDispatchPart(record.part_type || record.part, null) === part
+        )
         .reduce((sum, record) => sum + Number(record.pieces_count || 0), 0);
       return fromRecords;
     };
