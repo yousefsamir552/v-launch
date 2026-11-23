@@ -62,6 +62,31 @@ type SortKey = 'shortage' | 'percent' | 'cut' | 'code';
 const BOYS_COLOR = '#3B82F6';
 const GIRLS_COLOR = '#EC4899';
 
+// تسميات قيم فلتر التكوين (تشمل القيم المفردة القادمة من كارت التكوين).
+const COMPOSITION_FILTER_LABELS: Record<string, string> = {
+  one_piece: 'قطعة واحدة',
+  tshirt_only: 'تيشيرت فقط',
+  pants_only: 'بنطلون فقط',
+  two_pieces: 'قطعتان',
+  three_pieces: 'ثلاث قطع'
+};
+
+// تسميات المراحل (احتياطي لشارة الفلتر إن اختفت المرحلة من الـbreakdown).
+const STAGE_FILTER_LABELS: Record<string, string> = {
+  design: 'التصميم',
+  cutting: 'القص',
+  qc_before_print: 'العد قبل الطباعة',
+  printing: 'المطابع',
+  qc_after_print: 'العد بعد الطباعة',
+  sewing: 'المكن',
+  qc_after_sewing: 'العد بعد المكن',
+  finishing: 'التشطيب',
+  ironing: 'المكواة',
+  packaging: 'التعبئة والتغليف',
+  dest: 'الدَست',
+  completed: 'الإنتاج التام'
+};
+
 const TAB_META: Array<{
   key: ReportTab;
   label: string;
@@ -347,6 +372,7 @@ export const ReportsView: React.FC = () => {
   /* ---------- tab 1: الموديلات حسب المقاس ---------- */
   const [metric, setMetric] = useState<MetricMode>('models');
   const [composition, setComposition] = useState('all');
+  const [stageFilter, setStageFilter] = useState('');
   const [modelType, setModelType] = useState('all');
   const [modelsFrom, setModelsFrom] = useState('');
   const [modelsTo, setModelsTo] = useState('');
@@ -391,6 +417,7 @@ export const ReportsView: React.FC = () => {
         metric,
         composition: composition === 'all' ? undefined : composition,
         model_type: modelType === 'all' ? undefined : modelType,
+        stage: stageFilter || undefined,
         date_from: modelsFrom || undefined,
         date_to: modelsTo || undefined
       });
@@ -400,7 +427,18 @@ export const ReportsView: React.FC = () => {
     } finally {
       setModelsLoading(false);
     }
-  }, [composition, metric, modelType, modelsFrom, modelsTo]);
+  }, [composition, metric, modelType, modelsFrom, modelsTo, stageFilter]);
+
+  // تبديل فلتر المرحلة من كارت "المراحل" (ضغط ثانٍ يلغي الفلتر).
+  const toggleStage = (key: string) => setStageFilter((prev) => (prev === key ? '' : key));
+  // تبديل فلتر التكوين من كارت "التكوين" (ضغط ثانٍ يلغي الفلتر).
+  const toggleComposition = (key: string) =>
+    setComposition((prev) => (prev === key ? 'all' : key));
+  // إعادة تعيين كل فلاتر تبويب الموديلات التفاعلية.
+  const clearModelsFilters = () => {
+    setStageFilter('');
+    setComposition('all');
+  };
 
   const loadProduction = useCallback(async () => {
     setProductionLoading(true);
@@ -686,6 +724,12 @@ export const ReportsView: React.FC = () => {
     ...compositionRows.map((item) => (metric === 'pieces' ? item.pieces_count : item.models_count)),
     1
   );
+  const filteredModels = modelsReport?.filtered_models || [];
+  const hasActiveModelsFilter = stageFilter !== '' || composition !== 'all';
+  const activeStageLabel =
+    (modelsReport?.stage_breakdown || []).find((item) => item.key === stageFilter)?.label ||
+    STAGE_FILTER_LABELS[stageFilter] ||
+    stageFilter;
   const defectRows = qualityReport?.defects_by_stage || [];
   const defectsMax = Math.max(...defectRows.map((item) => item.defects), 1);
 
@@ -823,6 +867,8 @@ export const ReportsView: React.FC = () => {
                     >
                       <option value="all">كل التكوينات</option>
                       <option value="one_piece">قطعة واحدة</option>
+                      <option value="tshirt_only">تيشيرت فقط</option>
+                      <option value="pants_only">بنطلون فقط</option>
                       <option value="two_pieces">قطعتان</option>
                       <option value="three_pieces">ثلاث قطع</option>
                     </select>
@@ -912,6 +958,43 @@ export const ReportsView: React.FC = () => {
                     />
                   ) : (
                     <>
+                      {hasActiveModelsFilter && (
+                        <div className="mb-3 flex flex-wrap items-center gap-2">
+                          {stageFilter && (
+                            <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+                              المرحلة: {activeStageLabel}
+                              <button
+                                type="button"
+                                onClick={() => setStageFilter('')}
+                                className="rounded-full p-0.5 transition hover:bg-blue-200/60"
+                                title="إزالة فلتر المرحلة"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </span>
+                          )}
+                          {composition !== 'all' && (
+                            <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
+                              التكوين: {COMPOSITION_FILTER_LABELS[composition] || composition}
+                              <button
+                                type="button"
+                                onClick={() => setComposition('all')}
+                                className="rounded-full p-0.5 transition hover:bg-indigo-200/60"
+                                title="إزالة فلتر التكوين"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={clearModelsFilters}
+                            className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
+                          >
+                            عرض الكل
+                          </button>
+                        </div>
+                      )}
                       <div className="mb-3 flex flex-wrap items-center gap-4 text-xs text-slate-600">
                         <span className="inline-flex items-center gap-1.5">
                           <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: BOYS_COLOR }} />
@@ -955,14 +1038,30 @@ export const ReportsView: React.FC = () => {
                       <div className="space-y-3">
                         {compositionRows.map((item) => {
                           const value = metric === 'pieces' ? item.pieces_count : item.models_count;
+                          const active = composition === item.key;
                           return (
-                            <div key={item.key}>
+                            <button
+                              key={item.key}
+                              type="button"
+                              onClick={() => toggleComposition(item.key)}
+                              className={`w-full rounded-xl px-3 py-2 text-right transition ${
+                                active ? 'bg-indigo-600 ring-2 ring-indigo-200' : 'hover:bg-slate-50'
+                              }`}
+                              title={active ? 'إلغاء فلتر التكوين' : 'تصفية بهذا التكوين'}
+                            >
                               <div className="mb-1 flex items-center justify-between text-xs">
-                                <span className="text-slate-600">{item.label}</span>
-                                <span className="font-semibold text-slate-800">{fmt(value)}</span>
+                                <span className={active ? 'text-white' : 'text-slate-600'}>
+                                  {item.label}
+                                </span>
+                                <span className={`font-semibold ${active ? 'text-white' : 'text-slate-800'}`}>
+                                  {fmt(value)}
+                                </span>
                               </div>
-                              <ProgressBar value={(value / compositionMax) * 100} color="#6366F1" />
-                            </div>
+                              <ProgressBar
+                                value={(value / compositionMax) * 100}
+                                color={active ? '#ffffff' : '#6366F1'}
+                              />
+                            </button>
                           );
                         })}
                       </div>
@@ -974,20 +1073,89 @@ export const ReportsView: React.FC = () => {
                       <EmptyState title="لا توجد بيانات" icon={<Gauge className="h-5 w-5" />} />
                     ) : (
                       <div className="space-y-2">
-                        {(modelsReport?.stage_breakdown || []).map((item) => (
-                          <div
-                            key={item.key}
-                            className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs"
-                          >
-                            <span className="text-slate-600">{item.label}</span>
-                            <span className="font-semibold text-slate-800">{fmt(item.models_count)}</span>
-                          </div>
-                        ))}
+                        {(modelsReport?.stage_breakdown || []).map((item) => {
+                          const active = stageFilter === item.key;
+                          return (
+                            <button
+                              key={item.key}
+                              type="button"
+                              onClick={() => toggleStage(item.key)}
+                              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-xs transition ${
+                                active
+                                  ? 'bg-blue-600 text-white shadow-sm ring-2 ring-blue-200'
+                                  : 'bg-slate-50 text-slate-700 hover:bg-slate-100'
+                              }`}
+                              title={active ? 'إلغاء فلتر المرحلة' : 'تصفية بهذه المرحلة'}
+                            >
+                              <span className="flex items-center gap-1.5">
+                                {active && <CheckCircle2 className="h-3.5 w-3.5" />}
+                                {item.label}
+                              </span>
+                              <span className={`font-semibold ${active ? 'text-white' : 'text-slate-800'}`}>
+                                {fmt(item.models_count)}
+                              </span>
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </SectionCard>
                 </div>
               </div>
+
+              {hasActiveModelsFilter && (
+                <SectionCard
+                  title="الموديلات المطابقة للفلتر الحالي"
+                  subtitle={`${fmt(filteredModels.length)} موديل ضمن المرحلة/التكوين المختار`}
+                >
+                  {filteredModels.length === 0 ? (
+                    <EmptyState
+                      title="لا توجد موديلات مطابقة"
+                      hint="جرّب إزالة الفلتر أو اختيار مرحلة/تكوين آخر."
+                      icon={<Boxes className="h-5 w-5" />}
+                    />
+                  ) : (
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+                      {filteredModels.map((model) => (
+                        <div
+                          key={model.model_id}
+                          className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-2.5"
+                        >
+                          {model.image ? (
+                            <img
+                              src={model.image}
+                              alt={model.model_code}
+                              className="h-11 w-11 shrink-0 rounded-lg object-cover"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-400">
+                              <Shirt className="h-5 w-5" />
+                            </span>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-bold text-slate-800">{model.model_code}</p>
+                            <p className="truncate text-[11px] text-slate-500">
+                              {model.gender === 'girls' ? 'بناتي' : 'ولادي'}
+                              {model.model_type ? ` • ${model.model_type}` : ''}
+                              {` • ${model.size_category}`}
+                              {model.composition_label ? ` • ${model.composition_label}` : ''}
+                            </p>
+                          </div>
+                          <div className="shrink-0 text-left">
+                            <span className="block rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
+                              {model.stage_label}
+                            </span>
+                            <span className="mt-1 block text-[11px] font-semibold tabular-nums text-slate-700">
+                              {fmt(model.cut_pieces)} ق
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </SectionCard>
+              )}
 
               <SectionCard
                 title="تفصيل فئات المقاسات"

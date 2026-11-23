@@ -430,8 +430,12 @@ def _normalize_gender(model_type):
 
 
 # فلتر التكوين في الواجهة: "قطعة واحدة" تشمل تيشيرت فقط + بنطلون فقط.
+# كما تدعم مفاتيح التكوين المفردة (تيشيرت فقط / بنطلون فقط) حتى يعمل كارت
+# "التكوين" في التقارير كفلتر تفاعلي مباشر على كل صف.
 COMPOSITION_FILTER_MAP = {
     'one_piece': ['tshirt_only', 'pants_only'],
+    'tshirt_only': ['tshirt_only'],
+    'pants_only': ['pants_only'],
     'two_pieces': ['two_pieces'],
     'three_pieces': ['three_pieces'],
 }
@@ -611,11 +615,16 @@ def _current_good_pieces(model):
     return int(value or 0)
 
 
-def get_models_report(metric='models', date_from=None, date_to=None, composition=None, model_type=None):
+def get_models_report(metric='models', date_from=None, date_to=None, composition=None, model_type=None, stage=None):
     """
     تبويب "الموديلات حسب المقاس":
     يجمع الموديلات على فئات المقاسات (SizeDef) مع فصل ولادي/بناتي
     (حسب عدد الموديلات أو إجمالي القطع) ويعيد تفنيد التكوين والمراحل.
+
+    يدعم فلترَي التفاعل المتقاطع (Cross-Filtering):
+      - composition: فلتر التكوين من كارت "التكوين".
+      - stage: فلتر المرحلة من كارت "المراحل".
+    ويُرجع قائمة خفيفة filtered_models للموديلات المطابقة للفلاتر النشطة.
     """
     start = _parse_iso_date(date_from)
     end = _parse_iso_date(date_to)
@@ -628,14 +637,33 @@ def get_models_report(metric='models', date_from=None, date_to=None, composition
         qs = qs.filter(created_at__date__lte=end)
     if model_type:
         qs = qs.filter(model_type=model_type)
-    if composition:
-        comps = COMPOSITION_FILTER_MAP.get(composition)
-        if comps:
-            qs = qs.filter(garment_composition__in=comps)
 
+    # ملاحظة: فلترَا التكوين والمرحلة لا يُطبَّقان على الاستعلام نفسه حتى نستطيع
+    # حساب كل تفنيد من قاعدة مستقلة (كي لا تختفي باقي الخيارات من الكروت).
     rows = list(qs.values(
-        'size_category_id', 'model_type', 'status', 'total_cut_pieces', 'garment_composition',
+        'id', 'client_id', 'model_code', 'image',
+        'size_category_id', 'model_type', 'status',
+        'total_cut_pieces', 'garment_composition',
     ))
+
+    comps = COMPOSITION_FILTER_MAP.get(composition) if composition else None
+
+    def _matches_composition(row):
+        if not comps:
+            return True
+        return (row.get('garment_composition') or 'two_pieces') in comps
+
+    def _matches_stage(row):
+        if not stage:
+            return True
+        return _coarse_stage(row.get('status')) == stage
+
+    # تفنيد المراحل: بعد فلاتر التاريخ/النوع/التكوين فقط (بدون فلتر المرحلة).
+    stage_rows = [r for r in rows if _matches_composition(r)]
+    # تفنيد التكوين: بعد فلاتر التاريخ/النوع/المرحلة فقط (بدون فلتر التكوين).
+    comp_rows = [r for r in rows if _matches_stage(r)]
+    # الفئات والإجماليات وقائمة الموديلات: بالفلترين معاً.
+    filtered_rows = [r for r in rows if _matches_composition(r) and _matches_stage(r)]
 
     # فئة المقاس تُخزَّن في الموديل بالمعرف الخارجي (client_id) بينما قد يقارن
     # التقرير بالمعرف الداخلي (pk)؛ لذا نفهرس الفئتين معاً حتى لا تسقط الفئات
@@ -660,7 +688,7 @@ def get_models_report(metric='models', date_from=None, date_to=None, composition
             }
         return buckets[key]
 
-    for row in rows:
+    for row in filtered_rows:
         size_key = str(row.get('size_category_id') or '')
         size_obj = size_defs.get(size_key)
         if size_obj:
@@ -686,7 +714,7 @@ def get_models_report(metric='models', date_from=None, date_to=None, composition
 
     composition_breakdown = []
     for comp_key, comp_label in GARMENT_COMPOSITION_CHOICES:
-        members = [r for r in rows if (r.get('garment_composition') or 'two_pieces') == comp_key]
+        members = [r for r in comp_rows if (r.get('garment_composition') or 'two_pieces') == comp_key]
         composition_breakdown.append({
             'key': comp_key,
             'label': comp_label,
@@ -695,15 +723,37 @@ def get_models_report(metric='models', date_from=None, date_to=None, composition
         })
 
     stage_counts = {}
-    for row in rows:
-        stage = _coarse_stage(row.get('status'))
-        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+    for row in stage_rows:
+        stage_bucket = _coarse_stage(row.get('status'))
+        stage_counts[stage_bucket] = stage_counts.get(stage_bucket, 0) + 1
     stage_breakdown = [
         {'key': key, 'label': label, 'models_count': stage_counts.get(key, 0)}
         for key, label in COARSE_STAGE_LABELS
         if stage_counts.get(key, 0)
     ]
     stage_breakdown.sort(key=lambda item: item['models_count'], reverse=True)
+
+    filtered_models = []
+    for row in filtered_rows:
+        stage_key = _coarse_stage(row.get('status'))
+        size_key = str(row.get('size_category_id') or '')
+        size_obj = size_defs.get(size_key)
+        comp_key = row.get('garment_composition') or 'two_pieces'
+        filtered_models.append({
+            'model_id': row.get('id'),
+            'client_id': row.get('client_id') or '',
+            'model_code': row.get('model_code') or '',
+            'model_type': row.get('model_type') or '',
+            'gender': _normalize_gender(row.get('model_type')),
+            'image': row.get('image') or '',
+            'size_category': size_obj.name if size_obj else 'بدون فئة مقاس',
+            'garment_composition': comp_key,
+            'composition_label': GARMENT_COMPOSITION_LABELS.get(comp_key, ''),
+            'stage': stage_key,
+            'stage_label': COARSE_STAGE_LABEL_MAP.get(stage_key, row.get('status') or ''),
+            'cut_pieces': int(row.get('total_cut_pieces') or 0),
+        })
+    filtered_models.sort(key=lambda item: (-item['cut_pieces'], item['model_code']))
 
     model_types = list(
         ModelItem.objects.filter(is_deleted=False)
@@ -712,10 +762,10 @@ def get_models_report(metric='models', date_from=None, date_to=None, composition
     )
 
     totals = {
-        'models': len(rows),
+        'models': len(filtered_rows),
         'boys_models': sum(b['boys_models'] for b in size_categories),
         'girls_models': sum(b['girls_models'] for b in size_categories),
-        'pieces': sum(int(r.get('total_cut_pieces') or 0) for r in rows),
+        'pieces': sum(int(r.get('total_cut_pieces') or 0) for r in filtered_rows),
         'boys_pieces': sum(b['boys_pieces'] for b in size_categories),
         'girls_pieces': sum(b['girls_pieces'] for b in size_categories),
         'size_categories': len([b for b in size_categories if b['size_id'] != '__none__']),
@@ -727,10 +777,13 @@ def get_models_report(metric='models', date_from=None, date_to=None, composition
         'date_to': end.isoformat() if end else '',
         'composition_filter': composition or '',
         'model_type_filter': model_type or '',
+        'stage_filter': stage or '',
+        'active_stage': stage or '',
         'size_categories': size_categories,
         'composition_breakdown': composition_breakdown,
         'stage_breakdown': stage_breakdown,
         'model_types': model_types,
+        'filtered_models': filtered_models,
         'totals': totals,
         'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
     }

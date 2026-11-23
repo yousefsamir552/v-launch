@@ -1608,16 +1608,35 @@ export interface ReportStageItem {
   models_count: number;
 }
 
+/** موديل خفيف داخل قائمة تفاصيل الموديلات المطابقة للفلاتر. */
+export interface FilteredModelItem {
+  model_id: number;
+  client_id: string;
+  model_code: string;
+  model_type: string;
+  gender: 'boys' | 'girls';
+  image: string;
+  size_category: string;
+  garment_composition: string;
+  composition_label: string;
+  stage: string;
+  stage_label: string;
+  cut_pieces: number;
+}
+
 export interface ModelsReportResponse {
   metric: 'models' | 'pieces';
   date_from: string;
   date_to: string;
   composition_filter: string;
   model_type_filter: string;
+  stage_filter: string;
+  active_stage: string;
   size_categories: SizeCategoryReportRow[];
   composition_breakdown: ReportBreakdownItem[];
   stage_breakdown: ReportStageItem[];
   model_types: string[];
+  filtered_models: FilteredModelItem[];
   totals: {
     models: number;
     boys_models: number;

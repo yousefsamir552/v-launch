@@ -350,6 +350,7 @@ class ReportsViewSet(viewsets.ViewSet):
             date_to=request.query_params.get('date_to'),
             composition=request.query_params.get('composition'),
             model_type=request.query_params.get('model_type'),
+            stage=request.query_params.get('stage'),
         )
         return Response(data)
 

@@ -728,6 +728,7 @@ export const api = {
     date_to?: string;
     composition?: string;
     model_type?: string;
+    stage?: string;
   }) =>
     request<ModelsReportResponse>(
       `/reports/models/${buildQuery({
@@ -735,7 +736,8 @@ export const api = {
         date_from: params?.date_from,
         date_to: params?.date_to,
         composition: params?.composition,
-        model_type: params?.model_type
+        model_type: params?.model_type,
+        stage: params?.stage
       })}`
     ),
   getProductionReport: (params?: { period?: string; date_from?: string; date_to?: string }) =>
