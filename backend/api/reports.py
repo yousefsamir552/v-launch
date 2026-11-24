@@ -104,7 +104,7 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
     # 1. CUTTING REPORT (تقرير قسم القص)
     if section == 'cutting':
         summary['section_name'] = 'تقرير قسم القص وخطوط الفرش'
-        qs = CuttingRecord.objects.select_related('model').prefetch_related('color_layers')
+        qs = CuttingRecord.objects.filter(model__is_deleted=False).select_related('model').prefetch_related('color_layers')
 
         if date_from:
             qs = qs.filter(created_at__date__gte=date_from)
@@ -182,7 +182,7 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
     # 2. PRINTING REPORT (تقرير المطابع والتطريز)
     elif section == 'printing':
         summary['section_name'] = 'تقرير المطابع والتطريز'
-        qs = PrintDispatch.objects.select_related('model')
+        qs = PrintDispatch.objects.filter(model__is_deleted=False).select_related('model')
 
         if date_from:
             qs = qs.filter(dispatch_date__gte=date_from)
@@ -201,7 +201,7 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
             bucket = buckets[bucket_date]
             bucket['records'].append(rec)
             bucket['total_pieces'] += int(rec.pieces_count or 0)
-            if rec.status == 'تم الاستلام':
+            if rec.status in ('تم الاستلام', 'تم الاستلام بالمصنع'):
                 bucket['received_count'] += 1
             model_code = rec.model.model_code if rec.model else ''
             if model_code and model_code not in bucket['model_codes']:
@@ -252,7 +252,7 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
     # 3. QC REPORT (تقرير الفرز والجودة)
     elif section == 'qc':
         summary['section_name'] = 'تقرير الفرز ومراقبة الجودة (QC)'
-        qs = QCRecord.objects.select_related('model')
+        qs = QCRecord.objects.filter(model__is_deleted=False).select_related('model')
 
         if date_from:
             qs = qs.filter(created_at__date__gte=date_from)
@@ -328,7 +328,7 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
     # 4. SEWING REPORT (تقرير المكن وخطوط الخياطة)
     elif section == 'sewing':
         summary['section_name'] = 'تقرير قسم المكن وخطوط الخياطة'
-        qs = SewingDispatch.objects.select_related('model')
+        qs = SewingDispatch.objects.filter(model__is_deleted=False).select_related('model')
 
         if date_from:
             qs = qs.filter(dispatched_date__gte=date_from)
@@ -339,6 +339,7 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
         buckets = defaultdict(lambda: {
             'records': [], 'total_pieces': 0, 'model_codes': [], 'workshops': [],
             'received_count': 0, 'shirt_count': 0, 'pants_count': 0,
+            'jacket_count': 0, 'single_count': 0,
         })
         for rec in qs:
             bucket_date = _record_bucket_date(rec.dispatched_date, period)
@@ -348,12 +349,16 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
             bucket['records'].append(rec)
             pieces = int(rec.pieces_count or 0)
             bucket['total_pieces'] += pieces
-            if rec.status == 'تم الاستلام':
+            if rec.status in ('تم الاستلام', 'تم الاستلام بالمصنع'):
                 bucket['received_count'] += 1
             if rec.piece_type == 'shirt':
                 bucket['shirt_count'] += pieces
             elif rec.piece_type == 'pants':
                 bucket['pants_count'] += pieces
+            elif rec.piece_type == 'jacket':
+                bucket['jacket_count'] += pieces
+            else:
+                bucket['single_count'] += pieces
             model_code = rec.model.model_code if rec.model else ''
             if model_code and model_code not in bucket['model_codes']:
                 bucket['model_codes'].append(model_code)
@@ -367,10 +372,17 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
             model_codes = bucket['model_codes']
             shirt_count = bucket['shirt_count']
             pants_count = bucket['pants_count']
+            jacket_count = bucket['jacket_count']
+            single_count = bucket['single_count']
             ops_count = len(bucket['records'])
             total_pcs = bucket['total_pieces']
 
             all_models_set.update(model_codes)
+            part_metrics = [f"تيشرت: {shirt_count}", f"بنطلون: {pants_count}"]
+            if jacket_count:
+                part_metrics.append(f"جاكيت: {jacket_count}")
+            if single_count:
+                part_metrics.append(f"قطعة واحدة: {single_count}")
 
             results.append({
                 'period_key': bucket_date.isoformat(),
@@ -379,14 +391,14 @@ def get_production_report(section='cutting', period='daily', date_from=None, dat
                 'model_codes': model_codes,
                 'total_pieces': total_pcs,
                 'secondary_metric_label': 'تفصيل القطع',
-                'secondary_metric_value': f"تيشرت: {shirt_count} • بنطلون: {pants_count}",
+                'secondary_metric_value': ' • '.join(part_metrics),
                 'operations_count': ops_count,
                 'operators_list': bucket['workshops'],
                 'details_list': [
                     {
                         'id': rec.id,
                         'model_code': rec.model.model_code,
-                        'piece_label': rec.piece_label or ('تيشرت' if rec.piece_type == 'shirt' else 'بنطلون'),
+                        'piece_label': rec.piece_label or rec.get_piece_type_display(),
                         'workshop': rec.workshop_name,
                         'pieces': rec.pieces_count,
                         'expected_date': str(rec.expected_delivery_date) if rec.expected_delivery_date else '',
@@ -579,28 +591,29 @@ def _model_part_good_pieces(model, part_type):
 
 
 def _model_total_good_pieces(model):
-    total = (model.qc_shirt_pieces or 0) + (model.qc_pants_pieces or 0) + (model.qc_jacket_pieces or 0)
-    if not total:
-        total = model.count_after_sewing or 0
-    if not total:
-        total = model.total_cut_pieces or 0
-    return int(total or 0)
+    """الأطقم التامة للموديل (أقل قطعة بين أجزاء الطقم مطروحاً منها قطع عينة التصوير المعلقة)."""
+    from .services_pipeline import model_part_summary
+    summary = model_part_summary(model)
+    sets = int(summary.get('finished_good_sets') or 0)
+    if sets > 0 or int(summary.get('photography_outstanding_qty') or 0) > 0:
+        return sets
+    return int(summary.get('completed_sets') or model.total_cut_pieces or 0)
 
 
 def _current_good_pieces(model):
-    """العدد السليم الحالي للموديل بما يتوافق مع دلالة total_cut_pieces.
-
-    - الموديلات الجديدة (لها garment_parts): total_cut_pieces = أقل عدد مقصوص بين
-      القطع (أطقم مكتملة)، لذلك السليم الحالي = أقل عدد سليم بين القطع التي لها عد.
-    - الموديلات القديمة (بدون garment_parts): total_cut_pieces = مجموع القطع،
-      لذلك السليم الحالي = مجموع السليم لكل قطعة.
-    """
+    """العدد السليم الحالي للموديل كأطقم مكتملة (min(parts) - photography_outstanding_qty)."""
+    from .services_pipeline import model_part_summary
     stage = _coarse_stage(model.status)
     if stage in ('design', 'cutting'):
         return int(model.total_cut_pieces or 0)
 
     parts = [p for p in _model_parts(model) if p in ('shirt', 'pants', 'jacket')]
     is_legacy = not (model.garment_parts or [])
+    if not is_legacy:
+        summary = model_part_summary(model)
+        if stage in ('qc_after_sewing', 'finishing', 'ironing', 'packaging', 'dest', 'completed'):
+            return int(summary.get('finished_good_sets') or 0)
+
     per_part = [int(getattr(model, f'qc_{p}_pieces', 0) or 0) for p in parts]
     if parts and any(per_part):
         if is_legacy:
@@ -875,9 +888,18 @@ def _daily_pieces(qs, date_field, pieces_field, start, end, is_datetime):
     return total, models_total, daily
 
 
-def _assembly_like_aggregate(qs, start, end, piece_fn, date_field='actual_exit_date'):
+def _assembly_like_aggregate(qs, start, end, piece_fn, date_field='actual_exit_date', dedupe_by_model=False):
     """تجميع أقسام لا تحمل عدد قطع (التشطيب / المكواة / التعبئة)."""
-    records = qs.filter(**{f'{date_field}__range': (start, end)}).select_related('model')
+    records = list(qs.filter(**{f'{date_field}__range': (start, end)}).select_related('model'))
+    if dedupe_by_model:
+        # منع العد المزدوج للموديل الواحد بين مرحلتي التعبئة والدَست في نفس الفترة
+        # (نفضّل سجل التعبئة الأساسي إن وُجد، وإلا الدَست).
+        by_model = {}
+        for rec in records:
+            existing = by_model.get(rec.model_id)
+            if existing is None or (getattr(existing, 'stage', '') == 'dest' and getattr(rec, 'stage', '') == 'packaging'):
+                by_model[rec.model_id] = rec
+        records = list(by_model.values())
     daily = {}
     model_ids = set()
     total = 0
@@ -946,14 +968,17 @@ def get_production_departments_report(period='today', date_from=None, date_to=No
     مع التارجت اليومي/الشهري ونسبة الإنجاز والمقارنة بالفترة السابقة.
     """
     start, end, days, period_key = _resolve_report_period(period, date_from, date_to)
+    today = date.today()
+    # المتوسط اليومي يُحسب على الأيام المنقضية فعلياً من الفترة (وليس كامل 30/31 يوماً).
+    elapsed_days = max(1, (min(end, today) - start).days + 1) if start <= today else days
     prev_start, prev_end = _previous_period(start, end)
     targets = get_department_targets()
 
     simple_sources = {
-        'cutting': (CuttingRecord.objects.filter(is_sub_cut=False), 'created_at', 'pieces_count', True),
-        'printing': (PrintDispatch.objects.all(), 'dispatch_date', 'pieces_count', False),
-        'qc': (QCRecord.objects.all(), 'created_at', 'counted_pieces', True),
-        'sewing': (SewingDispatch.objects.all(), 'dispatched_date', 'pieces_count', False),
+        'cutting': (CuttingRecord.objects.filter(is_sub_cut=False, model__is_deleted=False), 'created_at', 'pieces_count', True),
+        'printing': (PrintDispatch.objects.filter(model__is_deleted=False), 'dispatch_date', 'pieces_count', False),
+        'qc': (QCRecord.objects.filter(model__is_deleted=False), 'created_at', 'counted_pieces', True),
+        'sewing': (SewingDispatch.objects.filter(model__is_deleted=False), 'dispatched_date', 'pieces_count', False),
     }
 
     departments = []
@@ -968,7 +993,7 @@ def get_production_departments_report(period='today', date_from=None, date_to=No
                 qs, date_field, pieces_field, prev_start, prev_end, is_datetime
             )
         elif key == 'finishing':
-            finishing_qs = FinishingRecord.objects.all()
+            finishing_qs = FinishingRecord.objects.filter(model__is_deleted=False)
             pieces, models_count, daily_map = _assembly_like_aggregate(
                 finishing_qs, start, end,
                 lambda rec: _model_part_good_pieces(rec.model, rec.part_type),
@@ -978,7 +1003,7 @@ def get_production_departments_report(period='today', date_from=None, date_to=No
                 lambda rec: _model_part_good_pieces(rec.model, rec.part_type),
             )
         elif key == 'ironing':
-            ironing_qs = AssemblyStageRecord.objects.filter(stage='ironing')
+            ironing_qs = AssemblyStageRecord.objects.filter(stage='ironing', model__is_deleted=False)
             pieces, models_count, daily_map = _assembly_like_aggregate(
                 ironing_qs, start, end,
                 lambda rec: _model_part_good_pieces(rec.model, rec.part_type),
@@ -987,20 +1012,25 @@ def get_production_departments_report(period='today', date_from=None, date_to=No
                 ironing_qs, prev_start, prev_end,
                 lambda rec: _model_part_good_pieces(rec.model, rec.part_type),
             )
-        else:  # packaging + dest
-            packaging_qs = AssemblyStageRecord.objects.filter(stage__in=('packaging', 'dest'))
+        else:  # packaging + dest (بدون عد مزدوج للموديل الواحد)
+            packaging_qs = AssemblyStageRecord.objects.filter(
+                stage__in=('packaging', 'dest'),
+                model__is_deleted=False,
+            )
             pieces, models_count, daily_map = _assembly_like_aggregate(
                 packaging_qs, start, end, lambda rec: _model_total_good_pieces(rec.model),
+                dedupe_by_model=True,
             )
             previous_pieces, _, _ = _assembly_like_aggregate(
                 packaging_qs, prev_start, prev_end, lambda rec: _model_total_good_pieces(rec.model),
+                dedupe_by_model=True,
             )
 
         dep_target = targets.get(key) or {'daily': 0, 'monthly': 0}
         daily_target = dep_target.get('daily', 0)
         monthly_target = dep_target.get('monthly', 0)
         target = monthly_target if period_key == 'month' else daily_target * days
-        avg_daily = round(pieces / days) if days else 0
+        avg_daily = round(pieces / elapsed_days) if elapsed_days else 0
         progress = round((pieces / target) * 100) if target else 0
         delta = pieces - previous_pieces
         delta_percent = round((delta / previous_pieces) * 100) if previous_pieces else (100 if pieces else 0)
@@ -1434,7 +1464,7 @@ def get_quality_shortage_report(search=None, sort='shortage', date_from=None, da
 
     stage_defect_labels = dict(QCRecord.STAGE_TYPES)
     defect_rows = (
-        QCRecord.objects.values('stage')
+        QCRecord.objects.filter(model__is_deleted=False).values('stage')
         .annotate(defects=Sum('defect_pieces'), counted=Sum('counted_pieces'))
         .order_by('-defects')
     )
@@ -1584,7 +1614,7 @@ def _model_stage_waterfall(model):
 
 
 def get_model_stage_waterfall(model_id):
-    model = ModelItem.objects.filter(id=model_id).first()
+    model = ModelItem.objects.filter(id=model_id, is_deleted=False).first()
     if not model:
         return None
     return _model_stage_waterfall(model)

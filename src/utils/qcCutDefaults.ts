@@ -26,24 +26,20 @@ const normalizeLabel = (value?: string | null): string =>
   (value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
 /**
- * مطابقة اسم لون طبقة الفرشة مع اسم اللون المعروض في مصفوفة الفرز.
- * تعتمد التطابق المباشر أو كون أحدهما بداية للآخر (بعد trim)، مع مقارنة أجزاء
- * التسمية بصيغة "كود - اسم" حتى تعمل التسميات المختصرة والكاملة معاً.
+ * مطابقة اسم لون طبقة الفرشة مع اسم اللون المعروض في مصفوفة الفرز (تطابق دقيق بدون تداخل بادئات مثل C1 و C10).
+ * تعتمد التطابق المباشر (مع تجاهل اللاحقة الاختيارية بين قوسين لاسم القطعة) أو التطابق الدقيق
+ * لأحد مقاطع الصيغة "كود - اسم" بدون استخدام startsWith/includes لمنع التداخل بين الأكواد المتشابهة.
  */
 export const qcColorNamesMatch = (a?: string | null, b?: string | null): boolean => {
-  const first = normalizeLabel(a);
-  const second = normalizeLabel(b);
+  const stripSuffix = (val: string) => val.replace(/\s*\([^()]*\)\s*$/, '').trim();
+  const first = stripSuffix(normalizeLabel(a));
+  const second = stripSuffix(normalizeLabel(b));
   if (!first || !second) return false;
   if (first === second) return true;
-  if (first.startsWith(second) || second.startsWith(first)) return true;
 
   const firstSegments = first.split(' - ').map((segment) => segment.trim()).filter(Boolean);
   const secondSegments = second.split(' - ').map((segment) => segment.trim()).filter(Boolean);
-  return firstSegments.some((segment) =>
-    secondSegments.some(
-      (other) => segment === other || segment.startsWith(other) || other.startsWith(segment)
-    )
-  );
+  return firstSegments.some((segment) => secondSegments.some((other) => segment === other));
 };
 
 /**

@@ -378,6 +378,7 @@ class DepartmentPriceIsolationTests(PermissionTestBase):
         super().setUp()
         self.sewing_dispatch = SewingDispatch.objects.create(
             model=self.model, workshop_name='ورشة النور', pieces_count=10,
+            received_pieces=10,
             expected_delivery_date=timezone.now().date(), cost_per_piece=4, total_cost=40,
         )
         self.finishing = FinishingRecord.objects.create(
@@ -497,7 +498,8 @@ class DepartmentPriceIsolationTests(PermissionTestBase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         saved = SewingDispatch.objects.get(workshop_name='ورشة جديدة')
         self.assertEqual(float(saved.cost_per_piece), 7.0)
-        self.assertEqual(float(saved.total_cost), 35.0)
+        # قبل الاستلام الفعلي تكون التكلفة الإجمالية 0 (تُحسب على القطع المستلمة فقط).
+        self.assertEqual(float(saved.total_cost), 0.0)
         # التدقيق المالي: يُسجَّل تغيير سعر المكن صريحاً في سجل المراقبة.
         audit = AuditLog.objects.filter(details__contains='سعر تشغيل القطعة').first()
         self.assertIsNotNone(audit)

@@ -771,8 +771,8 @@ DEFAULT_ROLES_SEED = [
             'view_fabric_prices': False, 'edit_fabric_prices': False,
             'view_accessory_prices': False, 'edit_accessory_prices': False,
             'view_printing_prices': True, 'edit_printing_prices': True,
-            'view_sewing_prices': True, 'edit_sewing_prices': True,
-            'view_assembly_prices': True, 'edit_assembly_prices': True,
+            'view_sewing_prices': False, 'edit_sewing_prices': False,
+            'view_assembly_prices': False, 'edit_assembly_prices': False,
             'send_whatsapp_requests': False, 'send_internal_messages': True,
             'can_add_printing_notes': True,
         }

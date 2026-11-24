@@ -508,7 +508,11 @@ const PrintDispatchesTable: React.FC<{ records: PrintDispatch[] }> = ({ records 
                   {(pr.pieces_count || 0).toLocaleString('ar-EG')} ق
                 </td>
                 <td className="py-2 px-3 text-center font-bold text-emerald-700">
-                  {pr.received_at ? `${(pr.pieces_count || 0).toLocaleString('ar-EG')} ق` : '-'}
+                  {Number(pr.received_pieces ?? 0) > 0
+                    ? `${Number(pr.received_pieces).toLocaleString('ar-EG')} ق`
+                    : pr.status === 'تم الاستلام بالمصنع'
+                    ? `${(pr.pieces_count || 0).toLocaleString('ar-EG')} ق`
+                    : '-'}
                 </td>
                 <td className="py-2 px-3 text-center font-bold text-indigo-700">{pr.status}</td>
                 <td className="py-2 px-3 text-slate-600">{pr.notes || '-'}</td>
@@ -1940,6 +1944,97 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                             {rec ? (rec.is_completed ? 'مكتملة' : 'جارية الآن') : 'لم تبدأ بعد'}
                             {rec?.notes ? ` • ملاحظات: ${rec.notes}` : ''}
                           </p>
+                        </div>
+                      );
+                    })()}
+
+                  {key === 'production_warehouse' &&
+                    (() => {
+                      const isInWarehouse =
+                        model.status === 'مخزن الإنتاج التام' || model.status === 'مكتمل الإنتاج';
+                      const destRec = assemblyStageRecords.find(
+                        (r) => r.model_id === model.id && r.stage === 'dest'
+                      );
+                      const packReq = packagingRequirements.find((r) => r.model_id === model.id);
+                      const photoHold = Math.max(
+                        0,
+                        Number(model.photography_outstanding_qty ?? packReq?.photography_outstanding_qty ?? 0)
+                      );
+                      const setsCount =
+                        model.finished_good_sets !== undefined && model.finished_good_sets !== null
+                          ? Number(model.finished_good_sets)
+                          : model.completed_sets !== undefined && model.completed_sets !== null
+                          ? Number(model.completed_sets)
+                          : Number(model.total_cut_pieces || 0);
+                      return (
+                        <div className="space-y-3">
+                          <div
+                            className={`rounded-2xl border p-4 text-xs font-bold ${
+                              isInWarehouse
+                                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                                : 'bg-amber-50 border-amber-200 text-amber-900'
+                            }`}
+                          >
+                            {isInWarehouse
+                              ? '✅ تم إيداع البضاعة الجاهزة في مخزن الإنتاج التام بنجاح.'
+                              : '⏳ لم يُستلم الموديل في مخزن الإنتاج التام بعد (بانتظار اكتمال الدَست أو الاعتماد النهائي).'}
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                            <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200">
+                              <span className="block text-[10px] font-bold text-emerald-700">
+                                الأطقم الجاهزة بالمخزن
+                              </span>
+                              <strong className="text-base font-black text-emerald-900">
+                                {setsCount.toLocaleString('ar-EG')} طقم
+                              </strong>
+                            </div>
+                            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                              <span className="block text-[10px] font-bold text-slate-500">
+                                تاريخ الإيداع
+                              </span>
+                              <strong className="text-slate-900 font-mono">
+                                {stage?.timestamp
+                                  ? String(stage.timestamp).slice(0, 10)
+                                  : destRec?.actual_exit_date || '—'}
+                              </strong>
+                            </div>
+                            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                              <span className="block text-[10px] font-bold text-slate-500">
+                                المسؤول
+                              </span>
+                              <strong className="text-slate-900">
+                                {stage?.user || 'أمين مخزن الإنتاج التام'}
+                              </strong>
+                            </div>
+                            <div className="p-3 rounded-2xl bg-indigo-50/70 border border-indigo-200">
+                              <span className="block text-[10px] font-bold text-indigo-700">
+                                عينات بالتصوير
+                              </span>
+                              <strong className="text-indigo-900 font-black">
+                                {photoHold.toLocaleString('ar-EG')} قطعة
+                              </strong>
+                            </div>
+                          </div>
+                          <div className="rounded-2xl border border-slate-200 p-3 bg-slate-50/60">
+                            <p className="text-[11px] font-black text-slate-700 mb-2">
+                              تفصيل القطع المعتمدة في المخزن:
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {parts.map((part) => {
+                                const qty = Number(
+                                  model.qc_summary?.[part] ?? model.cut_summary?.[part] ?? 0
+                                );
+                                return (
+                                  <span
+                                    key={part}
+                                    className="px-3 py-1 rounded-full bg-white border border-slate-200 text-xs font-bold text-slate-800"
+                                  >
+                                    {getPartLabel(part)}: {qty.toLocaleString('ar-EG')} قطعة
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
                         </div>
                       );
                     })()}

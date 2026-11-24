@@ -32,6 +32,7 @@ import {
   Truck
 } from 'lucide-react';
 import { ZoomableImage } from './ZoomableImage';
+import { finishedSetsOf } from '../utils/completedModels';
 
 interface DashboardViewProps {
   onNavigate: (tab: string, modelId?: string) => void;
@@ -53,6 +54,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   } = useApp();
 
   const activeModels = models.filter((m) => !m.is_deleted);
+  const activeModelIds = useMemo(() => new Set(activeModels.map((m) => m.id)), [activeModels]);
   const totalModels = activeModels.length;
   const totalFabrics = fabricColors.length;
 
@@ -87,15 +89,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     return { counts, totalPartItems };
   }, [activeModels, getPartStages]);
 
-  /** عدد الأطقم المكتملة للموديل = أقل عدد قطع بين كل القطع (min). */
-  const modelSets = (model: (typeof activeModels)[number]): number => {
-    const summary = model.cut_summary || {};
-    const values = Object.values(summary)
-      .map((value) => Number(value) || 0)
-      .filter((value) => Number.isFinite(value));
-    if (values.length) return Math.min(...values);
-    return Number(model.completed_sets || 0);
-  };
+  /** عدد الأطقم المكتملة للموديل = أقل عدد قطع بين الأجزاء مطروحاً منها قطع التصوير. */
+  const modelSets = (model: (typeof activeModels)[number]): number => finishedSetsOf(model);
   const totalSets = activeModels.reduce((sum, model) => sum + modelSets(model), 0);
 
   const inCuttingCount = stageStats.counts.cutting;
@@ -113,11 +108,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const finishedCount = stageStats.counts.completed;
 
   const totalCutPieces = cuttingRecords.reduce(
-    (sum, c) => sum + ((c.is_sub_cut ?? c.isSubCut ?? false) ? 0 : c.pieces_count),
+    (sum, c) =>
+      sum +
+      (!activeModelIds.has(c.model_id) || (c.is_sub_cut ?? c.isSubCut ?? false) ? 0 : c.pieces_count),
     0
   );
-  const totalQcGoodPieces = qcRecords.reduce((sum, q) => sum + q.good_qty, 0);
-  const totalDispatchedPieces = printDispatches.reduce((sum, d) => sum + d.pieces_count, 0);
+  const totalQcGoodPieces = qcRecords.reduce(
+    (sum, q) => sum + (activeModelIds.has(q.model_id) ? q.good_qty : 0),
+    0
+  );
+  const totalDispatchedPieces = printDispatches.reduce(
+    (sum, d) => sum + (activeModelIds.has(d.model_id) ? d.pieces_count : 0),
+    0
+  );
 
   const totalPartItems = stageStats.totalPartItems;
   const designPct = totalModels > 0 ? (inDesignCount / totalModels) * 100 : 0;

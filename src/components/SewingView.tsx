@@ -372,7 +372,7 @@ export const SewingView: React.FC = () => {
     }
     const m = models.find(mod => mod.id === receivingDispatch.model_id);
     const code = m?.model_code || 'الموديل';
-    const label = receivingDispatch.piece_label || (receivingDispatch.piece_type === 'shirt' ? 'تيشرت' : 'بنطلون');
+    const label = receivingDispatch.piece_label || getPartLabel(receivingDispatch.piece_type || 'shirt');
     const finalNotes = allowSewingNotes ? receiveNotes.trim() : '';
 
     receiveModelFromSewing(
@@ -590,9 +590,9 @@ export const SewingView: React.FC = () => {
           <div>
             <p className="text-xs font-bold text-slate-500 mb-1">إجمالي القطع بالمكن</p>
             <h3 className="text-2xl font-black text-slate-900">
-              {activeDispatches.reduce((acc, d) => acc + d.pieces_count, 0).toLocaleString('ar-EG')}
+              {activeDispatches.reduce((acc, d) => acc + getRemainingPieces(d), 0).toLocaleString('ar-EG')}
             </h3>
-            <span className="text-[11px] text-slate-500 font-semibold mt-1 inline-block">قطعة قيد الخياطة</span>
+            <span className="text-[11px] text-slate-500 font-semibold mt-1 inline-block">قطعة متبقية بالورش</span>
           </div>
           <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
             <Shirt className="w-6 h-6" />
@@ -955,10 +955,16 @@ export const SewingView: React.FC = () => {
                       <td className="px-6 py-4 text-center">
                         <span
                           className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-black ${
-                            isShirt ? 'bg-blue-100 text-blue-800 border border-blue-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                            isShirt
+                              ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                              : disp.piece_type === 'jacket'
+                              ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                              : disp.piece_type === 'single'
+                              ? 'bg-purple-100 text-purple-800 border border-purple-200'
+                              : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                           }`}
                         >
-                          {disp.piece_label || (isShirt ? 'تيشرت' : 'بنطلون')}
+                          {disp.piece_label || getPartLabel(disp.piece_type || 'shirt')}
                         </span>
                       </td>
 

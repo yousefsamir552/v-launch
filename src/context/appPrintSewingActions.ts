@@ -186,17 +186,22 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     const isReceiving = status === 'تم الاستلام بالمصنع' || requestedQty > 0;
     const cleanNotes = notes?.trim() || '';
 
-    if (isReceiving && requestedQty > 0 && remainingBefore === 0) {
+    if (isReceiving && remainingBefore === 0) {
       addFlashMessage('تم استلام كامل كمية هذه التشغيلة مسبقاً', 'danger');
+      return;
+    }
+    if (isReceiving && (requestedQty <= 0 || requestedQty > remainingBefore)) {
+      addFlashMessage(
+        requestedQty <= 0
+          ? 'يجب إدخال كمية استلام موجبة أكبر من صفر'
+          : `الكمية المتبقية عند المطبعة ${remainingBefore} قطعة فقط`,
+        'danger'
+      );
       return;
     }
 
     // الاستلام الجزئي على دفعات: كل استلام يضيف الكمية المستلمة ويحفظ سجل الدفعة.
-    const batchQty = isReceiving
-      ? requestedQty > 0
-        ? Math.min(remainingBefore, requestedQty)
-        : remainingBefore || totalPieces
-      : 0;
+    const batchQty = isReceiving ? requestedQty : 0;
     const newReceived = isReceiving ? alreadyReceived + batchQty : alreadyReceived;
     const isComplete = isReceiving && newReceived >= totalPieces;
     const resolvedStatus: DispatchStatus = isReceiving
@@ -210,11 +215,15 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
       prev.map((d) => {
         if (d.id !== dispatchId) return d;
         if (!isReceiving) return { ...d, status };
+        const unitCost = d.cost_per_piece;
         return {
           ...d,
           status: resolvedStatus,
           received_pieces: newReceived,
           remaining_pieces: Math.max(0, totalPieces - newReceived),
+          ...(unitCost !== null && unitCost !== undefined
+            ? { total_cost: Math.round(Number(unitCost) * newReceived * 100) / 100 }
+            : {}),
           receive_history: [
             ...(d.receive_history || []),
             {
@@ -230,7 +239,8 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
       })
     );
 
-    if (isReceiving) {
+    // لا نُرقّي القطعة إلى «العد بعد الطباعة» إلا بعد اكتمال استلام كامل الكمية.
+    if (isComplete) {
       const receivedPart = (disp.piece_type || 'shirt') as GarmentPart;
       setModels((prev) =>
         prev.map((m) =>
@@ -420,13 +430,21 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     const remainingBefore = Math.max(0, totalPieces - alreadyReceived);
     const requestedQty = receivedQty && receivedQty > 0 ? Math.floor(Number(receivedQty)) : 0;
 
-    if (requestedQty > 0 && remainingBefore === 0) {
+    if (remainingBefore === 0) {
       addFlashMessage('تم استلام كامل كمية هذه التشغيلة مسبقاً', 'danger');
       return;
     }
+    if (requestedQty <= 0 || requestedQty > remainingBefore) {
+      addFlashMessage(
+        requestedQty <= 0
+          ? 'يجب إدخال كمية استلام موجبة أكبر من صفر'
+          : `الكمية المتبقية بالورشة ${remainingBefore} قطعة فقط`,
+        'danger'
+      );
+      return;
+    }
 
-    const batchQty =
-      requestedQty > 0 ? Math.min(remainingBefore, requestedQty) : remainingBefore || totalPieces;
+    const batchQty = requestedQty;
     const newReceived = Math.min(totalPieces, alreadyReceived + batchQty);
     const isComplete = newReceived >= totalPieces;
     const resolvedStatus: SewingDispatchStatus = isComplete ? 'تم الاستلام' : 'استلام جزئي';
@@ -434,11 +452,21 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
 
     const updatedDispatches = sewingDispatches.map((d) => {
       if (d.id !== dispatchId) return d;
+      const unitCost = d.cost_per_piece;
+      const marker = cleanNotes ? `استلام: ${cleanNotes}` : '';
+      const existingNotes = (d.notes || '').trim();
+      const mergedNotes =
+        cleanNotes && !existingNotes.includes(marker)
+          ? (existingNotes ? `${existingNotes} | ${marker}` : marker)
+          : d.notes;
       return {
         ...d,
         status: resolvedStatus,
         received_pieces: newReceived,
         remaining_pieces: Math.max(0, totalPieces - newReceived),
+        ...(unitCost !== null && unitCost !== undefined
+          ? { total_cost: Math.round(Number(unitCost) * newReceived * 100) / 100 }
+          : {}),
         receive_history: [
           ...(d.receive_history || []),
           {
@@ -450,7 +478,7 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
           }
         ],
         received_at: nowStr,
-        ...(cleanNotes ? { notes: `${d.notes || ''} | استلام: ${cleanNotes}`.replace(/^\s*\|\s*/, '') } : {})
+        notes: mergedNotes
       };
     });
     setSewingDispatches(updatedDispatches);
@@ -458,28 +486,31 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     // "All pieces received" only when every other part already reached
     // (or passed) the "العد بعد المكن" stage.
     const qcAfterSewingIndex = PART_STAGE_ORDER.indexOf('qc_after_sewing');
-    const allPiecesReceived = targetModel
-      ? getModelParts(targetModelId).every((part) => {
-          if (part === pieceType) return true;
-          const stage = getPartStages(targetModelId)[part] || 'cutting';
-          return PART_STAGE_ORDER.indexOf(stage) >= qcAfterSewingIndex;
-        })
-      : false;
+    const allPiecesReceived =
+      isComplete && targetModel
+        ? getModelParts(targetModelId).every((part) => {
+            if (part === pieceType) return true;
+            const stage = getPartStages(targetModelId)[part] || 'cutting';
+            return PART_STAGE_ORDER.indexOf(stage) >= qcAfterSewingIndex;
+          })
+        : false;
 
-    setModels((prev) =>
-      prev.map((m) => {
-        if (m.id !== targetModelId) return m;
-        const updates: Partial<DesignModel> = {};
-        // لا نغلق مرحلة المكن للقطعة إلا عند اكتمال استلام كامل كميتها.
-        if (isComplete && pieceType === 'shirt') {
-          updates.sewing_shirt_status = 'تم الاستلام';
-        } else if (isComplete && pieceType === 'pants') {
-          updates.sewing_pants_status = 'تم الاستلام';
-        }
-        // Bug fix: only the received part leaves sewing; the sibling part stays put.
-        return patchModelPartStage({ ...m, ...updates }, pieceType, 'qc_after_sewing');
-      })
-    );
+    if (isComplete) {
+      setModels((prev) =>
+        prev.map((m) => {
+          if (m.id !== targetModelId) return m;
+          const updates: Partial<DesignModel> = {};
+          // لا نغلق مرحلة المكن للقطعة إلا عند اكتمال استلام كامل كميتها.
+          if (pieceType === 'shirt') {
+            updates.sewing_shirt_status = 'تم الاستلام';
+          } else if (pieceType === 'pants') {
+            updates.sewing_pants_status = 'تم الاستلام';
+          }
+          // Bug fix: only the received part leaves sewing; the sibling part stays put.
+          return patchModelPartStage({ ...m, ...updates }, pieceType, 'qc_after_sewing');
+        })
+      );
+    }
 
     api
       .receiveFromSewing(dispatchId, currentUser?.real_name || 'مسؤول الإنتاج', cleanNotes, batchQty)

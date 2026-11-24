@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import {
   AlertTriangle,
@@ -478,10 +478,13 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
             const supplierFromTxn = txns.find((txn) => txn.supplier_id)?.supplier_id || '';
             const supplierId = fabric.supplier_id || supplierFromTxn;
             const snapshotPrice = txns.find(
-              (txn) => txn.unit_price_snapshot !== null && txn.unit_price_snapshot !== undefined
+              (txn) => Number(txn.unit_price_snapshot) > 0
             )?.unit_price_snapshot;
+            const currentColorPrice = Number(color.price_per_unit);
             const price = canViewFabricPrices()
-              ? color.price_per_unit ?? snapshotPrice ?? null
+              ? currentColorPrice > 0
+                ? currentColorPrice
+                : snapshotPrice ?? (color.price_per_unit ?? null)
               : null;
 
             return {
@@ -560,10 +563,13 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
         const supplierFromTxn = txns.find((txn) => txn.supplier_id)?.supplier_id || '';
         const supplierId = item.supplier_id || supplierFromTxn;
         const snapshotPrice = txns.find(
-          (txn) => txn.unit_price_snapshot !== null && txn.unit_price_snapshot !== undefined
+          (txn) => Number(txn.unit_price_snapshot) > 0
         )?.unit_price_snapshot;
+        const currentItemPrice = Number(item.price_per_unit);
         const price = canViewAccessoryPrices()
-          ? item.price_per_unit ?? snapshotPrice ?? null
+          ? currentItemPrice > 0
+            ? currentItemPrice
+            : snapshotPrice ?? (item.price_per_unit ?? null)
           : null;
 
         return {
@@ -691,6 +697,7 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
   }, [filteredAccessoryRows]);
 
   /* ---------------------------- printing ----------------------------- */
+  const printMaterialsReportRef = useRef<() => void>(() => {});
   const printMaterialsReport = () => {
     const title =
       activeSection === 'fabric'
@@ -797,6 +804,13 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
       'landscape'
     );
   };
+  printMaterialsReportRef.current = printMaterialsReport;
+
+  useEffect(() => {
+    const handler = () => printMaterialsReportRef.current();
+    window.addEventListener('erp:print-materials-report', handler);
+    return () => window.removeEventListener('erp:print-materials-report', handler);
+  }, []);
 
   return (
     <div className="space-y-5">
@@ -1532,8 +1546,12 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
         const amount = Number(txn.amount || 0);
         if (txn.operation === 'deduct') entry.actual += amount;
         else if (isAccessoryReturn(txn.notes)) entry.actual -= amount;
-        if (entry.price === null && canViewAccessoryPrices() && txn.unit_price_snapshot != null) {
-          entry.price = txn.unit_price_snapshot;
+        if (
+          (entry.price === null || entry.price <= 0) &&
+          canViewAccessoryPrices() &&
+          Number(txn.unit_price_snapshot) > 0
+        ) {
+          entry.price = Number(txn.unit_price_snapshot);
         }
       });
 
@@ -1547,8 +1565,8 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
       entry.unit = acc.unit || entry.unit;
       entry.planned = round2(entry.planned + Number(acc.planned_quantity || 0));
       entry.perPiece = Number(acc.piece_consumption || 0);
-      if (canViewAccessoryPrices() && acc.unit_price_snapshot != null) {
-        entry.price = acc.unit_price_snapshot;
+      if (canViewAccessoryPrices() && Number(acc.unit_price_snapshot) > 0) {
+        entry.price = Number(acc.unit_price_snapshot);
       }
     });
 
@@ -1627,6 +1645,7 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
     canViewSewingPrices
   ]);
 
+  const printModelReportRef = useRef<() => void>(() => {});
   const printModelReport = () => {
     if (!selectedModel || !report) return;
     const model = selectedModel;
@@ -1769,6 +1788,13 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
       'portrait'
     );
   };
+  printModelReportRef.current = printModelReport;
+
+  useEffect(() => {
+    const handler = () => printModelReportRef.current();
+    window.addEventListener('erp:print-model-consumption-report', handler);
+    return () => window.removeEventListener('erp:print-model-consumption-report', handler);
+  }, []);
 
 
   return (

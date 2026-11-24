@@ -439,12 +439,13 @@ const WaterfallPanel: React.FC<{ data: ModelStageWaterfallResponse }> = ({ data 
 /* ------------------------------------------------------------------ */
 
 export const ReportsView: React.FC = () => {
-  const { hasPermission, addFlashMessage, globalSettings } = useApp();
+  const { hasPermission, addFlashMessage, globalSettings, refreshState } = useApp();
 
   const canViewReports = hasPermission('reports');
   const canEditTargets = hasPermission('reports', true);
 
   const [activeTab, setActiveTab] = useState<ReportTab>('models');
+  const [materialsRefreshTick, setMaterialsRefreshTick] = useState(0);
 
   /* ---------- tab 1: الموديلات حسب المقاس ---------- */
   const [metric, setMetric] = useState<MetricMode>('models');
@@ -583,7 +584,11 @@ export const ReportsView: React.FC = () => {
   const refreshActiveTab = () => {
     if (activeTab === 'models') void loadModels();
     else if (activeTab === 'production') void loadProduction();
-    else void loadQuality();
+    else if (activeTab === 'quality') void loadQuality();
+    else {
+      void refreshState();
+      setMaterialsRefreshTick((n) => n + 1);
+    }
   };
 
   const toggleModelDetails = async (modelId: number) => {
@@ -792,7 +797,9 @@ export const ReportsView: React.FC = () => {
   const printActiveTab = () => {
     if (activeTab === 'models') printModelsReport();
     else if (activeTab === 'production') printProductionReport();
-    else printQualityReport();
+    else if (activeTab === 'quality') printQualityReport();
+    else if (activeTab === 'materials') window.dispatchEvent(new CustomEvent('erp:print-materials-report'));
+    else if (activeTab === 'model_consumption') window.dispatchEvent(new CustomEvent('erp:print-model-consumption-report'));
   };
 
   /* --------------------------- derived data -------------------------- */
@@ -1780,8 +1787,10 @@ export const ReportsView: React.FC = () => {
           )}
 
 
-          {activeTab === 'materials' && <MaterialsReportSection />}
-          {activeTab === 'model_consumption' && <ModelConsumptionReportSection />}
+          {activeTab === 'materials' && <MaterialsReportSection refreshTick={materialsRefreshTick} />}
+          {activeTab === 'model_consumption' && (
+            <ModelConsumptionReportSection refreshTick={materialsRefreshTick} />
+          )}
 
           {targetsOpen && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" dir="rtl">

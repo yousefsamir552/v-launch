@@ -6,16 +6,15 @@ import {
 } from '../types';
 
 /**
- * الحالات التي يُحتسب لها استهلاك خامات التشغيل والأمبالاج:
- * أي موديل وصل إلى التشطيب أو تجاوزه (لأنه سيحتاج أكياس/كرتون/شماعات).
+ * الحالات التي يُحتسب لها احتياج نشط لخامات التشغيل والأمبالاج:
+ * الموديلات الموجودة فعلياً في مراحل التشطيب/المكواة/التعبئة/الدَست فقط،
+ * مع استبعاد الموديلات المكتملة في مخزن الإنتاج التام حتى لا تُحتسب كطلب نشط.
  */
 export const PACKAGING_ACTIVE_STATUSES: string[] = [
   'في التشطيب',
   'في المكواة',
   'في التعبئة والتغليف',
-  'جاهز للدَست',
-  'مخزن الإنتاج التام',
-  'مكتمل الإنتاج'
+  'جاهز للدَست'
 ];
 
 const toPositive = (value: unknown): number => {
@@ -24,25 +23,40 @@ const toPositive = (value: unknown): number => {
 };
 
 /**
- * عدد القطع المعتمدة للموديل عند حساب خامات التعبئة.
- * الأولوية: العد بعد المكن ← إجمالي القطع المقصوصة ← العد بعد الطباعة ←
- * مجموع القص حسب الأجزاء ← الكمية المستهدفة.
+ * عدد الأطقم (Sets) المعتمدة للموديل عند حساب خامات التعبئة (أقل قطعة وليست مجموع القطع):
+ * الأولوية: finished_good_sets / completed_sets ← أقل قطعة من qc_summary / cut_summary ←
+ * total_cut_pieces ← الكمية المستهدفة.
  */
 export const modelPackagingPieces = (model: DesignModel): number => {
-  const afterSewing = toPositive(model.count_after_sewing);
-  if (afterSewing > 0) return afterSewing;
+  if (model.finished_good_sets !== undefined && model.finished_good_sets !== null) {
+    const sets = toPositive(model.finished_good_sets);
+    if (sets > 0) return sets;
+  }
+  if (model.completed_sets !== undefined && model.completed_sets !== null) {
+    const sets = toPositive(model.completed_sets);
+    if (sets > 0) return sets;
+  }
+
+  const parts = (
+    Array.isArray(model.garment_parts) && model.garment_parts.length > 0
+      ? model.garment_parts
+      : Object.keys(model.cut_summary || {})
+  ) as Array<keyof NonNullable<DesignModel['cut_summary']>>;
+  if (parts.length > 0) {
+    const partCounts = parts
+      .map((part) => {
+        const qcVal = toPositive(model.qc_summary?.[part]);
+        if (qcVal > 0) return qcVal;
+        return toPositive(model.cut_summary?.[part]);
+      })
+      .filter((v) => v > 0);
+    if (partCounts.length > 0) {
+      return Math.min(...partCounts);
+    }
+  }
 
   const cutPieces = toPositive(model.total_cut_pieces);
   if (cutPieces > 0) return cutPieces;
-
-  const afterPrint = toPositive(model.count_after_print);
-  if (afterPrint > 0) return afterPrint;
-
-  const summaryTotal = Object.values(model.cut_summary || {}).reduce<number>(
-    (sum, value) => sum + toPositive(value),
-    0
-  );
-  if (summaryTotal > 0) return summaryTotal;
 
   return toPositive(model.target_cut_quantity);
 };

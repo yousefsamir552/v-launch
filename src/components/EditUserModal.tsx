@@ -145,9 +145,24 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
       new Set(delegatablePerms.filter((key) => Boolean((customPerms as any)[key])))
     );
 
+    // نخزّن الفروقات فقط عن الدور الوظيفي المختار حتى تسري أي تعديلات مستقبلية على الدور تلقائياً.
+    let overridesPayload: Record<string, any> = customPerms;
+    if (currentRoleObj) {
+      const roleBase = {
+        ...DEFAULT_PERMISSIONS,
+        ...(currentRoleObj.permissions || {})
+      } as Record<string, any>;
+      overridesPayload = {};
+      Object.entries(customPerms).forEach(([k, v]) => {
+        if (Boolean(v) !== Boolean(roleBase[k])) {
+          overridesPayload[k] = Boolean(v);
+        }
+      });
+    }
+
     onSave(
       user.id,
-      customPerms as UserPermissions,
+      overridesPayload as UserPermissions,
       password || undefined,
       roleName,
       selectedRoleId || undefined,

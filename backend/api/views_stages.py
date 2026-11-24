@@ -357,11 +357,14 @@ class QCRecordViewSet(BasePermViewSet):
         raw_notes = (data.get('defect_notes') or data.get('defectNotes') or data.get('notes') or '').strip()
 
         profile = getattr(request, 'user_profile', None)
+        can_write_notes = True
         if profile:
             if stage == 'before_print' and not profile.has_perm('can_add_qc_before_print_notes'):
-                raw_notes = ''
+                can_write_notes = False
             elif stage in ('after_print', 'after_sewing') and not profile.has_perm('can_add_qc_after_print_notes'):
-                raw_notes = ''
+                can_write_notes = False
+        if not can_write_notes:
+            raw_notes = ''
 
         good_qty = max(0, int(data.get('good_qty') if data.get('good_qty') is not None else (data.get('goodQty') or data.get('counted_pieces') or 0)))
         defect_qty = max(0, int(data.get('defect_qty') if data.get('defect_qty') is not None else (data.get('defectQty') or data.get('defect_pieces') or 0)))
@@ -371,6 +374,11 @@ class QCRecordViewSet(BasePermViewSet):
         size_val = (data.get('size') or '').strip()
         part_type = normalize_part_key(data.get('part_type') or data.get('partType') or 'shirt')
         pieces_cut_ref = int(data.get('pieces_cut') or model.total_cut_pieces or 0)
+
+        try:
+            validate_qc_stage_progression(model, stage, [part_type])
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
             # Upsert if same model + part + stage + color_name + size exists
@@ -388,7 +396,8 @@ class QCRecordViewSet(BasePermViewSet):
                 existing.pieces_cut = pieces_cut_ref
                 existing.counted_pieces = good_qty
                 existing.defect_pieces = defect_qty
-                existing.notes = raw_notes
+                if can_write_notes:
+                    existing.notes = raw_notes
                 existing.checked_by = inspector
                 existing.created_at_str = now_str
                 existing.save()
@@ -404,7 +413,7 @@ class QCRecordViewSet(BasePermViewSet):
                     pieces_cut=pieces_cut_ref,
                     counted_pieces=good_qty,
                     defect_pieces=defect_qty,
-                    notes=raw_notes,
+                    notes=raw_notes if can_write_notes else '',
                     checked_by=inspector,
                     created_at_str=now_str,
                 )
@@ -431,17 +440,28 @@ class QCRecordViewSet(BasePermViewSet):
         raw_notes = (data.get('notes') or data.get('defectNotes') or '').strip()
 
         profile = getattr(request, 'user_profile', None)
+        can_write_notes = True
         if profile:
             if stage == 'before_print' and not profile.has_perm('can_add_qc_before_print_notes'):
-                raw_notes = ''
+                can_write_notes = False
             elif stage in ('after_print', 'after_sewing') and not profile.has_perm('can_add_qc_after_print_notes'):
-                raw_notes = ''
+                can_write_notes = False
+        if not can_write_notes:
+            raw_notes = ''
 
         inspector = data.get('inspector_name') or data.get('user_name') or 'مراقب الجودة'
         now_str = data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
         pieces_cut_ref = int(model.total_cut_pieces or model.target_cut_quantity or 0)
 
         default_part_type = normalize_part_key(data.get('part_type') or data.get('partType') or 'shirt')
+        touched_parts = sorted({
+            normalize_part_key(entry.get('part_type') or entry.get('partType') or default_part_type)
+            for entry in entries if isinstance(entry, dict)
+        }) or [default_part_type]
+        try:
+            validate_qc_stage_progression(model, stage, touched_parts)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         saved_list = []
         with transaction.atomic():
@@ -455,7 +475,10 @@ class QCRecordViewSet(BasePermViewSet):
                 )
                 g_qty = max(0, int(entry.get('good_qty') if entry.get('good_qty') is not None else (entry.get('goodQty') or entry.get('counted_pieces') or 0)))
                 d_qty = max(0, int(entry.get('defect_qty') if entry.get('defect_qty') is not None else (entry.get('defectQty') or entry.get('defect_pieces') or 0)))
-                cell_notes = (entry.get('notes') or entry.get('defect_notes') or raw_notes or '').strip()
+                cell_notes = (
+                    (entry.get('notes') or entry.get('defect_notes') or raw_notes or '').strip()
+                    if can_write_notes else ''
+                )
 
                 existing = QCRecord.objects.filter(
                     model=model,
@@ -469,7 +492,8 @@ class QCRecordViewSet(BasePermViewSet):
                     existing.pieces_cut = pieces_cut_ref
                     existing.counted_pieces = g_qty
                     existing.defect_pieces = d_qty
-                    existing.notes = cell_notes
+                    if can_write_notes:
+                        existing.notes = cell_notes
                     existing.checked_by = inspector
                     existing.created_at_str = now_str
                     existing.save()
@@ -606,7 +630,7 @@ class PrintDispatchViewSet(BasePermViewSet):
 
     @action(detail=True, methods=['post'])
     def update_status(self, request, pk=None):
-        disp = self.get_object()
+        disp_obj = self.get_object()
         data = request.data
         new_status = data.get('status') or 'تم الاستلام بالمصنع'
         user_name = data.get('user_name') or 'مسؤول المطابع'
@@ -616,97 +640,122 @@ class PrintDispatchViewSet(BasePermViewSet):
         received_qty_raw = data.get('received_qty')
         if received_qty_raw is None:
             received_qty_raw = data.get('receivedQty')
-        try:
-            requested_qty = int(received_qty_raw) if received_qty_raw not in (None, '') else 0
-        except (TypeError, ValueError):
-            requested_qty = 0
-
-        total_pieces = int(disp.pieces_count or 0)
-        already_received = int(disp.received_pieces or 0)
-        remaining_before = max(0, total_pieces - already_received)
+        has_qty_input = received_qty_raw not in (None, '')
         is_receiving = (
             new_status in ('تم الاستلام', 'تم الاستلام بالمصنع')
-            or requested_qty > 0
+            or has_qty_input
         )
 
-        if is_receiving:
-            if requested_qty > 0:
-                if remaining_before == 0:
+        with transaction.atomic():
+            disp = PrintDispatch.objects.select_for_update().select_related('model').get(pk=disp_obj.pk)
+            m = ModelItem.objects.select_for_update().get(pk=disp.model_id)
+
+            total_pieces = int(disp.pieces_count or 0)
+            already_received = int(disp.received_pieces or 0)
+            remaining_before = max(0, total_pieces - already_received)
+
+            if is_receiving:
+                if remaining_before <= 0:
                     return Response(
                         {'detail': 'تم استلام كامل كمية هذه التشغيلة مسبقاً'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                batch_qty = min(remaining_before, requested_qty)
-            else:
-                batch_qty = remaining_before or total_pieces
+                if not has_qty_input:
+                    return Response(
+                        {'detail': 'يجب تحديد عدد القطع المستلمة صراحةً (أكبر من صفر)'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                try:
+                    requested_qty = int(received_qty_raw)
+                except (TypeError, ValueError):
+                    return Response(
+                        {'detail': 'عدد القطع المستلمة يجب أن يكون رقماً صحيحاً موجباً'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if requested_qty <= 0:
+                    return Response(
+                        {'detail': 'عدد القطع المستلمة يجب أن يكون أكبر من صفر'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if requested_qty > remaining_before:
+                    return Response(
+                        {
+                            'detail': f'لا يمكن استلام ({requested_qty}) قطعة — المتبقي عند المطبعة ({remaining_before}) قطعة فقط'
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
-            disp.received_pieces = already_received + batch_qty
-            history = disp.receive_history if isinstance(disp.receive_history, list) else []
-            history.append({
-                'date': now_str,
-                'qty': batch_qty,
-                'total_received': disp.received_pieces,
-                'user': user_name,
-                'notes': clean_notes,
-            })
-            disp.receive_history = history
-            disp.received_date = date.today()
-            disp.received_at_str = now_str
-            if clean_notes:
-                disp.notes = f"{disp.notes} | استلام: {clean_notes}".strip(' |')
-            if disp.received_pieces >= total_pieces:
-                disp.status = 'تم الاستلام بالمصنع'
+                batch_qty = requested_qty
+                disp.received_pieces = already_received + batch_qty
+                history = list(disp.receive_history) if isinstance(disp.receive_history, list) else []
+                history.append({
+                    'date': now_str,
+                    'qty': batch_qty,
+                    'total_received': disp.received_pieces,
+                    'user': user_name,
+                    'notes': clean_notes,
+                })
+                disp.receive_history = history
+                disp.received_date = date.today()
+                disp.received_at_str = now_str
+                if clean_notes:
+                    from .services_stages import _append_receive_note
+                    disp.notes = _append_receive_note(disp.notes, clean_notes)
+                is_complete = disp.received_pieces >= total_pieces
+                disp.status = 'تم الاستلام بالمصنع' if is_complete else 'استلام جزئي'
             else:
-                disp.status = 'استلام جزئي'
-        else:
-            batch_qty = 0
-            disp.status = new_status
-        disp.save()
+                batch_qty = 0
+                is_complete = False
+                disp.status = new_status
+            disp.save()
 
-        if is_receiving:
-            m = disp.model
-            # Only the returned part moves to "عد بعد الطباعة"; sibling parts stay put.
-            # Partial batches also open the counting stage so each delivered batch is
-            # counted as soon as it arrives.
-            advance_parts_to_stage(m, 'qc_after_print', [disp.piece_type or 'shirt'])
-            derive_pipeline_status(m)
-            m._skip_timeline_signal = True
-            m.save()
-            label = disp.piece_label or dict(PART_TYPE_CHOICES).get(disp.piece_type or 'shirt', disp.piece_type or '')
-            ModelTimeline.objects.create(
-                model=m,
-                stage='العد بعد الطباعة',
-                title='استلام الموديل من المطبعة',
-                notes=(
-                    f"استلام دفعة ({batch_qty} قطعة) [{label}] — إجمالي المستلم {disp.received_pieces} من {total_pieces} "
-                    f"من {disp.print_house} وتوجيه الموديل تلقائياً للعد بعد الطباعة"
-                    + (f" | ملاحظات: {clean_notes}" if clean_notes else '')
-                ),
-                user=user_name,
-                timestamp_str=now_str,
-                details={
-                    'phase_type': 'printing_received',
-                    'record_id': get_ext_id(disp),
-                    'shop_name': disp.print_house,
-                    'piece_type': disp.piece_type or 'shirt',
-                    'piece_label': label,
-                    'print_type': disp.print_type,
-                    'print_location': disp.print_location or '',
-                    'pieces_count': disp.pieces_count,
-                    'batch_qty': batch_qty,
-                    'received_pieces': disp.received_pieces,
-                    'remaining_pieces': max(0, total_pieces - disp.received_pieces),
-                    'received_at': now_str,
-                    'status': disp.status,
-                    'worker_notes': clean_notes or (disp.notes or ''),
-                    'operator_name': user_name,
-                }
-            )
+            if is_receiving:
+                # لا نُرقّي القطعة إلى «العد بعد الطباعة» إلا عند اكتمال استلام كامل الكمية
+                # حتى لا يُقفل القسم أثناء الاستلام الجزئي على دفعات.
+                if is_complete:
+                    advance_parts_to_stage(m, 'qc_after_print', [disp.piece_type or 'shirt'])
+                    derive_pipeline_status(m)
+                    m._skip_timeline_signal = True
+                    m.save()
+                label = disp.piece_label or dict(PART_TYPE_CHOICES).get(disp.piece_type or 'shirt', disp.piece_type or '')
+                ModelTimeline.objects.create(
+                    model=m,
+                    stage='العد بعد الطباعة' if is_complete else 'المطابع والتطريز',
+                    title='استلام الموديل من المطبعة' if is_complete else 'استلام جزئي من المطبعة',
+                    notes=(
+                        f"استلام دفعة ({batch_qty} قطعة) [{label}] — إجمالي المستلم {disp.received_pieces} من {total_pieces} "
+                        f"من {disp.print_house}"
+                        + (" وتوجيه الموديل تلقائياً للعد بعد الطباعة" if is_complete else "")
+                        + (f" | ملاحظات: {clean_notes}" if clean_notes else '')
+                    ),
+                    user=user_name,
+                    timestamp_str=now_str,
+                    details={
+                        'phase_type': 'printing_received',
+                        'record_id': get_ext_id(disp),
+                        'shop_name': disp.print_house,
+                        'piece_type': disp.piece_type or 'shirt',
+                        'piece_label': label,
+                        'print_type': disp.print_type,
+                        'print_location': disp.print_location or '',
+                        'pieces_count': disp.pieces_count,
+                        'batch_qty': batch_qty,
+                        'received_pieces': disp.received_pieces,
+                        'remaining_pieces': max(0, total_pieces - disp.received_pieces),
+                        'received_at': now_str,
+                        'status': disp.status,
+                        'worker_notes': clean_notes,
+                        'operator_name': user_name,
+                    }
+                )
         return Response(PrintDispatchSerializer(disp, context={'request': request}).data)
 
     @action(detail=True, methods=['post'])
     def receive(self, request, pk=None):
-        request.data['status'] = 'تم الاستلام بالمصنع'
+        if hasattr(request.data, '_mutable'):
+            request.data._mutable = True
+        if isinstance(request.data, dict):
+            request.data['status'] = 'تم الاستلام بالمصنع'
         return self.update_status(request, pk=pk)
 
     @action(detail=False, methods=['post'], url_path='skip_print')

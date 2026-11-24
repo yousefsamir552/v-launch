@@ -177,9 +177,13 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
     const cleanNotes = data.notes?.trim() || '';
     const cleanVendor = data.vendorName?.trim() || '';
     // السعر يُرسل فقط لمن يملك صلاحية تعديل أسعار الأسمبلي/التشطيب.
+    // لا نرسل total_cost: 0 أبداً حتى يحسب الباك إند الإجمالي بدقة من سعر القطعة × عدد القطع.
     const canSetPrice = canEditAssemblyPrices();
     const piecePrice = canSetPrice ? Math.max(0, Number(data.costPerPiece) || 0) : 0;
-    const totalPrice = canSetPrice ? Math.max(0, Number(data.totalCost) || 0) : 0;
+    const explicitTotal =
+      canSetPrice && data.totalCost !== undefined && Number(data.totalCost) > 0
+        ? Number(data.totalCost)
+        : undefined;
 
     setModels((prev) =>
       prev.map((m) => {
@@ -204,7 +208,9 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
       status: 'في التشطيب',
       is_received: false,
       notes: cleanNotes,
-      ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
+      ...(canSetPrice
+        ? { cost_per_piece: piecePrice, ...(explicitTotal !== undefined ? { total_cost: explicitTotal } : {}) }
+        : {})
     }));
     setFinishingRecords((prev) => [
       ...optimistic,
@@ -219,7 +225,9 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
         vendor_name: cleanVendor,
         notes: cleanNotes,
         user_name: currentUser?.real_name || 'مسؤول التشطيب',
-        ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
+        ...(canSetPrice
+          ? { cost_per_piece: piecePrice, ...(explicitTotal !== undefined ? { total_cost: explicitTotal } : {}) }
+          : {})
       })
       .then((res) => {
         const saved: FinishingRecord[] = Array.isArray(res?.finishingRecords)
@@ -341,7 +349,10 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
     // السعر يُرسل فقط لمن يملك صلاحية تعديل أسعار الأسمبلي/المكواة.
     const canSetPrice = canEditAssemblyPrices();
     const piecePrice = canSetPrice ? Math.max(0, Number(data.costPerPiece) || 0) : 0;
-    const totalPrice = canSetPrice ? Math.max(0, Number(data.totalCost) || 0) : 0;
+    const explicitTotal =
+      canSetPrice && data.totalCost !== undefined && Number(data.totalCost) > 0
+        ? Number(data.totalCost)
+        : undefined;
     const parts: GarmentPart[] =
       data.parts && data.parts.length
         ? data.parts
@@ -379,7 +390,9 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
         status: 'جارية الآن',
         is_completed: false,
         notes: cleanNotes,
-        ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
+        ...(canSetPrice
+          ? { cost_per_piece: piecePrice, ...(explicitTotal !== undefined ? { total_cost: explicitTotal } : {}) }
+          : {})
       }));
       return [...optimistic, ...others];
     });
@@ -392,7 +405,9 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
         vendor_name: cleanVendor,
         notes: cleanNotes,
         user_name: currentUser?.real_name || 'مسؤول المكواة',
-        ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
+        ...(canSetPrice
+          ? { cost_per_piece: piecePrice, ...(explicitTotal !== undefined ? { total_cost: explicitTotal } : {}) }
+          : {})
       })
       .then((res) => {
         const saved: AssemblyStageRecord[] = Array.isArray(res?.assemblyStageRecords)
@@ -521,7 +536,10 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
     // السعر يُرسل فقط لمن يملك صلاحية تعديل أسعار الأسمبلي/الأمبالاج.
     const canSetPrice = canEditAssemblyPrices();
     const piecePrice = canSetPrice ? Math.max(0, Number(data.costPerPiece) || 0) : 0;
-    const totalPrice = canSetPrice ? Math.max(0, Number(data.totalCost) || 0) : 0;
+    const explicitTotal =
+      canSetPrice && data.totalCost !== undefined && Number(data.totalCost) > 0
+        ? Number(data.totalCost)
+        : undefined;
 
     setModels((prev) =>
       prev.map((m) =>
@@ -546,7 +564,9 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
           status: 'جارية الآن' as const,
           is_completed: false,
           notes: cleanNotes,
-          ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
+          ...(canSetPrice
+            ? { cost_per_piece: piecePrice, ...(explicitTotal !== undefined ? { total_cost: explicitTotal } : {}) }
+            : {})
         },
         ...others
       ];
@@ -560,7 +580,9 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
         vendor_name: cleanVendor,
         notes: cleanNotes,
         user_name: currentUser?.real_name || 'مسؤول الأسمبلي',
-        ...(canSetPrice ? { cost_per_piece: piecePrice, total_cost: totalPrice } : {})
+        ...(canSetPrice
+          ? { cost_per_piece: piecePrice, ...(explicitTotal !== undefined ? { total_cost: explicitTotal } : {}) }
+          : {})
       })
       .then((res) => {
         const saved: AssemblyStageRecord | undefined = res?.assemblyStageRecord;

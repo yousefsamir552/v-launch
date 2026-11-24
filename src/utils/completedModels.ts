@@ -31,6 +31,7 @@ export const auditContextHeaders = (section: string): Record<string, string> => 
 export const finishedSetsOf = (
   model?:
     | {
+        finished_good_sets?: number;
         completed_sets?: number;
         count_after_sewing?: number;
         count_after_print?: number;
@@ -40,13 +41,20 @@ export const finishedSetsOf = (
     | null
 ): number => {
   if (!model) return 0;
-  const completedSets = Number(model.completed_sets || 0);
-  if (completedSets > 0) return completedSets;
+  // تجنب خطأ 0 falsy: إذا أعاد الباك إند 0 صراحةً (مثلاً كل القطع في التصوير) لا نرجع للأرقام الخام.
+  if (model.finished_good_sets !== undefined && model.finished_good_sets !== null) {
+    const val = Number(model.finished_good_sets);
+    return Number.isFinite(val) && val >= 0 ? val : 0;
+  }
+  if (model.completed_sets !== undefined && model.completed_sets !== null) {
+    const val = Number(model.completed_sets);
+    return Number.isFinite(val) && val >= 0 ? val : 0;
+  }
   return Number(
-    model.count_after_sewing ||
-      model.count_after_print ||
-      model.actual_cut_count ||
-      model.target_cut_quantity ||
+    model.count_after_sewing ??
+      model.count_after_print ??
+      model.actual_cut_count ??
+      model.target_cut_quantity ??
       0
   );
 };

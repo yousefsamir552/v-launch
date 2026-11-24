@@ -120,8 +120,8 @@ class AuthViewSet(viewsets.ViewSet):
                 user=user,
             )
         if user:
-            # إبطال الرمز فعلياً حتى لا يبقى صالحاً بعد تسجيل الخروج.
-            UserProfile.objects.filter(pk=user.pk).update(auth_token=None)
+            # إبطال الرمز ومسح last_seen فعلياً حتى يخرج المستخدم من قائمة المتصلين فوراً.
+            UserProfile.objects.filter(pk=user.pk).update(auth_token=None, last_seen=None)
         return Response({'status': 'logged_out'})
 
 
@@ -217,6 +217,11 @@ class StateViewSet(viewsets.ViewSet):
                 | visible_users.filter(pk=current_profile.pk)
             ).distinct()
         visible_roles = Role.objects.exclude(rank_level=RANK_SUDO).filter(rank_level__in=visible_ranks)
+        if current_profile is not None and not is_sudo_profile(current_profile) and current_profile.role_id:
+            # نُدرج دور المستخدم نفسه حتى تعمل وراثة الصلاحيات و delegatable_permissions لرتبتَي 1 و 2.
+            visible_roles = (
+                visible_roles | Role.objects.filter(pk=current_profile.role_id)
+            ).distinct()
         online_since = timezone.now() - timedelta(minutes=5)
         online_users = visible_users.filter(last_seen__gte=online_since)
         visible_logs = AuditLog.objects.exclude(user_id_ref='user-sudo').exclude(user_name__icontains='sudo')[:200]
@@ -712,6 +717,15 @@ class UserProfileViewSet(BasePermViewSet):
         if delegatable_error:
             return delegatable_error
 
+        # تخزين الفروقات فقط عن الدور في custom_permissions حتى تسري التعديلات المستقبلية على الدور.
+        if role_obj is not None and custom_permissions:
+            role_base = role_obj.get_permissions_dict()
+            custom_permissions = {
+                k: bool(v)
+                for k, v in custom_permissions.items()
+                if bool(v) != bool(role_base.get(k, False))
+            }
+
         user = UserProfile(
             client_id=data.get('id') or data.get('client_id'),
             username=username,
@@ -786,6 +800,7 @@ class UserProfileViewSet(BasePermViewSet):
             user.is_active = bool(data['is_active'])
             if not user.is_active:
                 user.auth_token = None
+                user.last_seen = None
 
         incoming_permissions = None
         if 'permissions' in data and isinstance(data['permissions'], dict):
@@ -800,7 +815,6 @@ class UserProfileViewSet(BasePermViewSet):
             )
             if denied:
                 return denied
-            user.custom_permissions = incoming_permissions
 
         role_changed = False
         if 'role_id' in data or 'role' in data:
@@ -832,6 +846,17 @@ class UserProfileViewSet(BasePermViewSet):
                 user.role_title = role_obj.name
             elif data.get('role'):
                 user.role_title = data.get('role')
+
+        if incoming_permissions is not None:
+            if user.role is not None:
+                role_base = user.role.get_permissions_dict()
+                user.custom_permissions = {
+                    k: bool(v)
+                    for k, v in incoming_permissions.items()
+                    if bool(v) != bool(role_base.get(k, False))
+                }
+            else:
+                user.custom_permissions = incoming_permissions
 
         if 'delegatable_permissions' in data:
             granted = effective_permission_keys(user)
@@ -942,6 +967,7 @@ class UserProfileViewSet(BasePermViewSet):
         user.is_active = not user.is_active
         if not user.is_active:
             user.auth_token = None
+            user.last_seen = None
         user.save()
         cascade = bool(request.data.get('cascade'))
         affected_user_ids = []
@@ -950,7 +976,8 @@ class UserProfileViewSet(BasePermViewSet):
                 descendant.is_active = user.is_active
                 if not descendant.is_active:
                     descendant.auth_token = None
-                descendant.save(update_fields=['is_active', 'auth_token'])
+                    descendant.last_seen = None
+                descendant.save(update_fields=['is_active', 'auth_token', 'last_seen'])
                 affected_user_ids.append(get_ext_id(descendant))
         payload = UserProfileSerializer(user, context={'request': request}).data
         payload['cascade'] = cascade

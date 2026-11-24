@@ -37,6 +37,16 @@ interface SewingSheetPreviewProps {
 const fmt = (value: number): string =>
   Math.round(Number.isFinite(value) ? value : 0).toLocaleString('ar-EG');
 
+/** يحافظ على الكسور العشرية للاستهلاك لكل قطعة (مثل 0.4 متر) بدون تصفيرها بـ Math.round. */
+const fmtDecimal = (value: number): string =>
+  (Number.isFinite(value) ? Number(value.toFixed(3)) : 0).toLocaleString('ar-EG', {
+    maximumFractionDigits: 3
+  });
+
+/** إجمالي الإكسسوار المطلوب يُقرّب للأعلى (Math.ceil) لضمان عدم العجز. */
+const fmtTotalCeil = (value: number): string =>
+  Math.ceil(Number.isFinite(value) && value > 0 ? value : 0).toLocaleString('ar-EG');
+
 const Field: React.FC<{ label: string; value: string; strong?: boolean }> = ({
   label,
   value,
@@ -214,13 +224,13 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
                     {accessory.accessory_code || '—'}
                   </td>
                   <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center">
-                    {fmt(per)}
+                    {fmtDecimal(per)}
                   </td>
                   <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center">
                     {accessory.unit || 'قطعة'}
                   </td>
                   <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center font-black">
-                    {fmt(per * data.piecesCount)}
+                    {fmtTotalCeil(per * data.piecesCount)}
                   </td>
                 </tr>
               );

@@ -259,6 +259,13 @@ const RequirementsCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({
   });
   const [notes, setNotes] = useState('');
 
+  useEffect(() => {
+    setDraftQty({
+      sent_to_photo: String(requirement?.photography_sent_qty ?? 0),
+      received_from_photo: String(requirement?.photography_received_qty ?? 0)
+    });
+  }, [requirement?.photography_sent_qty, requirement?.photography_received_qty]);
+
   const sentQty = Number(requirement?.photography_sent_qty || 0);
   const receivedQty = Number(requirement?.photography_received_qty || 0);
   const outstandingQty = Math.max(0, sentQty - receivedQty);
@@ -552,11 +559,18 @@ const PartFinishingRow: React.FC<{
               )}
             </>
           )}
+          <input
+            type="text"
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            placeholder={record ? 'ملاحظات استلام التشطيب (اختياري)' : 'ملاحظات التشطيب (اختياري)'}
+            className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-[11px] font-semibold"
+          />
           {!record ? (
             <button
               type="button"
               disabled={!canStart}
-              onClick={() =>
+              onClick={() => {
                 startFinishing({
                   modelId: model.id,
                   parts: [part],
@@ -566,8 +580,9 @@ const PartFinishingRow: React.FC<{
                   costPerPiece: canEditAssemblyPrices()
                     ? Math.max(0, parseFloat(cost) || 0)
                     : undefined
-                })
-              }
+                });
+                setNotes('');
+              }}
               className="w-full py-1.5 rounded-xl bg-purple-600 text-white text-[10px] font-black hover:bg-purple-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
             >
               تسجيل دخول {getPartLabel(part)} للتشطيب
@@ -575,7 +590,10 @@ const PartFinishingRow: React.FC<{
           ) : (
             <button
               type="button"
-              onClick={() => receiveFinishing(record.id, todayStr(), notes)}
+              onClick={() => {
+                receiveFinishing(record.id, todayStr(), notes);
+                setNotes('');
+              }}
               className="w-full py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
             >
               تسجيل استلام {getPartLabel(part)}
@@ -741,9 +759,16 @@ const PartIroningRow: React.FC<{
                   />
                 </div>
               )}
+              <input
+                type="text"
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="ملاحظات المكواة (اختياري)"
+                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-[11px] font-semibold"
+              />
               <button
                 type="button"
-                onClick={() =>
+                onClick={() => {
                   startIroning({
                     modelId: model.id,
                     partType: part,
@@ -753,21 +778,34 @@ const PartIroningRow: React.FC<{
                     costPerPiece: canEditAssemblyPrices()
                       ? Math.max(0, parseFloat(cost) || 0)
                       : undefined
-                  })
-                }
+                  });
+                  setNotes('');
+                }}
                 className="w-full py-1.5 rounded-xl bg-rose-600 text-white text-[10px] font-black hover:bg-rose-700 transition"
               >
                 تسجيل دخول {getPartLabel(part)} للمكواة
               </button>
             </>
           ) : (
-            <button
-              type="button"
-              onClick={() => receiveIroning(record.id, todayStr(), notes)}
-              className="w-full py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
-            >
-              تسجيل استلام {getPartLabel(part)} من المكواة
-            </button>
+            <>
+              <input
+                type="text"
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="ملاحظات استلام المكواة (اختياري)"
+                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-[11px] font-semibold"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  receiveIroning(record.id, todayStr(), notes);
+                  setNotes('');
+                }}
+                className="w-full py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
+              >
+                تسجيل استلام {getPartLabel(part)} من المكواة
+              </button>
+            </>
           )}
         </div>
       )}
@@ -846,12 +884,20 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
   );
   const completed = Boolean(record?.is_completed);
 
-  const [expectedExit, setExpectedExit] = useState(todayStr());
+  const [expectedExit, setExpectedExit] = useState(
+    record?.expected_exit_date?.slice(0, 10) || todayStr()
+  );
   const [vendor, setVendor] = useState(record?.vendor_name || '');
   const [notes, setNotes] = useState('');
   const [cost, setCost] = useState(
     record?.cost_per_piece != null ? String(record.cost_per_piece) : ''
   );
+
+  useEffect(() => {
+    if (record?.expected_exit_date) {
+      setExpectedExit(record.expected_exit_date.slice(0, 10));
+    }
+  }, [record?.expected_exit_date]);
 
   return (
     <div
@@ -948,10 +994,17 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
                   />
                 </div>
               )}
+              <input
+                type="text"
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="ملاحظات التعبئة والتغليف (اختياري)"
+                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-[11px] font-semibold"
+              />
               <button
                 type="button"
                 disabled={!allReady}
-                onClick={() =>
+                onClick={() => {
                   startAssemblyStage({
                     modelId: model.id,
                     stage: 'packaging',
@@ -961,8 +1014,9 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
                     costPerPiece: canEditAssemblyPrices()
                       ? Math.max(0, parseFloat(cost) || 0)
                       : undefined
-                  })
-                }
+                  });
+                  setNotes('');
+                }}
                 className="w-full py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 بدء التعبئة والتغليف
@@ -970,13 +1024,25 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
             </>
           )}
           {record && (
-            <button
-              type="button"
-              onClick={() => receiveAssemblyStage(record.id, todayStr(), notes)}
-              className="w-full py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
-            >
-              تسجيل استلام التعبئة
-            </button>
+            <>
+              <input
+                type="text"
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="ملاحظات استلام التعبئة (اختياري)"
+                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-[11px] font-semibold"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  receiveAssemblyStage(record.id, todayStr(), notes);
+                  setNotes('');
+                }}
+                className="w-full py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
+              >
+                تسجيل استلام التعبئة
+              </button>
+            </>
           )}
         </div>
       )}
@@ -1014,12 +1080,20 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
     (part) => PART_STAGE_ORDER.indexOf(stages[part] || 'cutting') < destIndex
   );
 
-  const [expectedExit, setExpectedExit] = useState(todayStr());
+  const [expectedExit, setExpectedExit] = useState(
+    record?.expected_exit_date?.slice(0, 10) || todayStr()
+  );
   const [vendor, setVendor] = useState(record?.vendor_name || '');
   const [notes, setNotes] = useState('');
   const [cost, setCost] = useState(
     record?.cost_per_piece != null ? String(record.cost_per_piece) : ''
   );
+
+  useEffect(() => {
+    if (record?.expected_exit_date) {
+      setExpectedExit(record.expected_exit_date.slice(0, 10));
+    }
+  }, [record?.expected_exit_date]);
 
   const requirementComplete = Boolean(requirement?.is_complete);
   const allArrived = waitingDest.length === 0;
@@ -1085,17 +1159,17 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
         <div className="space-y-2 pt-2 border-t border-slate-100">
           {!record || !record.is_completed ? (
             <>
+              <div className="flex items-center gap-1.5">
+                <label className="text-[10px] font-bold text-slate-500">الخروج المتوقع</label>
+                <input
+                  type="date"
+                  value={expectedExit}
+                  onChange={(event) => setExpectedExit(event.target.value)}
+                  className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
+                />
+              </div>
               {!record && (
                 <>
-                  <div className="flex items-center gap-1.5">
-                    <label className="text-[10px] font-bold text-slate-500">الخروج المتوقع</label>
-                    <input
-                      type="date"
-                      value={expectedExit}
-                      onChange={(event) => setExpectedExit(event.target.value)}
-                      className="flex-1 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-mono bg-white"
-                    />
-                  </div>
                   <WorkshopPicker
                     value={vendor}
                     onChange={setVendor}
@@ -1119,11 +1193,18 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
                   )}
                 </>
               )}
+              <input
+                type="text"
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder={record ? 'ملاحظات الدَست / الاستلام (اختياري)' : 'ملاحظات الدَست (اختياري)'}
+                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-[11px] font-semibold"
+              />
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   disabled={Boolean(blocked)}
-                  onClick={() =>
+                  onClick={() => {
                     startAssemblyStage({
                       modelId: model.id,
                       stage: 'dest',
@@ -1133,8 +1214,9 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
                       costPerPiece: canEditAssemblyPrices()
                         ? Math.max(0, parseFloat(cost) || 0)
                         : undefined
-                    })
-                  }
+                    });
+                    setNotes('');
+                  }}
                   className="flex-1 py-2 rounded-xl bg-slate-900 text-white text-[10px] font-black hover:bg-slate-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {record ? 'تحديث موعد الخروج' : 'بدء قسم الدَست'}
@@ -1142,7 +1224,10 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
                 {record && (
                   <button
                     type="button"
-                    onClick={() => receiveAssemblyStage(record.id, todayStr(), notes)}
+                    onClick={() => {
+                      receiveAssemblyStage(record.id, todayStr(), notes);
+                      setNotes('');
+                    }}
                     className="flex-1 py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
                   >
                     تسجيل استلام
@@ -1205,7 +1290,11 @@ export const AssemblyPackagingView: React.FC = () => {
   const requirementCompleteMap = useMemo(() => {
     const map: Record<string, boolean> = {};
     packagingRequirements.forEach((req) => {
-      map[req.model_id] = Boolean(req.is_complete);
+      // يظل الموديل مفتوحاً للتعديل في تبويب متطلبات الأمبالاج حتى يزول عجز قطع التصوير بالكامل.
+      const hasPhotoShortage =
+        Number(req.photography_shortage || 0) > 0 ||
+        Number(req.photography_outstanding_qty || 0) > 0;
+      map[req.model_id] = Boolean(req.is_complete) && !hasPhotoShortage;
     });
     return map;
   }, [packagingRequirements]);

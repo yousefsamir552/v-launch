@@ -1140,11 +1140,14 @@ class ModelItemViewSet(BasePermViewSet):
         raw_notes = (request.data.get('notes') or request.data.get('defectNotes') or '').strip()
 
         profile = getattr(request, 'user_profile', None)
+        can_write_notes = True
         if profile:
             if stage == 'before_print' and not profile.has_perm('can_add_qc_before_print_notes'):
-                raw_notes = ''
+                can_write_notes = False
             elif stage in ('after_print', 'after_sewing') and not profile.has_perm('can_add_qc_after_print_notes'):
-                raw_notes = ''
+                can_write_notes = False
+        if not can_write_notes:
+            raw_notes = ''
 
         notes = raw_notes
         advance_stage = request.data.get('advanceStage', True)
@@ -1156,6 +1159,19 @@ class ModelItemViewSet(BasePermViewSet):
         seed_part_stages_from_status(model)
 
         matrix_entries = request.data.get('matrix_entries') or request.data.get('matrixEntries')
+        touched_parts = (
+            sorted({
+                normalize_part_key(entry.get('part_type') or entry.get('partType') or default_part_type)
+                for entry in matrix_entries if isinstance(entry, dict)
+            })
+            if isinstance(matrix_entries, list) and len(matrix_entries) > 0
+            else [default_part_type]
+        )
+        try:
+            validate_qc_stage_progression(model, stage, touched_parts)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
         saved_records = []
 
         with transaction.atomic():
@@ -1168,7 +1184,10 @@ class ModelItemViewSet(BasePermViewSet):
                         continue
                     g_qty = max(0, int(entry.get('good_qty') if entry.get('good_qty') is not None else (entry.get('goodQty') or entry.get('counted_pieces') or 0)))
                     d_qty = max(0, int(entry.get('defect_qty') if entry.get('defect_qty') is not None else (entry.get('defectQty') or entry.get('defect_pieces') or 0)))
-                    cell_notes = (entry.get('notes') or entry.get('defect_notes') or notes or '').strip()
+                    cell_notes = (
+                        (entry.get('notes') or entry.get('defect_notes') or notes or '').strip()
+                        if can_write_notes else ''
+                    )
                     entry_part = normalize_part_key(
                         entry.get('part_type') or entry.get('partType') or default_part_type
                     )
@@ -1185,7 +1204,8 @@ class ModelItemViewSet(BasePermViewSet):
                         existing_rec.pieces_cut = pieces_cut_ref
                         existing_rec.counted_pieces = g_qty
                         existing_rec.defect_pieces = d_qty
-                        existing_rec.notes = cell_notes
+                        if can_write_notes:
+                            existing_rec.notes = cell_notes
                         existing_rec.checked_by = user
                         existing_rec.created_at_str = now_str
                         existing_rec.save()
@@ -1333,6 +1353,10 @@ class ModelItemViewSet(BasePermViewSet):
     @action(detail=True, methods=['post'])
     def finish_qc_approval(self, request, pk=None):
         model = self.get_object()
+        try:
+            validate_qc_stage_progression(model, 'before_print', get_model_parts(model))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         user_name = request.data.get('user_name') or 'مراقب الجودة'
         advance_parts_to_stage(model, 'printing')
@@ -1384,9 +1408,14 @@ class ModelItemViewSet(BasePermViewSet):
     @action(detail=True, methods=['post'])
     def finish_qc_to_production(self, request, pk=None):
         model = self.get_object()
+        try:
+            validate_qc_stage_progression(model, 'after_sewing', get_model_parts(model))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         notes = request.data.get('notes') or ''
         user_name = request.data.get('user_name') or 'مراقب الجودة'
+        set_all_part_stages(model, 'completed')
         model.status = 'مخزن الإنتاج التام'
         model._skip_timeline_signal = True
         model.save()

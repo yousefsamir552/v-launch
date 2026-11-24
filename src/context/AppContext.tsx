@@ -409,6 +409,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const logout = useCallback(() => {
     api.logout().catch(() => {});
     setCurrentUser(null);
+    // مسح كافة بيانات الجلسة من الذاكرة فوراً لمنع تسرب أي بيانات عند تبديل الحسابات.
+    setRoles([]);
+    setUsers([]);
+    setOnlineUsers([]);
+    setSizeDefs([]);
+    setSuppliers([]);
+    setWorkshops([]);
+    setFabrics([]);
+    setFabricColors([]);
+    setFabricTransactions([]);
+    setModels([]);
+    setRequirements([]);
+    setAccessories([]);
+    setAccessoryTypes([]);
+    setAccessoryItems([]);
+    setAccessoryTransactions([]);
+    setCuttingRecords([]);
+    setQcRecords([]);
+    setPrintDispatches([]);
+    setSewingDispatches([]);
+    setPackagingRequirements([]);
+    setFinishingRecords([]);
+    setAssemblyStageRecords([]);
+    setPackagingMaterialRules([]);
+    setInternalMessages([]);
+    setAuditLogs([]);
+    setReadNotificationIds([]);
+    setSnoozedNotifications({});
   }, [setCurrentUser]);
 
   const logAction = (action: string, details: string) => {

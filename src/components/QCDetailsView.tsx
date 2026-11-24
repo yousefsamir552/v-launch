@@ -734,11 +734,29 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
 
         {/* شريط مرجعي موحّد: من أين دخلت قطع هذه القطعة، وما المتوقع، وما سُجّل فعلياً */}
         {(() => {
+          // عند مرور نفس القطعة بطباعة + تطريز معاً لا نجمع الإرساليتين مرتين.
+          const beforeCap = partCounts.beforePrintGood || partCounts.cutPieces;
+          const bothPrintAndEmbroidery =
+            partCounts.printSent > 0 && partCounts.embroiderySent > 0;
+          const isSequentialBoth =
+            bothPrintAndEmbroidery &&
+            (beforeCap > 0
+              ? partCounts.printSent + partCounts.embroiderySent > beforeCap
+              : true);
+          const effectiveAfterPrintReceived = isSequentialBoth
+            ? partCounts.printReceived > 0 && partCounts.embroideryReceived > 0
+              ? Math.min(partCounts.printReceived, partCounts.embroideryReceived)
+              : Math.max(partCounts.printReceived, partCounts.embroideryReceived)
+            : partCounts.printReceived + partCounts.embroideryReceived;
+          const effectiveAfterPrintSent = isSequentialBoth
+            ? Math.max(partCounts.printSent, partCounts.embroiderySent)
+            : partCounts.printSent + partCounts.embroiderySent;
+
           const stageEntry =
             selectedStage === 'before_print'
               ? partCounts.cutPieces
               : selectedStage === 'after_print'
-              ? partCounts.printReceived + partCounts.embroideryReceived ||
+              ? effectiveAfterPrintReceived ||
                 partCounts.beforePrintGood ||
                 partCounts.cutPieces
               : partCounts.sewingReceived ||
@@ -778,15 +796,13 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
                     <div>
                       <span className="block text-slate-500">الداخل من الطباعة/التطريز:</span>
                       <strong className="text-sm font-black text-indigo-700">
-                        {(partCounts.printReceived + partCounts.embroideryReceived).toLocaleString(
-                          'ar-EG'
-                        )}
+                        {effectiveAfterPrintReceived.toLocaleString('ar-EG')}
                       </strong>
                       <span className="block text-[10px] text-slate-400">
-                        مرسل: {(partCounts.printSent + partCounts.embroiderySent).toLocaleString(
-                          'ar-EG'
-                        )}
-                        {partCounts.embroiderySent > 0
+                        مرسل: {effectiveAfterPrintSent.toLocaleString('ar-EG')}
+                        {partCounts.printSent > 0 && partCounts.embroiderySent > 0
+                          ? ` • طباعة: ${partCounts.printReceived.toLocaleString('ar-EG')}/${partCounts.printSent.toLocaleString('ar-EG')} • تطريز: ${partCounts.embroideryReceived.toLocaleString('ar-EG')}/${partCounts.embroiderySent.toLocaleString('ar-EG')}`
+                          : partCounts.embroiderySent > 0
                           ? ` • تطريز: ${partCounts.embroideryReceived.toLocaleString('ar-EG')}/${partCounts.embroiderySent.toLocaleString('ar-EG')}`
                           : ''}
                       </span>

@@ -413,7 +413,7 @@ class ReportsViewSet(viewsets.ViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
         if require_edit:
-            can_edit = profile.has_perm('reports_edit') or profile.has_perm('can_reports')
+            can_edit = profile.has_perm('reports_edit')
             if not can_edit:
                 return profile, Response(
                     {'error': 'ليس لديك صلاحية تعديل تارجتات الأقسام.'},
@@ -503,7 +503,6 @@ class ReportsViewSet(viewsets.ViewSet):
             profile is None
             or getattr(profile, 'is_sudo', False)
             or profile.has_perm('reports_edit')
-            or profile.has_perm('can_reports')
         )
         return Response({
             'targets': get_department_targets(),

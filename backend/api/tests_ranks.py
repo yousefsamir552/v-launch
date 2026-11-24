@@ -139,6 +139,7 @@ class RankVisibilityTests(TestCase):
     def test_state_endpoint_is_rank_scoped(self):
         from .views import StateViewSet
 
+        Role.objects.create(name='R2b', rank_level=RANK_LEVEL_TWO)
         request = self.factory.get('/', HTTP_AUTHORIZATION='Bearer token-rank2')
         response = StateViewSet().list(request)
         self.assertEqual(response.status_code, 200)
@@ -151,7 +152,8 @@ class RankVisibilityTests(TestCase):
 
         role_names = {role['name'] for role in response.data['roles']}
         self.assertIn('R3', role_names)
-        self.assertNotIn('R2', role_names)
+        self.assertIn('R2', role_names)     # own role included for inheritance/delegation
+        self.assertNotIn('R2b', role_names) # peer roles remain hidden
         self.assertNotIn('R1', role_names)
 
     def test_state_endpoint_hides_rank_label_from_rank_three(self):

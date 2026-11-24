@@ -39,6 +39,14 @@ export interface SewingSheetOptions {
 const fmtInt = (value: number): string =>
   Math.round(Number.isFinite(value) ? value : 0).toLocaleString('ar-EG');
 
+const fmtDecimal = (value: number): string =>
+  (Number.isFinite(value) ? Number(value.toFixed(3)) : 0).toLocaleString('ar-EG', {
+    maximumFractionDigits: 3
+  });
+
+const fmtTotalCeil = (value: number): string =>
+  Math.ceil(Number.isFinite(value) && value > 0 ? value : 0).toLocaleString('ar-EG');
+
 const DEFAULT_PIECE_LABELS: Record<SewingSheetOptions['pieceType'], string> = {
   shirt: 'التيشرت',
   pants: 'البنطلون',
@@ -95,9 +103,9 @@ const renderAccessories = (accessories: ModelAccessory[], piecesCount: number): 
         <td class="c-idx">${index + 1}</td>
         <td class="c-name">${escapeHtml(a.accessory_name || a.accessory_code || '—')}</td>
         <td class="c-code">${escapeHtml(a.accessory_code || '—')}</td>
-        <td class="c-per">${fmtInt(per)}</td>
+        <td class="c-per">${fmtDecimal(per)}</td>
         <td class="c-unit">${escapeHtml(a.unit || 'قطعة')}</td>
-        <td class="c-total">${fmtInt(total)}</td>
+        <td class="c-total">${fmtTotalCeil(total)}</td>
       </tr>`;
     })
     .join('');

@@ -11,9 +11,14 @@ export type CsvValue = string | number | boolean | null | undefined;
 /** BOM ضروري ليقرأ Excel محتوى UTF-8 بشكل صحيح. */
 const UTF8_BOM = '\uFEFF';
 
-/** يهرّب خلية CSV: يطوّقها بعلامات تنصيص ويضاعف أي تنصيص داخلي. */
+/** يهرّب خلية CSV ويحمي من حقن معادلات Excel (CSV Formula Injection). */
 export function escapeCsvCell(value: CsvValue): string {
-  const text = value === null || value === undefined ? '' : String(value);
+  const raw = value === null || value === undefined ? '' : String(value);
+  const needsFormulaGuard =
+    raw.length > 0 &&
+    /^[=+\-@\t\r]/.test(raw) &&
+    !(typeof value === 'number' && Number.isFinite(value));
+  const text = needsFormulaGuard ? `'${raw}` : raw;
   return `"${text.replace(/"/g, '""')}"`;
 }
 

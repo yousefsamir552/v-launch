@@ -64,6 +64,54 @@ from .services_pipeline import *
 from .services_pipeline import _stage_index, _model_reached_finished_stage
 from .services_schema_seed import *
 
+QC_STAGE_TO_REQUIRED_PART_STAGE = {
+    'before_print': 'qc_before_print',
+    'after_print': 'qc_after_print',
+    'after_sewing': 'qc_after_sewing',
+}
+QC_STAGE_ARABIC_LABELS = {
+    'before_print': 'العد قبل الطباعة',
+    'after_print': 'العد بعد الطباعة',
+    'after_sewing': 'العد بعد المكن',
+}
+
+
+def validate_qc_stage_progression(model, stage, parts):
+    """يتحقق من أن القطع وصلت فعلياً إلى مرحلة الفرز المطلوبة (يمنع القفز من القص للتشطيب/المكن)."""
+    if stage not in QC_STAGE_TO_REQUIRED_PART_STAGE:
+        raise ValueError('مرحلة الفرز غير معروفة')
+    if (model.status or '') in DESIGN_STAGES:
+        raise ValueError('لا يمكن تسجيل الفرز لموديل ما زال في مرحلة التصميم')
+    seed_part_stages_from_status(model)
+    stages = get_part_stages(model)
+    required_stage = QC_STAGE_TO_REQUIRED_PART_STAGE[stage]
+    required_idx = _stage_index(required_stage)
+    stage_label = QC_STAGE_ARABIC_LABELS.get(stage, stage)
+    not_ready = []
+    for raw_part in (parts or ['shirt']):
+        part = normalize_part_key(raw_part)
+        cur = stages.get(part, 'cutting')
+        if _stage_index(cur) < required_idx:
+            not_ready.append(f"{PART_LABELS.get(part, part)} ({PART_STAGE_LABELS.get(cur, cur)})")
+    if not_ready:
+        raise ValueError(
+            f"لا يمكن تسجيل ({stage_label}) قبل وصول القطع إلى المرحلة المطلوبة: {' / '.join(not_ready)}"
+        )
+
+
+def _append_receive_note(existing_notes, clean_notes):
+    """يلحق ملاحظة الاستلام دون تكرارها إن كانت مسجلة بالفعل."""
+    if not clean_notes:
+        return existing_notes
+    base = (existing_notes or '').strip()
+    marker = f"استلام: {clean_notes}"
+    if not base:
+        return marker
+    if base == clean_notes or base.endswith(marker) or f"| {marker}" in base:
+        return base
+    return f"{base} | {marker}"
+
+
 def dispatch_model_to_sewing_service(
     model_id, workshop_name, pieces_count, expected_delivery_date,
     notes=None, user_name='مدير الإنتاج', piece_type='shirt', piece_label=None, client_id=None,
@@ -76,183 +124,199 @@ def dispatch_model_to_sewing_service(
     if not model:
         raise ValueError("الموديل غير موجود")
     resolved_label = piece_label or PART_LABELS.get(piece_type, 'قطعة')
-    unit_cost, total_work_cost = resolve_cost_values(cost_per_piece, total_cost, pieces_count)
+    unit_cost, _ = resolve_cost_values(cost_per_piece, None, pieces_count=0)
+    # القاعدة المحاسبية المؤكدة: تكلفة تشغيل المكن تُحسب دائماً على القطع المستلمة فعلياً
+    # (وعند الإرسال يكون المستلم 0، وتُحدَّث تلقائياً عند كل دفعة استلام).
+    total_work_cost = 0.0
 
-    if piece_type == 'shirt':
-        model.sewing_shirt_workshop = workshop_name
-        model.sewing_shirt_expected_date = expected_delivery_date
-        model.sewing_shirt_status = 'في ورشة المكن'
-        model.sewing_shirt_pieces = pieces_count
-    elif piece_type == 'pants':
-        model.sewing_pants_workshop = workshop_name
-        model.sewing_pants_expected_date = expected_delivery_date
-        model.sewing_pants_status = 'في ورشة المكن'
-        model.sewing_pants_pieces = pieces_count
+    with transaction.atomic():
+        model = ModelItem.objects.select_for_update().get(pk=model.pk)
+        if piece_type == 'shirt':
+            model.sewing_shirt_workshop = workshop_name
+            model.sewing_shirt_expected_date = expected_delivery_date
+            model.sewing_shirt_status = 'في ورشة المكن'
+            model.sewing_shirt_pieces = pieces_count
+        elif piece_type == 'pants':
+            model.sewing_pants_workshop = workshop_name
+            model.sewing_pants_expected_date = expected_delivery_date
+            model.sewing_pants_status = 'في ورشة المكن'
+            model.sewing_pants_pieces = pieces_count
 
-    model.sewing_workshop = workshop_name
-    model.sewing_expected_date = expected_delivery_date
-    model.sewing_pieces_count = pieces_count
-    # Only this part moves to sewing; the coarse status follows the slowest part.
-    advance_parts_to_stage(model, 'sewing', [piece_type])
-    derive_pipeline_status(model)
-    model._skip_timeline_signal = True
-    model.save()
+        model.sewing_workshop = workshop_name
+        model.sewing_expected_date = expected_delivery_date
+        model.sewing_pieces_count = pieces_count
+        # Only this part moves to sewing; the coarse status follows the slowest part.
+        advance_parts_to_stage(model, 'sewing', [piece_type])
+        derive_pipeline_status(model)
+        model._skip_timeline_signal = True
+        model.save()
 
-    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-    clean_notes = (notes or '').strip()
-    # اربط الورشة المسجلة بالاسم إن لم تُمرَّر صريحاً، مع الإبقاء على الاسم النصي كما هو.
-    if workshop is None and workshop_name:
-        workshop = Workshop.objects.filter(name__iexact=workshop_name).first()
-    dispatch = SewingDispatch.objects.create(
-        client_id=client_id,
-        model=model,
-        piece_type=piece_type,
-        piece_label=resolved_label,
-        workshop_name=workshop_name,
-        workshop=workshop,
-        pieces_count=pieces_count,
-        expected_delivery_date=expected_delivery_date,
-        dispatched_at_str=now_str,
-        status='في ورشة المكن',
-        notes=clean_notes,
-        cost_per_piece=unit_cost,
-        total_cost=total_work_cost,
-    )
+        now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+        clean_notes = (notes or '').strip()
+        # اربط الورشة المسجلة بالاسم إن لم تُمرَّر صريحاً، مع الإبقاء على الاسم النصي كما هو.
+        if workshop is None and workshop_name:
+            workshop = Workshop.objects.filter(name__iexact=workshop_name).first()
+        dispatch = SewingDispatch.objects.create(
+            client_id=client_id,
+            model=model,
+            piece_type=piece_type,
+            piece_label=resolved_label,
+            workshop_name=workshop_name,
+            workshop=workshop,
+            pieces_count=pieces_count,
+            expected_delivery_date=expected_delivery_date,
+            dispatched_at_str=now_str,
+            status='في ورشة المكن',
+            notes=clean_notes,
+            cost_per_piece=unit_cost,
+            total_cost=total_work_cost,
+        )
 
-    tl_notes = f"تم إرسال {pieces_count} قطعة [{resolved_label}] للخياطة إلى ورشة ({workshop_name})، تاريخ الاستلام المتوقع: {expected_delivery_date}"
-    if clean_notes:
-        tl_notes += f" | ملاحظات: {clean_notes}"
+        tl_notes = f"تم إرسال {pieces_count} قطعة [{resolved_label}] للخياطة إلى ورشة ({workshop_name})، تاريخ الاستلام المتوقع: {expected_delivery_date}"
+        if clean_notes:
+            tl_notes += f" | ملاحظات: {clean_notes}"
 
-    ModelTimeline.objects.create(
-        model=model,
-        stage='قسم المكن والخياطة',
-        title=f'إرسال [{resolved_label}] إلى ورشة المكن: {workshop_name}',
-        user=user_name,
-        timestamp_str=now_str,
-        notes=tl_notes,
-        details={
-            'phase_type': 'sewing_dispatch',
-            'record_id': dispatch.client_id or str(dispatch.id),
-            'piece_type': piece_type,
-            'piece_label': resolved_label,
-            'workshop_name': workshop_name,
-            'pieces_count': pieces_count,
-            'expected_delivery_date': str(expected_delivery_date),
-            'dispatched_at': now_str,
-            'status': 'في ورشة المكن',
-            'worker_notes': clean_notes,
-            'operator_name': user_name,
-            'cost_per_piece': unit_cost,
-            'total_cost': total_work_cost,
-        }
-    )
+        ModelTimeline.objects.create(
+            model=model,
+            stage='قسم المكن والخياطة',
+            title=f'إرسال [{resolved_label}] إلى ورشة المكن: {workshop_name}',
+            user=user_name,
+            timestamp_str=now_str,
+            notes=tl_notes,
+            details={
+                'phase_type': 'sewing_dispatch',
+                'record_id': dispatch.client_id or str(dispatch.id),
+                'piece_type': piece_type,
+                'piece_label': resolved_label,
+                'workshop_name': workshop_name,
+                'pieces_count': pieces_count,
+                'expected_delivery_date': str(expected_delivery_date),
+                'dispatched_at': now_str,
+                'status': 'في ورشة المكن',
+                'worker_notes': clean_notes,
+                'operator_name': user_name,
+                'cost_per_piece': unit_cost,
+                'total_cost': total_work_cost,
+            }
+        )
 
     return dispatch
 
 
 def receive_model_from_sewing_service(dispatch_id, user_name='مراقب الجودة', notes='', received_qty=None):
     """
-    Receives model from sewing workshop and routes it to QC (العد بعد المكن).
+    Receives model from sewing workshop and routes it to QC (العد بعد المكن) once complete.
 
-    Supports partial receipt on several batches: every call adds ``received_qty``
-    pieces to ``received_pieces``, appends a row to ``receive_history`` and keeps
-    the part at the QC-after-sewing stage so the sorting section can count each
-    delivered batch as soon as it arrives.
+    Supports partial receipt on several batches: every call requires an explicit
+    positive ``received_qty`` (0 < received_qty <= remaining), recalculates
+    ``total_cost = round(received_pieces * cost_per_piece, 2)``, and keeps the
+    part in ``sewing`` until ``received_pieces >= pieces_count`` so partial
+    batches never prematurely lock the stage.
     """
-    dispatch = resolve_by_id(SewingDispatch, dispatch_id)
-    if not dispatch:
+    target = resolve_by_id(SewingDispatch, dispatch_id)
+    if not target:
         raise ValueError("إرسالية الخياطة غير موجودة")
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
     clean_notes = (notes or '').strip()
 
-    total_pieces = int(dispatch.pieces_count or 0)
-    already_received = int(dispatch.received_pieces or 0)
-    remaining_before = max(0, total_pieces - already_received)
+    with transaction.atomic():
+        dispatch = SewingDispatch.objects.select_for_update().select_related('model').get(pk=target.pk)
+        model = ModelItem.objects.select_for_update().get(pk=dispatch.model_id)
 
-    try:
-        requested_qty = int(received_qty) if received_qty not in (None, '') else 0
-    except (TypeError, ValueError):
-        requested_qty = 0
+        total_pieces = int(dispatch.pieces_count or 0)
+        already_received = int(dispatch.received_pieces or 0)
+        remaining_before = max(0, total_pieces - already_received)
 
-    if requested_qty > 0:
-        if remaining_before == 0:
+        if remaining_before <= 0:
             raise ValueError('تم استلام كامل كمية هذه التشغيلة مسبقاً')
-        batch_qty = min(remaining_before, requested_qty)
-    else:
-        batch_qty = remaining_before or total_pieces
 
-    dispatch.received_pieces = already_received + batch_qty
-    history = dispatch.receive_history if isinstance(dispatch.receive_history, list) else []
-    history.append({
-        'date': now_str,
-        'qty': batch_qty,
-        'total_received': dispatch.received_pieces,
-        'user': user_name,
-        'notes': clean_notes,
-    })
-    dispatch.receive_history = history
-    is_complete = dispatch.received_pieces >= total_pieces
-    dispatch.status = 'تم الاستلام' if is_complete else 'استلام جزئي'
-    dispatch.received_date = date.today()
-    dispatch.received_at_str = now_str
-    if clean_notes:
-        dispatch.notes = f"{dispatch.notes} | استلام: {clean_notes}".strip(' |')
-    dispatch.save()
+        if received_qty in (None, ''):
+            raise ValueError('يجب تحديد عدد القطع المستلمة صراحةً (أكبر من صفر)')
+        try:
+            requested_qty = int(received_qty)
+        except (TypeError, ValueError):
+            raise ValueError('عدد القطع المستلمة يجب أن يكون رقماً صحيحاً موجباً')
 
-    model = dispatch.model
-    if is_complete:
-        if dispatch.piece_type == 'shirt':
-            model.sewing_shirt_status = 'تم الاستلام'
-        elif dispatch.piece_type == 'pants':
-            model.sewing_pants_status = 'تم الاستلام'
+        if requested_qty <= 0:
+            raise ValueError('عدد القطع المستلمة يجب أن يكون أكبر من صفر')
+        if requested_qty > remaining_before:
+            raise ValueError(
+                f'لا يمكن استلام ({requested_qty}) قطعة — المتبقي بالورشة ({remaining_before}) قطعة فقط'
+            )
 
-    # Bug fix: advance ONLY the received part. The other part keeps its stage so
-    # receiving one part never ejects the sibling part out of sewing.
-    # Partial batches also open the sorting stage so every delivered batch is
-    # counted right away.
-    advance_parts_to_stage(model, 'qc_after_sewing', [dispatch.piece_type or 'shirt'])
-    derive_pipeline_status(model)
+        batch_qty = requested_qty
+        dispatch.received_pieces = already_received + batch_qty
+        dispatch.total_cost = round(
+            float(dispatch.cost_per_piece or 0) * int(dispatch.received_pieces or 0), 2
+        )
+        history = list(dispatch.receive_history) if isinstance(dispatch.receive_history, list) else []
+        history.append({
+            'date': now_str,
+            'qty': batch_qty,
+            'total_received': dispatch.received_pieces,
+            'user': user_name,
+            'notes': clean_notes,
+        })
+        dispatch.receive_history = history
+        is_complete = dispatch.received_pieces >= total_pieces
+        dispatch.status = 'تم الاستلام' if is_complete else 'استلام جزئي'
+        dispatch.received_date = date.today()
+        dispatch.received_at_str = now_str
+        if clean_notes:
+            dispatch.notes = _append_receive_note(dispatch.notes, clean_notes)
+        dispatch.save()
 
-    other_pending = SewingDispatch.objects.filter(model=model).exclude(id=dispatch.id).exclude(status='تم الاستلام').exists()
-    all_done = not other_pending and is_complete
+        if is_complete:
+            if dispatch.piece_type == 'shirt':
+                model.sewing_shirt_status = 'تم الاستلام'
+            elif dispatch.piece_type == 'pants':
+                model.sewing_pants_status = 'تم الاستلام'
+            # لا نُرقّي القطعة إلى «العد بعد المكن» إلا عند اكتمال استلام كامل الكمية.
+            advance_parts_to_stage(model, 'qc_after_sewing', [dispatch.piece_type or 'shirt'])
+            derive_pipeline_status(model)
 
-    model._skip_timeline_signal = True
-    model.save()
+        other_pending = SewingDispatch.objects.filter(model=model).exclude(id=dispatch.id).exclude(status='تم الاستلام').exists()
+        all_done = not other_pending and is_complete
 
-    label = dispatch.piece_label or ('تيشرت' if dispatch.piece_type == 'shirt' else 'بنطلون')
-    tl_notes = (
-        f"استلام دفعة ({batch_qty} قطعة) — إجمالي المستلم {dispatch.received_pieces} من {total_pieces} [{label}] "
-        f"من ورشة {dispatch.workshop_name}"
-        f"{' واكتمال القطع وتوجيه الموديل تلقائياً إلى الفرز والجودة (العد بعد المكن)' if all_done else ''}"
-    )
-    if clean_notes:
-        tl_notes += f" | ملاحظات: {clean_notes}"
+        model._skip_timeline_signal = True
+        model.save()
 
-    ModelTimeline.objects.create(
-        model=model,
-        stage='قسم المكن والفرز',
-        title=f'استلام [{label}] من ورشة المكن',
-        user=user_name,
-        timestamp_str=now_str,
-        notes=tl_notes,
-        details={
-            'phase_type': 'sewing_receive',
-            'record_id': dispatch.client_id or str(dispatch.id),
-            'piece_type': dispatch.piece_type,
-            'piece_label': label,
-            'workshop_name': dispatch.workshop_name,
-            'pieces_count': dispatch.pieces_count,
-            'batch_qty': batch_qty,
-            'received_pieces': dispatch.received_pieces,
-            'remaining_pieces': max(0, total_pieces - dispatch.received_pieces),
-            'dispatched_at': dispatch.dispatched_at_str or '',
-            'expected_delivery_date': str(dispatch.expected_delivery_date or ''),
-            'received_at': now_str,
-            'status': dispatch.status,
-            'worker_notes': clean_notes or (dispatch.notes or ''),
-            'operator_name': user_name,
-        }
-    )
+        label = dispatch.piece_label or PART_LABELS.get(dispatch.piece_type, 'قطعة')
+        tl_notes = (
+            f"استلام دفعة ({batch_qty} قطعة) — إجمالي المستلم {dispatch.received_pieces} من {total_pieces} [{label}] "
+            f"من ورشة {dispatch.workshop_name}"
+            f"{' واكتمال القطع وتوجيه الموديل تلقائياً إلى الفرز والجودة (العد بعد المكن)' if all_done else ''}"
+        )
+        if clean_notes:
+            tl_notes += f" | ملاحظات: {clean_notes}"
+
+        ModelTimeline.objects.create(
+            model=model,
+            stage='قسم المكن والفرز',
+            title=f'استلام [{label}] من ورشة المكن',
+            user=user_name,
+            timestamp_str=now_str,
+            notes=tl_notes,
+            details={
+                'phase_type': 'sewing_receive',
+                'record_id': dispatch.client_id or str(dispatch.id),
+                'piece_type': dispatch.piece_type,
+                'piece_label': label,
+                'workshop_name': dispatch.workshop_name,
+                'pieces_count': dispatch.pieces_count,
+                'batch_qty': batch_qty,
+                'received_pieces': dispatch.received_pieces,
+                'remaining_pieces': max(0, total_pieces - dispatch.received_pieces),
+                'dispatched_at': dispatch.dispatched_at_str or '',
+                'expected_delivery_date': str(dispatch.expected_delivery_date or ''),
+                'received_at': now_str,
+                'status': dispatch.status,
+                'cost_per_piece': float(dispatch.cost_per_piece or 0),
+                'total_cost': float(dispatch.total_cost or 0),
+                'worker_notes': clean_notes,
+                'operator_name': user_name,
+            }
+        )
 
     return dispatch
 
@@ -428,6 +492,15 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
 
     # Never pull a part back: parts that already left finishing keep their stage.
     current_stages = get_part_stages(model)
+    not_ready_for_finishing = [
+        part for part in part_keys
+        if _stage_index(current_stages.get(part, 'cutting')) < _stage_index('qc_after_sewing')
+    ]
+    if not_ready_for_finishing:
+        labels = ' / '.join(PART_LABELS.get(part, part) for part in not_ready_for_finishing)
+        raise ValueError(
+            f"لا يمكن بدء التشطيب قبل وصول القطع ({labels}) إلى مرحلة ما بعد المكن"
+        )
     part_keys = [
         part for part in part_keys
         if _stage_index(current_stages.get(part, 'cutting')) <= _stage_index('finishing')
@@ -475,8 +548,8 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
         stages[part] = 'finishing'
         records.append(record)
 
-    # إن لم يرسل المستخدم الإجمالي يدوياً، فالإجمالي = مجموع تكلفة قطع كل الأجزاء.
-    if total_cost in (None, ''):
+    # دائماً نحسب الإجمالي من مجموع تكلفة قطع كل الأجزاء على الباك إند (ولا يُصفّر بصفر من الواجهة).
+    if total_cost in (None, '', 0, '0', 0.0) or unit_cost > 0:
         total_finish_cost = round(sum(part_totals), 2)
 
     model.part_stages = stages
@@ -530,7 +603,7 @@ def receive_finishing_service(record_id, actual_exit_date=None, notes=None,
     clean_notes = (notes or '').strip()
     record.actual_exit_date = actual
     if clean_notes:
-        record.notes = f"{record.notes} | استلام: {clean_notes}".strip(' |') if record.notes else clean_notes
+        record.notes = _append_receive_note(record.notes, clean_notes)
     record.save()
 
     model = record.model
@@ -542,7 +615,7 @@ def receive_finishing_service(record_id, actual_exit_date=None, notes=None,
     ).exists()
 
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-    label = record.piece_label or ('تيشرت' if record.part_type == 'shirt' else 'بنطلون')
+    label = record.piece_label or PART_LABELS.get(record.part_type, 'قطعة')
     tl_notes = f"تم استلام [{label}] من التشطيب بتاريخ {actual.isoformat()}"
     if all_received:
         tl_notes += ' - اكتملت كل قطع التشطيب وتوجيه الموديل تلقائياً إلى قسم المكواة'
@@ -672,8 +745,8 @@ def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
         stages[part] = 'ironing'
         records.append(record)
 
-    # إن لم يرسل المستخدم الإجمالي يدوياً، فالإجمالي = مجموع تكلفة قطع كل الأجزاء.
-    if total_cost in (None, ''):
+    # دائماً نحسب الإجمالي من مجموع تكلفة قطع كل الأجزاء على الباك إند (ولا يُصفّر بصفر من الواجهة).
+    if total_cost in (None, '', 0, '0', 0.0) or unit_cost > 0:
         total_iron_cost = round(sum(part_totals), 2)
 
     model.part_stages = stages
@@ -724,7 +797,7 @@ def receive_ironing_service(record_id, actual_exit_date=None, notes=None,
     clean_notes = (notes or '').strip()
     record.actual_exit_date = actual
     if clean_notes:
-        record.notes = f"{record.notes} | استلام: {clean_notes}".strip(' |') if record.notes else clean_notes
+        record.notes = _append_receive_note(record.notes, clean_notes)
     record.save()
 
     model = record.model
@@ -800,6 +873,17 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
             )
 
     if stage == 'dest':
+        ensure_part_stages(model)
+        current_stages = get_part_stages(model)
+        waiting_dest = [
+            PART_LABELS.get(part, part)
+            for part, st in current_stages.items()
+            if _stage_index(st) < _stage_index('dest')
+        ]
+        if waiting_dest:
+            raise ValueError(
+                f"لا يمكن بدء الدَست قبل اكتمال التعبئة والتغليف لجميع القطع. في الانتظار: {' / '.join(waiting_dest)}"
+            )
         summary = packaging_requirement_summary(model)
         if not summary['is_complete']:
             missing = ' / '.join(summary['missing_steps'])
@@ -812,7 +896,16 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
     entry = _parse_date_value(entry_date) or date.today()
     expected = _parse_date_value(expected_exit_date)
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-    unit_cost, total_stage_cost = resolve_cost_values(cost_per_piece, total_cost)
+    summary_info = model_part_summary(model)
+    stage_pieces = (
+        int(summary_info.get('finished_good_sets') or 0)
+        or int(summary_info.get('completed_sets') or 0)
+        or int(getattr(model, 'total_cut_pieces', 0) or 0)
+        or int(getattr(model, 'target_cut_quantity', 0) or 0)
+    )
+    unit_cost, total_stage_cost = resolve_cost_values(
+        cost_per_piece, total_cost, pieces_count=stage_pieces
+    )
 
     # اربط الورشة المسجلة بالاسم إن لم تُمرَّر صريحاً، مع الإبقاء على الاسم النصي كما هو.
     if workshop is None and clean_vendor:
@@ -897,7 +990,7 @@ def receive_assembly_stage_service(record_id, actual_exit_date=None, notes=None,
     clean_notes = (notes or '').strip()
     record.actual_exit_date = actual
     if clean_notes:
-        record.notes = f"{record.notes} | استلام: {clean_notes}".strip(' |') if record.notes else clean_notes
+        record.notes = _append_receive_note(record.notes, clean_notes)
     record.save()
 
     model = record.model

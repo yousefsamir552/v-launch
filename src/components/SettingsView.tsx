@@ -310,9 +310,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
         rank_level: newUserRank,
         // كل الصلاحيات شخصية فقط افتراضياً؛ يحق للحساب تفويض ما يورّثه الدور فقط.
         delegatable_permissions: [],
-        permissions: matchedRole?.permissions
-          ? { ...DEFAULT_PERMISSIONS, ...matchedRole.permissions }
-          : { ...DEFAULT_PERMISSIONS }
+        // نترك التخصيصات فارغة عند ربط الحساب بدور وظيفي حتى يرث تلقائياً أي تعديلات مستقبلية على الدور.
+        permissions: matchedRole ? ({} as any) : { ...DEFAULT_PERMISSIONS }
       });
 
       // نفرّغ الفورم فقط بعد نجاح الحفظ الفعلي في قاعدة البيانات.

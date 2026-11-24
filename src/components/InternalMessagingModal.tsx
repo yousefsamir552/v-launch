@@ -33,10 +33,49 @@ export const InternalMessagingModal: React.FC<InternalMessagingModalProps> = ({ 
   const [userSearchTerm, setUserSearchTerm] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Filter out the current logged-in user AND strictly hide sudo from contact list (Task 2)
-  const availableContacts = users.filter(
-    (u) => u.id !== currentUser?.id && u.username.toLowerCase() !== 'sudo' && !u.is_sudo
-  );
+  // Filter out the current logged-in user AND strictly hide sudo from contact list (Task 2),
+  // AND include synthetic contacts for higher-rank senders/receivers who already messaged us
+  // so lower-rank users can always read and reply to their conversations.
+  const availableContacts = React.useMemo(() => {
+    const byId = new Map<
+      string,
+      { id: string; real_name: string; username: string; role?: string; is_sudo?: boolean }
+    >();
+    users.forEach((u) => {
+      if (u.id === currentUser?.id || u.username.toLowerCase() === 'sudo' || u.is_sudo) return;
+      byId.set(u.id, u);
+    });
+    if (currentUser) {
+      internalMessages.forEach((m) => {
+        const senderIsMe =
+          m.sender_id === currentUser.id || m.sender_id === currentUser.username;
+        const receiverIsMe =
+          m.receiver_id === currentUser.id || m.receiver_id === currentUser.username;
+        if (!senderIsMe && receiverIsMe && m.sender_id) {
+          const senderLower = String(m.sender_name || '').toLowerCase();
+          if (senderLower !== 'sudo' && m.sender_id !== 'user-sudo' && !byId.has(m.sender_id)) {
+            byId.set(m.sender_id, {
+              id: m.sender_id,
+              real_name: m.sender_name || 'إدارة المصنع',
+              username: m.sender_name || m.sender_id,
+              role: 'إدارة عليا'
+            });
+          }
+        } else if (senderIsMe && !receiverIsMe && m.receiver_id) {
+          const recLower = String(m.receiver_name || '').toLowerCase();
+          if (recLower !== 'sudo' && m.receiver_id !== 'user-sudo' && !byId.has(m.receiver_id)) {
+            byId.set(m.receiver_id, {
+              id: m.receiver_id,
+              real_name: m.receiver_name || 'إدارة المصنع',
+              username: m.receiver_name || m.receiver_id,
+              role: 'إدارة عليا'
+            });
+          }
+        }
+      });
+    }
+    return Array.from(byId.values());
+  }, [users, internalMessages, currentUser]);
 
   const filteredContacts = availableContacts.filter((u) => {
     const q = userSearchTerm.toLowerCase();
@@ -71,9 +110,9 @@ export const InternalMessagingModal: React.FC<InternalMessagingModalProps> = ({ 
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [internalMessages, selectedUserId]);
 
-  // Automatically mark unread messages from selected user as read
+  // Automatically mark unread messages from selected user as read ONLY when modal is open
   useEffect(() => {
-    if (!selectedUserId || !currentUser) return;
+    if (!isOpen || !selectedUserId || !currentUser) return;
     const unread = internalMessages.filter(
       (m) =>
         m.sender_id === selectedUserId &&
@@ -83,7 +122,7 @@ export const InternalMessagingModal: React.FC<InternalMessagingModalProps> = ({ 
     unread.forEach((m) => {
       markMessageRead(m.id);
     });
-  }, [selectedUserId, internalMessages, currentUser, markMessageRead]);
+  }, [isOpen, selectedUserId, internalMessages, currentUser, markMessageRead]);
 
   if (!isOpen) return null;
 
