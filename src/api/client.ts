@@ -382,6 +382,7 @@ export const api = {
     }),
 
   // الإكسسوارات والتصنيفات وحركات الصرف (Accessories)
+  getAccessoryTransactions: () => request<any[]>('/accessory-transactions/'),
   getAccessoryTypes: () => request<any[]>('/accessory-types/'),
   createAccessoryType: (data: any) =>
     request<any>('/accessory-types/', { method: 'POST', body: JSON.stringify(data) }),
@@ -414,8 +415,11 @@ export const api = {
       body: JSON.stringify(data),
       ...(auditHeaders ? { headers: auditHeaders } : {})
     }),
-  deleteModel: (id: string) =>
-    request<any>(`/models/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  deleteModel: (id: string, confirmPostCutting = false) =>
+    request<any>(
+      `/models/${encodeURIComponent(id)}/${confirmPostCutting ? '?confirm_post_cutting=1' : ''}`,
+      { method: 'DELETE' }
+    ),
   // فحص واسترداد خامات وإكسسوارات الموديلات المحذوفة سابقاً (sudo / مدير النظام)
   refundDeletedInventory: () =>
     request<{
@@ -662,6 +666,21 @@ export const api = {
 
   // التنبيهات، الرسائل الداخلية، وسجل المراقبة
   getNotifications: () => request<any>('/notifications/'),
+  getNotificationPreferences: () => request<{ readIds: string[]; snoozed: Record<string, string> }>('/notifications/preferences/'),
+  markNotificationRead: (notificationKey: string, meta?: Record<string, any>) =>
+    request<{ readIds: string[]; snoozed: Record<string, string> }>('/notifications/mark-read/', {
+      method: 'POST',
+      body: JSON.stringify({ notification_key: notificationKey, ...(meta || {}) })
+    }),
+  snoozeNotification: (notificationKey: string, hours: number) =>
+    request<{ readIds: string[]; snoozed: Record<string, string> }>('/notifications/snooze/', {
+      method: 'POST',
+      body: JSON.stringify({ notification_key: notificationKey, hours })
+    }),
+  clearSnoozedNotifications: () =>
+    request<{ readIds: string[]; snoozed: Record<string, string> }>('/notifications/clear-snoozed/', {
+      method: 'POST'
+    }),
   getInternalMessages: () => request<any[]>('/internal-messages/'),
   sendInternalMessage: (data: any) =>
     request<any>('/internal-messages/', { method: 'POST', body: JSON.stringify(data) }),
@@ -739,9 +758,24 @@ export const api = {
     }
     return requestForm<any>('/hr-attendance-records/upload-sheet/', form);
   },
-  reapplyHRAttendanceRules: (month?: string) =>
+  reapplyHRAttendanceRules: (month?: string, preserveDecisions = true) =>
     request<any>(`/hr-attendance-records/reapply-rules/${month ? `?month=${encodeURIComponent(month)}` : ''}`, {
-      method: 'POST'
+      method: 'POST',
+      body: JSON.stringify({ preserve_decisions: preserveDecisions })
+    }),
+  getHRPayrollSnapshot: (month: string) =>
+    request<{ is_locked: boolean; month: string; snapshot: any | null }>(
+      `/hr-payroll-snapshots/for-month/?month=${encodeURIComponent(month)}`
+    ),
+  lockHRPayroll: (month: string, notes = '') =>
+    request<{ is_locked: boolean; month: string; snapshot: any }>('/hr-payroll-snapshots/lock/', {
+      method: 'POST',
+      body: JSON.stringify({ month, notes })
+    }),
+  unlockHRPayroll: (month: string) =>
+    request<{ is_locked: boolean; month: string; status: string }>('/hr-payroll-snapshots/unlock/', {
+      method: 'POST',
+      body: JSON.stringify({ month })
     }),
   getHRPenalties: (month?: string) =>
     request<any[]>(`/hr-penalties/${month ? `?month=${encodeURIComponent(month)}` : ''}`),

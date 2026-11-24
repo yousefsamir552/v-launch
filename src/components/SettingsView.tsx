@@ -1491,7 +1491,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => deleteSizeDef(s.id)}
+                                      onClick={() => {
+                                        if (window.confirm(`هل أنت متأكد من حذف فئة المقاسات "${s.name}"؟`)) {
+                                          deleteSizeDef(s.id);
+                                        }
+                                      }}
                                       className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition cursor-pointer"
                                       title="حذف المقاس"
                                     >
@@ -1657,7 +1661,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => deleteSupplier(sup.id)}
+                                      onClick={() => {
+                                        if (window.confirm(`هل أنت متأكد من حذف المورد "${sup.name}"؟`)) {
+                                          deleteSupplier(sup.id);
+                                        }
+                                      }}
                                       className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition cursor-pointer"
                                       title="حذف المورد"
                                     >
@@ -1909,7 +1917,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => deleteWorkshop(wrk.id)}
+                                    onClick={() => {
+                                      if (window.confirm(`هل أنت متأكد من حذف الورشة "${wrk.name}"؟`)) {
+                                        deleteWorkshop(wrk.id);
+                                      }
+                                    }}
                                     className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition cursor-pointer"
                                     title="حذف الورشة"
                                   >

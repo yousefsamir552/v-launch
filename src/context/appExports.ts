@@ -106,7 +106,7 @@ export const buildExportActions = (ctx: AppInternalContext) => {
     addFlashMessage('تم تصدير بيانات التصميم بنجاح');
   };
 
-  const exportFabricTransactionsCsv = () => {
+  const exportFabricTransactionsCsv = async () => {
     const headers: CsvValue[] = [
       'التاريخ',
       'الخامة',
@@ -117,7 +117,14 @@ export const buildExportActions = (ctx: AppInternalContext) => {
       'مرجع الموديل',
       'الملاحظات'
     ];
-    const rows: CsvValue[][] = fabricTransactions.map((tx) => {
+    let fullTxns = fabricTransactions;
+    try {
+      const fetched = await api.getFabricTransactions();
+      if (Array.isArray(fetched)) fullTxns = fetched;
+    } catch {
+      // fallback to in-memory state if endpoint unavailable
+    }
+    const rows: CsvValue[][] = fullTxns.map((tx) => {
       const color = fabricColors.find((c) => c.id === tx.color_id);
       const fabric = fabrics.find((f) => f.id === (color?.fabric_id || tx.fabric_id));
       return [
@@ -141,7 +148,7 @@ export const buildExportActions = (ctx: AppInternalContext) => {
     addFlashMessage('تم تصدير حركات القماش بنجاح');
   };
 
-  const exportAccessoryTransactionsCsv = () => {
+  const exportAccessoryTransactionsCsv = async () => {
     const headers: CsvValue[] = [
       'التاريخ',
       'كود الإكسسوار',
@@ -151,7 +158,14 @@ export const buildExportActions = (ctx: AppInternalContext) => {
       'مرجع الموديل',
       'الملاحظات'
     ];
-    const rows: CsvValue[][] = accessoryTransactions.map((tx) => [
+    let fullTxns = accessoryTransactions;
+    try {
+      const fetched = await api.getAccessoryTransactions();
+      if (Array.isArray(fetched)) fullTxns = fetched;
+    } catch {
+      // fallback to in-memory state
+    }
+    const rows: CsvValue[][] = fullTxns.map((tx) => [
       tx.timestamp || '-',
       tx.accessory_code || '-',
       tx.accessory_name || '-',
@@ -554,10 +568,18 @@ export const buildExportActions = (ctx: AppInternalContext) => {
         ];
       })
     });
+    // جلب سجل الحركات الكامل غير المقتطع للنسخة الاحتياطية الشاملة.
+    const [fullFabricTxnsRes, fullAccessoryTxnsRes] = await Promise.all([
+      api.getFabricTransactions().catch(() => null),
+      api.getAccessoryTransactions().catch(() => null)
+    ]);
+    const backupFabricTxns = Array.isArray(fullFabricTxnsRes) ? fullFabricTxnsRes : fabricTransactions;
+    const backupAccessoryTxns = Array.isArray(fullAccessoryTxnsRes) ? fullAccessoryTxnsRes : accessoryTransactions;
+
     sheets.push({
       name: 'fabric_transactions',
       headers: ['التاريخ', 'الخامة', 'كود اللون', 'الحركة', 'الكمية', 'مرجع الموديل', 'الملاحظات'],
-      rows: fabricTransactions.map((tx) => {
+      rows: backupFabricTxns.map((tx) => {
         const color = fabricColors.find((c) => c.id === tx.color_id);
         const fabric = fabrics.find((f) => f.id === (color?.fabric_id || tx.fabric_id));
         return [
@@ -596,7 +618,7 @@ export const buildExportActions = (ctx: AppInternalContext) => {
     sheets.push({
       name: 'accessory_transactions',
       headers: ['التاريخ', 'الكود', 'الاسم', 'الحركة', 'الكمية', 'مرجع الموديل', 'الملاحظات'],
-      rows: accessoryTransactions.map((tx) => [
+      rows: backupAccessoryTxns.map((tx) => [
         tx.timestamp || '-',
         tx.accessory_code || '-',
         tx.accessory_name || '-',

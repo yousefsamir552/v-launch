@@ -12,6 +12,7 @@ from .views import (
     AuditLogViewSet, ReportsViewSet,
     HRJobTitleViewSet, HREmployeeViewSet, HRAttendanceSettingsViewSet,
     HRAttendanceRecordViewSet, HRPenaltyViewSet, HRLoanViewSet,
+    HRPayrollSnapshotViewSet,
     PackagingMaterialRuleViewSet, PackagingMaterialTransactionViewSet,
     FactoryResetViewSet
 )
@@ -50,6 +51,7 @@ router.register(r'hr-attendance-settings', HRAttendanceSettingsViewSet, basename
 router.register(r'hr-attendance-records', HRAttendanceRecordViewSet, basename='hr-attendance-records')
 router.register(r'hr-penalties', HRPenaltyViewSet, basename='hr-penalties')
 router.register(r'hr-loans', HRLoanViewSet, basename='hr-loans')
+router.register(r'hr-payroll-snapshots', HRPayrollSnapshotViewSet, basename='hr-payroll-snapshots')
 router.register(r'hr-reports', HRReportsViewSet, basename='hr-reports')
 router.register(r'packaging-material-rules', PackagingMaterialRuleViewSet, basename='packaging-material-rules')
 router.register(r'packaging-material-transactions', PackagingMaterialTransactionViewSet, basename='packaging-material-transactions')

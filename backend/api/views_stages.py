@@ -79,11 +79,8 @@ class CuttingRecordViewSet(BasePermViewSet):
                 .values_list('spread_number', flat=True)
                 .first()
             ) or 0
-            spread_num = int(
-                data.get('spread_number')
-                or data.get('spreadNumber')
-                or (last_spread_num + 1)
-            )
+            # توليد رقم الفرشة تلقائياً على الباك إند داخل قفل الموديل لمنع أي تكرار أو تعارض.
+            spread_num = int(last_spread_num) + 1
             rec = CuttingRecord.objects.create(
                 client_id=data.get('id') or data.get('client_id'),
                 model=model,

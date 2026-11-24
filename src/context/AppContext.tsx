@@ -155,23 +155,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [internalMessages, setInternalMessages] = useState<InternalMessage[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [flashMessages, setFlashMessages] = useState<FlashMessage[]>([]);
-  const [readNotificationIds, setReadNotificationIds] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('erp_read_notifications');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  // Snoozed notifications: map of notification id → ISO date-time until it stays hidden.
-  const [snoozedNotifications, setSnoozedNotifications] = useState<Record<string, string>>(() => {
-    try {
-      const saved = localStorage.getItem(SNOOZED_NOTIFICATIONS_STORAGE_KEY);
-      return saved ? JSON.parse(saved) : {};
-    } catch {
-      return {};
-    }
-  });
+  const [readNotificationIds, setReadNotificationIds] = useState<string[]>([]);
+  // Snoozed notifications: map of notification id → ISO date-time until it stays hidden (persisted in DB AppNotification).
+  const [snoozedNotifications, setSnoozedNotifications] = useState<Record<string, string>>({});
 
   /**
    * Automatically compute `reserved_quantity` for each FabricColor and AccessoryItem
@@ -193,6 +179,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [models]);
 
   const fabricColors = useMemo<FabricColor[]>(() => {
+    // إذا لم تُحمَّل الموديلات أو المتطلبات لهذا المستخدم (مثل أمين مخزن القماش فقط)، نُبقي المحجوز القادم من السيرفر كما هو دون تصفيره.
+    if (models.length === 0 && requirements.length === 0) {
+      return fabricColorsRaw;
+    }
     const reservedByColor: Record<string, number> = {};
     requirements.forEach((req) => {
       if (designModelIdsSet.has(req.model_id)) {
@@ -206,16 +196,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...c,
       reserved_quantity: reservedByColor[c.id] ?? 0
     }));
-  }, [fabricColorsRaw, requirements, designModelIdsSet]);
+  }, [fabricColorsRaw, requirements, designModelIdsSet, models.length]);
 
   const accessoryItems = useMemo<AccessoryItem[]>(() => {
+    // إذا لم تُحمَّل الموديلات أو إكسسواراتها لهذا المستخدم، نُبقي المحجوز القادم من السيرفر كما هو دون تصفيره.
+    if (models.length === 0 && accessories.length === 0) {
+      return accessoryItemsRaw;
+    }
     // الإكسسوار يبقى محجوزاً عبر كل مراحل التشغيل حتى يتم صرفه فعلياً (is_issued = false).
     const reservedByAcc: Record<string, number> = {};
     accessories.forEach((acc) => {
       if (acc.accessory_id && !acc.is_issued && activeModelIdsSet.has(acc.model_id)) {
         const qty = Math.max(0, Number(acc.planned_quantity) || 0);
         reservedByAcc[acc.accessory_id] = Number(
-          ((reservedByAcc[acc.accessory_id] || 0) + qty).toFixed(2)
+          ((reservedByAcc[acc.accessory_id] || 0) + qty).toFixed(3)
         );
       }
     });
@@ -223,7 +217,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...it,
       reserved_quantity: reservedByAcc[it.id] ?? 0
     }));
-  }, [accessoryItemsRaw, accessories, activeModelIdsSet]);
+  }, [accessoryItemsRaw, accessories, activeModelIdsSet, models.length]);
 
   const removeFlashMessage = useCallback((id: string) => {
     setFlashMessages((prev) => prev.filter((m) => m.id !== id));
@@ -263,6 +257,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...DEFAULT_GLOBAL_SETTINGS,
             ...state.globalSettings
           });
+        }
+        if (state.notificationStates) {
+          setReadNotificationIds(
+            Array.isArray(state.notificationStates.readIds) ? state.notificationStates.readIds : []
+          );
+          setSnoozedNotifications(
+            state.notificationStates.snoozed && typeof state.notificationStates.snoozed === 'object'
+              ? state.notificationStates.snoozed
+              : {}
+          );
         }
         setRoles(Array.isArray(state.roles) ? state.roles : []);
         // Strictly filter out sudo from any frontend user list (Task 2)

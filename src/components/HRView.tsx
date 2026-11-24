@@ -190,6 +190,8 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
   const rankSafeEmployees = employees.filter((emp) =>
     allowedRanks.includes(Number(emp.rank_level ?? 3) as 0 | 1 | 2 | 3)
   );
+  // الموظفون النشطون فقط لشاشات التشغيل الفعالة (الحضور / السُلف / الجزاءات / المرتبات المفتوحة).
+  const activeEmployees = rankSafeEmployees.filter((emp) => emp.is_active !== false);
 
   return (
     <div className="space-y-4" dir="rtl">
@@ -275,18 +277,18 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
       )}
 
       {section === 'attendance' && activeTab === 'records' && (
-        <AttendanceRecordsPanel employees={rankSafeEmployees} />
+        <AttendanceRecordsPanel employees={activeEmployees} />
       )}
 
       {section === 'loans_penalties' && activeTab === 'loans' && (
-        <LoansPanel employees={rankSafeEmployees} />
+        <LoansPanel employees={activeEmployees} />
       )}
 
       {section === 'loans_penalties' && activeTab === 'penalties' && (
-        <PenaltiesPanel employees={rankSafeEmployees} />
+        <PenaltiesPanel employees={activeEmployees} />
       )}
 
-      {section === 'payroll' && <PayrollPanel employees={rankSafeEmployees} />}
+      {section === 'payroll' && <PayrollPanel employees={activeEmployees} />}
 
       {section === 'reports' && <HRReportsView />}
     </div>

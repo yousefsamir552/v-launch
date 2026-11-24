@@ -273,8 +273,8 @@ class QCRecord(models.Model):
     model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, related_name="qc_records")
     stage = models.CharField(max_length=30, choices=STAGE_TYPES, default='before_print', verbose_name="مرحلة العد والفرز")
     part_type = models.CharField(max_length=20, choices=PART_TYPE_CHOICES, default='shirt', verbose_name="نوع القطعة")
-    color_name = models.CharField(max_length=150, blank=True, null=True, default='', verbose_name="اللون")
-    size = models.CharField(max_length=50, blank=True, null=True, default='', verbose_name="المقاس")
+    color_name = models.CharField(max_length=150, blank=True, default='', verbose_name="اللون")
+    size = models.CharField(max_length=50, blank=True, default='', verbose_name="المقاس")
     pieces_cut = models.IntegerField(default=0, verbose_name="القطع المقصوصة")
     counted_pieces = models.IntegerField(default=0, verbose_name="العدد الفعلي السليم")
     defect_pieces = models.IntegerField(default=0, verbose_name="عدد الهوالك والعيوب")
@@ -285,8 +285,18 @@ class QCRecord(models.Model):
 
     class Meta:
         ordering = ['-created_at', '-id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['model', 'stage', 'part_type', 'color_name', 'size'],
+                name='uniq_qc_record_cell',
+            ),
+        ]
 
     def save(self, *args, **kwargs):
+        if self.color_name is None:
+            self.color_name = ''
+        if self.size is None:
+            self.size = ''
         if not self.client_id:
             self.client_id = generate_client_id('qc')
         super().save(*args, **kwargs)
@@ -391,6 +401,7 @@ class SewingDispatch(models.Model):
 
 class AppNotification(models.Model):
     URGENCY_CHOICES = [
+        ('critical', 'حرج'),
         ('overdue', 'متأخر عن موعد الاستلام'),
         ('today', 'موعد الاستلام اليوم'),
         ('tomorrow', 'موعد الاستلام غداً'),
@@ -401,23 +412,41 @@ class AppNotification(models.Model):
         ('finishing', 'قسم التشطيب'),
         ('ironing', 'قسم المكواة'),
         ('packaging', 'قسم التعبئة والتغليف'),
+        ('dest', 'قسم الدَست'),
+        ('materials', 'خامات التشغيل'),
     ]
 
-    title = models.CharField(max_length=255, verbose_name="عنوان التنبيه")
-    message = models.TextField(verbose_name="نص الإشعار")
-    urgency = models.CharField(max_length=20, choices=URGENCY_CHOICES, verbose_name="مستوى الأهمية")
-    stage = models.CharField(max_length=20, choices=STAGE_CHOICES, verbose_name="المرحلة")
-    model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, related_name="notifications")
-    target_name = models.CharField(max_length=200, verbose_name="اسم الجهة (المطبعة أو الورشة)")
-    expected_date = models.DateField(verbose_name="تاريخ الاستلام المتوقع")
+    user = models.ForeignKey(
+        UserProfile, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="app_notifications", verbose_name="المستخدم",
+    )
+    notification_key = models.CharField(
+        max_length=255, blank=True, default='', db_index=True, verbose_name="مفتاح التنبيه",
+    )
+    title = models.CharField(max_length=255, blank=True, default='', verbose_name="عنوان التنبيه")
+    message = models.TextField(blank=True, default='', verbose_name="نص الإشعار")
+    urgency = models.CharField(max_length=20, choices=URGENCY_CHOICES, default='today', verbose_name="مستوى الأهمية")
+    stage = models.CharField(max_length=20, choices=STAGE_CHOICES, default='printing', verbose_name="المرحلة")
+    model = models.ForeignKey(ModelItem, on_delete=models.CASCADE, null=True, blank=True, related_name="notifications")
+    target_name = models.CharField(max_length=200, blank=True, default='', verbose_name="اسم الجهة (المطبعة أو الورشة)")
+    expected_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الاستلام المتوقع")
     is_read = models.BooleanField(default=False, verbose_name="تمت القراءة")
+    snoozed_until = models.DateTimeField(blank=True, null=True, verbose_name="مؤجل حتى")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['-urgency', 'expected_date']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'notification_key'],
+                condition=models.Q(user__isnull=False) & ~models.Q(notification_key=''),
+                name='uniq_app_notification_user_key',
+            ),
+        ]
 
     def __str__(self):
-        return f"[{self.urgency}] {self.title} - {self.model.model_code}"
+        code = self.model.model_code if self.model else self.notification_key
+        return f"[{self.urgency}] {self.title or self.notification_key} - {code}"
 
 
 class InternalMessage(models.Model):

@@ -4,25 +4,107 @@ from .views_common import _truthy_permission_keys, _accessory_price_snapshot
 class NotificationViewSet(viewsets.ViewSet):
     """
     Smart In-App Notifications for Expected Delivery Dates (Printing & Sewing
-    + التشطيب/المكواة/التعبئة/الدست).
+    + التشطيب/المكواة/التعبئة/الدست) مع حفظ حالة القراءة والتأجيل لكل مستخدم في قاعدة البيانات.
 
     التنبيهات مقيّدة بالصلاحيات: المستخدم لا يستلم إلا تنبيهات الأقسام التي يملك
     صلاحية عرضها (وحساب sudo يرى كل شيء) — بنفس منطق جرس التنبيهات في الواجهة.
     """
+    permission_classes = [IsAuthenticatedProfile]
+
+    def _user_notification_states(self, profile):
+        if profile is None:
+            return {'readIds': [], 'snoozed': {}}
+        now_dt = timezone.now()
+        read_ids = []
+        snoozed = {}
+        for row in AppNotification.objects.filter(user=profile).exclude(notification_key=''):
+            if row.is_read:
+                read_ids.append(row.notification_key)
+            if row.snoozed_until and row.snoozed_until > now_dt:
+                snoozed[row.notification_key] = row.snoozed_until.isoformat()
+        return {'readIds': read_ids, 'snoozed': snoozed}
+
     def list(self, request):
         ensure_initial_seed()
+        profile = resolve_request_user_profile(request)
         notifs = generate_smart_delivery_notifications()
         notifs.extend(generate_assembly_delivery_notifications())
-        notifs = filter_notifications_by_permission(notifs, resolve_request_user_profile(request))
+        notifs = filter_notifications_by_permission(notifs, profile)
         urgency_weights = {'overdue': 0, 'today': 1, 'tomorrow': 2}
         notifs.sort(key=lambda n: urgency_weights.get(n.get('urgency'), 3))
+        states = self._user_notification_states(profile)
         return Response({
             'notifications': notifs,
             'total_count': len(notifs),
             'overdue_count': sum(1 for n in notifs if n['urgency'] == 'overdue'),
             'today_count': sum(1 for n in notifs if n['urgency'] == 'today'),
-            'tomorrow_count': sum(1 for n in notifs if n['urgency'] == 'tomorrow')
+            'tomorrow_count': sum(1 for n in notifs if n['urgency'] == 'tomorrow'),
+            'states': states,
         })
+
+    @action(detail=False, methods=['get'])
+    def preferences(self, request):
+        profile = resolve_request_user_profile(request)
+        return Response(self._user_notification_states(profile))
+
+    @action(detail=False, methods=['post'], url_path='mark-read')
+    def mark_read(self, request):
+        profile = resolve_request_user_profile(request)
+        if not profile:
+            return Response({'detail': 'مطلوب تسجيل الدخول'}, status=status.HTTP_401_UNAUTHORIZED)
+        key = str(request.data.get('notification_key') or request.data.get('id') or '').strip()
+        if not key:
+            return Response({'detail': 'مفتاح التنبيه مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        stage = str(request.data.get('stage') or 'printing').strip()
+        if stage not in dict(AppNotification.STAGE_CHOICES):
+            stage = 'printing'
+        urgency = str(request.data.get('urgency') or 'today').strip()
+        if urgency not in dict(AppNotification.URGENCY_CHOICES):
+            urgency = 'today'
+        AppNotification.objects.update_or_create(
+            user=profile,
+            notification_key=key[:255],
+            defaults={
+                'is_read': True,
+                'title': str(request.data.get('title') or '')[:255],
+                'message': str(request.data.get('message') or ''),
+                'stage': stage,
+                'urgency': urgency,
+                'target_name': str(request.data.get('target_name') or '')[:200],
+            },
+        )
+        return Response(self._user_notification_states(profile))
+
+    @action(detail=False, methods=['post'])
+    def snooze(self, request):
+        profile = resolve_request_user_profile(request)
+        if not profile:
+            return Response({'detail': 'مطلوب تسجيل الدخول'}, status=status.HTTP_401_UNAUTHORIZED)
+        key = str(request.data.get('notification_key') or request.data.get('id') or '').strip()
+        if not key:
+            return Response({'detail': 'مفتاح التنبيه مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            hours = float(request.data.get('hours') or 4)
+        except (TypeError, ValueError):
+            hours = 4.0
+        hours = max(0.25, min(hours, 24 * 30))
+        until = timezone.now() + timedelta(hours=hours)
+        AppNotification.objects.update_or_create(
+            user=profile,
+            notification_key=key[:255],
+            defaults={
+                'snoozed_until': until,
+            },
+        )
+        return Response(self._user_notification_states(profile))
+
+    @action(detail=False, methods=['post'], url_path='clear-snoozed')
+    def clear_snoozed(self, request):
+        profile = resolve_request_user_profile(request)
+        if not profile:
+            return Response({'detail': 'مطلوب تسجيل الدخول'}, status=status.HTTP_401_UNAUTHORIZED)
+        AppNotification.objects.filter(user=profile).update(snoozed_until=None)
+        return Response(self._user_notification_states(profile))
 
 
 class InternalMessageViewSet(BasePermViewSet):
@@ -516,6 +598,7 @@ class FactoryResetViewSet(viewsets.ViewSet):
 
             # 2) الموارد البشرية: الحضور/الجزاءات/السُلف ← الموظفين ← الوظائف (PROTECT).
             if 'hr' in selected:
+                _count_and_delete(HRPayrollSnapshot.objects.all(), 'كشوف الرواتب المعتمدة', summary)
                 _count_and_delete(HRAttendanceRecord.objects.all(), 'سجلات الحضور', summary)
                 _count_and_delete(HRPenalty.objects.all(), 'الجزاءات', summary)
                 _count_and_delete(HRLoan.objects.all(), 'السُلف', summary)

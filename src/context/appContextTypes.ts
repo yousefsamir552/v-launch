@@ -536,7 +536,7 @@ export interface AppContextType {
     notes?: string,
     defectQuantity?: number
   ) => Promise<{ success: boolean; message: string }>;
-  deleteDesignModel: (modelId: string) => void;
+  deleteDesignModel: (modelId: string, confirmPostCutting?: boolean) => void;
 
   // Cutting Actions (Spreads / Lays System)
   addCuttingRecord: (data: {
@@ -600,8 +600,8 @@ export interface AppContextType {
 
   // Unified permission-aware exports (Excel/CSV)
   exportDesignModelsCsv: () => void;
-  exportFabricTransactionsCsv: () => void;
-  exportAccessoryTransactionsCsv: () => void;
+  exportFabricTransactionsCsv: () => void | Promise<void>;
+  exportAccessoryTransactionsCsv: () => void | Promise<void>;
   exportProductionWarehouseCsv: () => void;
   exportPrintDispatchesCsv: () => void;
   exportSewingDispatchesCsv: () => void;

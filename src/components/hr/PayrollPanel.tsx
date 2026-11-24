@@ -3,7 +3,8 @@ import {
   Users, Briefcase, Clock, Plus, Search, Pencil, Trash2, X, Save,
   AlertTriangle, CalendarDays, Building2, Coffee, Timer, Info, Wallet,
   Scale, Banknote, RefreshCw, Download, Upload, FileSpreadsheet, FileText,
-  CheckCircle2, XCircle, UsersRound, LayoutList, History, Printer, BarChart3
+  CheckCircle2, XCircle, UsersRound, LayoutList, History, Printer, BarChart3,
+  Lock, Unlock
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { escapeHtml, renderLogoHtml } from '../../utils/printShared';
@@ -24,7 +25,7 @@ import {
   weeklyOffIndexFromKey, weeklyOffDayLabel, formatDayLabel, isoDate,
   weekDatesBeforeWeeklyOff, weeklyOffRatioForAbsences, weeklyOffRatioLabel,
   weeklyOffDeductionForDate, sumWeeklyOffDeductionsForEmployeeMonth,
-  dailyRateFor, hourlyRateFor, timeToMinutes, lateMinutesFor, matchLateRule,
+  dailyRateFor, hourlyRateFor, workingHoursPerDayFor, timeToMinutes, lateMinutesFor, matchLateRule,
   isAttendedRecord, MonthAccrual, computeMonthAccrual
 } from './hrShared';
 
@@ -33,6 +34,8 @@ interface PayrollRow {
   baseSalary: number;
   attendedDays: number;
   paidSundayDays: number;
+  workedWeeklyOffDays: number;
+  weeklyOffExtraDays: number;
   earnedDays: number;
   earnedBase: number;
   overtimeDays: number;
@@ -52,31 +55,45 @@ interface PayrollRow {
 }
 
 export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
-  const { addFlashMessage, globalSettings } = useApp();
+  const { addFlashMessage, logAction, globalSettings } = useApp();
 
   const [month, setMonth] = useState(currentMonth());
   const [records, setRecords] = useState<HRAttendanceRecord[]>([]);
   const [penalties, setPenalties] = useState<HRPenalty[]>([]);
   const [loans, setLoans] = useState<HRLoan[]>([]);
   const [settings, setSettings] = useState<HRAttendanceSettings | null>(null);
+  const [lockedSnapshot, setLockedSnapshot] = useState<any | null>(null);
+  const [isLockModalOpen, setIsLockModalOpen] = useState(false);
+  const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
+  const [lockNotes, setLockNotes] = useState('');
+  const [isLocking, setIsLocking] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+
+  const effectiveSettings = (lockedSnapshot?.settings_snapshot || settings) as HRAttendanceSettings | null;
   // يوم الإجازة الأسبوعية المدفوعة من الإعدادات (الأحد افتراضياً).
-  const weeklyOffIndex = weeklyOffIndexFromKey(settings?.weekly_off_day);
+  const weeklyOffIndex = weeklyOffIndexFromKey(effectiveSettings?.weekly_off_day);
   const weeklyOffLabel = weeklyOffDayLabel(weeklyOffIndex);
+  const shiftHours = workingHoursPerDayFor(effectiveSettings);
+  const weeklyOffMultiplier =
+    Number(effectiveSettings?.weekly_off_work_multiplier ?? 1.0) >= 0
+      ? Number(effectiveSettings?.weekly_off_work_multiplier ?? 1.0)
+      : 1.0;
 
   const loadPayrollData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [recordsRes, penaltiesRes, loansRes, settingsRes] = await Promise.all([
+      const [recordsRes, penaltiesRes, loansRes, settingsRes, snapshotRes] = await Promise.all([
         api.getHRAttendanceRecords({ month, includePrevWeek: true }),
         api.getHRPenalties(month),
         api.getHRLoans(month),
-        api.getHRAttendanceSettings().catch(() => null)
+        api.getHRAttendanceSettings().catch(() => null),
+        api.getHRPayrollSnapshot(month).catch(() => ({ is_locked: false, snapshot: null }))
       ]);
       setRecords(Array.isArray(recordsRes) ? recordsRes : []);
       setPenalties(Array.isArray(penaltiesRes) ? penaltiesRes : []);
       setLoans(Array.isArray(loansRes) ? loansRes : []);
       setSettings(settingsRes || null);
+      setLockedSnapshot(snapshotRes?.is_locked ? snapshotRes.snapshot : null);
     } catch (err: any) {
       addFlashMessage(err?.message || 'فشل تحميل بيانات المرتبات', 'danger');
     } finally {
@@ -89,7 +106,78 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
     void loadPayrollData();
   }, [loadPayrollData]);
 
+  const handleLockMonth = async () => {
+    setIsLocking(true);
+    try {
+      const res = await api.lockHRPayroll(month, lockNotes.trim());
+      setLockedSnapshot(res?.snapshot || null);
+      setIsLockModalOpen(false);
+      setLockNotes('');
+      addFlashMessage(`تم اعتماد وإغلاق كشف رواتب شهر ${month} بنجاح وتجميد كافة الأرقام`, 'success');
+      logAction('الموارد البشرية', `اعتماد وإغلاق كشف مرتبات شهر ${month}`);
+    } catch (err: any) {
+      addFlashMessage(err?.message || 'فشل اعتماد وإغلاق الشهر', 'danger');
+    } finally {
+      setIsLocking(false);
+    }
+  };
+
+  const handleUnlockMonth = async () => {
+    setIsLocking(true);
+    try {
+      await api.unlockHRPayroll(month);
+      setLockedSnapshot(null);
+      setIsUnlockModalOpen(false);
+      addFlashMessage(`تم إعادة فتح كشف رواتب شهر ${month}`, 'info');
+      logAction('الموارد البشرية', `إعادة فتح كشف مرتبات شهر ${month}`);
+      await loadPayrollData();
+    } catch (err: any) {
+      addFlashMessage(err?.message || 'فشل إعادة فتح الشهر', 'danger');
+    } finally {
+      setIsLocking(false);
+    }
+  };
+
   const rows = useMemo<PayrollRow[]>(() => {
+    // عند اعتماد وإغلاق الشهر تُعرض اللقطة المجمّدة كما هي (لا تتأثر بأي تعديل مستقبلي للرواتب أو القواعد أو إيقاف الموظفين).
+    if (lockedSnapshot && Array.isArray(lockedSnapshot.rows)) {
+      return lockedSnapshot.rows.map((item: any) => ({
+        employee: {
+          id: String(item.employee_id || ''),
+          employee_code: item.employee_code || '',
+          name: item.employee_name || '—',
+          job_id: '',
+          job_title: item.job_title || '—',
+          department: item.department || undefined,
+          department_label: item.department_label || '',
+          monthly_salary: Number(item.base_salary) || 0,
+          rule_application_mode: 'auto',
+          is_active: item.is_active !== false
+        } as HREmployee,
+        baseSalary: Number(item.base_salary) || 0,
+        attendedDays: Number(item.attended_days) || 0,
+        paidSundayDays: Number(item.paid_sunday_days) || 0,
+        workedWeeklyOffDays: Number(item.worked_weekly_off_days) || 0,
+        weeklyOffExtraDays: Number(item.weekly_off_extra_days) || 0,
+        earnedDays: Number(item.earned_days) || 0,
+        earnedBase: Number(item.earned_base) || 0,
+        overtimeDays: Number(item.overtime_days) || 0,
+        overtimeHours: Number(item.overtime_hours) || 0,
+        overtimePay: Number(item.overtime_pay) || 0,
+        attendanceDays: Number(item.attendance_days) || 0,
+        attendanceHours: Number(item.attendance_hours) || 0,
+        attendanceDeduction: Number(item.attendance_deduction) || 0,
+        sundayDeductionDays: Number(item.sunday_deduction_days) || 0,
+        sundayDeduction: 0,
+        penaltyDays: Number(item.penalty_days) || 0,
+        penaltyHours: Number(item.penalty_hours) || 0,
+        penaltyDeduction: Number(item.penalty_deduction) || 0,
+        loanDeduction: Number(item.loan_deduction) || 0,
+        totalDeduction: Number(item.total_deduction) || 0,
+        netPay: Number(item.net_pay) || 0
+      }));
+    }
+
     const inMonth = (date?: string) => !!date && date.startsWith(month);
     const today = new Date();
     const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
@@ -98,108 +186,109 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
         ? isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1))
         : undefined;
     const officialStart = settings?.official_start_time || '08:30';
-    // يوم الإجازة الأسبوعية المدفوعة مأخوذ من نطاق المكوّن (weeklyOffIndex).
 
-    return employees.map((employee) => {
-      const baseSalary = Number(employee.monthly_salary) || 0;
-      const dayRate = dailyRateFor(baseSalary);
-      const hourRate = hourlyRateFor(baseSalary);
+    return employees
+      .filter((emp) => emp.is_active !== false)
+      .map((employee) => {
+        const baseSalary = Number(employee.monthly_salary) || 0;
+        const dayRate = dailyRateFor(baseSalary);
+        const hourRate = hourlyRateFor(baseSalary, shiftHours);
 
-      // خصم التأخير/الانصراف المبكر (على أيام الحضور فقط — الغياب لا يُحسب مرتين).
-      let attendanceDays = 0;
-      let attendanceHours = 0;
-      let overtimeDays = 0;
-      let overtimeHours = 0;
-      records.forEach((record) => {
-        if (record.employee_id !== employee.id) return;
-        if (!inMonth(record.date)) return;
-        if (record.review_status === 'rejected') return;
-        // يوم الإجازة الأسبوعية بدون بصمة حضور = إجازة مدفوعة (تُحسب ضمن الأيام المستحقة).
-        // أما يوم الإجازة الذي عمل فيه الموظف (له بصمة حضور) فيُعامل كيوم عمل عادي.
-        const recordDay = new Date(`${record.date}T00:00:00`);
-        if (recordDay.getDay() === weeklyOffIndex && !record.check_in) return;
+        // خصم التأخير/الانصراف المبكر (على أيام الحضور المعتمدة فقط — المرفوض وبانتظار المراجعة لا يُخصم).
+        let attendanceDays = 0;
+        let attendanceHours = 0;
+        let overtimeDays = 0;
+        let overtimeHours = 0;
+        records.forEach((record) => {
+          if (record.employee_id !== employee.id) return;
+          if (!inMonth(record.date)) return;
+          // يوم الإجازة الأسبوعية بدون بصمة حضور = إجازة مدفوعة (تُحسب ضمن الأيام المستحقة).
+          const recordDay = new Date(`${record.date}T00:00:00`);
+          if (recordDay.getDay() === weeklyOffIndex && !record.check_in) return;
 
-        overtimeDays += Number(record.overtime_days) || 0;
-        overtimeHours += Number(record.overtime_hours) || 0;
+          // الإضافي يُحسب دائماً حتى عند رفض الخصم (رفض الخصم يلغي الغرامة فقط لا اليوم).
+          overtimeDays += Number(record.overtime_days) || 0;
+          overtimeHours += Number(record.overtime_hours) || 0;
 
-        // الغياب غير محسوب ضمن الأيام المستحقة أصلاً، فلا نخصمه مرة ثانية.
-        if (!isAttendedRecord(record)) return;
-        if (record.is_excused) return;
+          // الغياب غير محسوب ضمن الأيام المستحقة أصلاً، فلا نخصمه مرة ثانية.
+          if (!isAttendedRecord(record)) return;
+          if (record.is_excused) return;
+          if (record.review_status === 'rejected' || record.review_status === 'pending_review') return;
 
-        let dedDays = Number(record.calculated_deduction_days) || 0;
-        let dedHours = Number(record.calculated_deduction_hours) || 0;
-        // احتياطي ديناميكي: لو لم يُخزَّن الخصم، طبّق شريحة التأخير من الإعدادات.
-        if (dedDays === 0 && dedHours === 0) {
-          const lateMinutes = lateMinutesFor(record.check_in, officialStart);
-          const rule = matchLateRule(settings?.rules_json, lateMinutes);
-          const ruleValue = Number(rule?.deduction_value) || 0;
-          if (rule && ruleValue > 0) {
-            if (rule.deduction_type === 'days') dedDays = ruleValue;
-            else dedHours = ruleValue;
+          let dedDays = Number(record.calculated_deduction_days) || 0;
+          let dedHours = Number(record.calculated_deduction_hours) || 0;
+          // احتياطي ديناميكي: لو لم يُخزَّن الخصم (لسجل معتمد أو تلقائي)، طبّق شريحة التأخير من الإعدادات.
+          if (dedDays === 0 && dedHours === 0) {
+            const lateMinutes = lateMinutesFor(record.check_in, officialStart);
+            const rule = matchLateRule(settings?.rules_json, lateMinutes);
+            const ruleValue = Number(rule?.deduction_value) || 0;
+            if (rule && ruleValue > 0) {
+              if (rule.deduction_type === 'days') dedDays = ruleValue;
+              else dedHours = ruleValue;
+            }
           }
-        }
-        attendanceDays += dedDays;
-        attendanceHours += dedHours;
+          attendanceDays += dedDays;
+          attendanceHours += dedHours;
+        });
+
+        // الأجر المكتسب وفق القواعد المؤكدة (30 - غياب - خصم إجازة، + عمل يوم الإجازة × المضاعف فوق سقف الـ30).
+        const accrual = computeMonthAccrual(
+          employee.id,
+          records,
+          month,
+          upToIso,
+          weeklyOffIndex,
+          weeklyOffMultiplier
+        );
+        const earnedBase = accrual.earnedDays * dayRate;
+
+        const sundayDeductionDays = accrual.sundayDeductionDays;
+
+        let penaltyDays = 0;
+        let penaltyHours = 0;
+        penalties.forEach((penalty) => {
+          if (penalty.employee_id !== employee.id) return;
+          if (!inMonth(penalty.date)) return;
+          if (penalty.penalty_type === 'days') penaltyDays += Number(penalty.value) || 0;
+          else penaltyHours += Number(penalty.value) || 0;
+        });
+
+        const loanDeduction = loans
+          .filter((loan) => loan.employee_id === employee.id && inMonth(loan.date))
+          .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
+
+        const attendanceDeduction = attendanceDays * dayRate + attendanceHours * hourRate;
+        const sundayDeduction = 0;
+        const penaltyDeduction = penaltyDays * dayRate + penaltyHours * hourRate;
+        const overtimePay = overtimeDays * dayRate + overtimeHours * hourRate;
+        const totalDeduction = attendanceDeduction + penaltyDeduction + loanDeduction;
+
+        return {
+          employee,
+          baseSalary,
+          attendedDays: accrual.attendedDays,
+          paidSundayDays: accrual.paidSundayDays,
+          workedWeeklyOffDays: accrual.workedWeeklyOffDays,
+          weeklyOffExtraDays: accrual.weeklyOffExtraDays,
+          earnedDays: accrual.earnedDays,
+          earnedBase,
+          overtimeDays,
+          overtimeHours,
+          overtimePay,
+          attendanceDays,
+          attendanceHours,
+          attendanceDeduction,
+          sundayDeductionDays,
+          sundayDeduction,
+          penaltyDays,
+          penaltyHours,
+          penaltyDeduction,
+          loanDeduction,
+          totalDeduction,
+          netPay: earnedBase + overtimePay - totalDeduction
+        };
       });
-
-      // الأجر المكتسب على أساس الحضور الفعلي + أيام الإجازة الأسبوعية المدفوعة (بحد أقصى 30 يوماً).
-      const accrual = computeMonthAccrual(employee.id, records, month, upToIso, weeklyOffIndex);
-      const earnedBase = accrual.earnedDays * dayRate;
-
-      // خصم يوم الإجازة يُحسب من سجلات أيام العمل الستة (للعرض فقط — مطبّق ضمن الأيام المستحقة).
-      const sundayDeductionDays = sumWeeklyOffDeductionsForEmployeeMonth(
-        records,
-        employee.id,
-        month,
-        upToIso,
-        weeklyOffIndex
-      );
-
-      let penaltyDays = 0;
-      let penaltyHours = 0;
-      penalties.forEach((penalty) => {
-        if (penalty.employee_id !== employee.id) return;
-        if (!inMonth(penalty.date)) return;
-        if (penalty.penalty_type === 'days') penaltyDays += Number(penalty.value) || 0;
-        else penaltyHours += Number(penalty.value) || 0;
-      });
-
-      const loanDeduction = loans
-        .filter((loan) => loan.employee_id === employee.id && inMonth(loan.date))
-        .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
-
-      const attendanceDeduction = attendanceDays * dayRate + attendanceHours * hourRate;
-      // خصم الإجازة الأسبوعية ليس مبلغاً إضافياً: أثره ظاهر في تقليل الأيام المستحقة (earnedDays).
-      const sundayDeduction = 0;
-      const penaltyDeduction = penaltyDays * dayRate + penaltyHours * hourRate;
-      const overtimePay = overtimeDays * dayRate + overtimeHours * hourRate;
-      // الخصومات المطروحة من الأجر المكتسب: التأخير + الجزاءات اليدوية + السُلف فقط.
-      const totalDeduction = attendanceDeduction + penaltyDeduction + loanDeduction;
-
-      return {
-        employee,
-        baseSalary,
-        attendedDays: accrual.attendedDays,
-        paidSundayDays: accrual.paidSundayDays,
-        earnedDays: accrual.earnedDays,
-        earnedBase,
-        overtimeDays,
-        overtimeHours,
-        overtimePay,
-        attendanceDays,
-        attendanceHours,
-        attendanceDeduction,
-        sundayDeductionDays,
-        sundayDeduction,
-        penaltyDays,
-        penaltyHours,
-        penaltyDeduction,
-        loanDeduction,
-        totalDeduction,
-        netPay: earnedBase + overtimePay - totalDeduction
-      };
-    });
-  }, [employees, records, penalties, loans, month, settings]);
+  }, [employees, records, penalties, loans, month, settings, lockedSnapshot, weeklyOffIndex, shiftHours, weeklyOffMultiplier]);
 
   const totals = useMemo(
     () =>
@@ -213,7 +302,8 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           penaltyDeduction: acc.penaltyDeduction + row.penaltyDeduction,
           loanDeduction: acc.loanDeduction + row.loanDeduction,
           totalDeduction: acc.totalDeduction + row.totalDeduction,
-          netPay: acc.netPay + row.netPay
+          // إجمالي النقد المطلوب دفعه: لا يُسمح لرصيد سالب لعامل أن يخفض مستحقات باقي العمال.
+          netPay: acc.netPay + Math.max(0, row.netPay)
         }),
         {
           baseSalary: 0,
@@ -235,12 +325,10 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
     (row.employee.department ? HR_DEPARTMENT_LABELS[row.employee.department] : '—');
 
   const buildWorkerSheetHtml = (row: PayrollRow) => {
+    // نُبقي سجلات الأسبوع السابق من الشهر الماضي داخل recordsByDate حتى يتطابق خصم أول يوم إجازة 100% مع جدول المرتبات.
     const recordsByDate = new Map<string, HRAttendanceRecord>();
     records
-      .filter(
-        (record) =>
-          record.employee_id === row.employee.id && (record.date || '').startsWith(month)
-      )
+      .filter((record) => record.employee_id === row.employee.id)
       .forEach((record) => recordsByDate.set(record.date, record));
 
     // سُلف الشهر موزّعة على أيام تواريخها لتظهر في صف اليوم نفسه.
@@ -260,9 +348,8 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
     const monthNumber = Number(monthStr);
     const daysInMonth = year && monthNumber ? new Date(year, monthNumber, 0).getDate() : 30;
     const dayRate = dailyRateFor(row.baseSalary);
-    const hourRate = hourlyRateFor(row.baseSalary);
-    const officialStart = settings?.official_start_time || '08:30';
-    const weeklyOffLabel = weeklyOffDayLabel(weeklyOffIndex);
+    const hourRate = hourlyRateFor(row.baseSalary, shiftHours);
+    const officialStart = effectiveSettings?.official_start_time || '08:30';
     const statusLabels: Record<string, string> = {
       present: 'حاضر',
       absent: 'غائب',
@@ -284,13 +371,13 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       const loansReason = dayLoans.map((loan) => loan.notes || 'سلفة').join('، ');
 
       // يوم الإجازة الأسبوعية إجازة مدفوعة فقط عند غياب بصمة الحضور؛
-      // اليوم الذي عُمل فيه يُطبع كيوم عمل عادي ببصماته وخصمه.
+      // اليوم الذي عُمل فيه يُطبع كيوم عمل إضافي فوق سقف الـ30 يوماً بمضاعف الإعدادات.
       if (isWeeklyOff && !(record && record.check_in)) {
         const weekDates = weekDatesBeforeWeeklyOff(iso);
         const hasWeekData = weekDates.some((dateStr) => recordsByDate.has(dateStr));
         const absentCount = weekDates.filter((dateStr) => {
           const rec = recordsByDate.get(dateStr);
-          return !rec || (!rec.is_excused && !rec.check_in);
+          return !rec || !isAttendedRecord(rec);
         }).length;
         const ratio = hasWeekData ? weeklyOffRatioForAbsences(absentCount) : 0;
         const deduction = ratio * dayRate;
@@ -314,31 +401,45 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
         continue;
       }
 
-      let deduction =
-        (Number(record.calculated_deduction_days) || 0) * dayRate +
-        (Number(record.calculated_deduction_hours) || 0) * hourRate;
-      if (record.is_excused) deduction = 0;
+      const waivedByReview = record.review_status === 'rejected' || record.review_status === 'pending_review';
+      let dedDays = 0;
+      let dedHours = 0;
+      if (isAttendedRecord(record) && !record.is_excused && !waivedByReview) {
+        dedDays = Number(record.calculated_deduction_days) || 0;
+        dedHours = Number(record.calculated_deduction_hours) || 0;
+        if (dedDays === 0 && dedHours === 0) {
+          const lm = lateMinutesFor(record.check_in, officialStart);
+          const rule = matchLateRule(effectiveSettings?.rules_json, lm);
+          const rv = Number(rule?.deduction_value) || 0;
+          if (rule && rv > 0) {
+            if (rule.deduction_type === 'days') dedDays = rv;
+            else dedHours = rv;
+          }
+        }
+      }
+      const deduction = dedDays * dayRate + dedHours * hourRate;
       const overtime =
         (Number(record.overtime_days) || 0) * dayRate +
         (Number(record.overtime_hours) || 0) * hourRate;
       const lateMinutes = lateMinutesFor(record.check_in, officialStart);
-      let reason = 'حضور كامل';
+      let reason = isWeeklyOff ? `عمل يوم الإجازة الأسبوعية (×${weeklyOffMultiplier})` : 'حضور كامل';
       if (record.is_excused) reason = `بعذر: ${record.excuse_note || 'بدون خصم'}`;
+      else if (record.review_status === 'rejected') reason = 'تم رفض الخصم (بدون خصم)';
+      else if (record.review_status === 'pending_review') reason = 'بانتظار المراجعة (غير مخصوم حتى الاعتماد)';
       else if (record.status === 'absent') reason = 'غياب بدون عذر';
       else if (record.status === 'missing_punch') reason = 'بصمة ناقصة تحتاج مراجعة';
       else if (record.status === 'leave') reason = statusLabels[record.status] || 'إجازة';
-      else if (lateMinutes > 0) reason = `تأخير ${lateMinutes} دقيقة`;
+      else if (lateMinutes > 0 && !isWeeklyOff) reason = `تأخير ${lateMinutes} دقيقة`;
       else if (deduction > 0) reason = 'خصم تأخير / انصراف مبكر';
 
-      // أحمر للغياب، أزرق لأيام الإضافي، أصفر للتأخير.
+      // أحمر للغياب، أزرق لأيام الإضافي/عمل الإجازة، أصفر للتأخير.
       let rowClass = 'row-ok';
       if (record.status === 'absent') rowClass = 'row-absent';
-      else if (overtime > 0) rowClass = 'row-overtime';
+      else if (overtime > 0 || isWeeklyOff) rowClass = 'row-overtime';
       else if (record.status === 'missing_punch') rowClass = 'row-info';
       else if (record.status === 'leave') rowClass = 'row-off';
       else if (deduction > 0) rowClass = 'row-warn';
 
-      // reason قد يحتوي على excuse_note القادم من قاعدة البيانات: يُهرَّب دائماً عند الإخراج.
       dayRows.push(`<tr class="${rowClass}">
         <td class="mono">${dateLabel} — ${dayLabel}</td>
         <td class="mono">${escapeHtml(record.check_in || '—')}</td>
@@ -352,6 +453,10 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
     const overtimeText = `${row.overtimeDays} يوم / ${row.overtimeHours} ساعة`;
     const attendanceText = `${row.attendanceDays.toFixed(2)} يوم / ${row.attendanceHours.toFixed(2)} ساعة`;
     const penaltyText = `${row.penaltyDays.toFixed(2)} يوم / ${row.penaltyHours.toFixed(2)} ساعة`;
+    const extraOffText =
+      row.workedWeeklyOffDays > 0
+        ? ` + عمل إجازة ${row.workedWeeklyOffDays}×${weeklyOffMultiplier} (${row.weeklyOffExtraDays.toFixed(2)} يوم)`
+        : '';
 
     return `<div class="sheet">
       <div class="head">
@@ -374,7 +479,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           <td class="label">الأيام المستحقة</td>
           <td class="mono">${row.earnedDays.toFixed(2)} يوم</td>
           <td class="label">تفصيل الأيام</td>
-          <td class="mono">حضور ${row.attendedDays.toFixed(2)} + ${escapeHtml(weeklyOffLabel)} ${row.paidSundayDays.toFixed(2)}</td>
+          <td class="mono">حضور ${row.attendedDays.toFixed(2)} + ${escapeHtml(weeklyOffLabel)} ${row.paidSundayDays.toFixed(2)}${escapeHtml(extraOffText)}</td>
         </tr>
         <tr class="screen-only">
           <td class="label">المرتب الشهري</td>
@@ -490,16 +595,54 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
               الخصومات: {formatMoney(totals.totalDeduction)}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={printAllEnvelopes}
-            className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-white text-emerald-700 text-[11px] font-black hover:bg-emerald-50 transition cursor-pointer shrink-0"
-          >
-            <Printer className="w-4 h-4" />
-            طباعة أوراق مرتبات العمال للجميع A4
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {lockedSnapshot ? (
+              <button
+                type="button"
+                onClick={() => setIsUnlockModalOpen(true)}
+                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-amber-400 text-slate-950 text-[11px] font-black hover:bg-amber-300 transition cursor-pointer"
+              >
+                <Unlock className="w-4 h-4" />
+                الشهر معتمد ومغلق — إعادة فتح
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsLockModalOpen(true)}
+                disabled={rows.length === 0}
+                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-900/90 text-white text-[11px] font-black hover:bg-slate-900 transition cursor-pointer disabled:opacity-50"
+              >
+                <Lock className="w-4 h-4" />
+                اعتماد وإغلاق الشهر
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={printAllEnvelopes}
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-white text-emerald-700 text-[11px] font-black hover:bg-emerald-50 transition cursor-pointer shrink-0"
+            >
+              <Printer className="w-4 h-4" />
+              طباعة أوراق مرتبات العمال للجميع A4
+            </button>
+          </div>
         </div>
       </div>
+
+      {lockedSnapshot && (
+        <div className="flex items-start gap-2.5 px-4 py-3 rounded-2xl bg-amber-50 border border-amber-300 text-amber-900 text-[11px] font-bold">
+          <Lock className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" />
+          <div>
+            <p className="font-black">
+              تم اعتماد وإغلاق كشف رواتب شهر {month} وتجميد جميع الأرقام بشكل نهائي.
+            </p>
+            <p className="text-[10px] text-amber-800 mt-0.5">
+              بواسطة: {lockedSnapshot.locked_by || 'الإدارة'}
+              {lockedSnapshot.locked_at ? ` — بتاريخ ${String(lockedSnapshot.locked_at).slice(0, 16).replace('T', ' ')}` : ''}
+              {lockedSnapshot.notes ? ` — ملاحظات: ${lockedSnapshot.notes}` : ''}
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
@@ -695,11 +838,90 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       <div className="flex items-start gap-2 px-4 py-3 rounded-2xl bg-blue-50 border border-blue-200 text-blue-800 text-[11px] font-bold">
         <Info className="w-4 h-4 shrink-0" />
         <span>
-          يُحسب الأجر على أيام الحضور الفعلي + أيام {weeklyOffLabel} المدفوعة (بحد أقصى 30 يوماً)، وتُخصم
-          قواعد التأخير ومخالفات الجزاءات والسُلف فقط. تُتجاهل السجلات «المرفوضة»، وراتب اليوم =
-          المرتب ÷ 30 وراتب الساعة = راتب اليوم ÷ 8.
+          يُحسب الأجر وفق القواعد المؤكدة (30 يوماً − الغياب − خصم {weeklyOffLabel}) مع إضافة العمل يوم{' '}
+          {weeklyOffLabel} فوق سقف الـ30 يوماً بمعامل ×{weeklyOffMultiplier}. تُعفى الخصومات «المرفوضة»
+          و«بانتظار المراجعة» من الصافي مع الإبقاء على يوم الحضور، وراتب اليوم = المرتب ÷ 30 وراتب
+          الساعة = راتب اليوم ÷ {Number(shiftHours.toFixed(2))} ساعة.
         </span>
       </div>
+
+      {isLockModalOpen && (
+        <Modal
+          title={`اعتماد وإغلاق مرتبات شهر ${month}`}
+          subtitle="سيتم تجميد المرتبات والأرصدة والقواعد لهذا الشهر بشكل دائم لحمايتها من أي تعديلات مستقبلية."
+          onClose={() => setIsLockModalOpen(false)}
+          maxWidthClass="max-w-lg"
+          footer={
+            <>
+              <button
+                type="button"
+                onClick={() => setIsLockModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-black text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={isLocking}
+                onClick={() => void handleLockMonth()}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black hover:bg-emerald-700 cursor-pointer disabled:opacity-60"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                {isLocking ? 'جاري الإغلاق...' : 'تأكيد اعتماد وإغلاق الشهر'}
+              </button>
+            </>
+          }
+        >
+          <div className="space-y-3">
+            <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900">
+              إجمالي النقد المطلوب دفعه: <span className="font-mono font-black">{formatMoney(totals.netPay)}</span> — عدد العمال: {rows.length}
+            </div>
+            <div>
+              <label className={labelClass}>ملاحظات الإغلاق (اختياري)</label>
+              <textarea
+                value={lockNotes}
+                onChange={(e) => setLockNotes(e.target.value)}
+                rows={2}
+                placeholder="مثال: تم الصرف النقدي بالكامل ومراجعة السُلف..."
+                className={inputClass}
+              />
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {isUnlockModalOpen && (
+        <Modal
+          title={`إعادة فتح كشف رواتب شهر ${month}`}
+          subtitle="إعادة فتح الشهر ستسمح بتعديل الحضور والجزاءات والسُلف وإعادة حساب المرتبات وفق القواعد الحالية."
+          onClose={() => setIsUnlockModalOpen(false)}
+          maxWidthClass="max-w-md"
+          footer={
+            <>
+              <button
+                type="button"
+                onClick={() => setIsUnlockModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-black text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                تراجع
+              </button>
+              <button
+                type="button"
+                disabled={isLocking}
+                onClick={() => void handleUnlockMonth()}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-600 text-white text-xs font-black hover:bg-amber-700 cursor-pointer disabled:opacity-60"
+              >
+                <Unlock className="w-3.5 h-3.5" />
+                {isLocking ? 'جاري الفتح...' : 'تأكيد إعادة فتح الشهر'}
+              </button>
+            </>
+          }
+        >
+          <p className="text-xs font-bold text-slate-600">
+            هل أنت متأكد من إلغاء تجميد شهر <span className="font-mono font-black">{month}</span>؟
+          </p>
+        </Modal>
+      )}
     </div>
   );
 };

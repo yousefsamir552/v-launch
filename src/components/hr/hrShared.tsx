@@ -271,7 +271,7 @@ export const weeklyOffDeductionForDate = (
   if (!weekDates.some((day) => recordsByDate.has(day))) return 0;
   const absentCount = weekDates.filter((day) => {
     const record = recordsByDate.get(day);
-    return !record || (!record.is_excused && !record.check_in);
+    return !record || !isAttendedRecord(record);
   }).length;
   return weeklyOffRatioForAbsences(absentCount);
 };
@@ -310,9 +310,28 @@ export const sumWeeklyOffDeductionsForEmployeeMonth = (
   return total;
 };
 
-/** أجر اليوم = المرتب ÷ 30، وأجر الساعة = أجر اليوم ÷ 8. */
+/** احتساب ساعات العمل اليومية ديناميكياً من مواعيد الحضور والانصراف الرسمية (مع دعم عبور منتصف الليل). */
+export const workingHoursPerDayFor = (
+  settings?: Pick<HRAttendanceSettings, 'official_start_time' | 'official_end_time' | 'working_hours_per_day'> | null
+): number => {
+  if (settings?.working_hours_per_day && Number(settings.working_hours_per_day) > 0) {
+    return Number(settings.working_hours_per_day);
+  }
+  const startMins = timeToMinutes(settings?.official_start_time || '08:30');
+  const endMins = timeToMinutes(settings?.official_end_time || '17:30');
+  if (startMins == null || endMins == null) return 8;
+  let diff = endMins - startMins;
+  if (diff <= 0) diff += 24 * 60;
+  const hours = Math.round((diff / 60) * 10000) / 10000;
+  return hours > 0 ? hours : 8;
+};
+
+/** أجر اليوم = المرتب ÷ 30، وأجر الساعة = أجر اليوم ÷ ساعات العمل اليومية الديناميكية. */
 export const dailyRateFor = (salary: number) => (Number(salary) || 0) / 30;
-export const hourlyRateFor = (salary: number) => dailyRateFor(salary) / 8;
+export const hourlyRateFor = (salary: number, workingHoursPerDay: number = 8) => {
+  const hours = Number(workingHoursPerDay) > 0 ? Number(workingHoursPerDay) : 8;
+  return dailyRateFor(salary) / hours;
+};
 
 /** تحويل قيمة وقت ("08:05" أو "08:05:00") إلى دقائق من منتصف الليل. */
 export const timeToMinutes = (value?: string | null): number | null => {
@@ -366,12 +385,26 @@ export const matchLateRule = (
   });
   if (best) return best;
 
-  // لا شريحة مطابقة: إما فجوة بين شريحتين أو تجاوز أعلى شريحة — طبّق أعلى شريحة.
+  // لا شريحة مطابقة مباشرة:
+  // 1) في حالة الفجوة بين شريحتين → طبّق أقرب شريحة أقل (أكبر to_minutes < lateMinutes) بدل القفز لأقصى عقوبة.
+  // 2) عند تجاوز أعلى شريحة → طبّق أعلى شريحة.
   const minFrom = candidates.reduce<number>(
     (min, rule) => Math.min(min, fromValue(rule)),
     Infinity
   );
   if (Number.isFinite(minFrom) && lateMinutes >= minFrom) {
+    const lowerTiers = candidates.filter((rule) => {
+      const to = toValue(rule);
+      return to != null && to < lateMinutes;
+    });
+    const higherTiers = candidates.filter((rule) => fromValue(rule) > lateMinutes);
+    if (lowerTiers.length > 0 && higherTiers.length > 0) {
+      return lowerTiers.reduce((acc, rule) => {
+        const accTo = toValue(acc) ?? -Infinity;
+        const ruleTo = toValue(rule) ?? -Infinity;
+        return ruleTo > accTo || (ruleTo === accTo && fromValue(rule) > fromValue(acc)) ? rule : acc;
+      });
+    }
     return candidates.reduce((acc, rule) => {
       const accTo = toValue(acc) ?? Infinity;
       const ruleTo = toValue(rule) ?? Infinity;
@@ -391,38 +424,59 @@ export const isAttendedRecord = (record: HRAttendanceRecord): boolean => {
 export interface MonthAccrual {
   attendedDays: number;
   paidSundayDays: number;
+  workedWeeklyOffDays: number;
+  weeklyOffExtraDays: number;
+  sundayDeductionDays: number;
+  unexcusedAbsenceDays: number;
   earnedDays: number;
 }
 
 /**
- * استحقاق الموظف داخل شهر على أساس الحضور الفعلي:
- * - أيام العمل الفعلية (عدا يوم الإجازة الأسبوعية) التي حضر فيها.
- * - أيام الإجازة الأسبوعية المدفوعة في الأسابيع التي حضر فيها (بعد خصم نسبة الغياب).
- * - إذا اكتمل الشهر بحضور كامل يُمنح 30 يوماً (تعويض 28/29) وبحد أقصى 30.
+ * استحقاق الموظف داخل شهر وفق القواعد المحاسبية المؤكدة:
+ * 1) للشهر المكتمل: earned_base = max(0, 30 - total_unexcused_absence_days - sunday_deduction_days)
+ *    بحيث يخصم يوم الغياب يوماً واحداً بالضبط سواء كان الشهر 28 أو 30 أو 31 يوماً.
+ * 2) العمل يوم الإجازة الأسبوعية يمنح أجراً إضافياً فوق سقف الـ 30 يوماً بمضاعف
+ *    ديناميكي (weeklyOffWorkMultiplier: 1.0 / 1.5 / 2.0 ...).
+ * 3) السجلات ذات review_status='rejected' لا تُستبعد أبداً من الحضور (رفض الخصم يلغي الخصم فقط).
  */
 export const computeMonthAccrual = (
   employeeId: string,
   records: HRAttendanceRecord[],
   monthKey: string,
   upToIso?: string,
-  weeklyOffIndex: number = DEFAULT_WEEKLY_OFF_INDEX
+  weeklyOffIndex: number = DEFAULT_WEEKLY_OFF_INDEX,
+  weeklyOffWorkMultiplier: number = 1.0
 ): MonthAccrual => {
-  const empty: MonthAccrual = { attendedDays: 0, paidSundayDays: 0, earnedDays: 0 };
+  const empty: MonthAccrual = {
+    attendedDays: 0,
+    paidSundayDays: 0,
+    workedWeeklyOffDays: 0,
+    weeklyOffExtraDays: 0,
+    sundayDeductionDays: 0,
+    unexcusedAbsenceDays: 0,
+    earnedDays: 0
+  };
   if (!monthKey) return empty;
   const [yearStr, monthStr] = monthKey.split('-');
   const year = Number(yearStr);
   const monthNumber = Number(monthStr);
   if (!year || !monthNumber) return empty;
 
+  const mult = Number.isFinite(weeklyOffWorkMultiplier) && weeklyOffWorkMultiplier >= 0
+    ? weeklyOffWorkMultiplier
+    : 1.0;
+
   const recordsByDate = new Map<string, HRAttendanceRecord>();
   records
-    .filter((record) => record.employee_id === employeeId && record.review_status !== 'rejected')
+    .filter((record) => record.employee_id === employeeId)
     .forEach((record) => recordsByDate.set(record.date, record));
 
   const lastDay = new Date(year, monthNumber, 0).getDate();
-  let attendedDays = 0;
-  let workdaysInScope = 0;
+  let attendedRegularDays = 0;
+  let workedWeeklyOffDays = 0;
   let paidSundayDays = 0;
+  let unexcusedAbsenceDays = 0;
+  let sundayDeductionDays = 0;
 
   for (let day = 1; day <= lastDay; day += 1) {
     const cursor = new Date(year, monthNumber - 1, day);
@@ -432,34 +486,50 @@ export const computeMonthAccrual = (
     // اليوم الحالي (بعد نقطة التوقف = أمس) يُحتسب إذا وُجدت له بصمة حضور فعلية.
     if (upToIso && iso > upToIso && !hasCheckIn) continue;
     if (cursor.getDay() === weeklyOffIndex) {
-      // يوم الإجازة الذي عمل فيه الموظف (له بصمة حضور) يوم عمل عادي مستحق.
+      // العمل يوم الإجازة الأسبوعية يمنح أجراً إضافياً فوق سقف الـ 30 يوماً.
       if (hasCheckIn) {
-        workdaysInScope += 1;
-        attendedDays += 1;
+        workedWeeklyOffDays += 1;
         continue;
       }
       const weekDates = weekDatesBeforeWeeklyOff(iso);
       const hasWeekData = weekDates.some((dateStr) => recordsByDate.has(dateStr));
       if (hasWeekData) {
-        paidSundayDays += Math.max(0, 1 - weeklyOffDeductionForDate(recordsByDate, iso));
+        const ded = weeklyOffDeductionForDate(recordsByDate, iso);
+        sundayDeductionDays += ded;
+        paidSundayDays += Math.max(0, 1 - ded);
       }
       continue;
     }
-    workdaysInScope += 1;
-    if (record && isAttendedRecord(record)) attendedDays += 1;
+    if (record && isAttendedRecord(record)) {
+      attendedRegularDays += 1;
+    } else {
+      unexcusedAbsenceDays += 1;
+    }
   }
 
-  let earnedDays = attendedDays + paidSundayDays;
+  const attendedDays = attendedRegularDays + workedWeeklyOffDays;
   const monthLastIso = isoDate(new Date(year, monthNumber - 1, lastDay));
   const monthComplete = !upToIso || upToIso >= monthLastIso;
-  if (monthComplete && workdaysInScope > 0 && attendedDays >= workdaysInScope) {
-    // شهر مكتمل بحضور كامل: 30 يوماً حسابية مهما كان طول الشهر.
-    earnedDays = 30;
+  const weeklyOffExtraDays = workedWeeklyOffDays * mult;
+
+  let earnedDays = 0;
+  if (attendedRegularDays === 0 && workedWeeklyOffDays === 0 && paidSundayDays === 0) {
+    earnedDays = 0;
+  } else if (monthComplete) {
+    const baseEarned = Math.max(0, 30 - unexcusedAbsenceDays - sundayDeductionDays);
+    earnedDays = baseEarned + weeklyOffExtraDays;
+  } else {
+    const baseEarned = Math.min(30, attendedRegularDays + paidSundayDays);
+    earnedDays = baseEarned + weeklyOffExtraDays;
   }
-  earnedDays = Math.min(30, earnedDays);
+
   return {
     attendedDays: Math.round(attendedDays * 100) / 100,
     paidSundayDays: Math.round(paidSundayDays * 100) / 100,
+    workedWeeklyOffDays: Math.round(workedWeeklyOffDays * 100) / 100,
+    weeklyOffExtraDays: Math.round(weeklyOffExtraDays * 100) / 100,
+    sundayDeductionDays: Math.round(sundayDeductionDays * 100) / 100,
+    unexcusedAbsenceDays: Math.round(unexcusedAbsenceDays * 100) / 100,
     earnedDays: Math.round(earnedDays * 100) / 100
   };
 };

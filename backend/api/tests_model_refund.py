@@ -122,9 +122,9 @@ class RefundModelInventoryServiceTests(TestCase):
         )
         summary = refund_model_consumed_inventory(self.model)
         self.color.refresh_from_db()
-        # الصافي = deduct 10 - add 0 = 10 (العيوب لا تُعاد للمخزن).
-        self.assertEqual(summary['fabric_total_quantity'], 10.0)
-        self.assertEqual(self.color.quantity, 100.0)
+        # الصافي السليم = deduct 10 - add 0 - defect 3 = 7 (العيوب لا تُعاد أبداً للرصيد السليم).
+        self.assertEqual(summary['fabric_total_quantity'], 7.0)
+        self.assertEqual(self.color.quantity, 97.0)
 
     def test_refund_ignores_transactions_of_other_models(self):
         ModelItem.objects.create(model_code='M-OTHER')

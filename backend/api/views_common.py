@@ -11,6 +11,7 @@ from django.http import Http404, HttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_time
 from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
 import re
 import secrets
 import urllib.parse
@@ -31,7 +32,7 @@ from .models import (
     PACKAGING_MATERIAL_LABELS,
     PACKAGING_MATERIAL_UNIT_KEYS, PACKAGING_MATERIAL_RULE_MODE_KEYS,
     HRJobTitle, HREmployee, HRAttendanceSettings,
-    HRAttendanceRecord, HRPenalty, HRLoan,
+    HRAttendanceRecord, HRPenalty, HRLoan, HRPayrollSnapshot,
     HR_DEPARTMENT_LABELS, WEEK_DAY_LABELS, HR_ATTENDANCE_STATUS_CHOICES,
     HR_REVIEW_STATUS_CHOICES, HR_PENALTY_TYPE_CHOICES,
     RANK_SUDO, RANK_LEVEL_ONE, RANK_LEVEL_TWO, RANK_LEVEL_THREE,
@@ -53,7 +54,8 @@ from .serializers import (
     PackagingMaterialRuleSerializer, PackagingMaterialSizeRuleSerializer,
     PackagingMaterialTransactionSerializer,
     HRJobTitleSerializer, HREmployeeSerializer, HRAttendanceSettingsSerializer,
-    HRAttendanceRecordSerializer, HRPenaltySerializer, HRLoanSerializer
+    HRAttendanceRecordSerializer, HRPenaltySerializer, HRLoanSerializer,
+    HRPayrollSnapshotSerializer,
 )
 from .services import (
     ensure_initial_seed,
@@ -118,6 +120,7 @@ from .hr_attendance_io import (
     parse_attendance_sheet,
     reapply_employee_month,
     weekly_off_weekday,
+    working_hours_per_day,
 )
 
 
@@ -566,5 +569,58 @@ class BasePermViewSet(AuditedModelViewSetMixin, viewsets.ModelViewSet):
         context = super().get_serializer_context()
         context['request'] = self.request
         return context
+
+
+class BaseReadOnlyPermViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Read-only ViewSet for immutable ledgers (FabricTransaction, AccessoryTransaction).
+    Enforces authentication, client_id/pk lookup, and serializer request context.
+    """
+    permission_classes = [IsAuthenticatedProfile]
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        request.user_profile = resolve_request_user_profile(request)
+
+    def get_object(self):
+        queryset = self.filter_queryset(self.get_queryset())
+        lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
+        lookup_val = self.kwargs.get(lookup_url_kwarg)
+        if lookup_val is None:
+            raise Http404
+
+        s_val = str(lookup_val).strip()
+        if hasattr(queryset.model, 'client_id'):
+            obj = queryset.filter(client_id=s_val).first()
+            if obj:
+                self.check_object_permissions(self.request, obj)
+                return obj
+
+        if s_val.isdigit():
+            obj = queryset.filter(pk=int(s_val)).first()
+            if obj:
+                self.check_object_permissions(self.request, obj)
+                return obj
+
+        raise Http404
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
+
+
+def to_decimal(value, default=Decimal('0'), places=3) -> Decimal:
+    """Convert numeric input to a quantized Decimal safely."""
+    if value in (None, ''):
+        return default
+    try:
+        dec = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError, TypeError):
+        return default
+    if not dec.is_finite():
+        return default
+    quant = Decimal('1').scaleb(-places)
+    return dec.quantize(quant)
 
 

@@ -222,6 +222,12 @@ class CanManageHR(permissions.BasePermission):
             perm_key = HR_SECTION_PERM_MAP.get(required_section, required_section)
             if profile.has_perm(perm_key):
                 return True
+            # إجراء إعادة تطبيق القواعد يمكن استدعاؤه من شاشة "القواعد العامة" (hr_rules)
+            # أو من شاشة "سجل الحضور" (hr_attendance).
+            if getattr(view, 'action', None) == 'reapply_rules' and (
+                profile.has_perm('hr_rules') or profile.has_perm('hr_attendance')
+            ):
+                return True
             # قراءة البيانات المساندة (وظائف/موظفين/إعدادات) متاحة لأي تبويب HR
             # حتى تعمل شاشات السلف/الجزاءات/المرتبات بشكل صحيح، لكن بيانات
             # السلف/الجزاءات المالية نفسها لا تُقرأ إلا من التبويبات المخوّلة بها.

@@ -572,12 +572,31 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   };
 
   const handleDelete = () => {
+    const isPostCutting =
+      model.status !== 'مرحلة التصميم' && model.status !== 'تصميم';
+    if (isPostCutting) {
+      const firstConfirm = window.confirm(
+        `⚠️ تحذير خطير: الموديل (${model.model_code}) دخل أو تجاوز مرحلة القص بالفعل (الحالة الحالية: ${model.status}).\n\nالأصل أن تُحذف الموديلات قبل القص فقط. هل تريد بالتأكيد حذف هذا الموديل واسترداد خاماته السليمة المتبقية؟`
+      );
+      if (!firstConfirm) return;
+      const typed = window.prompt(
+        `لتأكيد حذف موديل بعد القص نهائياً، اكتب كود الموديل (${model.model_code}):`
+      );
+      if (!typed || typed.trim().toUpperCase() !== model.model_code.trim().toUpperCase()) {
+        addFlashMessage('تم إلغاء الحذف — كود التأكيد غير مطابق.', 'warning');
+        return;
+      }
+      deleteDesignModel(modelId, true);
+      onBack();
+      return;
+    }
+
     if (
       window.confirm(
         'هل أنت متأكد من حذف هذا الموديل؟ سيتم إخفاؤه من النظام وتحرير الأقمشة المحجوزة وإعادتها إلى المتاح للتصميم.'
       )
     ) {
-      deleteDesignModel(modelId);
+      deleteDesignModel(modelId, false);
       onBack();
     }
   };
@@ -1460,7 +1479,8 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                               <input
                                 type="number"
                                 min="0"
-                                disabled={!canEdit}
+                                step="any"
+                                disabled={!canEdit || !!acc.is_issued}
                                 value={accQuantities[acc.id] ?? acc.planned_quantity}
                                 onChange={(e) =>
                                   setAccQuantities({
@@ -1468,19 +1488,28 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                                     [acc.id]: parseFloat(e.target.value) || 0
                                   })
                                 }
-                                className="w-20 px-2 py-1 text-center font-black text-xs border rounded-lg"
+                                className="w-20 px-2 py-1 text-center font-black text-xs border rounded-lg disabled:bg-slate-100 disabled:text-slate-500"
                               />
                             </td>
                             <td className="p-2 text-center text-slate-500">{acc.unit || 'قطعة'}</td>
                             <td className="p-2 text-center">
-                              {canEdit && (
-                                <button
-                                  type="button"
-                                  onClick={() => deleteModelAccessory(acc.id)}
-                                  className="text-rose-500 hover:text-rose-700 cursor-pointer"
+                              {acc.is_issued ? (
+                                <span
+                                  className="inline-block px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-black"
+                                  title="تم صرف الإكسسوار من المخزن ولا يمكن تعديله أو حذفه"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                  تم الصرف
+                                </span>
+                              ) : (
+                                canEdit && (
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteModelAccessory(acc.id)}
+                                    className="text-rose-500 hover:text-rose-700 cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )
                               )}
                             </td>
                           </tr>
@@ -1528,7 +1557,8 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                               <input
                                 type="number"
                                 min="0"
-                                disabled={!canEdit}
+                                step="any"
+                                disabled={!canEdit || !!acc.is_issued}
                                 value={accQuantities[acc.id] ?? acc.planned_quantity}
                                 onChange={(e) =>
                                   setAccQuantities({
@@ -1536,19 +1566,28 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                                     [acc.id]: parseFloat(e.target.value) || 0
                                   })
                                 }
-                                className="w-20 px-2 py-1 text-center font-black text-xs border rounded-lg"
+                                className="w-20 px-2 py-1 text-center font-black text-xs border rounded-lg disabled:bg-slate-100 disabled:text-slate-500"
                               />
                             </td>
                             <td className="p-2 text-center text-slate-500">{acc.unit || 'قطعة'}</td>
                             <td className="p-2 text-center">
-                              {canEdit && (
-                                <button
-                                  type="button"
-                                  onClick={() => deleteModelAccessory(acc.id)}
-                                  className="text-rose-500 hover:text-rose-700 cursor-pointer"
+                              {acc.is_issued ? (
+                                <span
+                                  className="inline-block px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-black"
+                                  title="تم صرف الإكسسوار من المخزن ولا يمكن تعديله أو حذفه"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                  تم الصرف
+                                </span>
+                              ) : (
+                                canEdit && (
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteModelAccessory(acc.id)}
+                                    className="text-rose-500 hover:text-rose-700 cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )
                               )}
                             </td>
                           </tr>
@@ -1596,7 +1635,8 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                               <input
                                 type="number"
                                 min="0"
-                                disabled={!canEdit}
+                                step="any"
+                                disabled={!canEdit || !!acc.is_issued}
                                 value={accQuantities[acc.id] ?? acc.planned_quantity}
                                 onChange={(e) =>
                                   setAccQuantities({
@@ -1604,19 +1644,28 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                                     [acc.id]: parseFloat(e.target.value) || 0
                                   })
                                 }
-                                className="w-20 px-2 py-1 text-center font-black text-xs border rounded-lg"
+                                className="w-20 px-2 py-1 text-center font-black text-xs border rounded-lg disabled:bg-slate-100 disabled:text-slate-500"
                               />
                             </td>
                             <td className="p-2 text-center text-slate-500">{acc.unit || 'قطعة'}</td>
                             <td className="p-2 text-center">
-                              {canEdit && (
-                                <button
-                                  type="button"
-                                  onClick={() => deleteModelAccessory(acc.id)}
-                                  className="text-rose-500 hover:text-rose-700 cursor-pointer"
+                              {acc.is_issued ? (
+                                <span
+                                  className="inline-block px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-black"
+                                  title="تم صرف الإكسسوار من المخزن ولا يمكن تعديله أو حذفه"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                  تم الصرف
+                                </span>
+                              ) : (
+                                canEdit && (
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteModelAccessory(acc.id)}
+                                    className="text-rose-500 hover:text-rose-700 cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )
                               )}
                             </td>
                           </tr>
@@ -1664,7 +1713,8 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                               <input
                                 type="number"
                                 min="0"
-                                disabled={!canEdit}
+                                step="any"
+                                disabled={!canEdit || !!acc.is_issued}
                                 value={accQuantities[acc.id] ?? acc.planned_quantity}
                                 onChange={(e) =>
                                   setAccQuantities({
@@ -1672,19 +1722,28 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                                     [acc.id]: parseFloat(e.target.value) || 0
                                   })
                                 }
-                                className="w-20 px-2 py-1 text-center font-black text-xs border rounded-lg"
+                                className="w-20 px-2 py-1 text-center font-black text-xs border rounded-lg disabled:bg-slate-100 disabled:text-slate-500"
                               />
                             </td>
                             <td className="p-2 text-center text-slate-500">{acc.unit || 'قطعة'}</td>
                             <td className="p-2 text-center">
-                              {canEdit && (
-                                <button
-                                  type="button"
-                                  onClick={() => deleteModelAccessory(acc.id)}
-                                  className="text-rose-500 hover:text-rose-700 cursor-pointer"
+                              {acc.is_issued ? (
+                                <span
+                                  className="inline-block px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-black"
+                                  title="تم صرف الإكسسوار من المخزن ولا يمكن تعديله أو حذفه"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                  تم الصرف
+                                </span>
+                              ) : (
+                                canEdit && (
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteModelAccessory(acc.id)}
+                                    className="text-rose-500 hover:text-rose-700 cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )
                               )}
                             </td>
                           </tr>

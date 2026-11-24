@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from decimal import Decimal
 import uuid
 from .storage_r2 import guard_image_field
 from .models_auth import *
@@ -110,6 +111,12 @@ class HRAttendanceSettings(models.Model):
         verbose_name="يوم الإجازة الأسبوعية المدفوعة",
     )
     month_calculation_days = models.IntegerField(default=30, verbose_name="عدد أيام الشهر الحسابية")
+    weekly_off_work_multiplier = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal('1.00'),
+        verbose_name="معامل أجر العمل يوم الإجازة الأسبوعية",
+    )
     rules_json = models.JSONField(default=list, blank=True, verbose_name="قواعد التأخير والانصراف والغياب")
     overtime_rules = models.JSONField(default=list, blank=True, verbose_name="قواعد ومواعيد العمل الإضافي")
     updated_at = models.DateTimeField(auto_now=True)
@@ -167,9 +174,37 @@ class HRAttendanceSettings(models.Model):
     def weekly_off_day_label(self) -> str:
         return WEEK_DAY_LABELS.get(self.weekly_off_day, self.weekly_off_day)
 
+    @property
+    def working_hours_per_day(self) -> float:
+        """حساب ساعات العمل اليومية ديناميكياً من موعد الحضور والانصراف الرسمي."""
+        from django.utils.dateparse import parse_time as _parse_time
+
+        start = self.official_start_time
+        end = self.official_end_time
+        if isinstance(start, str):
+            start = _parse_time(start)
+        if isinstance(end, str):
+            end = _parse_time(end)
+        if not start or not end:
+            return 8.0
+        start_mins = start.hour * 60 + start.minute
+        end_mins = end.hour * 60 + end.minute
+        diff = end_mins - start_mins
+        if diff <= 0:
+            diff += 24 * 60
+        hours = round(diff / 60.0, 4)
+        return hours if hours > 0 else 8.0
+
     def save(self, *args, **kwargs):
         # عدد أيام الشهر الحسابية ثابت دائماً = 30 يوماً
         self.month_calculation_days = 30
+        try:
+            mult = Decimal(str(self.weekly_off_work_multiplier))
+            if mult < 0:
+                mult = Decimal('1.00')
+            self.weekly_off_work_multiplier = mult
+        except Exception:
+            self.weekly_off_work_multiplier = Decimal('1.00')
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -209,6 +244,12 @@ class HRAttendanceRecord(models.Model):
 
     class Meta:
         ordering = ['-date', '-id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['employee', 'date'],
+                name='uniq_hr_attendance_employee_date',
+            ),
+        ]
 
     def save(self, *args, **kwargs):
         if not self.client_id:
@@ -271,5 +312,36 @@ class HRLoan(models.Model):
 
     def __str__(self):
         return f"{self.employee} - {self.amount}"
+
+
+class HRPayrollSnapshot(models.Model):
+    """
+    لقطة شهرية مجمّدة لكشف المرتبات عند «اعتماد وإغلاق الشهر».
+    تحفظ رواتب الموظفين وقواعد الحضور وصافي المرتب بشكل دائم حتى لا تتأثر
+    بأي تعديل مستقبلي على الرواتب أو القواعد أو تعطيل الموظفين.
+    """
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    month = models.CharField(max_length=7, unique=True, db_index=True, verbose_name="الشهر (YYYY-MM)")
+    is_locked = models.BooleanField(default=True, verbose_name="الشهر معتمد ومغلق")
+    locked_at = models.DateTimeField(auto_now_add=True, verbose_name="تاريخ الاعتماد والإغلاق")
+    locked_by = models.CharField(max_length=200, blank=True, default='', verbose_name="تم الاعتماد بواسطة")
+    settings_snapshot = models.JSONField(default=dict, blank=True, verbose_name="لقطة إعدادات الحضور والرواتب")
+    rows_json = models.JSONField(default=list, blank=True, verbose_name="تفاصيل كشف الرواتب المجمد")
+    totals_json = models.JSONField(default=dict, blank=True, verbose_name="إجماليات الشهر المجمد")
+    notes = models.TextField(blank=True, default='', verbose_name="ملاحظات الإغلاق")
+
+    class Meta:
+        ordering = ['-month', '-id']
+        verbose_name = "اعتماد وإغلاق كشف رواتب شهري"
+        verbose_name_plural = "كشوف الرواتب المعتمدة والمغلقة"
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('hr-pay')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"كشف رواتب {self.month} ({'مغلق' if self.is_locked else 'مفتوح'})"
+
 
 

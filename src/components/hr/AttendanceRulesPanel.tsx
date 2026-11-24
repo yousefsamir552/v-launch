@@ -24,7 +24,7 @@ import {
   weeklyOffIndexFromKey, weeklyOffDayLabel, formatDayLabel, isoDate,
   weekDatesBeforeWeeklyOff, weeklyOffRatioForAbsences, weeklyOffRatioLabel,
   weeklyOffDeductionForDate, sumWeeklyOffDeductionsForEmployeeMonth,
-  dailyRateFor, hourlyRateFor, timeToMinutes, lateMinutesFor, matchLateRule,
+  dailyRateFor, hourlyRateFor, workingHoursPerDayFor, timeToMinutes, lateMinutesFor, matchLateRule,
   isAttendedRecord, MonthAccrual, computeMonthAccrual
 } from './hrShared';
 
@@ -38,17 +38,28 @@ export const AttendanceRulesPanel: React.FC<{
   const [startTime, setStartTime] = useState('08:30');
   const [endTime, setEndTime] = useState('17:30');
   const [weeklyOff, setWeeklyOff] = useState<HRWeekDayKey>('Sunday');
+  const [weeklyOffMultiplier, setWeeklyOffMultiplier] = useState<string>('1');
   const [rules, setRules] = useState<HRAttendanceRule[]>([]);
   const [overtimeRules, setOvertimeRules] = useState<HROvertimeRule[]>([]);
   const [formError, setFormError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isReapplying, setIsReapplying] = useState(false);
 
+  const shiftHours = useMemo(
+    () =>
+      workingHoursPerDayFor({
+        official_start_time: startTime,
+        official_end_time: endTime
+      }),
+    [startTime, endTime]
+  );
+
   useEffect(() => {
     if (!settings) return;
     setStartTime(settings.official_start_time || '08:30');
     setEndTime(settings.official_end_time || '17:30');
     setWeeklyOff(settings.weekly_off_day || 'Sunday');
+    setWeeklyOffMultiplier(String(settings.weekly_off_work_multiplier ?? 1));
     setRules(Array.isArray(settings.rules_json) ? settings.rules_json : []);
     setOvertimeRules(Array.isArray(settings.overtime_rules) ? settings.overtime_rules : []);
   }, [settings]);
@@ -129,8 +140,13 @@ export const AttendanceRulesPanel: React.FC<{
       setFormError('يرجى تحديد مواعيد الحضور والانصراف الرسمية');
       return;
     }
-    if (startTime >= endTime) {
-      setFormError('موعد الحضور الرسمي يجب أن يسبق موعد الانصراف الرسمي');
+    if (startTime === endTime) {
+      setFormError('موعد الحضور الرسمي وموعد الانصراف الرسمي لا يمكن أن يكونا متطابقين');
+      return;
+    }
+    const parsedMultiplier = Number(weeklyOffMultiplier);
+    if (!Number.isFinite(parsedMultiplier) || parsedMultiplier < 0) {
+      setFormError('معامل أجر العمل يوم الإجازة الأسبوعية يجب أن يكون رقماً موجباً (مثلاً 1 أو 1.5 أو 2)');
       return;
     }
     if (rules.some((rule) => !Number(rule.deduction_value) || Number(rule.deduction_value) <= 0)) {
@@ -159,6 +175,7 @@ export const AttendanceRulesPanel: React.FC<{
         official_start_time: startTime,
         official_end_time: endTime,
         weekly_off_day: weeklyOff,
+        weekly_off_work_multiplier: parsedMultiplier,
         month_calculation_days: 30,
         rules_json: rules.map((rule) => ({
           ...rule,
@@ -173,12 +190,19 @@ export const AttendanceRulesPanel: React.FC<{
       });
       addFlashMessage('تم حفظ قواعد الحضور والانصراف بنجاح');
       if (weeklyOffChanged) {
-        const reapplyResult = await api.reapplyHRAttendanceRules().catch(() => null);
-        const offLabel = HR_WEEK_DAYS.find((day) => day.key === weeklyOff)?.label || weeklyOff;
-        addFlashMessage(
-          `تم إعادة احتساب ${Number(reapplyResult?.updated ?? 0)} سجل حضور على أساس إجازة أسبوعية يوم ${offLabel}`,
-          'info'
-        );
+        try {
+          const reapplyResult = await api.reapplyHRAttendanceRules();
+          const offLabel = HR_WEEK_DAYS.find((day) => day.key === weeklyOff)?.label || weeklyOff;
+          addFlashMessage(
+            `تم إعادة احتساب ${Number(reapplyResult?.updated ?? 0)} سجل حضور على أساس إجازة أسبوعية يوم ${offLabel}`,
+            'info'
+          );
+        } catch (reapplyErr: any) {
+          addFlashMessage(
+            reapplyErr?.message || 'تم حفظ الإعدادات لكن تعذرت إعادة تطبيق القواعد على السجلات تلقائياً',
+            'warning'
+          );
+        }
       }
       logAction('الموارد البشرية', 'تحديث قواعد الحضور والانصراف العامة');
       await onRefresh();
@@ -204,7 +228,7 @@ export const AttendanceRulesPanel: React.FC<{
           </div>
         </div>
 
-        <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
           <div>
             <label className={labelClass}>موعد الحضور الرسمي</label>
             <input
@@ -237,13 +261,26 @@ export const AttendanceRulesPanel: React.FC<{
               ))}
             </select>
           </div>
+          <div>
+            <label className={labelClass}>معامل العمل يوم الإجازة (فوق الـ30 يوم)</label>
+            <input
+              type="number"
+              min="0"
+              step="0.25"
+              value={weeklyOffMultiplier}
+              onChange={(event) => setWeeklyOffMultiplier(event.target.value)}
+              placeholder="1.0 / 1.5 / 2.0"
+              className={`${inputClass} font-mono`}
+            />
+          </div>
         </div>
 
         <div className="mx-4 mb-4 flex items-start gap-2 px-3 py-2.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-800 text-[11px] font-bold">
           <Info className="w-4 h-4 shrink-0" />
           <span>
-            الشهر الحسابي ثابت دائماً 30 يوماً، وراتب اليوم = المرتب الشهري ÷ 30، وراتب الساعة = راتب
-            اليوم ÷ 8 ساعات.
+            الشهر الحسابي ثابت دائماً 30 يوماً (الغياب يخصم يوماً واحداً سواء كان الشهر 28 أو 30 أو 31 يوماً)،
+            وساعات العمل اليومية المحسوبة = {Number(shiftHours.toFixed(2))} ساعة، وراتب اليوم = المرتب ÷ 30،
+            وراتب الساعة = راتب اليوم ÷ {Number(shiftHours.toFixed(2))} ساعة. العمل يوم الإجازة الأسبوعية يُضاف فوق سقف الـ30 يوماً بمعامل ×{Number(weeklyOffMultiplier) || 1}.
           </span>
         </div>
       </div>

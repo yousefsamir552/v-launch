@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   Package,
@@ -33,6 +33,7 @@ import {
   Tag
 } from 'lucide-react';
 import { DesignModel, Fabric, FabricColor, FabricTransaction, ModelRequirement, Supplier } from '../types';
+import { api } from '../api/client';
 import { isImageLogo } from '../utils/printShared';
 import { AccessoriesWarehouseView } from './AccessoriesWarehouseView';
 import { ProductionWarehouseView } from './ProductionWarehouseView';
@@ -153,7 +154,8 @@ export const WarehouseView: React.FC = () => {
     formatSupplierWhatsappMessage,
     openWhatsAppOrder,
     addFlashMessage,
-    globalSettings
+    globalSettings,
+    updateGlobalSettings
   } = useApp();
 
   const [showPrintInventoryModal, setShowPrintInventoryModal] = useState(false);
@@ -332,18 +334,21 @@ export const WarehouseView: React.FC = () => {
   const [showTransactionModal, setShowTransactionModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
 
-  // Automatic Alert System State (Task 1.2: Replace fixed threshold buttons 1, 10, 15, 25 with a single Input Field + Confirm)
-  const [minThreshold, setMinThreshold] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem('erp_fabric_alert_threshold');
-      const parsed = saved ? parseFloat(saved) : NaN;
-      return !Number.isNaN(parsed) && parsed >= 0 ? parsed : 25;
-    } catch {
-      return 25;
-    }
-  });
-  const [thresholdInput, setThresholdInput] = useState<string>(() => String(minThreshold));
+  // Automatic Alert System State — persisted in DB via globalSettings.fabric_alert_threshold
+  const dbThreshold =
+    typeof globalSettings?.fabric_alert_threshold === 'number' &&
+    !Number.isNaN(globalSettings.fabric_alert_threshold) &&
+    globalSettings.fabric_alert_threshold >= 0
+      ? globalSettings.fabric_alert_threshold
+      : 25;
+  const [minThreshold, setMinThreshold] = useState<number>(dbThreshold);
+  const [thresholdInput, setThresholdInput] = useState<string>(() => String(dbThreshold));
   const [fabricDropdownOpen, setFabricDropdownOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    setMinThreshold(dbThreshold);
+    setThresholdInput(String(dbThreshold));
+  }, [dbThreshold]);
 
   const handleConfirmAlertThreshold = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -354,12 +359,8 @@ export const WarehouseView: React.FC = () => {
     }
     setMinThreshold(parsed);
     setThresholdInput(String(parsed));
-    try {
-      localStorage.setItem('erp_fabric_alert_threshold', String(parsed));
-    } catch {
-      // ignore storage errors
-    }
-    addFlashMessage(`تم تأكيد حد التنبيه: يتم الآن عرض الأقمشة التي تقل كميتها عن (${parsed})`, 'info');
+    updateGlobalSettings({ fabric_alert_threshold: parsed });
+    addFlashMessage(`تم تأكيد وحفظ حد التنبيه: يتم الآن عرض الأقمشة التي تقل كميتها عن (${parsed})`, 'info');
   };
 
   // Reorder Modal State
@@ -565,7 +566,11 @@ export const WarehouseView: React.FC = () => {
       color_code: color.color_code || '',
       color_name: color.color_name || '',
       hex_code: /^#[0-9A-Fa-f]{6}$/.test(color.hex_code || '') ? color.hex_code : '#64748b',
-      price_per_unit: String(color.price_per_unit ?? 0)
+      // عند غياب صلاحية رؤية السعر تكون القيمة null: نتركها فارغة حتى لا نُصفّر السعر بالخطأ عند حفظ التعديل.
+      price_per_unit:
+        color.price_per_unit !== null && color.price_per_unit !== undefined
+          ? String(color.price_per_unit)
+          : ''
     });
   };
 
@@ -584,9 +589,12 @@ export const WarehouseView: React.FC = () => {
       hex_code: editColorForm.hex_code
     };
 
-    // السعر يُعدّل فقط لمن يملك صلاحية تعديل أسعار الأقمشة.
-    if (canEditFabricPrices()) {
-      updates.price_per_unit = Math.max(0, parseFloat(editColorForm.price_per_unit) || 0);
+    // السعر يُعدّل فقط لمن يملك صلاحية تعديل أسعار الأقمشة وفقط عند إدخال قيمة فعلية (لا نُصفّر السعر المخفي).
+    if (canEditFabricPrices() && String(editColorForm.price_per_unit ?? '').trim() !== '') {
+      const parsedPrice = parseFloat(editColorForm.price_per_unit);
+      if (!Number.isNaN(parsedPrice) && parsedPrice >= 0) {
+        updates.price_per_unit = parsedPrice;
+      }
     }
 
     const res = updateFabricColorDetails(editingColor.id, updates);
@@ -596,6 +604,23 @@ export const WarehouseView: React.FC = () => {
       addFlashMessage(res.message, 'danger');
     }
   };
+
+  // سجل حركات القماش الكامل غير المقتطع (لجرد القماش الشامل).
+  const [fullFabricTransactions, setFullFabricTransactions] = useState<FabricTransaction[] | null>(null);
+  useEffect(() => {
+    if (fabricSubView !== 'audit') return;
+    let cancelled = false;
+    api
+      .getFabricTransactions()
+      .then((rows) => {
+        if (!cancelled && Array.isArray(rows)) setFullFabricTransactions(rows);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [fabricSubView, fabricTransactions.length]);
+  const auditFabricTransactions = fullFabricTransactions ?? fabricTransactions;
 
   // ============================================================
   // جرد القماش الشامل (وارد / مستهلك / متبقي + توزيع الاستهلاك)
@@ -613,7 +638,7 @@ export const WarehouseView: React.FC = () => {
   const fabricAuditRows: FabricAuditRow[] = [];
 
   const buildAuditRowForColor = (fabric: Fabric, color: FabricColor) => {
-    const colorTransactions = fabricTransactions.filter((t) => t.color_id === color.id);
+    const colorTransactions = auditFabricTransactions.filter((t) => t.color_id === color.id);
     const deductTransactions = colorTransactions.filter((t) => t.operation === 'deduct');
     const returnTransactions = colorTransactions.filter(
       (t) => t.operation === 'add' && (t.notes || '').includes('إرجاع فائض')

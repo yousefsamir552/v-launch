@@ -12,7 +12,7 @@ from .models import (
     PackagingMaterialRule, PackagingMaterialSizeRule, PackagingMaterialTransaction,
     PART_STAGE_LABELS, PART_STAGE_ORDER, PART_TYPE_CHOICES,
     HRJobTitle, HREmployee, HRAttendanceSettings,
-    HRAttendanceRecord, HRPenalty, HRLoan,
+    HRAttendanceRecord, HRPenalty, HRLoan, HRPayrollSnapshot,
     RANK_SUDO, RANK_LEVEL_THREE, DEFAULT_RANK_LEVEL,
     coerce_rank_level, rank_visibility_label, SALARY_PERMISSION_KEYS,
 )
@@ -163,6 +163,7 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
             'favorite_accessory_ids': self._system_setting_list('favorite_accessory_ids', 'ids'),
             'accessory_groups': self._system_setting_list('accessory_groups', 'groups'),
             'department_targets': instance.department_targets if isinstance(instance.department_targets, dict) else {},
+            'fabric_alert_threshold': float(instance.fabric_alert_threshold if instance.fabric_alert_threshold is not None else 25),
             'updated_by': instance.updated_by or '',
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
         }
@@ -382,14 +383,15 @@ class AccessorySerializer(serializers.ModelSerializer):
                 else None
             ),
             'supplier_id': instance.supplier_id_ref or '',
-            'min_threshold': int(instance.min_threshold or 0),
+            'min_threshold': float(instance.min_threshold or 0),
             'created_at': instance.created_at_str or '',
             'usage_type': instance.usage_type or 'stock',
             'custom_model_code': instance.custom_model_code or '',
-            'target_quantity': int(instance.target_quantity or 0),
-            'delivered_quantity': int(instance.delivered_quantity or 0),
+            'target_quantity': float(instance.target_quantity or 0),
+            'delivered_quantity': float(instance.delivered_quantity or 0),
             'withdrawn_for_model': bool(instance.withdrawn_for_model),
-            'deficit_quantity': instance.deficit_quantity,
+            'deficit_quantity': float(instance.deficit_quantity or 0),
+            'notes': instance.notes or '',
         }
 
 
@@ -630,6 +632,7 @@ class PrintDispatchSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         cost = float(instance.cost_per_piece or 0)
         pcs = int(instance.pieces_count or 0)
+        received = int(instance.received_pieces or 0)
         can_view_costs = viewer_can_view(self.context, 'view_printing_prices', 'view_printing_costs')
         disp_at = instance.dispatched_at_str or (instance.dispatch_date.isoformat() if instance.dispatch_date else '')
         rec_at = instance.received_at_str or (instance.received_date.isoformat() if instance.received_date else None)
@@ -645,13 +648,13 @@ class PrintDispatchSerializer(serializers.ModelSerializer):
             'dispatched_at': disp_at,
             'expected_delivery_date': to_date_str(instance.expected_delivery_date),
             'pieces_count': pcs,
-            'received_pieces': int(instance.received_pieces or 0),
-            'remaining_pieces': max(0, pcs - int(instance.received_pieces or 0)),
+            'received_pieces': received,
+            'remaining_pieces': max(0, pcs - received),
             'receive_history': instance.receive_history if isinstance(instance.receive_history, list) else [],
             'print_type': instance.print_type or 'سلك سكرين مائي',
-            # تكاليف الطباعة تُخفى (None) لمن لا يملك صلاحية عرضها.
+            # تكاليف الطباعة تُخفى (None) لمن لا يملك صلاحية عرضها وتُحسب دائماً على المستلم الفعلي.
             'cost_per_piece': cost if can_view_costs else None,
-            'total_cost': round(cost * pcs, 2) if can_view_costs else None,
+            'total_cost': round(cost * received, 2) if can_view_costs else None,
             'notes': instance.notes or '',
             'status': instance.status,
             'received_at': rec_at,
@@ -671,22 +674,24 @@ class SewingDispatchSerializer(serializers.ModelSerializer):
         rec_at = instance.received_at_str or (instance.received_date.isoformat() if instance.received_date else None)
         can_view_prices = viewer_can_view(self.context, 'view_sewing_prices')
         pcs = int(instance.pieces_count or 0)
+        received = int(instance.received_pieces or 0)
         cost = float(instance.cost_per_piece or 0)
-        total = float(instance.total_cost or 0) or round(cost * pcs, 2)
+        # القاعدة المحاسبية المؤكدة: تكلفة المكن تُحسب دائماً على القطع المستلمة فعلياً.
+        total = round(cost * received, 2)
         return {
             'id': get_ext_id(instance),
             'model_id': get_ext_id(instance.model),
             'workshop_name': instance.workshop_name,
             'workshop_id': workshop_ext_id(instance),
             'pieces_count': pcs,
-            'received_pieces': int(instance.received_pieces or 0),
-            'remaining_pieces': max(0, pcs - int(instance.received_pieces or 0)),
+            'received_pieces': received,
+            'remaining_pieces': max(0, pcs - received),
             'receive_history': instance.receive_history if isinstance(instance.receive_history, list) else [],
             'dispatched_at': disp_at,
             'expected_delivery_date': to_date_str(instance.expected_delivery_date),
             'status': instance.status,
             'piece_type': instance.piece_type or 'shirt',
-            'piece_label': instance.piece_label or ('تيشرت' if instance.piece_type == 'shirt' else 'بنطلون'),
+            'piece_label': instance.piece_label or instance.get_piece_type_display(),
             'received_at': rec_at,
             'notes': instance.notes or '',
             'is_overdue': instance.is_overdue,
@@ -1151,6 +1156,8 @@ class HRAttendanceSettingsSerializer(serializers.ModelSerializer):
             'weekly_off_day': instance.weekly_off_day,
             'weekly_off_day_label': instance.weekly_off_day_label,
             'month_calculation_days': instance.month_calculation_days or 30,
+            'weekly_off_work_multiplier': float(instance.weekly_off_work_multiplier if instance.weekly_off_work_multiplier is not None else 1.0),
+            'working_hours_per_day': float(instance.working_hours_per_day),
             'rules_json': instance.rules_json if isinstance(instance.rules_json, list) else [],
             'overtime_rules': instance.overtime_rules if isinstance(instance.overtime_rules, list) else [],
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
@@ -1232,4 +1239,23 @@ class HRLoanSerializer(serializers.ModelSerializer):
             'amount': float(instance.amount or 0),
             'notes': instance.notes or '',
             'created_at': instance.created_at.isoformat() if instance.created_at else '',
+        }
+
+
+class HRPayrollSnapshotSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HRPayrollSnapshot
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        return {
+            'id': get_ext_id(instance),
+            'month': instance.month,
+            'is_locked': bool(instance.is_locked),
+            'locked_at': instance.locked_at.isoformat() if instance.locked_at else '',
+            'locked_by': instance.locked_by or '',
+            'settings_snapshot': instance.settings_snapshot if isinstance(instance.settings_snapshot, dict) else {},
+            'rows': instance.rows_json if isinstance(instance.rows_json, list) else [],
+            'totals': instance.totals_json if isinstance(instance.totals_json, dict) else {},
+            'notes': instance.notes or '',
         }

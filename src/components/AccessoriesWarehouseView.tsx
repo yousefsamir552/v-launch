@@ -121,7 +121,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
     usageType: 'stock' as AccessoryUsageType,
     customModelCode: '',
     targetQuantity: 100,
-    pricePerUnit: 0
+    pricePerUnit: '' as string | number
   });
 
   // Reorder modal state
@@ -192,9 +192,9 @@ export const AccessoriesWarehouseView: React.FC = () => {
         };
       } else {
         const threshold = Number(item.min_threshold ?? 0);
-        const deficit = Math.max(0, threshold - available);
-        // حد التنبيه = 0 يعني أن التنبيهات معطّلة لهذا الصنف (لا نقص أبداً).
-        const isLow = threshold > 0 && available <= threshold;
+        const deficit = Math.max(0, Number((threshold - available).toFixed(3)));
+        // حد التنبيه = 0 يعني أن التنبيهات معطّلة لهذا الصنف؛ والنقص الفعلي عند available < threshold فقط.
+        const isLow = threshold > 0 && available < threshold;
         return {
           item,
           supplier: sup,
@@ -437,7 +437,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
       usageType: item.usage_type || 'stock',
       customModelCode: item.custom_model_code || '',
       targetQuantity: Number(item.target_quantity ?? item.min_threshold ?? 0),
-      pricePerUnit: Number(item.price_per_unit ?? 0)
+      // عند غياب صلاحية رؤية السعر تكون القيمة null: نتركها فارغة حتى لا نُصفّر السعر بالخطأ.
+      pricePerUnit:
+        item.price_per_unit !== null && item.price_per_unit !== undefined
+          ? String(item.price_per_unit)
+          : ''
     });
     setShowEditModal(true);
   };
@@ -456,6 +460,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
       : isCustom
       ? Math.max(0, Number(editForm.targetQuantity))
       : nextThreshold;
+    const rawPriceStr = String(editForm.pricePerUnit ?? '').trim();
+    const parsedPrice = rawPriceStr !== '' ? Number(rawPriceStr) : NaN;
 
     updateAccessoryItem(editingItem.id, {
       type_id: editForm.typeId,
@@ -471,8 +477,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
       custom_model_code: isCarryover ? '' : isCustom ? editForm.customModelCode.trim() : '',
       target_quantity: nextTarget,
       ...(isCarryover ? { delivered_quantity: 0, withdrawn_for_model: false } : {}),
-      ...(canEditAccessoryPrices()
-        ? { price_per_unit: Math.max(0, Number(editForm.pricePerUnit) || 0) }
+      ...(canEditAccessoryPrices() && Number.isFinite(parsedPrice) && parsedPrice >= 0
+        ? { price_per_unit: parsedPrice }
         : {})
     });
 
@@ -1139,7 +1145,15 @@ export const AccessoriesWarehouseView: React.FC = () => {
                       </button>
                       <button
                         type="button"
-                        onClick={() => deleteAccessoryItem(item.id)}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `هل أنت متأكد من حذف الإكسسوار "${item.name}" (${item.code}) نهائياً من المخزن؟`
+                            )
+                          ) {
+                            deleteAccessoryItem(item.id);
+                          }
+                        }}
                         className="p-1.5 bg-rose-600/90 text-white rounded-lg shadow-xs hover:bg-rose-700 transition cursor-pointer"
                         title="حذف الصنف"
                       >
@@ -2223,8 +2237,9 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     step="0.01"
                     value={editForm.pricePerUnit}
                     onChange={(e) =>
-                      setEditForm({ ...editForm, pricePerUnit: Number(e.target.value) })
+                      setEditForm({ ...editForm, pricePerUnit: e.target.value })
                     }
+                    placeholder="اتركه فارغاً للإبقاء على السعر الحالي"
                     className="w-full px-3 py-2 text-xs rounded-xl border border-emerald-300 bg-emerald-50/40 font-bold text-emerald-950 focus:outline-hidden"
                   />
                   <p className="text-[10px] text-slate-500 mt-1">

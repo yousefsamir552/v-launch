@@ -164,8 +164,15 @@ def parse_sheet_time(value):
         return None
     text = text.replace('\u200f', '').replace('\u200e', '')
 
-    # كسور إكسيل: 0.354166 = 08:30، و 45678.354166 = تاريخ + وقت.
-    if re.fullmatch(r'\d+(\.\d+)?', text):
+    # أرقام صحيحة من خانة أو خانتين مثل "8" أو "17" تعني الساعة (08:00 / 17:00) وليس منتصف الليل.
+    if re.fullmatch(r'\d{1,2}', text):
+        hour_int = int(text)
+        if 0 <= hour_int <= 23:
+            return time(hour_int, 0, 0)
+        return None
+
+    # كسور إكسيل (تحتوي على فاصلة عشرية): 0.354166 = 08:30، و 45678.354166 = تاريخ + وقت.
+    if re.fullmatch(r'\d+\.\d+', text):
         try:
             number = float(text)
         except ValueError:
@@ -471,8 +478,52 @@ def parse_attendance_sheet(filename: str, content: bytes):
             'status': status,
         })
 
+    # دمج صفوف البصمة المنفصلة لنفس الموظف في نفس اليوم (مثلاً صف للحضور وصف للانصراف).
+    merged_by_key = {}
+    merged_order = []
+    for item in rows:
+        emp_key = (
+            item['employee_code'].casefold()
+            if item['employee_code']
+            else ' '.join(item['employee_name'].split()).casefold()
+        )
+        key = (emp_key, item['date'])
+        existing = merged_by_key.get(key)
+        if existing is None:
+            merged_by_key[key] = dict(item)
+            merged_order.append(key)
+            continue
+
+        # جمع البصمات المتاحة لهذا اليوم (أقدم بصمة = حضور، أحدث بصمة = انصراف).
+        in_times = [t for t in (existing['check_in'], item['check_in']) if t is not None]
+        out_times = [t for t in (existing['check_out'], item['check_out']) if t is not None]
+        if in_times and out_times:
+            existing['check_in'] = min(in_times)
+            existing['check_out'] = max(out_times)
+        elif len(in_times) >= 2 and not out_times:
+            # بعض أجهزة البصمة تضع الحضور والانصراف كلاهما في عمود "الحضور" بصفين منفصلين.
+            existing['check_in'] = min(in_times)
+            latest = max(in_times)
+            if latest != existing['check_in']:
+                existing['check_out'] = latest
+        elif len(out_times) >= 2 and not in_times:
+            existing['check_in'] = min(out_times)
+            latest = max(out_times)
+            if latest != existing['check_in']:
+                existing['check_out'] = latest
+        else:
+            existing['check_in'] = existing['check_in'] or item['check_in']
+            existing['check_out'] = existing['check_out'] or item['check_out']
+
+        if item['status'] and (not existing['status'] or existing['status'] == 'missing_punch'):
+            existing['status'] = item['status']
+        if item['employee_name'] and not existing['employee_name']:
+            existing['employee_name'] = item['employee_name']
+
+    merged_rows = [merged_by_key[key] for key in merged_order]
+
     return {
-        'rows': rows,
+        'rows': merged_rows,
         'errors': errors,
         'skipped': skipped,
         'total_rows': len(raw_rows),
@@ -533,11 +584,25 @@ def _match_rule(rules, violation_type: str, minutes: float):
     if best:
         return best[1]
 
-    # لا توجد شريحة مطابقة: إما أن الدقائق وقعت في فجوة بين شريحتين أو تجاوزت
-    # أعلى شريحة مسجلة. في الحالتين تُطبَّق أعلى شريحة تأخير تلقائياً بدلاً من
-    # تجاهل الخصم بصمت (بشرط ألا تكون الدقائق أقل من كل الشرائح).
+    # لا توجد شريحة مطابقة مباشرة:
+    # 1) إذا وقعت الدقائق في فجوة بين شريحتين (أقل من أعلى حد أقصى)، نطبّق أقرب شريحة سابقة (أكبر to_minutes < minutes)
+    #    بدلاً من القفز إلى أقصى عقوبة.
+    # 2) إذا تجاوزت الدقائق أعلى شريحة مسجلة، نطبّق الشريحة الأعلى.
     min_from = min((from_min for from_min, _to, _rule in candidates), default=None)
     if min_from is not None and minutes >= min_from:
+        lower_tiers = [
+            item for item in candidates
+            if item[1] is not None and item[1] < minutes
+        ]
+        higher_tiers = [
+            item for item in candidates
+            if item[0] > minutes
+        ]
+        if lower_tiers and higher_tiers:
+            # وقعت في فجوة بين شريحة أقل وشريحة أعلى → طبّق أقرب شريحة أقل.
+            closest_lower = max(lower_tiers, key=lambda item: (item[1], item[0]))
+            return closest_lower[2]
+        # تجاوزت كل الشرائح → طبّق أعلى شريحة.
         highest = max(
             candidates,
             key=lambda item: (
@@ -593,24 +658,32 @@ def compute_attendance(settings, employee, work_date, check_in, check_out, statu
     late_minutes = 0
     early_minutes = 0
     # تُحتسب دقائق التأخير/الانصراف المبكر متى وُجدت بصمة فعلية (حضور أو بصمة ناقصة).
+    # ندعم الورديات العابرة لمنتصف الليل (مثل 22:00 → 06:00 أو انصراف إضافي بعد 00:00).
     if check_in or check_out:
-        # مقارنة موحّدة بالدقائق من منتصف الليل حتى تعمل مع time أو "HH:MM(:SS)"
         check_in_minutes = _clock_minutes(check_in)
         check_out_minutes = _clock_minutes(check_out)
         start_minutes = _clock_minutes(official_start)
         end_minutes = _clock_minutes(official_end)
-        if (
-            check_in_minutes is not None
-            and start_minutes is not None
-            and check_in_minutes > start_minutes
-        ):
-            late_minutes = int(round(check_in_minutes - start_minutes))
-        if (
-            check_out_minutes is not None
-            and end_minutes is not None
-            and check_out_minutes < end_minutes
-        ):
-            early_minutes = int(round(end_minutes - check_out_minutes))
+        if start_minutes is not None and end_minutes is not None:
+            is_overnight_shift = end_minutes <= start_minutes
+            eff_end = end_minutes + 1440 if is_overnight_shift else end_minutes
+
+            eff_in = check_in_minutes
+            if eff_in is not None and is_overnight_shift and eff_in < start_minutes - 360:
+                eff_in += 1440
+
+            eff_out = check_out_minutes
+            if eff_out is not None:
+                if is_overnight_shift and eff_out <= start_minutes:
+                    eff_out += 1440
+                elif not is_overnight_shift and eff_in is not None and eff_out < eff_in:
+                    # وردية نهارية استمرت لما بعد منتصف الليل (مثلاً حضور 08:30 وانصراف 00:30).
+                    eff_out += 1440
+
+            if eff_in is not None and eff_in > start_minutes:
+                late_minutes = int(round(eff_in - start_minutes))
+            if eff_out is not None and eff_out < eff_end:
+                early_minutes = int(round(eff_end - eff_out))
 
     totals = {'days': 0.0, 'hours': 0.0}
     manual_review = getattr(employee, 'rule_application_mode', 'auto') == 'manual_review'
@@ -673,12 +746,32 @@ def _clock_minutes(value):
     return hours * 60 + minutes
 
 
-def compute_overtime(settings, check_out):
+def working_hours_per_day(settings) -> float:
+    """احتساب ساعات العمل اليومية ديناميكياً من مواعيد الحضور والانصراف الرسمية."""
+    if settings is not None and hasattr(settings, 'working_hours_per_day'):
+        try:
+            val = float(settings.working_hours_per_day)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    start_m = _clock_minutes(getattr(settings, 'official_start_time', None) or time(8, 30))
+    end_m = _clock_minutes(getattr(settings, 'official_end_time', None) or time(17, 30))
+    if start_m is None or end_m is None:
+        return 8.0
+    diff = end_m - start_m
+    if diff <= 0:
+        diff += 1440
+    hours = round(diff / 60.0, 4)
+    return hours if hours > 0 else 8.0
+
+
+def compute_overtime(settings, check_out, check_in=None):
     """
     احتساب العمل الإضافي من بصمة الانصراف وفق قواعد الإضافي.
 
-    القاعدة تنطبق إذا كانت بصمة الانصراف ضمن الشريحة أو بعد بدايتها
-    (check_out >= from_time)، وعند تطابق أكثر من شريحة تُختار الأكثر تحديداً
+    تُحترم بدايتا ونهايتا كل قاعدة (from_time <= check_out <= to_time) مع دعم
+    الورديات التي تعبر منتصف الليل، وعند تطابق أكثر من شريحة تُختار الأكثر تحديداً
     (الأكبر في from_time).
 
     Returns dict(overtime_days, overtime_hours, overtime_label).
@@ -692,6 +785,22 @@ def compute_overtime(settings, check_out):
     if check_out_minutes is None:
         return empty
 
+    official_start = getattr(settings, 'official_start_time', None) or time(8, 30)
+    official_end = getattr(settings, 'official_end_time', None) or time(17, 30)
+    start_minutes = _clock_minutes(official_start) or 0
+    end_minutes = _clock_minutes(official_end) or 0
+    is_overnight_shift = end_minutes <= start_minutes
+    check_in_minutes = _clock_minutes(check_in)
+
+    eff_out = check_out_minutes
+    if is_overnight_shift and eff_out <= start_minutes:
+        eff_out += 1440
+    elif not is_overnight_shift and (
+        (check_in_minutes is not None and eff_out < check_in_minutes)
+        or (check_in_minutes is None and eff_out < start_minutes)
+    ):
+        eff_out += 1440
+
     best = None
     for rule in rules:
         if not isinstance(rule, dict):
@@ -699,10 +808,27 @@ def compute_overtime(settings, check_out):
         from_minutes = _clock_minutes(rule.get('from_time'))
         if from_minutes is None:
             continue
-        if check_out_minutes < from_minutes:
+        to_minutes = _clock_minutes(rule.get('to_time'))
+
+        # تطبيع شريحة الإضافي لعبور منتصف الليل عند الحاجة.
+        eff_from = from_minutes
+        eff_to = to_minutes
+        if is_overnight_shift and eff_from <= start_minutes:
+            eff_from += 1440
+        elif not is_overnight_shift and eff_from < start_minutes:
+            eff_from += 1440
+        if eff_to is not None:
+            if eff_to <= eff_from:
+                eff_to += 1440
+            elif eff_to < start_minutes and eff_from >= 1440:
+                eff_to += 1440
+
+        if eff_out < eff_from:
             continue
-        if best is None or from_minutes > best[0]:
-            best = (from_minutes, rule)
+        if eff_to is not None and eff_out > eff_to:
+            continue
+        if best is None or eff_from > best[0]:
+            best = (eff_from, rule)
 
     if not best:
         return empty
@@ -744,7 +870,14 @@ def sunday_deduction_for_week(records_by_date, week_dates):
     absent_dates = []
     for day in week_dates:
         record = records_by_date.get(day)
-        attended = bool(record and (getattr(record, 'is_excused', False) or record.check_in))
+        attended = bool(
+            record
+            and (
+                getattr(record, 'status', '') == 'present'
+                or getattr(record, 'is_excused', False)
+                or record.check_in
+            )
+        )
         if not attended:
             absent_dates.append(day)
 
@@ -773,7 +906,7 @@ def _week_dates_before(off_date):
     return [off_date - timedelta(days=offset) for offset in range(6, 0, -1)]
 
 
-def reapply_employee_month(settings, employee, month_start, month_end, preserve_decisions=False):
+def reapply_employee_month(settings, employee, month_start, month_end, preserve_decisions=True):
     """
     إعادة تطبيق قواعد الحضور والإضافي وخصم الإجازة الأسبوعية على كل سجلات موظف في شهر.
 
@@ -813,7 +946,7 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
             record.check_out,
             record.status,
         )
-        overtime = compute_overtime(settings, record.check_out)
+        overtime = compute_overtime(settings, record.check_out, record.check_in)
 
         if record.is_excused:
             deduction_days = 0.0

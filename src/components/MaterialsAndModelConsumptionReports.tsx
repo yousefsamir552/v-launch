@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { api } from '../api/client';
 import {
   AlertTriangle,
   Boxes,
@@ -353,19 +354,39 @@ const ModelCodeChips: React.FC<{ codes: string[]; max?: number }> = ({ codes, ma
 /* Materials & accessories report                                     */
 /* ------------------------------------------------------------------ */
 
-export const MaterialsReportSection: React.FC = () => {
+export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ refreshTick = 0 }) => {
   const {
     models,
     sizeDefs,
     suppliers,
     fabrics,
     fabricColors,
-    fabricTransactions,
+    fabricTransactions: stateFabricTransactions,
     accessoryItems,
-    accessoryTransactions,
+    accessoryTransactions: stateAccessoryTransactions,
     canViewFabricPrices,
     canViewAccessoryPrices
   } = useApp();
+  const [fullFabricTxns, setFullFabricTxns] = useState<FabricTransaction[] | null>(null);
+  const [fullAccessoryTxns, setFullAccessoryTxns] = useState<typeof stateAccessoryTransactions | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      api.getFabricTransactions().catch(() => null),
+      api.getAccessoryTransactions().catch(() => null)
+    ]).then(([fTxns, aTxns]) => {
+      if (!active) return;
+      if (Array.isArray(fTxns)) setFullFabricTxns(fTxns);
+      if (Array.isArray(aTxns)) setFullAccessoryTxns(aTxns);
+    });
+    return () => {
+      active = false;
+    };
+  }, [refreshTick, stateFabricTransactions.length, stateAccessoryTransactions.length]);
+
+  const fabricTransactions = fullFabricTxns ?? stateFabricTransactions;
+  const accessoryTransactions = fullAccessoryTxns ?? stateAccessoryTransactions;
   const openPrint = usePrintWindow();
 
   const [activeSection, setActiveSection] = useState<'fabric' | 'accessory'>('fabric');
@@ -1195,14 +1216,14 @@ const ASSEMBLY_LABELS: Record<AssemblyStageKey, string> = {
   dest: 'الدَست'
 };
 
-export const ModelConsumptionReportSection: React.FC = () => {
+export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> = ({ refreshTick = 0 }) => {
   const {
     models,
     sizeDefs,
     fabrics,
     fabricColors,
-    fabricTransactions,
-    accessoryTransactions,
+    fabricTransactions: stateFabricTransactions,
+    accessoryTransactions: stateAccessoryTransactions,
     cuttingRecords,
     printDispatches,
     sewingDispatches,
@@ -1217,6 +1238,26 @@ export const ModelConsumptionReportSection: React.FC = () => {
     canViewSewingPrices,
     canViewAssemblyPrices
   } = useApp();
+  const [fullFabricTxns, setFullFabricTxns] = useState<FabricTransaction[] | null>(null);
+  const [fullAccessoryTxns, setFullAccessoryTxns] = useState<typeof stateAccessoryTransactions | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      api.getFabricTransactions().catch(() => null),
+      api.getAccessoryTransactions().catch(() => null)
+    ]).then(([fTxns, aTxns]) => {
+      if (!active) return;
+      if (Array.isArray(fTxns)) setFullFabricTxns(fTxns);
+      if (Array.isArray(aTxns)) setFullAccessoryTxns(aTxns);
+    });
+    return () => {
+      active = false;
+    };
+  }, [refreshTick, stateFabricTransactions.length, stateAccessoryTransactions.length]);
+
+  const fabricTransactions = fullFabricTxns ?? stateFabricTransactions;
+  const accessoryTransactions = fullAccessoryTxns ?? stateAccessoryTransactions;
   const openPrint = usePrintWindow();
 
   const [search, setSearch] = useState('');

@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.hashers import make_password, check_password as django_check_password
 from datetime import date, timedelta
+from decimal import Decimal
 import uuid
 
 from .storage_r2 import guard_image_field
@@ -179,6 +180,12 @@ class GlobalSettings(models.Model):
         default=dict,
         blank=True,
         verbose_name="تارجتات الأقسام (يومي / شهري)"
+    )
+    fabric_alert_threshold = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('25.00'),
+        verbose_name="حد التنبيه الأدنى لمخزن القماش"
     )
     updated_by = models.CharField(
         max_length=150,

@@ -70,11 +70,11 @@ class ModelItemViewSet(BasePermViewSet):
         # إرجاع فائض القماش للمخزن متاح لقسم القص أو لمخزن القماش (تعديل).
         if action_name == 'return_fabric_to_warehouse' and profile.has_perm('fabric_warehouse_edit'):
             return
-        # صرف وتسليم إكسسوارات الموديل متاح لأمين مخزن الإكسسوارات أو قسم المكن.
-        if action_name == 'issue_accessories' and (
-            profile.has_perm('accessories_warehouse_edit') or profile.has_perm('sewing_edit')
-        ):
+        # صرف وتسليم إكسسوارات الموديل محصور في صلاحية تعديل مخزن الإكسسوارات فقط.
+        if action_name == 'issue_accessories' and profile.has_perm('accessories_warehouse_edit'):
             return
+        if action_name == 'issue_accessories':
+            raise PermissionDenied('صرف الإكسسوارات مخصص لصلاحية مخزن الإكسسوارات فقط')
         # فحص واسترداد أرصدة الموديلات المحذوفة متاح لحساب sudo أو مدير النظام.
         if action_name == 'refund_deleted_inventory' and profile.has_perm('manage_permissions'):
             return
@@ -263,10 +263,31 @@ class ModelItemViewSet(BasePermViewSet):
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
     def destroy(self, request, *args, **kwargs):
-        """حذف الموديل (حذف منطقي) مع استرداد ما صُرف فعلياً من قماش/إكسسوارات للمخزن."""
+        """حذف الموديل (حذف منطقي) مع حارس تأكيد لما بعد القص واسترداد ما صُرف فعلياً."""
         model = self.get_object()
         profile = getattr(request, 'user_profile', None)
         data = getattr(request, 'data', {}) or {}
+        has_entered_cutting = (
+            (model.status not in ('مرحلة التصميم', 'تصميم'))
+            or model.cutting_records.exists()
+        )
+        confirm_override = (
+            str(request.query_params.get('confirm_post_cutting') or '').strip().lower() in ('1', 'true', 'yes')
+            or bool(data.get('confirm_post_cutting'))
+            or bool(data.get('force'))
+        )
+        if has_entered_cutting and not confirm_override:
+            return Response(
+                {
+                    'detail': (
+                        f'تحذير: الموديل ({model.model_code}) دخل أو تجاوز مرحلة القص بالفعل '
+                        f'(الحالة الحالية: {model.status}). يتطلب حذفه تأكيداً صريحاً.'
+                    ),
+                    'requires_post_cutting_confirmation': True,
+                    'model_status': model.status,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         user_name = (
             (data.get('user_name') or '').strip()
             or (getattr(profile, 'real_name', '') if profile else '')
@@ -365,7 +386,7 @@ class ModelItemViewSet(BasePermViewSet):
 
             for acc_id, qty in acc_quantities.items():
                 acc_obj = resolve_by_id(ModelAccessory, acc_id)
-                if acc_obj and acc_obj.model_id == model.id:
+                if acc_obj and acc_obj.model_id == model.id and not acc_obj.is_issued:
                     acc_obj.planned_quantity = max(0.0, float(qty or 0))
                     acc_obj.save()
 
@@ -397,17 +418,7 @@ class ModelItemViewSet(BasePermViewSet):
 
     @action(detail=True, methods=['post'])
     def issue_fabric_to_cutting(self, request, pk=None):
-        model = self.get_object()
-
-        # حماية من إعادة صرف / نقل موديل غادر مرحلة التصميم بالفعل.
-        if model.status not in ('مرحلة التصميم', 'تصميم'):
-            return Response(
-                {
-                    'error': 'تم صرف خامات هذا الموديل وتحويله لقسم القص مسبقاً ولا يمكن إعادة صرفه أو نقله مرة أخرى.'
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+        target_model = self.get_object()
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         user_name = request.data.get('user_name') or 'مسؤول التصميم'
 
@@ -415,6 +426,16 @@ class ModelItemViewSet(BasePermViewSet):
         pending_accessories = []
 
         with transaction.atomic():
+            # قفل سجل الموديل داخل المعاملة لمنع أي صرف مزدوج متزامن.
+            model = ModelItem.objects.select_for_update().get(pk=target_model.pk)
+            if model.status not in ('مرحلة التصميم', 'تصميم'):
+                return Response(
+                    {
+                        'error': 'تم صرف خامات هذا الموديل وتحويله لقسم القص مسبقاً ولا يمكن إعادة صرفه أو نقله مرة أخرى.'
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             # Optional: if reqQuantities or accQuantities were sent in the same payload, apply them first
             req_quantities = request.data.get('reqQuantities') or {}
             acc_quantities = request.data.get('accQuantities') or {}
@@ -425,14 +446,42 @@ class ModelItemViewSet(BasePermViewSet):
                     req_obj.save()
             for acc_id, qty in acc_quantities.items():
                 acc_obj = resolve_by_id(ModelAccessory, acc_id)
-                if acc_obj and acc_obj.model_id == model.id:
+                if acc_obj and acc_obj.model_id == model.id and not acc_obj.is_issued:
                     acc_obj.planned_quantity = max(0.0, float(qty or 0))
                     acc_obj.save()
 
-            for req in model.requirements.select_related('color', 'color__fabric').all():
-                if req.planned_quantity > 0:
-                    # Lock the color row: concurrent issue operations must not double-deduct.
-                    col = FabricColor.objects.select_for_update().select_related('fabric').get(pk=req.color_id)
+            reqs = list(model.requirements.select_related('color', 'color__fabric').all())
+            needed_by_color = {}
+            for req in reqs:
+                if float(req.planned_quantity or 0) > 0 and req.color_id:
+                    needed_by_color[req.color_id] = round(
+                        needed_by_color.get(req.color_id, 0.0) + float(req.planned_quantity or 0),
+                        2,
+                    )
+
+            # قفل كل ألوان القماش المطلوبة والتحقق من كفاية الرصيد قبل خصم أي لون.
+            locked_colors = {}
+            shortages = []
+            for color_pk in sorted(needed_by_color.keys()):
+                col = FabricColor.objects.select_for_update().select_related('fabric').get(pk=color_pk)
+                locked_colors[color_pk] = col
+                need = needed_by_color[color_pk]
+                avail = round(float(col.quantity or 0), 2)
+                if avail + 1e-6 < need:
+                    shortages.append(
+                        f"{col.fabric.name} ({col.color_code}): المتوفر {avail:g} والمطلوب {need:g}"
+                    )
+            if shortages:
+                return Response(
+                    {
+                        'error': 'رصيد مخزن القماش لا يكفي لصرف خامات الموديل: ' + ' | '.join(shortages),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            for req in reqs:
+                if float(req.planned_quantity or 0) > 0 and req.color_id in locked_colors:
+                    col = locked_colors[req.color_id]
                     col.quantity = max(0.0, round(float(col.quantity or 0) - float(req.planned_quantity), 2))
                     col.reserved_quantity = max(0.0, round(float(col.reserved_quantity or 0) - float(req.planned_quantity), 2))
                     col.save()
@@ -628,7 +677,10 @@ class ModelItemViewSet(BasePermViewSet):
 
             for m_acc, acc_item, qty in resolved:
                 item = locked_items[acc_item.pk]
-                item.current_stock = max(0, int(round(float(item.current_stock or 0) - qty)))
+                item.current_stock = max(
+                    Decimal('0'),
+                    to_decimal(item.current_stock, Decimal('0')) - to_decimal(qty, Decimal('0')),
+                )
                 item.save(update_fields=['current_stock'])
 
                 if not m_acc.unit_price_snapshot:
@@ -717,6 +769,11 @@ class ModelItemViewSet(BasePermViewSet):
     def return_fabric_to_warehouse(self, request, pk=None):
         """إرجاع فائض قماش غير مستخدم من قسم القص إلى مخزن القماش."""
         model = self.get_object()
+        if model.status in ('مرحلة التصميم', 'تصميم'):
+            return Response(
+                {'error': 'لا يمكن إرجاع قماش لموديل ما زال في مرحلة التصميم ولم يُصرف له قماش للقص بعد.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         requirement_id = (
             request.data.get('requirement_id')
             or request.data.get('requirementId')
@@ -962,6 +1019,27 @@ class ModelItemViewSet(BasePermViewSet):
                 {'error': 'تم إنهاء قص هذه القطع وتحويلها للمرحلة التالية مسبقاً ولا يمكن إعادة تحويلها.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # منع ترحيل أي قطعة بـ 0 قطع مقصوصة عند وجود فرشات مسجلة على الموديل.
+        if model.cutting_records.exists():
+            zero_parts = []
+            for key in cutting_keys:
+                part_cut_total = (
+                    model.cutting_records.filter(part_type=key, is_sub_cut=False)
+                    .aggregate(total=models.Sum('pieces_count'))['total']
+                    or 0
+                )
+                if int(part_cut_total) <= 0:
+                    zero_parts.append(dict(PART_TYPE_CHOICES).get(key, key))
+            if zero_parts:
+                return Response(
+                    {
+                        'error': (
+                            f"لا يمكن إنهاء قص ({' / '.join(zero_parts)}) لأن عدد القطع المقصوصة يساوي صفر."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         moved_parts = list(cutting_keys)
         advance_parts_to_stage(model, 'qc_before_print', cutting_keys)
@@ -1727,6 +1805,11 @@ class ModelAccessoryViewSet(BasePermViewSet):
 
     def update(self, request, *args, **kwargs):
         m_acc = self.get_object()
+        if m_acc.is_issued:
+            return Response(
+                {'detail': 'لا يمكن تعديل إكسسوار تم صرفه فعلياً من مخزن الإكسسوارات'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         data = request.data
         if 'accessory_id' in data:
             m_acc.accessory_id_ref = data.get('accessory_id') or None
@@ -1747,6 +1830,11 @@ class ModelAccessoryViewSet(BasePermViewSet):
 
     def destroy(self, request, *args, **kwargs):
         m_acc = self.get_object()
+        if m_acc.is_issued:
+            return Response(
+                {'detail': 'لا يمكن حذف إكسسوار تم صرفه فعلياً من مخزن الإكسسوارات'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         m_acc.delete()
         sync_reserved_quantities()
         return Response({'status': 'deleted'})

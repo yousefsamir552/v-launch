@@ -145,8 +145,8 @@ STATE_SECTION_KEYS = {
     'assemblyStageRecords': ('assembly_packaging', 'tracking', 'reports', 'production_wh'),
     'packagingMaterialRules': ('assembly_packaging', 'production_wh', 'reports'),
     'packagingMaterialTransactions': ('assembly_packaging', 'production_wh', 'reports'),
-    'fabrics': ('fabric', 'design', 'cutting', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
-    'fabricColors': ('fabric', 'design', 'cutting', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'fabrics': ('fabric', 'design', 'cutting', 'qc', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'fabricColors': ('fabric', 'design', 'cutting', 'qc', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
     'fabricTransactions': ('fabric', 'design', 'cutting', 'tracking', 'reports', 'production_wh'),
     'accessoryTypes': ('accessories', 'design', 'cutting', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
     'accessoryItems': ('accessories', 'design', 'cutting', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
@@ -241,8 +241,60 @@ class StateViewSet(viewsets.ViewSet):
                 Q(sender=current_profile) | Q(receiver=current_profile)
             )
 
+        # حالة التنبيهات المحفوظة للمستخدم الحالي في قاعدة البيانات (AppNotification)
+        notif_read_ids = []
+        notif_snoozed = {}
+        if current_profile is not None:
+            now_dt = timezone.now()
+            user_notifs = AppNotification.objects.filter(
+                user=current_profile
+            ).exclude(notification_key='')
+            for row in user_notifs:
+                if row.is_read:
+                    notif_read_ids.append(row.notification_key)
+                if row.snoozed_until and row.snoozed_until > now_dt:
+                    notif_snoozed[row.notification_key] = row.snoozed_until.isoformat()
+
+        # احتساب الكميات المحجوزة الحية من قاعدة البيانات (لضمان دقة المحجوز حتى لمستخدمي المخازن بدون صلاحية التصميم)
+        from django.db.models import Sum as _Sum
+        live_fabric_reserved = {
+            row['color_id']: round(float(row['total'] or 0), 2)
+            for row in ModelRequirement.objects.filter(
+                model__is_deleted=False,
+                model__status__in=('مرحلة التصميم', 'تصميم'),
+            ).values('color_id').annotate(total=_Sum('planned_quantity'))
+        }
+        live_acc_reserved = {}
+        for row in (
+            ModelAccessory.objects.filter(
+                model__is_deleted=False,
+                is_issued=False,
+            )
+            .exclude(accessory_id_ref__isnull=True)
+            .exclude(accessory_id_ref='')
+            .values('accessory_id_ref')
+            .annotate(total=_Sum('planned_quantity'))
+        ):
+            ref = str(row['accessory_id_ref'] or '').strip()
+            if ref:
+                live_acc_reserved[ref] = round(float(row['total'] or 0), 3)
+
+        fabric_colors_qs = list(FabricColor.objects.select_related('fabric').all())
+        for col in fabric_colors_qs:
+            col.reserved_quantity = live_fabric_reserved.get(col.pk, 0.0)
+
+        accessory_items_qs = list(Accessory.objects.all())
+        for acc in accessory_items_qs:
+            ext_key = get_ext_id(acc)
+            reserved_val = live_acc_reserved.get(ext_key, live_acc_reserved.get(str(acc.pk), 0.0))
+            acc.reserved_quantity = reserved_val
+
         payload = {
             'globalSettings': GlobalSettingsSerializer(GlobalSettings.get_solo()).data,
+            'notificationStates': {
+                'readIds': notif_read_ids,
+                'snoozed': notif_snoozed,
+            },
             'roles': RoleSerializer(visible_roles, many=True, context=req_ctx).data,
             'users': UserProfileSerializer(visible_users, many=True, context=req_ctx).data,
             'onlineUsers': UserProfileSerializer(online_users, many=True, context=req_ctx).data,
@@ -250,10 +302,10 @@ class StateViewSet(viewsets.ViewSet):
             'suppliers': SupplierSerializer(Supplier.objects.all(), many=True).data,
             'workshops': WorkshopSerializer(Workshop.objects.all(), many=True).data,
             'fabrics': FabricSerializer(Fabric.objects.filter(is_deleted=False), many=True, context=req_ctx).data,
-            'fabricColors': FabricColorSerializer(FabricColor.objects.select_related('fabric').all(), many=True, context=req_ctx).data,
+            'fabricColors': FabricColorSerializer(fabric_colors_qs, many=True, context=req_ctx).data,
             'fabricTransactions': FabricTransactionSerializer(FabricTransaction.objects.select_related('color', 'fabric').all()[:300], many=True, context=req_ctx).data,
             'accessoryTypes': AccessoryTypeSerializer(AccessoryType.objects.all(), many=True).data,
-            'accessoryItems': AccessorySerializer(Accessory.objects.all(), many=True, context=req_ctx).data,
+            'accessoryItems': AccessorySerializer(accessory_items_qs, many=True, context=req_ctx).data,
             'accessoryTransactions': AccessoryTransactionSerializer(AccessoryTransaction.objects.select_related('accessory').all()[:300], many=True, context=req_ctx).data,
             'models': ModelItemSerializer(
                 ModelItem.objects.filter(is_deleted=False).prefetch_related(
@@ -261,15 +313,15 @@ class StateViewSet(viewsets.ViewSet):
                 ),
                 many=True, context=req_ctx
             ).data,
-            'requirements': ModelRequirementSerializer(ModelRequirement.objects.select_related('model', 'color').all(), many=True, context=req_ctx).data,
-            'accessories': ModelAccessorySerializer(ModelAccessory.objects.select_related('model').all(), many=True, context=req_ctx).data,
-            'cuttingRecords': CuttingRecordSerializer(CuttingRecord.objects.select_related('model').prefetch_related('color_layers').all(), many=True).data,
-            'qcRecords': QCRecordSerializer(QCRecord.objects.select_related('model').all(), many=True).data,
-            'printDispatches': PrintDispatchSerializer(PrintDispatch.objects.select_related('model').all(), many=True, context=req_ctx).data,
-            'sewingDispatches': SewingDispatchSerializer(SewingDispatch.objects.select_related('model').all(), many=True, context=req_ctx).data,
-            'packagingRequirements': PackagingRequirementSerializer(PackagingRequirement.objects.select_related('model').all(), many=True).data,
-            'finishingRecords': FinishingRecordSerializer(FinishingRecord.objects.select_related('model').all(), many=True, context=req_ctx).data,
-            'assemblyStageRecords': AssemblyStageRecordSerializer(AssemblyStageRecord.objects.select_related('model').all(), many=True, context=req_ctx).data,
+            'requirements': ModelRequirementSerializer(ModelRequirement.objects.select_related('model', 'color').filter(model__is_deleted=False), many=True, context=req_ctx).data,
+            'accessories': ModelAccessorySerializer(ModelAccessory.objects.select_related('model').filter(model__is_deleted=False), many=True, context=req_ctx).data,
+            'cuttingRecords': CuttingRecordSerializer(CuttingRecord.objects.select_related('model').prefetch_related('color_layers').filter(model__is_deleted=False), many=True).data,
+            'qcRecords': QCRecordSerializer(QCRecord.objects.select_related('model').filter(model__is_deleted=False), many=True).data,
+            'printDispatches': PrintDispatchSerializer(PrintDispatch.objects.select_related('model').filter(model__is_deleted=False), many=True, context=req_ctx).data,
+            'sewingDispatches': SewingDispatchSerializer(SewingDispatch.objects.select_related('model').filter(model__is_deleted=False), many=True, context=req_ctx).data,
+            'packagingRequirements': PackagingRequirementSerializer(PackagingRequirement.objects.select_related('model').filter(model__is_deleted=False), many=True).data,
+            'finishingRecords': FinishingRecordSerializer(FinishingRecord.objects.select_related('model').filter(model__is_deleted=False), many=True, context=req_ctx).data,
+            'assemblyStageRecords': AssemblyStageRecordSerializer(AssemblyStageRecord.objects.select_related('model').filter(model__is_deleted=False), many=True, context=req_ctx).data,
             'packagingMaterialRules': PackagingMaterialRuleSerializer(
                 PackagingMaterialRule.objects.prefetch_related(
                     'size_rules', 'size_rules__rule', 'size_rules__supplier',
@@ -363,14 +415,31 @@ class GlobalSettingsViewSet(viewsets.ViewSet):
 
         can_edit_header = True
         can_edit_messages = True
+        can_edit_fabric_threshold = True
         if profile and not (profile.is_sudo or profile.username.lower() == 'sudo'):
             can_edit_header = profile.has_perm('edit_header_settings') or profile.has_perm('manage_permissions')
             can_edit_messages = profile.has_perm('edit_message_templates') or profile.has_perm('manage_permissions')
-            if not can_edit_header and not can_edit_messages:
+            can_edit_fabric_threshold = (
+                can_edit_header
+                or profile.has_perm('fabric_warehouse_edit')
+                or profile.has_perm('fabric_warehouse_view')
+            )
+            only_threshold = set(data.keys()).issubset({'fabric_alert_threshold'})
+            if only_threshold:
+                if not can_edit_fabric_threshold:
+                    return Response(
+                        {'detail': 'ليس لديك صلاحية تعديل حد التنبيه لقسم القماش'},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+            elif not can_edit_header and not can_edit_messages:
                 return Response(
                     {'detail': 'ليس لديك صلاحية تعديل الإعدادات العامة للموقع'},
                     status=status.HTTP_403_FORBIDDEN
                 )
+
+        if 'fabric_alert_threshold' in data and data['fabric_alert_threshold'] is not None and can_edit_fabric_threshold:
+            threshold_val = max(Decimal('0'), to_decimal(data['fabric_alert_threshold'], Decimal('25'), places=2))
+            obj.fabric_alert_threshold = threshold_val
 
         if can_edit_header:
             if 'site_name' in data and data['site_name'] is not None:

@@ -8,7 +8,7 @@ from .models import (
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
     PackagingMaterialRule, PackagingMaterialSizeRule, PackagingMaterialTransaction,
     HRJobTitle, HREmployee, HRAttendanceSettings,
-    HRAttendanceRecord, HRPenalty, HRLoan
+    HRAttendanceRecord, HRPenalty, HRLoan, HRPayrollSnapshot
 )
 
 
@@ -207,3 +207,10 @@ class HRPenaltyAdmin(admin.ModelAdmin):
 class HRLoanAdmin(admin.ModelAdmin):
     list_display = ('employee', 'date', 'amount')
     search_fields = ('employee__name', 'employee__employee_code')
+
+
+@admin.register(HRPayrollSnapshot)
+class HRPayrollSnapshotAdmin(admin.ModelAdmin):
+    list_display = ('month', 'is_locked', 'locked_by', 'locked_at')
+    list_filter = ('is_locked',)
+    search_fields = ('month', 'locked_by')

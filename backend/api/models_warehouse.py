@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from decimal import Decimal
 import uuid
 from .storage_r2 import guard_image_field
 from .models_auth import *
@@ -193,13 +194,13 @@ class Accessory(models.Model):
     usage_type = models.CharField(max_length=20, choices=USAGE_TYPES, default='stock', verbose_name="نوع الاستخدام")
     custom_model_code = models.CharField(max_length=100, blank=True, null=True, verbose_name="كود الموديل المخصص له")
     unit = models.CharField(max_length=50, default="قطعة", verbose_name="وحدة القياس")
-    current_stock = models.IntegerField(default=0, verbose_name="الرصيد الفعلي الحالي")
+    current_stock = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal('0'), verbose_name="الرصيد الفعلي الحالي")
     reserved_quantity = models.FloatField(default=0.0, verbose_name="الكمية المحجوزة")
-    min_threshold = models.IntegerField(default=10, verbose_name="الحد الأدنى للتنبيه")
+    min_threshold = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal('10'), verbose_name="الحد الأدنى للتنبيه")
 
     # For custom_model usage type
-    target_quantity = models.IntegerField(default=0, verbose_name="الكمية المطلوبة / المستهدفة")
-    delivered_quantity = models.IntegerField(default=0, verbose_name="الكمية التي تم توريدها")
+    target_quantity = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal('0'), verbose_name="الكمية المطلوبة / المستهدفة")
+    delivered_quantity = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal('0'), verbose_name="الكمية التي تم توريدها")
     withdrawn_for_model = models.BooleanField(default=False, verbose_name="تم سحبه واكتماله بالكامل للموديل")
 
     price_per_unit = models.DecimalField(max_digits=10, decimal_places=2, default=0.0, verbose_name="سعر الوحدة")
@@ -216,11 +217,19 @@ class Accessory(models.Model):
         if self.usage_type == 'custom_model':
             if self.withdrawn_for_model:
                 return 0
-            return max(0, self.target_quantity - self.delivered_quantity)
+            target = Decimal(str(self.target_quantity or 0))
+            delivered = Decimal(str(self.delivered_quantity or 0))
+            return float(round(max(Decimal('0'), target - delivered), 3))
         # حد تنبيه صفر (أو أقل) يعني أن التنبيهات معطّلة لهذا الصنف.
-        if self.min_threshold <= 0:
+        threshold = Decimal(str(self.min_threshold or 0))
+        if threshold <= 0:
             return 0
-        return max(0, self.min_threshold - self.current_stock)
+        stock = Decimal(str(self.current_stock or 0))
+        reserved = Decimal(str(self.reserved_quantity or 0))
+        available = max(Decimal('0'), stock - reserved)
+        if available >= threshold:
+            return 0
+        return float(round(threshold - available, 3))
 
     def save(self, *args, **kwargs):
         guard_image_field(self, 'image', 'صورة الصنف')

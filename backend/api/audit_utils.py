@@ -86,6 +86,7 @@ SECTION_BY_MODEL = {
     'HRAttendanceRecord': 'الموارد البشرية',
     'HRPenalty': 'الموارد البشرية',
     'HRLoan': 'الموارد البشرية',
+    'HRPayrollSnapshot': 'الموارد البشرية',
 }
 
 # اسم العنصر العربي المستخدم في صياغة التفاصيل
@@ -121,6 +122,7 @@ NOUN_BY_MODEL = {
     'HRAttendanceRecord': 'سجل حضور',
     'HRPenalty': 'جزاء',
     'HRLoan': 'سلفة',
+    'HRPayrollSnapshot': 'اعتماد كشف رواتب شهري',
 }
 
 # اسم الدالة (action method) -> (نوع الإجراء، صيغة عربية للتفاصيل)

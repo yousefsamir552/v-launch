@@ -479,33 +479,29 @@ export const buildSettingsUsersActions = (ctx: AppInternalContext) => {
   };
 
   const markNotificationRead = (id: string) => {
-    setReadNotificationIds((prev) => {
-      const updated = prev.includes(id) ? prev : [...prev, id];
-      try {
-        localStorage.setItem('erp_read_notifications', JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
+    setReadNotificationIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    api.markNotificationRead(id).then((res) => {
+      if (res && Array.isArray(res.readIds)) {
+        setReadNotificationIds(res.readIds);
+      }
+    }).catch(() => {});
   };
 
-  /** Snoozes a notification for N hours: it disappears from the bell/dashboard until then. */
+  /** Snoozes a notification for N hours: it disappears from the bell/dashboard until then (persisted in DB). */
   const snoozeNotification = (id: string, hours: SnoozeHours) => {
     const until = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
-    setSnoozedNotifications((prev) => {
-      const updated = { ...prev, [id]: until };
-      try {
-        localStorage.setItem(SNOOZED_NOTIFICATIONS_STORAGE_KEY, JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
+    setSnoozedNotifications((prev) => ({ ...prev, [id]: until }));
+    api.snoozeNotification(id, hours).then((res) => {
+      if (res && res.snoozed && typeof res.snoozed === 'object') {
+        setSnoozedNotifications(res.snoozed);
+      }
+    }).catch(() => {});
   };
 
-  /** Clears every snooze (useful from the bell's "restore all" button). */
+  /** Clears every snooze (useful from the bell's "restore all" button, persisted in DB). */
   const clearSnoozedNotifications = () => {
     setSnoozedNotifications({});
-    try {
-      localStorage.removeItem(SNOOZED_NOTIFICATIONS_STORAGE_KEY);
-    } catch {}
+    api.clearSnoozedNotifications().catch(() => {});
   };
 
 

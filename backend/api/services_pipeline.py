@@ -900,38 +900,6 @@ def refund_model_consumed_inventory(model, user_name=''):
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
     model_code = (model.model_code or '').strip()
 
-    # 1. تجميع الصافي المنصرف لكل لون قماش / إكسسوار من الحركات المرتبطة بالموديل.
-    fabric_net = defaultdict(float)
-    accessory_net = defaultdict(float)
-    if model_code:
-        for txn in (
-            FabricTransaction.objects
-            .filter(model_code_ref__iexact=model_code)
-            .values('color_id', 'operation', 'amount')
-        ):
-            color_id = txn['color_id']
-            if color_id is None:
-                continue
-            amount = float(txn['amount'] or 0)
-            if txn['operation'] == 'deduct':
-                fabric_net[color_id] += amount
-            elif txn['operation'] == 'add':
-                fabric_net[color_id] -= amount
-
-        for txn in (
-            AccessoryTransaction.objects
-            .filter(model_code_ref__iexact=model_code)
-            .values('accessory_id', 'operation', 'amount')
-        ):
-            accessory_id = txn['accessory_id']
-            if accessory_id is None:
-                continue
-            amount = float(txn['amount'] or 0)
-            if txn['operation'] == 'deduct':
-                accessory_net[accessory_id] += amount
-            elif txn['operation'] == 'add':
-                accessory_net[accessory_id] -= amount
-
     refund_note = f"استرداد تلقائي لخامات الموديل المحذوف {model_code}"
     if user_name:
         refund_note += f" بواسطة {user_name}"
@@ -940,6 +908,44 @@ def refund_model_consumed_inventory(model, user_name=''):
     accessory_details = []
 
     with transaction.atomic():
+        # قفل سجل الموديل أولاً داخل المعاملة لمنع أي استرداد مزدوج متزامن.
+        if getattr(model, 'pk', None):
+            ModelItem.objects.select_for_update().filter(pk=model.pk).first()
+
+        # 1. تجميع الصافي المنصرف لكل لون قماش / إكسسوار من الحركات المرتبطة بالموديل.
+        # القاعدة المحاسبية المؤكدة: لا يُعاد قماش العيوب (defect) أبداً للرصيد السليم:
+        #   refund = total_deducted - total_returned_good (add) - total_defect (defect)
+        fabric_net = defaultdict(float)
+        accessory_net = defaultdict(float)
+        if model_code:
+            for txn in (
+                FabricTransaction.objects
+                .filter(model_code_ref__iexact=model_code)
+                .values('color_id', 'operation', 'amount')
+            ):
+                color_id = txn['color_id']
+                if color_id is None:
+                    continue
+                amount = float(txn['amount'] or 0)
+                if txn['operation'] == 'deduct':
+                    fabric_net[color_id] += amount
+                elif txn['operation'] in ('add', 'defect'):
+                    fabric_net[color_id] -= amount
+
+            for txn in (
+                AccessoryTransaction.objects
+                .filter(model_code_ref__iexact=model_code)
+                .values('accessory_id', 'operation', 'amount')
+            ):
+                accessory_id = txn['accessory_id']
+                if accessory_id is None:
+                    continue
+                amount = float(txn['amount'] or 0)
+                if txn['operation'] == 'deduct':
+                    accessory_net[accessory_id] += amount
+                elif txn['operation'] == 'add':
+                    accessory_net[accessory_id] -= amount
+
         # 2. استرداد القماش: إضافة الصافي للرصيد الفعلي وتسجيل حركة إضافة.
         for color_id, raw_net in fabric_net.items():
             net = round(float(raw_net), 2)
@@ -978,15 +984,17 @@ def refund_model_consumed_inventory(model, user_name=''):
             })
 
         # 3. استرداد الإكسسوارات: إضافة الصافي للرصيد الفعلي وتسجيل حركة إضافة.
+        from decimal import Decimal as _Decimal
         for accessory_id, raw_net in accessory_net.items():
-            net = round(float(raw_net), 2)
+            net = round(float(raw_net), 3)
             if net <= 0:
                 continue
             try:
                 item = Accessory.objects.select_for_update().get(pk=accessory_id)
             except Accessory.DoesNotExist:
                 continue
-            item.current_stock = int(round(float(item.current_stock or 0) + net))
+            cur = _Decimal(str(item.current_stock or 0))
+            item.current_stock = (cur + _Decimal(str(net))).quantize(_Decimal('0.001'))
             item.save(update_fields=['current_stock'])
 
             AccessoryTransaction.objects.create(

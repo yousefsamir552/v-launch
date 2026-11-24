@@ -247,7 +247,15 @@ export const AccessoryGroupsManager: React.FC<AccessoryGroupsManagerProps> = ({
     } else {
       setGroups((prev) => [
         ...prev,
-        { id: `ag-${Date.now()}`, name, description, items: cleanItems }
+        {
+          id:
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+              ? `ag-${crypto.randomUUID().slice(0, 12)}`
+              : `ag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          name,
+          description,
+          items: cleanItems
+        }
       ]);
     }
     closeEditor();

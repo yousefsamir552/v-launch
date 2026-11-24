@@ -199,14 +199,26 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     const code = String(color.color_code || '').trim();
     const name = String(color.color_name || '').trim();
     const canonical = name ? `${code} - ${name}` : code;
-    // مطابقة مرنة لاسم لون الطبقة مع لون المتطلب (الكود - الاسم، الكود وحده، أو الاسم).
+    // مطابقة دقيقة لاسم لون الطبقة مع لون المتطلب (بدون startsWith/includes حتى لا يتداخل C1 مع C10).
+    const codeNorm = code.toLowerCase();
+    const nameNorm = name.toLowerCase();
+    const canonicalNorm = canonical.toLowerCase();
     const matchesColor = (layerName?: string | null): boolean => {
       const value = String(layerName || '').trim();
       if (!value) return false;
-      if (canonical && value === canonical) return true;
-      if (code && value === code) return true;
-      if (code && value.startsWith(code)) return true;
-      if (name && value.includes(name)) return true;
+      const valNorm = value.toLowerCase();
+      if (canonicalNorm && valNorm === canonicalNorm) return true;
+      if (codeNorm && valNorm === codeNorm) return true;
+      if (nameNorm && valNorm === nameNorm) return true;
+      // صيغة "CODE - NAME" أو "CODE — NAME": نطابق الجزء قبل الشرطة بالضبط مع الكود.
+      const dashParts = valNorm.split(/\s*[-–—]\s*/);
+      if (dashParts.length >= 2) {
+        const partCode = dashParts[0].trim();
+        const partName = dashParts.slice(1).join(' - ').trim();
+        if (codeNorm && partCode === codeNorm) {
+          if (!nameNorm || partName === nameNorm) return true;
+        }
+      }
       return false;
     };
     let consumed = 0;
@@ -397,7 +409,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
       return;
     }
     if (!layerWeight || Number(layerWeight) <= 0) {
-      alert('يرجى إدخال إجمالي وزن الراق (مطلوب لحسابات التكلفة والتسعير)!');
+      alert('يرجى إدخال وزن الراق الواحد (مطلوب لحسابات التكلفة والتسعير)!');
       return;
     }
     if (!cutterName.trim()) {
@@ -407,7 +419,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
 
     addCuttingRecord({
       modelId,
-      spreadNumber: partRecords.length + 1,
+      // يتم توليد رقم الفرشة تلقائياً على الباك إند داخل قفل الموديل لمنع أي تكرار.
+      spreadNumber: undefined as unknown as number,
       partType: selectedPart,
       isSubCut,
       subCutLabel: subCutLabel.trim(),
@@ -453,13 +466,22 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
       return;
     }
 
-    const scopedRecords = modelCuttingRecords.filter(
-      (r) =>
-        targetParts.includes((r.part_type || r.partType || 'shirt') as GarmentPart) &&
-        !isSubCutRecord(r)
-    );
-    if (scopedRecords.length === 0) {
-      alert('يجب تسجيل فرشة قص واحدة على الأقل قبل التحويل للفرز!');
+    // التحقق من كل قطعة على حدة: لا يُسمح بإنهاء وترحيل أي قطعة عدد قطعها المقصوصة = 0.
+    const emptyParts = targetParts.filter((part) => {
+      const partCutPieces = modelCuttingRecords
+        .filter(
+          (r) =>
+            ((r.part_type || r.partType || 'shirt') as GarmentPart) === part &&
+            !isSubCutRecord(r)
+        )
+        .reduce((sum, r) => sum + (Number(r.pieces_count ?? r.piecesCount ?? 0) || 0), 0);
+      return partCutPieces <= 0;
+    });
+    if (emptyParts.length > 0) {
+      const emptyLabels = emptyParts.map((part) => getPartLabel(part)).join(' / ');
+      alert(
+        `لا يمكن إنهاء قص (${emptyLabels}) لأن عدد القطع المقصوصة يساوي 0! يرجى تسجيل فرشة قص أساسية لكل قطعة أولاً.`
+      );
       return;
     }
 
@@ -647,6 +669,22 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                   title={model.notes_shirt}
                 >
                   ملاحظات تيشرت: {model.notes_shirt}
+                </span>
+              )}
+              {model.notes_pants && (
+                <span
+                  className="px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-800 font-bold border border-indigo-200 line-clamp-1 max-w-[220px]"
+                  title={model.notes_pants}
+                >
+                  ملاحظات بنطلون: {model.notes_pants}
+                </span>
+              )}
+              {model.notes_jacket && (
+                <span
+                  className="px-2.5 py-1 rounded-lg bg-violet-50 text-violet-800 font-bold border border-violet-200 line-clamp-1 max-w-[220px]"
+                  title={model.notes_jacket}
+                >
+                  ملاحظات جاكيت: {model.notes_jacket}
                 </span>
               )}
             </div>
@@ -1135,7 +1173,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
 
                       <div>
                         <label className="block text-xs font-bold text-slate-700 mb-1">
-                          إجمالي وزن الراق (كجم) *
+                          وزن الراق الواحد (كجم) *
                         </label>
                         <input
                           type="number"
@@ -1378,7 +1416,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                             </span>
                           )}
                           <span className="px-2.5 py-1 rounded-lg bg-blue-50 border border-blue-200 font-bold text-blue-900">
-                            إجمالي وزن الراق:{' '}
+                            وزن الراق الواحد:{' '}
                             <strong>{rec.layer_weight} كجم</strong>
                           </span>
                           <span
@@ -1477,7 +1515,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                               </>
                             )}
                             <span className="px-2.5 py-0.5 rounded-lg bg-blue-50 text-blue-800 border border-blue-200 font-bold text-[11px]">
-                              إجمالي وزن الراق: {rec.layer_weight} كجم
+                              وزن الراق الواحد: {rec.layer_weight} كجم
                             </span>
                           </div>
 

@@ -24,7 +24,7 @@ import {
   weeklyOffIndexFromKey, weeklyOffDayLabel, formatDayLabel, isoDate,
   weekDatesBeforeWeeklyOff, weeklyOffRatioForAbsences, weeklyOffRatioLabel,
   weeklyOffDeductionForDate, sumWeeklyOffDeductionsForEmployeeMonth,
-  dailyRateFor, hourlyRateFor, timeToMinutes, lateMinutesFor, matchLateRule,
+  dailyRateFor, hourlyRateFor, workingHoursPerDayFor, timeToMinutes, lateMinutesFor, matchLateRule,
   isAttendedRecord, MonthAccrual, computeMonthAccrual
 } from './hrShared';
 
@@ -61,30 +61,43 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
   const [isDeleting, setIsDeleting] = useState(false);
   const [attendanceRecords, setAttendanceRecords] = useState<HRAttendanceRecord[]>([]);
   const [penalties, setPenalties] = useState<HRPenalty[]>([]);
+  const [settings, setSettings] = useState<HRAttendanceSettings | null>(null);
   // يوم الإجازة الأسبوعية من إعدادات الحضور (الأحد افتراضياً) — يُستخدم في احتساب الاستحقاق.
-  const [weeklyOffIndex, setWeeklyOffIndex] = useState<number>(DEFAULT_WEEKLY_OFF_INDEX);
+  const weeklyOffIndex = weeklyOffIndexFromKey(settings?.weekly_off_day);
   const weeklyOffLabel = weeklyOffDayLabel(weeklyOffIndex);
+  const shiftHours = workingHoursPerDayFor(settings);
+  const weeklyOffMultiplier =
+    Number(settings?.weekly_off_work_multiplier ?? 1.0) >= 0
+      ? Number(settings?.weekly_off_work_multiplier ?? 1.0)
+      : 1.0;
   const [dueSearch, setDueSearch] = useState('');
   const [overLimit, setOverLimit] = useState<{ amount: number; limit: number } | null>(null);
   const [pendingLoanPayload, setPendingLoanPayload] = useState<any | null>(null);
 
-  // فترة الاستحقاق: من أول الشهر حتى أمس (30 يوماً حسابية كحد أقصى)
+  // فترة الاستحقاق: أيام العمل حتى أمس (مع احتساب حضور اليوم إن وُجد) + سُلف وجزاءات وإضافي اليوم لحظياً.
   const duePeriod = useMemo(() => {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    const todayIsoStr = isoDate(now);
     const dates: string[] = [];
     for (let cursor = new Date(monthStart); cursor <= yesterday; cursor.setDate(cursor.getDate() + 1)) {
       dates.push(isoDate(cursor));
     }
+    const datesThroughToday = [...dates];
+    if (!datesThroughToday.includes(todayIsoStr)) {
+      datesThroughToday.push(todayIsoStr);
+    }
     return {
       monthKey: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
       yesterdayIso: isoDate(yesterday),
+      todayIso: todayIsoStr,
       yesterdayLabel: `${String(yesterday.getDate()).padStart(2, '0')}/${String(
         yesterday.getMonth() + 1
       ).padStart(2, '0')}/${yesterday.getFullYear()}`,
       workdays: Math.min(dates.length, 30),
-      dates
+      dates,
+      datesThroughToday
     };
   }, []);
 
@@ -102,7 +115,7 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
       setLoans(Array.isArray(loansRes) ? loansRes : []);
       setAttendanceRecords(Array.isArray(attendanceRes) ? attendanceRes : []);
       setPenalties(Array.isArray(penaltiesRes) ? penaltiesRes : []);
-      setWeeklyOffIndex(weeklyOffIndexFromKey(settingsRes?.weekly_off_day));
+      setSettings(settingsRes || null);
     } catch (err: any) {
       addFlashMessage(err?.message || 'فشل تحميل السُلف من السيرفر', 'danger');
     } finally {
@@ -128,81 +141,92 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
     [filteredLoans]
   );
 
-  // المستحق حتى أمس = (المرتب ÷ 30) × أيام الاستحقاق الفعلية − التأخير − الجزاءات − السُلف
+  // المستحق الحالي = (المرتب ÷ 30) × أيام الاستحقاق + الإضافي (شامل اليوم) − التأخير المعتمد − الجزاءات (شامل اليوم) − السُلف (شامل اليوم)
   const loanDueRows = useMemo<LoanDueRow[]>(() => {
-    const rangeSet = new Set(duePeriod.dates);
-    return employees.map((employee) => {
-      const salary = Number(employee.monthly_salary) || 0;
-      const dayRate = dailyRateFor(salary);
-      const hourRate = hourlyRateFor(salary);
-      const employeeRecords = attendanceRecords.filter((record) => {
-        if (record.employee_id !== employee.id || !rangeSet.has(record.date)) return false;
-        // يوم الإجازة الأسبوعية يُحسب منفصلاً ضمن أيام الإجازة المدفوعة.
-        const recordDay = new Date(`${record.date}T00:00:00`);
-        return recordDay.getDay() !== weeklyOffIndex;
+    const throughTodaySet = new Set(duePeriod.datesThroughToday);
+    return employees
+      .filter((emp) => emp.is_active !== false)
+      .map((employee) => {
+        const salary = Number(employee.monthly_salary) || 0;
+        const dayRate = dailyRateFor(salary);
+        const hourRate = hourlyRateFor(salary, shiftHours);
+        const employeeRecords = attendanceRecords.filter((record) => {
+          if (record.employee_id !== employee.id || !throughTodaySet.has(record.date)) return false;
+          const recordDay = new Date(`${record.date}T00:00:00`);
+          if (recordDay.getDay() === weeklyOffIndex && !record.check_in) return false;
+          return true;
+        });
+        // الإضافي (بما في ذلك اليوم)
+        const overtimeDays = employeeRecords.reduce(
+          (sum, record) => sum + (Number(record.overtime_days) || 0),
+          0
+        );
+        const overtimeHours = employeeRecords.reduce(
+          (sum, record) => sum + (Number(record.overtime_hours) || 0),
+          0
+        );
+        // خصم التأخير/الانصراف المعتمد أو التلقائي فقط (لا نخصم pending_review أو rejected).
+        const penaltyRecords = employeeRecords.filter(
+          (record) =>
+            isAttendedRecord(record) &&
+            !record.is_excused &&
+            record.review_status !== 'rejected' &&
+            record.review_status !== 'pending_review'
+        );
+        const attendanceDeductionDays = penaltyRecords.reduce(
+          (sum, record) => sum + (Number(record.calculated_deduction_days) || 0),
+          0
+        );
+        const attendanceDeductionHours = penaltyRecords.reduce(
+          (sum, record) => sum + (Number(record.calculated_deduction_hours) || 0),
+          0
+        );
+        // الجزاءات اليدوية شامل اليوم
+        const employeePenalties = penalties.filter(
+          (penalty) => penalty.employee_id === employee.id && throughTodaySet.has(penalty.date)
+        );
+        const penaltyDays = employeePenalties
+          .filter((penalty) => penalty.penalty_type === 'days')
+          .reduce((sum, penalty) => sum + (Number(penalty.value) || 0), 0);
+        const penaltyHours = employeePenalties
+          .filter((penalty) => penalty.penalty_type === 'hours')
+          .reduce((sum, penalty) => sum + (Number(penalty.value) || 0), 0);
+        // السُلف السابقة شامل سُلف اليوم لحظياً!
+        const previousLoans = loans
+          .filter((loan) => loan.employee_id === employee.id && throughTodaySet.has(loan.date))
+          .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
+        // المستحق يُبنى على الحضور الفعلي + الإضافي + معامل عمل الإجازة الأسبوعية.
+        const accrual = computeMonthAccrual(
+          employee.id,
+          attendanceRecords,
+          duePeriod.monthKey,
+          duePeriod.yesterdayIso,
+          weeklyOffIndex,
+          weeklyOffMultiplier
+        );
+        const earned = dayRate * accrual.earnedDays;
+        const overtimeMoney = dayRate * overtimeDays + hourRate * overtimeHours;
+        const deductionMoney =
+          dayRate * (attendanceDeductionDays + penaltyDays) +
+          hourRate * (attendanceDeductionHours + penaltyHours);
+        const currentDue = Math.max(0, earned + overtimeMoney - deductionMoney - previousLoans);
+        return {
+          employee,
+          salary,
+          workdays: duePeriod.workdays,
+          earnedDays: accrual.earnedDays,
+          attendedDays: accrual.attendedDays,
+          paidSundayDays: accrual.paidSundayDays,
+          attendanceDeductionDays,
+          attendanceDeductionHours,
+          sundayDeductionDays: accrual.sundayDeductionDays,
+          penaltyDays,
+          penaltyHours,
+          previousLoans,
+          currentDue
+        };
       });
-      // خصم التأخير/الانصراف على أيام الحضور فقط (الغياب مستبعد من أيام الاستحقاق).
-      const penaltyRecords = employeeRecords.filter(
-        (record) => isAttendedRecord(record) && !record.is_excused
-      );
-      const attendanceDeductionDays = penaltyRecords.reduce(
-        (sum, record) => sum + (Number(record.calculated_deduction_days) || 0),
-        0
-      );
-      const attendanceDeductionHours = penaltyRecords.reduce(
-        (sum, record) => sum + (Number(record.calculated_deduction_hours) || 0),
-        0
-      );
-      const sundayDeductionDays = sumWeeklyOffDeductionsForEmployeeMonth(
-        attendanceRecords,
-        employee.id,
-        duePeriod.monthKey,
-        duePeriod.yesterdayIso,
-        weeklyOffIndex
-      );
-      const employeePenalties = penalties.filter(
-        (penalty) => penalty.employee_id === employee.id && rangeSet.has(penalty.date)
-      );
-      const penaltyDays = employeePenalties
-        .filter((penalty) => penalty.penalty_type === 'days')
-        .reduce((sum, penalty) => sum + (Number(penalty.value) || 0), 0);
-      const penaltyHours = employeePenalties
-        .filter((penalty) => penalty.penalty_type === 'hours')
-        .reduce((sum, penalty) => sum + (Number(penalty.value) || 0), 0);
-      const previousLoans = loans
-        .filter((loan) => loan.employee_id === employee.id && rangeSet.has(loan.date))
-        .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
-      // المستحق يُبنى على الحضور الفعلي (أيام العمل + أيام الإجازة الأسبوعية المدفوعة) لا على أيام التقويم.
-      const accrual = computeMonthAccrual(
-        employee.id,
-        attendanceRecords,
-        duePeriod.monthKey,
-        duePeriod.yesterdayIso,
-        weeklyOffIndex
-      );
-      const earned = dayRate * accrual.earnedDays;
-      // خصم الأحد مطبّق عبر تقليل أيام الاستحقاق، فلا يُخصم مالياً مرة أخرى.
-      const deductionMoney =
-        dayRate * (attendanceDeductionDays + penaltyDays) +
-        hourRate * (attendanceDeductionHours + penaltyHours);
-      const currentDue = Math.max(0, earned - deductionMoney - previousLoans);
-      return {
-        employee,
-        salary,
-        workdays: duePeriod.workdays,
-        earnedDays: accrual.earnedDays,
-        attendedDays: accrual.attendedDays,
-        paidSundayDays: accrual.paidSundayDays,
-        attendanceDeductionDays,
-        attendanceDeductionHours,
-        sundayDeductionDays,
-        penaltyDays,
-        penaltyHours,
-        previousLoans,
-        currentDue
-      };
-    });
-  }, [employees, attendanceRecords, penalties, loans, duePeriod, weeklyOffIndex]);
+  }, [employees, attendanceRecords, penalties, loans, duePeriod, weeklyOffIndex, shiftHours, weeklyOffMultiplier]);
 
   const dueGroups = useMemo(() => {
     const query = dueSearch.trim().toLowerCase();
@@ -310,8 +334,8 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
           <tbody>
             ${group.rows
               .map((row) => {
-                const attendanceDays = row.attendanceDeductionDays + row.attendanceDeductionHours / 8;
-                const penaltyDays = row.penaltyDays + row.penaltyHours / 8;
+                const attendanceDays = row.attendanceDeductionDays + row.attendanceDeductionHours / shiftHours;
+                const penaltyDays = row.penaltyDays + row.penaltyHours / shiftHours;
                 return `<tr>
                   <td>${escapeHtml(row.employee.employee_code || '-')}</td>
                   <td>${escapeHtml(row.employee.name)}</td>

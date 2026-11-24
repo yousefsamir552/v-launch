@@ -142,7 +142,12 @@ class FabricViewSet(BasePermViewSet):
             return Response({'detail': 'يجب اختيار خامة أو كتابة اسم خامة جديدة'}, status=status.HTTP_400_BAD_REQUEST)
 
         clean_code = (data.get('colorCode') or data.get('color_code') or '').strip().upper()
-        qty = float(data.get('quantity') or 0)
+        try:
+            qty = float(data.get('quantity') or 0)
+        except (TypeError, ValueError):
+            return Response({'detail': 'الكمية غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+        if qty < 0:
+            return Response({'detail': 'الكمية لا يمكن أن تكون سالبة'}, status=status.HTTP_400_BAD_REQUEST)
         profile = getattr(request, 'user_profile', None)
         can_edit_price = is_sudo_account(profile) or (
             profile is not None and (
@@ -150,25 +155,52 @@ class FabricViewSet(BasePermViewSet):
             )
         )
         price_per_unit = 0.0
-        if can_edit_price:
+        if can_edit_price and data.get('pricePerUnit') not in (None, ''):
             price_per_unit = max(0.0, float(data.get('pricePerUnit') or 0))
-        existing_color = FabricColor.objects.filter(fabric=fab, color_code__iexact=clean_code).first()
 
-        if existing_color:
-            existing_color.quantity = round(float(existing_color.quantity or 0) + qty, 2)
-            existing_color.save()
-            color_obj = existing_color
-        else:
-            color_obj = FabricColor.objects.create(
-                client_id=data.get('colorClientId'),
-                fabric=fab,
-                color_code=clean_code,
-                color_name=data.get('colorName') or '',
-                hex_code=data.get('hexCode') or '#64748b',
-                price_per_unit=price_per_unit,
-                quantity=max(0.0, qty),
-                reserved_quantity=0.0,
+        now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+        with transaction.atomic():
+            existing_color = (
+                FabricColor.objects.select_for_update()
+                .filter(fabric=fab, color_code__iexact=clean_code)
+                .first()
             )
+            if existing_color:
+                existing_color.quantity = round(float(existing_color.quantity or 0) + qty, 2)
+                if can_edit_price and data.get('pricePerUnit') not in (None, ''):
+                    existing_color.price_per_unit = price_per_unit
+                existing_color.save()
+                color_obj = existing_color
+                txn_notes = 'إضافة رصيد وارد للون موجود بالمخزن'
+            else:
+                color_obj = FabricColor.objects.create(
+                    client_id=data.get('colorClientId'),
+                    fabric=fab,
+                    color_code=clean_code,
+                    color_name=data.get('colorName') or '',
+                    hex_code=data.get('hexCode') or '#64748b',
+                    price_per_unit=price_per_unit,
+                    quantity=round(max(0.0, qty), 2),
+                    reserved_quantity=0.0,
+                )
+                txn_notes = 'رصيد افتتاحي عند إضافة اللون للمخزن'
+
+            if qty > 0:
+                FabricTransaction.objects.create(
+                    color=color_obj,
+                    fabric=fab,
+                    model_code_ref='',
+                    notes=txn_notes,
+                    operation='add',
+                    amount=round(qty, 2),
+                    timestamp=now_str,
+                    unit_price_snapshot=color_obj.price_per_unit or 0,
+                    supplier=resolve_supplier_link(
+                        data,
+                        getattr(fab, 'supplier_id_ref', None),
+                        getattr(fab, 'supplier', None),
+                    ),
+                )
 
         return Response({
             'fabric': FabricSerializer(fab, context={'request': request}).data,
@@ -196,10 +228,17 @@ class FabricColorViewSet(BasePermViewSet):
         # Lock the row so two concurrent stock adjustments cannot overwrite each other.
         with transaction.atomic():
             col = FabricColor.objects.select_for_update().select_related('fabric').get(pk=target.pk)
-            if 'price_per_unit' in data and can_edit_price:
+            old_qty = round(float(col.quantity or 0), 2)
+            if 'price_per_unit' in data and can_edit_price and data['price_per_unit'] not in (None, ''):
                 col.price_per_unit = max(0.0, float(data['price_per_unit'] or 0))
             if 'quantity' in data:
-                col.quantity = max(0.0, float(data['quantity'] or 0))
+                try:
+                    new_qty = float(data['quantity'] if data['quantity'] not in (None, '') else 0)
+                except (TypeError, ValueError):
+                    return Response({'detail': 'الكمية غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+                if new_qty < 0:
+                    return Response({'detail': 'الكمية لا يمكن أن تكون سالبة'}, status=status.HTTP_400_BAD_REQUEST)
+                col.quantity = round(new_qty, 2)
             if 'reserved_quantity' in data:
                 col.reserved_quantity = max(0.0, float(data['reserved_quantity'] or 0))
             if 'color_code' in data and str(data['color_code']).strip():
@@ -209,6 +248,23 @@ class FabricColorViewSet(BasePermViewSet):
             if 'hex_code' in data:
                 col.hex_code = data['hex_code']
             col.save()
+            diff = round(float(col.quantity or 0) - old_qty, 2)
+            if 'quantity' in data and abs(diff) > 0:
+                FabricTransaction.objects.create(
+                    color=col,
+                    fabric=col.fabric,
+                    model_code_ref='',
+                    notes='تعديل رصيد مباشر من مخزن القماش',
+                    operation='add' if diff > 0 else 'deduct',
+                    amount=abs(diff),
+                    timestamp=timezone.now().strftime('%Y-%m-%d %H:%M'),
+                    unit_price_snapshot=col.price_per_unit or 0,
+                    supplier=resolve_supplier_link(
+                        data,
+                        getattr(col.fabric, 'supplier_id_ref', None),
+                        getattr(col.fabric, 'supplier', None),
+                    ),
+                )
             response_data = FabricColorSerializer(col, context={'request': request}).data
         return Response(response_data)
 
@@ -220,16 +276,37 @@ class FabricColorViewSet(BasePermViewSet):
         if not target:
             return Response({'detail': 'اللون غير موجود'}, status=status.HTTP_404_NOT_FOUND)
 
-        op = data.get('operation', 'deduct')
-        amount = float(data.get('amount') or 0)
+        op = str(data.get('operation') or '').strip()
+        if op not in ('add', 'deduct'):
+            return Response({'detail': 'نوع العملية غير صالح؛ المسموح add أو deduct فقط'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            amount = float(data.get('amount') or 0)
+        except (TypeError, ValueError):
+            return Response({'detail': 'الكمية غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
         if amount <= 0:
             return Response({'detail': 'الكمية يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Lock the row: two concurrent deductions must never spend the same stock twice.
+        # Lock the row: two concurrent deductions must never spend the same stock twice
+        # nor eat into stock reserved for models in Design.
         with transaction.atomic():
             col = FabricColor.objects.select_for_update().select_related('fabric').get(pk=target.pk)
-            if op == 'deduct' and col.quantity < amount:
-                return Response({'detail': 'الكمية الموجودة بالمخزن لا تكفي للصرف'}, status=status.HTTP_400_BAD_REQUEST)
+            if op == 'deduct':
+                live_reserved = float(
+                    ModelRequirement.objects.filter(
+                        color=col,
+                        model__is_deleted=False,
+                        model__status__in=('مرحلة التصميم', 'تصميم'),
+                    ).aggregate(total=models.Sum('planned_quantity'))['total'] or 0
+                )
+                reserved = max(float(col.reserved_quantity or 0), live_reserved)
+                available = round(max(0.0, float(col.quantity or 0) - reserved), 2)
+                if float(col.quantity or 0) < amount:
+                    return Response({'detail': 'الكمية الموجودة بالمخزن لا تكفي للصرف'}, status=status.HTTP_400_BAD_REQUEST)
+                if amount > available + 1e-6:
+                    return Response(
+                        {'detail': f'الكمية المتاحة للصرف ({available:g}) لا تكفي؛ يوجد ({reserved:g}) محجوزة لموديلات في مرحلة التصميم'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             if op == 'add':
                 col.quantity = round(float(col.quantity or 0) + amount, 2)
@@ -261,9 +338,29 @@ class FabricColorViewSet(BasePermViewSet):
         return Response(payload)
 
 
-class FabricTransactionViewSet(BasePermViewSet):
-    permission_classes = [HasDynamicSectionPermission]
-    required_section = 'fabric'
+class CanReadFabricLedger(permissions.BasePermission):
+    """قراءة سجل حركات القماش الكامل (بدون اقتطاع 300 صف) لمخزن القماش والتقارير وحركة الموديلات."""
+    def has_permission(self, request, view):
+        profile = getattr(request, 'user_profile', None) or resolve_request_user_profile(request)
+        if profile is None:
+            return False
+        request.user_profile = profile
+        if is_sudo_profile(profile):
+            return True
+        if request.method not in permissions.SAFE_METHODS:
+            return False
+        return any(
+            profile.has_perm(k)
+            for k in (
+                'fabric_warehouse_view', 'fabric_warehouse_edit',
+                'reports_view', 'reports_edit', 'can_reports',
+                'models_tracking_view', 'models_tracking_edit',
+            )
+        )
+
+
+class FabricTransactionViewSet(BaseReadOnlyPermViewSet):
+    permission_classes = [CanReadFabricLedger]
     queryset = FabricTransaction.objects.select_related('color', 'fabric').all()
     serializer_class = FabricTransactionSerializer
 
@@ -298,44 +395,70 @@ class AccessoryViewSet(BasePermViewSet):
     def create(self, request, *args, **kwargs):
         data = request.data
         usage_type = data.get('usage_type') or 'stock'
-        qty = int(float(data.get('quantity', data.get('current_stock', 0)) or 0))
-        min_thresh = int(float(data.get('min_threshold', 10) or 0))
-        target_qty = int(float(data.get('target_quantity', min_thresh) or 0))
-        delivered_qty = int(float(data.get('delivered_quantity', qty) or 0))
+        raw_qty = to_decimal(data.get('quantity', data.get('current_stock', 0)), Decimal('0'))
+        if raw_qty < 0:
+            return Response({'detail': 'الكمية لا يمكن أن تكون سالبة'}, status=status.HTTP_400_BAD_REQUEST)
+        qty = raw_qty
+        min_thresh = max(Decimal('0'), to_decimal(data.get('min_threshold', 10), Decimal('10')))
+        target_qty = max(Decimal('0'), to_decimal(data.get('target_quantity', min_thresh), min_thresh))
+        delivered_qty = max(Decimal('0'), to_decimal(data.get('delivered_quantity', qty), qty))
         # "الرصيد السابق / المرحّل" بضاعة قديمة تُصفّى فقط:
         # لا حد تنبيه، ولا شروط custom_model (الكمية المستهدفة/الموردة بلا معنى).
         if usage_type == 'carryover':
-            min_thresh = 0
-            target_qty = 0
-            delivered_qty = 0
+            min_thresh = Decimal('0')
+            target_qty = Decimal('0')
+            delivered_qty = Decimal('0')
         profile = getattr(request, 'user_profile', None)
         can_edit_price = is_sudo_account(profile) or (
             profile is not None and (
                 profile.has_perm('edit_accessory_prices') or profile.has_perm('manage_permissions')
             )
         )
-        price = max(0.0, float(data.get('price_per_unit') or 0)) if can_edit_price else 0.0
-
-        acc = Accessory.objects.create(
-            client_id=data.get('id') or data.get('client_id'),
-            type_id_ref=data.get('type_id') or 'type-1',
-            type_name=data.get('type_name') or 'عام',
-            code=(data.get('code') or '').strip().upper(),
-            name=(data.get('name') or '').strip(),
-            image=clean_image_value(data.get('image') or '', 'accessories', 'صورة الصنف'),
-            unit=data.get('unit') or 'قطعة',
-            current_stock=max(0, qty),
-            reserved_quantity=float(data.get('reserved_quantity') or 0),
-            price_per_unit=price,
-            supplier_id_ref=data.get('supplier_id') or '',
-            min_threshold=max(0, min_thresh),
-            usage_type=usage_type,
-            custom_model_code='' if usage_type == 'carryover' else (data.get('custom_model_code') or ''),
-            target_quantity=target_qty,
-            delivered_quantity=delivered_qty,
-            withdrawn_for_model=False if usage_type == 'carryover' else bool(data.get('withdrawn_for_model', False)),
-            created_at_str=data.get('created_at') or date.today().isoformat(),
+        price = (
+            max(0.0, float(data.get('price_per_unit') or 0))
+            if (can_edit_price and data.get('price_per_unit') not in (None, ''))
+            else 0.0
         )
+
+        with transaction.atomic():
+            acc = Accessory.objects.create(
+                client_id=data.get('id') or data.get('client_id'),
+                type_id_ref=data.get('type_id') or 'type-1',
+                type_name=data.get('type_name') or 'عام',
+                code=(data.get('code') or '').strip().upper(),
+                name=(data.get('name') or '').strip(),
+                image=clean_image_value(data.get('image') or '', 'accessories', 'صورة الصنف'),
+                unit=data.get('unit') or 'قطعة',
+                current_stock=qty,
+                reserved_quantity=float(data.get('reserved_quantity') or 0),
+                price_per_unit=price,
+                supplier_id_ref=data.get('supplier_id') or '',
+                min_threshold=min_thresh,
+                usage_type=usage_type,
+                custom_model_code='' if usage_type == 'carryover' else (data.get('custom_model_code') or ''),
+                target_quantity=target_qty,
+                delivered_quantity=delivered_qty,
+                withdrawn_for_model=False if usage_type == 'carryover' else bool(data.get('withdrawn_for_model', False)),
+                notes=data.get('notes') or '',
+                created_at_str=data.get('created_at') or date.today().isoformat(),
+            )
+            if qty > 0:
+                AccessoryTransaction.objects.create(
+                    accessory=acc,
+                    accessory_code=acc.code,
+                    accessory_name=acc.name,
+                    operation='add',
+                    amount=float(qty),
+                    model_code_ref=acc.custom_model_code or '',
+                    notes='رصيد افتتاحي عند إضافة الصنف للمخزن',
+                    timestamp=timezone.now().strftime('%Y-%m-%d %H:%M'),
+                    unit_price_snapshot=acc.price_per_unit or 0,
+                    supplier=resolve_supplier_link(
+                        data,
+                        getattr(acc, 'supplier_id_ref', None),
+                        getattr(acc, 'supplier', None),
+                    ),
+                )
         return Response(
             AccessorySerializer(acc, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
@@ -359,6 +482,7 @@ class AccessoryViewSet(BasePermViewSet):
         # Lock the row so concurrent stock adjustments are serialised.
         with transaction.atomic():
             acc = Accessory.objects.select_for_update().get(pk=target.pk)
+            old_stock = to_decimal(acc.current_stock, Decimal('0'))
             for field in ['name', 'code', 'unit', 'usage_type', 'custom_model_code', 'type_name']:
                 if field in data:
                     setattr(acc, field, data[field])
@@ -368,30 +492,59 @@ class AccessoryViewSet(BasePermViewSet):
                 acc.type_id_ref = data['type_id']
             if 'supplier_id' in data:
                 acc.supplier_id_ref = data['supplier_id']
+            stock_updated = False
             if 'quantity' in data:
-                acc.current_stock = max(0, int(float(data['quantity'] or 0)))
+                new_stk = to_decimal(data['quantity'], Decimal('0'))
+                if new_stk < 0:
+                    return Response({'detail': 'الكمية لا يمكن أن تكون سالبة'}, status=status.HTTP_400_BAD_REQUEST)
+                acc.current_stock = new_stk
+                stock_updated = True
             elif 'current_stock' in data:
-                acc.current_stock = max(0, int(float(data['current_stock'] or 0)))
+                new_stk = to_decimal(data['current_stock'], Decimal('0'))
+                if new_stk < 0:
+                    return Response({'detail': 'الكمية لا يمكن أن تكون سالبة'}, status=status.HTTP_400_BAD_REQUEST)
+                acc.current_stock = new_stk
+                stock_updated = True
             if 'reserved_quantity' in data:
                 acc.reserved_quantity = max(0.0, float(data['reserved_quantity'] or 0))
-            if 'price_per_unit' in data and can_edit_price:
+            if 'price_per_unit' in data and can_edit_price and data['price_per_unit'] not in (None, ''):
                 acc.price_per_unit = max(0.0, float(data['price_per_unit'] or 0))
             if 'min_threshold' in data:
-                acc.min_threshold = max(0, int(float(data['min_threshold'] or 0)))
+                acc.min_threshold = max(Decimal('0'), to_decimal(data['min_threshold'], Decimal('0')))
             if 'target_quantity' in data:
-                acc.target_quantity = max(0, int(float(data['target_quantity'] or 0)))
+                acc.target_quantity = max(Decimal('0'), to_decimal(data['target_quantity'], Decimal('0')))
             if 'delivered_quantity' in data:
-                acc.delivered_quantity = max(0, int(float(data['delivered_quantity'] or 0)))
+                acc.delivered_quantity = max(Decimal('0'), to_decimal(data['delivered_quantity'], Decimal('0')))
             if 'withdrawn_for_model' in data:
                 acc.withdrawn_for_model = bool(data['withdrawn_for_model'])
+            if 'notes' in data:
+                acc.notes = data['notes'] or ''
             # تطبيع "الرصيد السابق / المرحّل": لا حد تنبيه ولا بيانات موديل مخصص.
             if acc.usage_type == 'carryover':
-                acc.min_threshold = 0
+                acc.min_threshold = Decimal('0')
                 acc.custom_model_code = ''
-                acc.target_quantity = 0
-                acc.delivered_quantity = 0
+                acc.target_quantity = Decimal('0')
+                acc.delivered_quantity = Decimal('0')
                 acc.withdrawn_for_model = False
             acc.save()
+            diff = acc.current_stock - old_stock
+            if stock_updated and diff != 0:
+                AccessoryTransaction.objects.create(
+                    accessory=acc,
+                    accessory_code=acc.code,
+                    accessory_name=acc.name,
+                    operation='add' if diff > 0 else 'deduct',
+                    amount=float(abs(diff)),
+                    model_code_ref=acc.custom_model_code or '',
+                    notes='تعديل رصيد مباشر من مخزن الإكسسوارات',
+                    timestamp=timezone.now().strftime('%Y-%m-%d %H:%M'),
+                    unit_price_snapshot=acc.price_per_unit or 0,
+                    supplier=resolve_supplier_link(
+                        data,
+                        getattr(acc, 'supplier_id_ref', None),
+                        getattr(acc, 'supplier', None),
+                    ),
+                )
             response_data = AccessorySerializer(acc, context={'request': request}).data
         return Response(response_data)
 
@@ -403,23 +556,27 @@ class AccessoryViewSet(BasePermViewSet):
         if not acc:
             return Response({'detail': 'الصنف غير موجود'}, status=status.HTTP_404_NOT_FOUND)
 
-        op = data.get('operation', 'deduct')
-        amount = float(data.get('amount') or 0)
-        if amount <= 0:
+        op = str(data.get('operation') or '').strip()
+        if op not in ('add', 'deduct'):
+            return Response({'detail': 'نوع العملية غير صالح؛ المسموح add أو deduct فقط'}, status=status.HTTP_400_BAD_REQUEST)
+        amount_dec = to_decimal(data.get('amount'), Decimal('0'))
+        amount = float(amount_dec)
+        if amount_dec <= 0:
             return Response({'detail': 'الكمية يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Lock the row: concurrent deductions must not oversell the same stock.
         with transaction.atomic():
             acc = Accessory.objects.select_for_update().get(pk=acc.pk)
-            if op == 'deduct' and acc.current_stock < amount:
+            current_dec = to_decimal(acc.current_stock, Decimal('0'))
+            if op == 'deduct' and current_dec < amount_dec:
                 return Response({'detail': 'الرصيد المتاح لا يكفي للصرف'}, status=status.HTTP_400_BAD_REQUEST)
 
             if op == 'add':
-                acc.current_stock = int(round(float(acc.current_stock or 0) + amount))
+                acc.current_stock = current_dec + amount_dec
                 if acc.usage_type == 'custom_model':
-                    acc.delivered_quantity = int(round(float(acc.delivered_quantity or 0) + amount))
+                    acc.delivered_quantity = to_decimal(acc.delivered_quantity, Decimal('0')) + amount_dec
             else:
-                acc.current_stock = max(0, int(round(float(acc.current_stock or 0) - amount)))
+                acc.current_stock = max(Decimal('0'), current_dec - amount_dec)
             acc.save()
 
             tr = AccessoryTransaction.objects.create(
@@ -459,9 +616,29 @@ class AccessoryViewSet(BasePermViewSet):
         return Response(AccessorySerializer(accessory, context={'request': request}).data)
 
 
-class AccessoryTransactionViewSet(BasePermViewSet):
-    permission_classes = [HasDynamicSectionPermission]
-    required_section = 'accessories'
+class CanReadAccessoryLedger(permissions.BasePermission):
+    """قراءة سجل حركات الإكسسوارات الكامل لمخزن الإكسسوارات والتقارير وحركة الموديلات."""
+    def has_permission(self, request, view):
+        profile = getattr(request, 'user_profile', None) or resolve_request_user_profile(request)
+        if profile is None:
+            return False
+        request.user_profile = profile
+        if is_sudo_profile(profile):
+            return True
+        if request.method not in permissions.SAFE_METHODS:
+            return False
+        return any(
+            profile.has_perm(k)
+            for k in (
+                'accessories_warehouse_view', 'accessories_warehouse_edit',
+                'reports_view', 'reports_edit', 'can_reports',
+                'models_tracking_view', 'models_tracking_edit',
+            )
+        )
+
+
+class AccessoryTransactionViewSet(BaseReadOnlyPermViewSet):
+    permission_classes = [CanReadAccessoryLedger]
     queryset = AccessoryTransaction.objects.select_related('accessory').all()
     serializer_class = AccessoryTransactionSerializer
 

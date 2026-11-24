@@ -27,10 +27,15 @@ from .models import (
     HRPenalty,
     HRLoan,
     HRAttendanceSettings,
+    HRPayrollSnapshot,
     RANK_SUDO,
 )
 from .permissions import IsAuthenticatedProfile
-from .hr_attendance_io import DEFAULT_WEEKLY_OFF_WEEKDAY, weekly_off_weekday
+from .hr_attendance_io import (
+    DEFAULT_WEEKLY_OFF_WEEKDAY,
+    weekly_off_weekday,
+    working_hours_per_day,
+)
 from .views import (
     is_sudo_profile,
     rank_scoped_queryset,
@@ -134,19 +139,33 @@ def _weekly_off_deduction_for_date(records_by_date, off_date):
     absent_count = 0
     for day in week_dates:
         record = records_by_date.get(day)
-        if record is None or (not record.is_excused and not record.check_in):
+        if record is None or not _is_attended(record):
             absent_count += 1
     return _weekly_off_ratio(absent_count)
 
 
 def _compute_month_accrual(records_by_date, month_key, up_to_iso,
-                           weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY):
-    """استحقاق الشهر على أساس الحضور الفعلي + أيام الإجازة الأسبوعية المدفوعة (حد 30 يوماً)."""
+                           weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY,
+                           weekly_off_work_multiplier=1.0):
+    """
+    استحقاق الشهر وفق القواعد المحاسبية المؤكدة:
+    1) للشهر المكتمل: earned_base_days = max(0, 30 - total_unexcused_absence_days - sunday_deduction_days)
+       ليخصم الغياب يوماً واحداً بالضبط سواء كان الشهر 28 أو 30 أو 31 يوماً.
+    2) العمل يوم الإجازة الأسبوعية يمنح أجراً إضافياً فوق سقف الـ 30 يوماً بمضاعف
+       ديناميكي (weekly_off_work_multiplier: 1.0 / 1.5 / 2.0 ...).
+    """
     y, m = (int(part) for part in month_key.split('-'))
     last_day = calendar.monthrange(y, m)[1]
-    attended_days = 0.0
+    attended_regular_days = 0.0
+    worked_weekly_off_days = 0.0
     workdays_in_scope = 0
     paid_weekly_off_days = 0.0
+    unexcused_absence_days = 0.0
+    sunday_deduction_days = 0.0
+    try:
+        mult = max(0.0, float(weekly_off_work_multiplier))
+    except (TypeError, ValueError):
+        mult = 1.0
 
     for day in range(1, last_day + 1):
         cursor = date(y, m, day)
@@ -157,27 +176,41 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso,
         # يوم الإجازة الأسبوعية المدفوعة (يأتي من إعدادات الحضور، والأحد افتراضياً).
         if cursor.weekday() == weekly_off_index:
             if has_check_in:
-                workdays_in_scope += 1
-                attended_days += 1
+                worked_weekly_off_days += 1.0
                 continue
             week_dates = [cursor - timedelta(days=offset) for offset in range(6, 0, -1)]
             if any(day_key in records_by_date for day_key in week_dates):
-                paid_weekly_off_days += max(0.0, 1.0 - _weekly_off_deduction_for_date(records_by_date, cursor))
+                ded = _weekly_off_deduction_for_date(records_by_date, cursor)
+                sunday_deduction_days += ded
+                paid_weekly_off_days += max(0.0, 1.0 - ded)
             continue
         workdays_in_scope += 1
         if record and _is_attended(record):
-            attended_days += 1
+            attended_regular_days += 1.0
+        else:
+            unexcused_absence_days += 1.0
 
-    earned_days = attended_days + paid_weekly_off_days
+    attended_days = attended_regular_days + worked_weekly_off_days
     month_last = date(y, m, last_day)
     month_complete = up_to_iso is None or up_to_iso >= month_last
-    if month_complete and workdays_in_scope > 0 and attended_days >= workdays_in_scope:
-        earned_days = 30.0
-    earned_days = min(30.0, earned_days)
+    weekly_off_extra_days = worked_weekly_off_days * mult
+
+    if attended_regular_days == 0 and worked_weekly_off_days == 0 and paid_weekly_off_days == 0:
+        earned_days = 0.0
+    elif month_complete:
+        base_earned = max(0.0, 30.0 - unexcused_absence_days - sunday_deduction_days)
+        earned_days = base_earned + weekly_off_extra_days
+    else:
+        base_earned = min(30.0, attended_regular_days + paid_weekly_off_days)
+        earned_days = base_earned + weekly_off_extra_days
 
     return {
         'attended_days': round(attended_days, 2),
         'paid_sunday_days': round(paid_weekly_off_days, 2),
+        'worked_weekly_off_days': round(worked_weekly_off_days, 2),
+        'weekly_off_extra_days': round(weekly_off_extra_days, 2),
+        'sunday_deduction_days': round(sunday_deduction_days, 2),
+        'unexcused_absence_days': round(unexcused_absence_days, 2),
         'earned_days': round(earned_days, 2),
     }
 
@@ -243,6 +276,17 @@ def _match_late_rule(rules, late_minutes):
 
     min_from = min((_from(rule) for rule in candidates), default=float('inf'))
     if min_from != float('inf') and late_minutes >= min_from:
+        lower_tiers = [
+            rule for rule in candidates
+            if _to(rule) is not None and _to(rule) < late_minutes
+        ]
+        higher_tiers = [
+            rule for rule in candidates
+            if _from(rule) > late_minutes
+        ]
+        if lower_tiers and higher_tiers:
+            return max(lower_tiers, key=lambda rule: (_to(rule), _from(rule)))
+
         def sort_key(rule):
             to_value = _to(rule)
             return (to_value if to_value is not None else float('inf'), _from(rule))
@@ -258,9 +302,14 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
                                 weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY):
     salary = float(employee.monthly_salary or 0)
     day_rate = salary / 30.0
-    hour_rate = day_rate / 8.0
+    shift_hours = working_hours_per_day(settings)
+    hour_rate = day_rate / shift_hours
     official_start = getattr(settings, 'official_start_time', None) if settings else None
     rules = getattr(settings, 'rules_json', None) if settings else None
+    try:
+        weekly_off_mult = float(getattr(settings, 'weekly_off_work_multiplier', 1.0) or 1.0)
+    except (TypeError, ValueError):
+        weekly_off_mult = 1.0
 
     attendance_days = 0.0
     attendance_hours = 0.0
@@ -270,12 +319,11 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
     for record in employee_records:
         if not str(record.date).startswith(month_key):
             continue
-        if record.review_status == 'rejected':
-            continue
         # يوم الإجازة الأسبوعية بدون بصمة حضور = إجازة مدفوعة (لا إضافي/خصم عليه).
         if record.date.weekday() == weekly_off_index and not record.check_in:
             continue
 
+        # الإضافي يُحسب دائماً حتى لو رُفض خصم التأخير (رفض الخصم يلغي الخصم فقط ولا يلغي اليوم).
         overtime_days += float(record.overtime_days or 0)
         overtime_hours += float(record.overtime_hours or 0)
 
@@ -283,6 +331,9 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
         if not _is_attended(record):
             continue
         if record.is_excused:
+            continue
+        # الخصومات المرفوضة (rejected) أو بانتظار المراجعة (pending_review) لا تُخصم من الصافي.
+        if record.review_status in ('rejected', 'pending_review'):
             continue
 
         ded_days = float(record.calculated_deduction_days or 0)
@@ -299,7 +350,13 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
         attendance_days += ded_days
         attendance_hours += ded_hours
 
-    accrual = _compute_month_accrual(records_by_date, month_key, up_to_iso, weekly_off_index)
+    accrual = _compute_month_accrual(
+        records_by_date,
+        month_key,
+        up_to_iso,
+        weekly_off_index,
+        weekly_off_work_multiplier=weekly_off_mult,
+    )
     earned_base = accrual['earned_days'] * day_rate
 
     penalty_days = 0.0
@@ -325,13 +382,27 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
     total_deduction = attendance_deduction + penalty_deduction + loan_amount
 
     return {
-        'earned_base': earned_base,
-        'overtime_pay': overtime_pay,
-        'loan_amount': loan_amount,
-        'attendance_deduction': attendance_deduction,
-        'penalty_deduction': penalty_deduction,
-        'deductions': attendance_deduction + penalty_deduction,
-        'net_pay': earned_base + overtime_pay - total_deduction,
+        'base_salary': round(salary, 2),
+        'attended_days': accrual['attended_days'],
+        'paid_sunday_days': accrual['paid_sunday_days'],
+        'worked_weekly_off_days': accrual['worked_weekly_off_days'],
+        'weekly_off_extra_days': accrual['weekly_off_extra_days'],
+        'sunday_deduction_days': accrual['sunday_deduction_days'],
+        'earned_days': accrual['earned_days'],
+        'earned_base': round(earned_base, 2),
+        'overtime_days': round(overtime_days, 2),
+        'overtime_hours': round(overtime_hours, 2),
+        'overtime_pay': round(overtime_pay, 2),
+        'attendance_days': round(attendance_days, 2),
+        'attendance_hours': round(attendance_hours, 2),
+        'penalty_days': round(penalty_days, 2),
+        'penalty_hours': round(penalty_hours, 2),
+        'loan_amount': round(loan_amount, 2),
+        'attendance_deduction': round(attendance_deduction, 2),
+        'penalty_deduction': round(penalty_deduction, 2),
+        'deductions': round(attendance_deduction + penalty_deduction, 2),
+        'total_deduction': round(total_deduction, 2),
+        'net_pay': round(earned_base + overtime_pay - total_deduction, 2),
     }
 
 
@@ -341,7 +412,8 @@ def _sum_rows(rows):
         'overtime': sum(row['overtime_pay'] for row in rows),
         'loans': sum(row['loan_amount'] for row in rows),
         'deductions': sum(row['deductions'] for row in rows),
-        'net': sum(row['net_pay'] for row in rows),
+        # إجمالي النقد المطلوب دفعه: لا نطرح أرصدة سالبة لعامل من مستحقات زملائه.
+        'net': sum(max(0.0, float(row['net_pay'] or 0)) for row in rows),
     }
 
 
@@ -490,16 +562,63 @@ class HRReportsViewSet(viewsets.ViewSet):
                 return today - timedelta(days=1)
             return None
 
+        # جلب الكشوف المعتمدة والمغلقة للشهور المطلوبة لاستخدام الأرقام المجمّدة.
+        locked_snapshots = {
+            snap.month: snap
+            for snap in HRPayrollSnapshot.objects.filter(month__in=needed_months, is_locked=True)
+        }
+        snapshot_rows_by_month = {}
+        for snap_month, snap in locked_snapshots.items():
+            by_emp = {}
+            for row in (snap.rows_json or []):
+                emp_key = str(row.get('employee_id') or '')
+                if emp_key:
+                    by_emp[emp_key] = {
+                        'earned_base': float(row.get('earned_base') or 0),
+                        'overtime_pay': float(row.get('overtime_pay') or 0),
+                        'loan_amount': float(row.get('loan_deduction', row.get('loan_amount')) or 0),
+                        'attendance_deduction': float(row.get('attendance_deduction') or 0),
+                        'penalty_deduction': float(row.get('penalty_deduction') or 0),
+                        'deductions': float(row.get('attendance_deduction') or 0) + float(row.get('penalty_deduction') or 0),
+                        'net_pay': float(row.get('net_pay') or 0),
+                    }
+            snapshot_rows_by_month[snap_month] = by_emp
+
         employee_rows = {}
         for employee in employees:
             employee_records = records_by_employee.get(employee.id, [])
             records_by_date = {}
             for record in employee_records:
-                if record.review_status == 'rejected':
-                    continue
+                # لا نستبعد السجل عند رفض الخصم (rejected): رفض الخصم يلغي الغرامة فقط ولا يلغي الحضور.
                 records_by_date[record.date] = record
+            emp_ext_id = _ext_id(employee)
             per_month = {}
             for month_key in needed_months:
+                if month_key in snapshot_rows_by_month:
+                    snap_row = snapshot_rows_by_month[month_key].get(emp_ext_id)
+                    if snap_row is not None:
+                        per_month[month_key] = snap_row
+                    else:
+                        per_month[month_key] = {
+                            'earned_base': 0.0, 'overtime_pay': 0.0, 'loan_amount': 0.0,
+                            'attendance_deduction': 0.0, 'penalty_deduction': 0.0,
+                            'deductions': 0.0, 'net_pay': 0.0,
+                        }
+                    continue
+                # للشهر المفتوح: الموظف غير النشط بدون أي سجلات حضور/سلف/جزاءات لا يُدرج.
+                if not employee.is_active:
+                    has_activity = (
+                        any(str(r.date).startswith(month_key) for r in employee_records)
+                        or any(str(p.date).startswith(month_key) for p in penalties_by_employee.get(employee.id, []))
+                        or any(str(l.date).startswith(month_key) for l in loans_by_employee.get(employee.id, []))
+                    )
+                    if not has_activity:
+                        per_month[month_key] = {
+                            'earned_base': 0.0, 'overtime_pay': 0.0, 'loan_amount': 0.0,
+                            'attendance_deduction': 0.0, 'penalty_deduction': 0.0,
+                            'deductions': 0.0, 'net_pay': 0.0,
+                        }
+                        continue
                 per_month[month_key] = _payroll_for_employee_month(
                     employee,
                     employee_records,
@@ -645,11 +764,17 @@ class HRReportsViewSet(viewsets.ViewSet):
         if not can_view_salaries:
             for m_row in months_payload:
                 m_row['earned_salary'] = 0.0
+                m_row['overtime_bonus'] = 0.0
+                m_row['deductions'] = 0.0
                 m_row['net_paid'] = 0.0
             annual_kpis['net_salary_total'] = 0.0
+            annual_kpis['overtime_bonus_total'] = 0.0
+            annual_kpis['deductions_total'] = 0.0
             annual_kpis['avg_monthly_labor_cost'] = 0.0
             for c_row in comparison:
                 c_row['net'] = 0.0
+                c_row['overtime'] = 0.0
+                c_row['deductions'] = 0.0
                 c_row['net_change_pct'] = None
 
             # صفوف الأقسام تُرجع المفاتيح earned/overtime/loans/deductions/net/percent
@@ -699,8 +824,6 @@ class HRReportsViewSet(viewsets.ViewSet):
 
         for record in window_records:
             if record.employee_id not in employees_by_id:
-                continue
-            if record.review_status == 'rejected':
                 continue
             if not (range_start <= record.date <= range_end):
                 continue

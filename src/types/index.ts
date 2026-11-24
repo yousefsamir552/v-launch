@@ -168,6 +168,8 @@ export interface GlobalSiteSettings {
   accessory_groups?: AccessoryGroup[];
   /** تارجتات أقسام الإنتاج (يومي / شهري): { cutting: { daily, monthly }, ... } */
   department_targets?: DepartmentTargetsMap;
+  /** حد التنبيه الأدنى لمخزن القماش (محفوظ في قاعدة البيانات). */
+  fabric_alert_threshold?: number;
   updated_by?: string;
   updated_at?: string;
 }
@@ -1378,6 +1380,10 @@ export interface HRAttendanceSettings {
   weekly_off_day_label?: string;
   /** عدد أيام الشهر الحسابية ثابت دائماً = 30 يوماً. */
   month_calculation_days: number;
+  /** معامل أجر العمل يوم الإجازة الأسبوعية (مثلاً 1.0 أو 1.5 أو 2.0). */
+  weekly_off_work_multiplier?: number;
+  /** ساعات العمل اليومية المحسوبة ديناميكياً من مواعيد الحضور والانصراف. */
+  working_hours_per_day?: number;
   rules_json: HRAttendanceRule[];
   overtime_rules: HROvertimeRule[];
   updated_at?: string;

@@ -355,24 +355,35 @@ def resolve_cost_values(cost_per_piece, total_cost=None, pieces_count=None):
     يحسم (سعر القطعة، الإجمالي) من مدخلات الواجهة بأمان.
 
     * ``cost_per_piece`` سالب أو غير رقمي → 0.
-    * إن مُرِّر ``total_cost`` صريحاً يُستخدم كما هو.
-    * وإلا يُحسب الإجمالي = السعر × عدد القطع إن توفّر العدد، أو السعر فقط.
+    * عند وجود ``cost_per_piece > 0`` و ``pieces_count > 0`` يُحسب الإجمالي دائماً
+      على الباك إند (السعر × عدد القطع مقرباً لمنزلتين) ولا يسمح لـ ``0`` من الواجهة بتصفيره.
+    * إن لم يوجد سعر للقطعة ولكن مُرِّر ``total_cost > 0`` صريحاً يُستخدم كما هو.
     """
     try:
         cost = max(0.0, float(cost_per_piece or 0))
     except (TypeError, ValueError):
         cost = 0.0
+    try:
+        count = max(0.0, float(pieces_count or 0))
+    except (TypeError, ValueError):
+        count = 0.0
+    explicit_total = None
     if total_cost not in (None, ''):
         try:
-            total = max(0.0, float(total_cost or 0))
+            parsed_total = max(0.0, float(total_cost or 0))
+            if parsed_total > 0:
+                explicit_total = parsed_total
         except (TypeError, ValueError):
-            total = 0.0
+            explicit_total = None
+
+    if cost > 0:
+        total = round(cost * count, 2) if count > 0 else (
+            round(explicit_total, 2) if explicit_total is not None else round(cost, 2)
+        )
+    elif explicit_total is not None:
+        total = round(explicit_total, 2)
     else:
-        try:
-            count = float(pieces_count or 0)
-        except (TypeError, ValueError):
-            count = 0.0
-        total = round(cost * count, 2) if count > 0 else round(cost, 2)
+        total = 0.0
     return round(cost, 2), round(total, 2)
 
 
@@ -599,7 +610,7 @@ def get_accessory_deficits():
         if item.usage_type == 'custom_model':
             if item.withdrawn_for_model:
                 continue
-            deficit = max(0, item.target_quantity - item.delivered_quantity)
+            deficit = round(max(0.0, float(item.target_quantity or 0) - float(item.delivered_quantity or 0)), 3)
             if deficit > 0:
                 model_deficits.append({
                     'id': ext_id,
@@ -607,26 +618,31 @@ def get_accessory_deficits():
                     'name': item.name,
                     'usage_type': 'custom_model',
                     'custom_model_code': item.custom_model_code,
-                    'current_stock': item.current_stock,
-                    'delivered_quantity': item.delivered_quantity,
-                    'target_quantity': item.target_quantity,
+                    'current_stock': float(item.current_stock or 0),
+                    'delivered_quantity': float(item.delivered_quantity or 0),
+                    'target_quantity': float(item.target_quantity or 0),
                     'deficit': deficit,
                     'unit': item.unit,
                     'supplier': item.supplier
                 })
         else:
             # حد تنبيه صفر (أو أقل) يعني أن التنبيهات معطّلة لهذا الصنف.
-            if item.min_threshold <= 0:
+            min_thr = float(item.min_threshold or 0)
+            cur_stk = float(item.current_stock or 0)
+            reserved = float(item.reserved_quantity or 0)
+            available = round(max(0.0, cur_stk - reserved), 3)
+            if min_thr <= 0:
                 continue
-            deficit = max(0, item.min_threshold - item.current_stock)
-            if item.current_stock <= item.min_threshold:
+            if available < min_thr:
+                deficit = round(max(0.0, min_thr - available), 3)
                 stock_deficits.append({
                     'id': ext_id,
                     'code': item.code or f"ACC-{item.id}",
                     'name': item.name,
                     'usage_type': 'stock',
-                    'current_stock': item.current_stock,
-                    'min_threshold': item.min_threshold,
+                    'current_stock': cur_stk,
+                    'available': available,
+                    'min_threshold': min_thr,
                     'deficit': deficit,
                     'unit': item.unit,
                     'supplier': item.supplier
@@ -758,7 +774,7 @@ def generate_smart_delivery_notifications():
         code = disp.model.model_code
         m_ext_id = disp.model.client_id or str(disp.model_id)
         d_ext_id = disp.client_id or str(disp.id)
-        piece_suffix = f" [{disp.piece_label or ('تيشرت' if disp.piece_type == 'shirt' else 'بنطلون')}]"
+        piece_suffix = f" [{disp.piece_label or PART_LABELS.get(disp.piece_type, 'قطعة')}]"
 
         if exp < today:
             days = (today - exp).days

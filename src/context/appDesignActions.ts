@@ -558,8 +558,11 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
       }
     }
 
+    const makeClientId = (prefix: string) =>
+      `${prefix}-${typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID().slice(0, 12) : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
+
     const newReq: ModelRequirement = {
-      id: 'req-' + Date.now(),
+      id: makeClientId('req'),
       model_id: modelId,
       color_id: colorId,
       part_name: partName.trim(),
@@ -616,8 +619,13 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
     const pieceConsumption = accessory.piece_consumption || 1;
     const plannedQty = accessory.planned_quantity ?? Math.round(pieceConsumption * targetCut);
 
+    const uniqueId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? `macc-${crypto.randomUUID().slice(0, 12)}`
+        : `macc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
     const newAcc: ModelAccessory = {
-      id: 'macc-' + Date.now(),
+      id: uniqueId,
       model_id: modelId,
       accessory_id: accessory.id,
       accessory_code: accessory.code,
@@ -830,12 +838,12 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
     }
   };
 
-  const deleteDesignModel = (modelId: string) => {
+  const deleteDesignModel = (modelId: string, confirmPostCutting = false) => {
     const target = models.find((m) => m.id === modelId);
     if (!target) return;
     setModels((prev) => prev.map((m) => (m.id === modelId ? { ...m, is_deleted: true } : m)));
     api
-      .deleteModel(modelId)
+      .deleteModel(modelId, confirmPostCutting)
       .then(async (res: any) => {
         // حدّث كل الحالة فوراً حتى تظهر أرصدة المخزن بعد استرداد الخامات.
         await refreshState();
