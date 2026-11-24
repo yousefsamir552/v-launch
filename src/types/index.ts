@@ -134,6 +134,26 @@ export interface RolePermissions {
   can_add_printing_notes?: boolean;
 }
 
+/**
+ * عنصر داخل مجموعة إكسسوارات جاهزة.
+ * `piece_consumption` = استهلاك القطعة الواحدة من هذا الإكسسوار.
+ */
+export interface AccessoryGroupItem {
+  accessory_id: string;
+  piece_consumption: number;
+}
+
+/**
+ * مجموعة أدوات/إكسسوارات جاهزة (مثل: تيكتات بيبي مقاسات 2-5)
+ * تُضاف كلها لبنود الموديل بضغطة واحدة وبكميات محسوبة تلقائياً.
+ */
+export interface AccessoryGroup {
+  id: string;
+  name: string;
+  description?: string;
+  items: AccessoryGroupItem[];
+}
+
 export interface GlobalSiteSettings {
   id?: string;
   site_name: string;
@@ -144,6 +164,8 @@ export interface GlobalSiteSettings {
   default_sewing_instructions: string;
   internal_message_templates: string[];
   favorite_accessory_ids?: string[];
+  /** مجموعات الإكسسوارات الجاهزة للإضافة السريعة في شاشة التصميم. */
+  accessory_groups?: AccessoryGroup[];
   /** تارجتات أقسام الإنتاج (يومي / شهري): { cutting: { daily, monthly }, ... } */
   department_targets?: DepartmentTargetsMap;
   updated_by?: string;

@@ -137,6 +137,19 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
         # Base64 from older clients is uploaded to R2 and replaced by its URL.
         return normalize_image_field(value, 'settings', 'شعار الموقع')
 
+    def _system_setting_list(self, key, inner_key):
+        """
+        يقرأ قائمة محفوظة داخل SystemSetting.value بأمان.
+        يُرجع [] لو الإعداد غير موجود أو قيمته ليست dict أو الحقل الداخلي ليس list،
+        بدلاً من رفع استثناء على بيانات قديمة/تالفة.
+        """
+        setting = SystemSetting.objects.filter(key=key).first()
+        if setting and isinstance(setting.value, dict):
+            value = setting.value.get(inner_key)
+            if isinstance(value, list):
+                return value
+        return []
+
     def to_representation(self, instance):
         return {
             'id': str(instance.id),
@@ -147,12 +160,8 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
             'whatsapp_supplier_template': instance.whatsapp_supplier_template or '',
             'default_sewing_instructions': instance.default_sewing_instructions or '',
             'internal_message_templates': instance.internal_message_templates if isinstance(instance.internal_message_templates, list) else [],
-            'favorite_accessory_ids': (
-                SystemSetting.objects.filter(key='favorite_accessory_ids').first().value.get('ids', [])
-                if SystemSetting.objects.filter(key='favorite_accessory_ids').exists()
-                and isinstance(SystemSetting.objects.filter(key='favorite_accessory_ids').first().value, dict)
-                else []
-            ),
+            'favorite_accessory_ids': self._system_setting_list('favorite_accessory_ids', 'ids'),
+            'accessory_groups': self._system_setting_list('accessory_groups', 'groups'),
             'department_targets': instance.department_targets if isinstance(instance.department_targets, dict) else {},
             'updated_by': instance.updated_by or '',
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',

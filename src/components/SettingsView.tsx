@@ -28,6 +28,7 @@ import {
 import { User, WorkshopType, WORKSHOP_TYPE_KEYS, WORKSHOP_TYPE_LABELS } from '../types';
 import { EditUserModal } from './EditUserModal';
 import { RoleManagementSection, DEFAULT_PERMISSIONS } from './RoleManagementSection';
+import { AccessoryGroupsManager } from './AccessoryGroupsManager';
 
 interface SettingsViewProps {
   onOpenLogs: () => void;
@@ -42,7 +43,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     suppliers,
     workshops,
     users,
-    accessoryItems,
     globalSettings,
     updateGlobalSettings,
     addSizeDef,
@@ -164,10 +164,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
   const [internalTemplates, setInternalTemplates] = useState<string[]>(
     globalSettings.internal_message_templates || []
   );
-  const [favoriteAccessoryIds, setFavoriteAccessoryIds] = useState<string[]>(
-    globalSettings.favorite_accessory_ids || []
-  );
   const [newInternalTemplate, setNewInternalTemplate] = useState('');
+  // مدير الأدوات العامة (مجموعات الإكسسوارات + المفضلة) يُفتح كمودال مستقل.
+  const [accessoryManagerOpen, setAccessoryManagerOpen] = useState(false);
 
   useEffect(() => {
     setSiteName(globalSettings.site_name || 'نظام إدارة المصنع');
@@ -177,7 +176,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     setWhatsappTemplate(globalSettings.whatsapp_supplier_template || '');
     setSewingInstructions(globalSettings.default_sewing_instructions || '');
     setInternalTemplates(globalSettings.internal_message_templates || []);
-    setFavoriteAccessoryIds(globalSettings.favorite_accessory_ids || []);
   }, [globalSettings]);
 
   useEffect(() => {
@@ -292,12 +290,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     setEditingWrkId(null);
   };
 
-  const handleToggleFavoriteAccessory = (accId: string) => {
-    setFavoriteAccessoryIds((prev) =>
-      prev.includes(accId) ? prev.filter((id) => id !== accId) : [...prev, accId]
-    );
-  };
-
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!realName.trim() || !username.trim() || !password) return;
@@ -370,8 +362,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
       copyright_text: copyrightText.trim(),
       whatsapp_supplier_template: whatsappTemplate,
       default_sewing_instructions: sewingInstructions,
-      internal_message_templates: internalTemplates,
-      favorite_accessory_ids: favoriteAccessoryIds
+      internal_message_templates: internalTemplates
     });
   };
 
@@ -864,68 +855,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
               </div>
             </div>
 
-            {/* Part B: General Tools - Favorite / Permanent Accessories for Quick Use in Design */}
+            {/* Part B: General Tools - entry point to the dedicated manager (groups + favorites) */}
             <div className="bg-amber-50/40 rounded-3xl p-5 border border-amber-200/90 space-y-4">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div>
                   <h4 className="font-extrabold text-sm text-amber-950 flex items-center gap-2">
                     <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
-                    <span>🛠️ الأدوات العامة: الإكسسوارات المفضلة / الدائمة (أزرار سريعة في قسم التصميم)</span>
+                    <span>🛠️ الأدوات العامة ومجموعات الإكسسوارات</span>
                   </h4>
                   <p className="text-xs text-slate-600 mt-0.5">
-                    حدد الإكسسوارات الدائمة (مثل: أستيك، قمر، شريط، إلخ) من مخزن الإكسسوارات ليتم حفظها وظهورها كأزرار إضافة سريعة داخل شاشة التصميم.
+                    أدِر الإكسسوارات المفضلة (الأزرار السريعة) ومجموعات الأدوات الجاهزة (مثل تيكتات بيبي مقاسات 2-5) من شاشة مخصصة واحدة، لتظهر كأزرار إضافة سريعة داخل شاشة التصميم.
                   </p>
                 </div>
                 <span className="px-3 py-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 text-xs font-black">
-                  محدد حالياً: {favoriteAccessoryIds.length} عنصر
+                  {(globalSettings.accessory_groups || []).length} مجموعة •{' '}
+                  {(globalSettings.favorite_accessory_ids || []).length} أداة مفضلة
                 </span>
               </div>
 
-              {accessoryItems.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 max-h-72 overflow-y-auto p-1">
-                  {accessoryItems.map((acc) => {
-                    const isFav = favoriteAccessoryIds.includes(acc.id);
-                    const avail = acc.quantity - acc.reserved_quantity;
-                    return (
-                      <button
-                        key={acc.id}
-                        type="button"
-                        onClick={() => handleToggleFavoriteAccessory(acc.id)}
-                        className={`flex items-center justify-between gap-2 p-3 rounded-2xl border text-start transition cursor-pointer ${
-                          isFav
-                            ? 'bg-amber-500/15 border-amber-500 text-amber-950 shadow-2xs ring-2 ring-amber-400/30'
-                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                        }`}
-                      >
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-mono text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
-                              {acc.code}
-                            </span>
-                            <span className="font-bold text-xs truncate">{acc.name}</span>
-                          </div>
-                          <span className="text-[10px] text-slate-500 block mt-0.5">
-                            {acc.type_name} • متاح: {avail} {acc.unit}
-                          </span>
-                        </div>
-                        <div
-                          className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 border ${
-                            isFav
-                              ? 'bg-amber-500 border-amber-600 text-white'
-                              : 'bg-slate-100 border-slate-300 text-transparent'
-                          }`}
-                        >
-                          <Star className={`w-3.5 h-3.5 ${isFav ? 'fill-white' : ''}`} />
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500 bg-white p-4 rounded-2xl border border-slate-200 text-center">
-                  لا توجد إكسسوارات مسجلة في مخزن الإكسسوارات حالياً. أضف أصنافاً في مخزن الإكسسوارات أولاً لتحديد المفضل منها.
-                </p>
-              )}
+              <button
+                type="button"
+                onClick={() => setAccessoryManagerOpen(true)}
+                className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-amber-500 hover:bg-amber-600 text-white font-black text-xs shadow-md shadow-amber-500/20 transition flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Sliders className="w-4 h-4" />
+                <span>فتح مدير الأدوات العامة والمجموعات</span>
+              </button>
             </div>
 
             {/* Part C: Message Templates & Default Sewing Print Instructions */}
@@ -1070,6 +1025,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
           </div>
         </form>
       )}
+
+      {/* مدير الأدوات العامة (مجموعات الإكسسوارات + الإكسسوارات المفضلة) */}
+      <AccessoryGroupsManager
+        open={accessoryManagerOpen}
+        onClose={() => setAccessoryManagerOpen(false)}
+      />
 
       {/* Tab 3: Users Management */}
       {activeTab === 'users' && hasUsersPerm && (

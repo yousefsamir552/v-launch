@@ -608,6 +608,7 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
       target_type?: 'shirt' | 'pants' | 'jacket' | 'single';
       piece_consumption?: number;
       planned_quantity?: number;
+      silent?: boolean;
     }
   ) => {
     const targetModel = models.find((m) => m.id === modelId);
@@ -632,17 +633,19 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
       .createModelAccessory(newAcc)
       .then((saved) => {
         setAccessories((prev) => prev.map((a) => (a.id === newAcc.id ? saved : a)));
-        addFlashMessage(
-          `تمت إضافة إكسسوار "${accessory.name}" إلى ${
-            accessory.target_type === 'pants'
-              ? 'البنطلون'
-              : accessory.target_type === 'jacket'
-              ? 'الجاكيت'
-              : accessory.target_type === 'single'
-              ? 'القطعة الواحدة'
-              : 'التيشرت'
-          }`
-        );
+        if (!accessory.silent) {
+          addFlashMessage(
+            `تمت إضافة إكسسوار "${accessory.name}" إلى ${
+              accessory.target_type === 'pants'
+                ? 'البنطلون'
+                : accessory.target_type === 'jacket'
+                ? 'الجاكيت'
+                : accessory.target_type === 'single'
+                ? 'القطعة الواحدة'
+                : 'التيشرت'
+            }`
+          );
+        }
       })
       .catch((err) => {
         refreshState();

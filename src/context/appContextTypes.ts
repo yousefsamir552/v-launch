@@ -167,6 +167,7 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSiteSettings = {
     'تنبيه: يوجد نقص في بعض المستلزمات، يرجى المراجعة العاجلة.'
   ],
   favorite_accessory_ids: [],
+  accessory_groups: [],
   department_targets: {}
 };
 
@@ -498,6 +499,8 @@ export interface AppContextType {
       target_type?: 'shirt' | 'pants' | 'jacket' | 'single';
       piece_consumption?: number;
       planned_quantity?: number;
+      /** عند true لا تُعرض رسالة نجاح فردية (تُستخدم عند الإضافة ضمن مجموعة برسالة ملخّصة). */
+      silent?: boolean;
     }
   ) => { success: boolean; message: string };
   deleteModelAccessory: (accId: string) => void;

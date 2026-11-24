@@ -397,6 +397,13 @@ class GlobalSettingsViewSet(viewsets.ViewSet):
                 defaults={'value': {'ids': data['favorite_accessory_ids']}}
             )
 
+        # مجموعات الإكسسوارات الجاهزة (تُخزَّن كإعداد نظام بلا Migrations جديدة).
+        if 'accessory_groups' in data and isinstance(data['accessory_groups'], list):
+            SystemSetting.objects.update_or_create(
+                key='accessory_groups',
+                defaults={'value': {'groups': data['accessory_groups']}}
+            )
+
         if profile and not (profile.is_sudo or profile.username.lower() == 'sudo'):
             obj.updated_by = profile.real_name or profile.username
         elif 'updated_by' in data and data['updated_by']:

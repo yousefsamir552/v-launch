@@ -18,6 +18,7 @@ import {
 import { ZoomableImage } from './ZoomableImage';
 import { EditModelModal } from './EditModelModal';
 import {
+  AccessoryGroup,
   AccessoryItem,
   GarmentComposition,
   GarmentPart,
@@ -33,6 +34,7 @@ import { AccessoryPicker } from './AccessoryPicker';
 import { EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel } from '../utils/completedModels';
 import { printAccessoryIssueOrder } from '../utils/printAccessoryIssueOrder';
+import { AccessoryGroupsManager } from './AccessoryGroupsManager';
 
 /** ألوان شارات القطع في جدول الأقمشة المخصصة للموديل. */
 const PART_BADGE_STYLES: Record<GarmentPart, string> = {
@@ -113,13 +115,16 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     deleteDesignModel,
     normalizePartKey,
     hasPermission,
-    canAddDesignNotes
+    canAddDesignNotes,
+    canViewGlobalSettings,
+    addFlashMessage
   } = useApp();
 
   const canEdit = hasPermission('design', true);
   const canWriteNotes = canAddDesignNotes();
   const model = models.find((m) => m.id === modelId && !m.is_deleted);
   const [editModalOpen, setEditModalOpen] = useState(false);
+  const [accessoryManagerOpen, setAccessoryManagerOpen] = useState(false);
 
   const modelReqs = requirements.filter((r) => r.model_id === modelId);
   const modelAccs = accessories.filter((a) => a.model_id === modelId);
@@ -291,6 +296,11 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   const favoriteIds = globalSettings?.favorite_accessory_ids || [];
   const generalToolItems = accessoryItems.filter((item) => favoriteIds.includes(item.id));
 
+  // مجموعات الإكسسوارات الجاهزة المحفوظة من الإعدادات (إضافة دفعة واحدة).
+  const accessoryGroups = Array.isArray(globalSettings?.accessory_groups)
+    ? globalSettings.accessory_groups
+    : [];
+
   // Quick-add only: tools already added to the current target section are hidden from the quick box
   // so they never duplicate. Removal happens from the accessories table itself.
   const remainingGeneralTools = generalToolItems.filter(
@@ -327,6 +337,68 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
       piece_consumption: consumption,
       planned_quantity: plannedTotal
     });
+  };
+
+  /**
+   * إضافة كل عناصر مجموعة إكسسوارات جاهزة دفعة واحدة.
+   * يتم تخطي العناصر المضافة بالفعل لنفس القسم، وحساب الكمية تلقائياً:
+   * استهلاك العنصر × العدد المستهدف للقص.
+   */
+  const handleAddAccessoryGroup = (group: AccessoryGroup) => {
+    if (!canEdit) return;
+    const basis = Number(targetCutQuantity) || 100;
+    let addedCount = 0;
+    let skippedCount = 0;
+    let missingCount = 0;
+
+    group.items.forEach((entry) => {
+      const item = accessoryItems.find((candidate) => candidate.id === entry.accessory_id);
+      if (!item) {
+        missingCount += 1;
+        return;
+      }
+      const alreadyAdded = modelAccs.some(
+        (a) =>
+          (a.accessory_id === item.id || a.accessory_code === item.code) &&
+          a.target_type === accTargetType
+      );
+      if (alreadyAdded) {
+        skippedCount += 1;
+        return;
+      }
+      const consumption =
+        Number(entry.piece_consumption) || Number(accPieceConsumption) || 1;
+      addModelAccessory(modelId, {
+        id: item.id,
+        code: item.code,
+        name: item.name,
+        unit: item.unit,
+        image: item.image,
+        target_type: accTargetType,
+        piece_consumption: consumption,
+        planned_quantity: Math.round(consumption * basis),
+        silent: true
+      });
+      addedCount += 1;
+    });
+
+    if (addedCount > 0) {
+      addFlashMessage(
+        `تمت إضافة ${addedCount} إكسسوار من مجموعة "${group.name}" إلى ${accTargetLabel}` +
+          (skippedCount > 0 ? ` • تم تجاهل ${skippedCount} عنصر مكرر` : '') +
+          (missingCount > 0 ? ` • ${missingCount} عنصر غير موجود بالمخزن` : '')
+      );
+    } else if (skippedCount > 0) {
+      addFlashMessage(
+        `كل عناصر مجموعة "${group.name}" مضافة بالفعل إلى ${accTargetLabel}`,
+        'warning'
+      );
+    } else {
+      addFlashMessage(
+        `تعذّر العثور على عناصر مجموعة "${group.name}" في مخزن الإكسسوارات`,
+        'danger'
+      );
+    }
   };
 
   /**
@@ -1000,10 +1072,103 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                     🛠️ الأدوات العامة (اختيار سريع لـ {accTargetLabel}):
                   </h4>
                 </div>
-                <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-black">
-                  {generalToolItems.length} أداة محفوظة
-                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-black">
+                    {generalToolItems.length} أداة محفوظة
+                  </span>
+                  {canViewGlobalSettings() && (
+                    <button
+                      type="button"
+                      onClick={() => setAccessoryManagerOpen(true)}
+                      className="px-2.5 py-1 rounded-full bg-white border border-amber-300 text-amber-800 hover:bg-amber-50 text-[10px] font-black flex items-center gap-1 cursor-pointer"
+                      title="إدارة مجموعات الإكسسوارات والأدوات المفضلة"
+                    >
+                      <Sparkles className="w-3 h-3" /> إدارة
+                    </button>
+                  )}
+                </div>
               </div>
+
+              {/* مجموعات الإكسسوارات الجاهزة: إضافة كل عناصر المجموعة دفعة واحدة */}
+              {accessoryGroups.length > 0 && (
+                <div className="rounded-2xl border border-indigo-200 bg-indigo-50/40 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <h5 className="font-extrabold text-xs text-indigo-950 flex items-center gap-1.5">
+                      <Layers className="w-4 h-4 text-indigo-600" />
+                      📦 مجموعات جاهزة (إضافة دفعة واحدة لـ {accTargetLabel})
+                    </h5>
+                    <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-900 border border-indigo-300 text-[10px] font-black">
+                      {accessoryGroups.length} مجموعة
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {accessoryGroups.map((group) => {
+                      const groupItems = group.items
+                        .map((entry) => {
+                          const item = accessoryItems.find(
+                            (candidate) => candidate.id === entry.accessory_id
+                          );
+                          return item ? { item, consumption: entry.piece_consumption } : null;
+                        })
+                        .filter(
+                          (value): value is { item: AccessoryItem; consumption: number } =>
+                            value !== null
+                        );
+                      const pendingCount = groupItems.filter(
+                        ({ item }) =>
+                          !modelAccs.some(
+                            (a) =>
+                              (a.accessory_id === item.id || a.accessory_code === item.code) &&
+                              a.target_type === accTargetType
+                          )
+                      ).length;
+                      const allAdded = groupItems.length > 0 && pendingCount === 0;
+
+                      return (
+                        <button
+                          key={group.id}
+                          type="button"
+                          disabled={!canEdit || groupItems.length === 0 || allAdded}
+                          onClick={() => handleAddAccessoryGroup(group)}
+                          className={`flex items-center justify-between gap-2 p-2.5 rounded-2xl border text-start transition ${
+                            allAdded
+                              ? 'bg-emerald-50/70 border-emerald-300 text-emerald-900'
+                              : 'bg-white border-indigo-200 text-slate-700 hover:bg-indigo-50 cursor-pointer'
+                          } disabled:opacity-70 disabled:cursor-not-allowed`}
+                          title={
+                            allAdded
+                              ? 'كل عناصر المجموعة مضافة بالفعل لهذا القسم'
+                              : 'إضافة كل عناصر المجموعة دفعة واحدة'
+                          }
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
+                            <div className="min-w-0">
+                              <span className="font-extrabold text-xs text-slate-900 block truncate">
+                                {group.name}
+                              </span>
+                              <span className="text-[10px] text-slate-500 block">
+                                {groupItems.length} عنصر بالمخزن •{' '}
+                                {group.description || `${group.items.length} عنصر بالمجموعة`}
+                              </span>
+                            </div>
+                          </div>
+                          <span
+                            className={`text-[10px] font-black px-2 py-0.5 rounded-full shrink-0 border ${
+                              allAdded
+                                ? 'bg-emerald-100 border-emerald-300 text-emerald-800'
+                                : 'bg-indigo-100 border-indigo-300 text-indigo-800'
+                            }`}
+                          >
+                            {allAdded ? '✓ مضافة' : `+ إضافة ${pendingCount}/${groupItems.length}`}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               <p className="text-[11px] text-slate-500">
                 اضغط على أي أداة عامة لإضافتها فوراً كصف عادي في قائمة إكسسوارات الموديل ضمن قسم{' '}
@@ -1673,6 +1838,12 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
           onClose={() => setEditModalOpen(false)}
         />
       )}
+
+      {/* إدارة مجموعات الإكسسوارات والأدوات المفضلة (تُطبق فوراً على شاشة التصميم) */}
+      <AccessoryGroupsManager
+        open={accessoryManagerOpen}
+        onClose={() => setAccessoryManagerOpen(false)}
+      />
     </div>
   );
 };
