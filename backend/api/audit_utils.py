@@ -801,6 +801,14 @@ def _detect_completed_model_edit(action_type: str, before_obj, after_obj) -> boo
         status = str(getattr(obj, 'status', '') or '').strip()
         if status and status not in {'مرحلة التصميم', 'تصميم', 'في القص', 'جاري القص'}:
             return True
+    else:
+        # سجلات الأقسام (قص/جودة/مطابع/مكن/تشطيب...) مرتبطة بموديل: نفحص موديلها
+        # المرتبط، فإن كان قد تجاوز مرحلة القص تُسجَّل العملية بعلامة موديل منتهٍ.
+        linked = getattr(obj, 'model', None)
+        if linked is not None and linked.__class__.__name__ == 'ModelItem':
+            linked_status = str(getattr(linked, 'status', '') or '').strip()
+            if linked_status and linked_status not in {'مرحلة التصميم', 'تصميم', 'في القص', 'جاري القص'}:
+                return True
     return False
 
 

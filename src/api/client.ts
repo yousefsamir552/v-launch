@@ -608,13 +608,17 @@ export const api = {
   getCuttingRecords: () => request<any[]>('/cutting-records/'),
   createCuttingRecord: (data: any) =>
     request<any>('/cutting-records/', { method: 'POST', body: JSON.stringify(data) }),
-  updateCuttingRecord: (id: string, data: any) =>
+  updateCuttingRecord: (id: string, data: any, headers?: Record<string, string>) =>
     request<any>(`/cutting-records/${encodeURIComponent(id)}/`, {
       method: 'PATCH',
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
+      ...(headers ? { headers } : {})
     }),
-  deleteCuttingRecord: (id: string) =>
-    request<any>(`/cutting-records/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  deleteCuttingRecord: (id: string, headers?: Record<string, string>) =>
+    request<any>(`/cutting-records/${encodeURIComponent(id)}/`, {
+      method: 'DELETE',
+      ...(headers ? { headers } : {})
+    }),
   getQCRecords: () => request<any[]>('/qc-records/'),
   createQCRecord: (data: any) =>
     request<any>('/qc-records/', { method: 'POST', body: JSON.stringify(data) }),

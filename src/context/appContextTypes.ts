@@ -189,6 +189,27 @@ export const auditHeadersForModel = (
   return PRE_PRODUCTION_STAGES.has(model.status) ? undefined : auditContextHeaders(section);
 };
 
+/**
+ * حقول فرشة القص القابلة للتعديل من نافذة تعديل الفرشة.
+ * كل الحقول اختيارية: أي حقل غير مُرسل يبقى على قيمته الحالية في السجل.
+ */
+export interface CuttingRecordUpdate {
+  partType?: GarmentPart;
+  spreadNumber?: number;
+  isSubCut?: boolean;
+  subCutLabel?: string;
+  spreaderName?: string;
+  cutterName?: string;
+  colorLayers?: CuttingSpreadLayer[];
+  colorName?: string;
+  layersCount?: number;
+  piecesPerLayer?: number;
+  layerWeight?: number;
+  piecesCount?: number;
+  shadeDegree?: string;
+  notes?: string;
+}
+
 export interface AppContextType {
   currentUser: User | null;
   setCurrentUser: (user: User | null) => void;
@@ -535,10 +556,10 @@ export interface AppContextType {
     isSubCut?: boolean;
     subCutLabel?: string;
   }) => void;
-  updateCuttingRecord: (
-    recordId: string,
-    updates: { isSubCut?: boolean; subCutLabel?: string }
-  ) => void;
+  /** تعديل كامل لفرشة قص قائمة (يشمل تحويلها بين أساسية/فرعية). */
+  updateCuttingRecord: (recordId: string, updates: CuttingRecordUpdate) => void;
+  /** حذف فرشة قص نهائياً مع إعادة حساب أعداد القطع وفائض القماش. */
+  deleteCuttingRecord: (recordId: string) => void;
   finishCuttingToQC: (modelId: string, notes?: string, parts?: GarmentPart[]) => void;
   exportCuttingCsv: (modelId: string) => void;
 

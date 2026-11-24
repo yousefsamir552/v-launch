@@ -70,13 +70,19 @@ class CuttingRecordViewSet(BasePermViewSet):
 
         with transaction.atomic():
             # اقفل سجل الموديل أولاً ثم احسب رقم الفرشة، حتى لا تحصل فرشتان
-            # متزامنتان على نفس الرقم (Race Condition).
+            # متزامنتان على نفس الرقم (Race Condition). نستخدم أكبر رقم موجود + 1
+            # (وليس عدد السجلات) حتى لا يتكرر رقم فرشة بعد حذف إحدى الفرشات.
             model = ModelItem.objects.select_for_update().get(pk=model.pk)
-            existing_spreads_count = CuttingRecord.objects.filter(model=model).count()
+            last_spread_num = (
+                CuttingRecord.objects.filter(model=model)
+                .order_by('-spread_number')
+                .values_list('spread_number', flat=True)
+                .first()
+            ) or 0
             spread_num = int(
                 data.get('spread_number')
                 or data.get('spreadNumber')
-                or (existing_spreads_count + 1)
+                or (last_spread_num + 1)
             )
             rec = CuttingRecord.objects.create(
                 client_id=data.get('id') or data.get('client_id'),
@@ -184,70 +190,154 @@ class CuttingRecordViewSet(BasePermViewSet):
                     return data.get(key)
             return None
 
+        def to_int(value, default=0, minimum=0):
+            try:
+                return max(minimum, int(value if value is not None else default))
+            except (TypeError, ValueError):
+                return default
+
+        def to_float(value, default=0.0, minimum=0.0):
+            try:
+                return max(minimum, float(value if value is not None else default))
+            except (TypeError, ValueError):
+                return default
+
         profile = getattr(request, 'user_profile', None)
         can_cutting_notes = True if not profile else profile.has_perm('can_add_cutting_notes')
 
-        if has('part_type', 'partType'):
-            rec.part_type = normalize_part_key(val('part_type', 'partType') or 'shirt')
-        if has('spread_number', 'spreadNumber'):
-            try:
-                rec.spread_number = max(1, int(val('spread_number', 'spreadNumber') or 1))
-            except (TypeError, ValueError):
-                pass
-        if has('spreader_name', 'spreaderName'):
-            rec.spreader_name = str(val('spreader_name', 'spreaderName') or '').strip()[:150]
-        if has('cutter_name', 'cutterName'):
-            rec.cutter_name = str(val('cutter_name', 'cutterName') or '').strip()[:150]
-        if has('fabric_color', 'color_name', 'colorName'):
-            rec.fabric_color = str(val('fabric_color', 'color_name', 'colorName') or '').strip()[:255]
-        if has('layers_count', 'layersCount'):
-            try:
-                rec.layers_count = max(0, int(val('layers_count', 'layersCount') or 0))
-            except (TypeError, ValueError):
-                pass
-        if has('pieces_per_layer', 'piecesPerLayer'):
-            try:
-                rec.pieces_per_layer = max(0, int(val('pieces_per_layer', 'piecesPerLayer') or 0))
-            except (TypeError, ValueError):
-                pass
-        if has('layer_weight', 'layerWeight'):
-            try:
-                rec.layer_weight = max(0.0, float(val('layer_weight', 'layerWeight') or 0))
-            except (TypeError, ValueError):
-                pass
-        if has('pieces_count', 'piecesCount'):
-            try:
-                rec.pieces_count = max(0, int(val('pieces_count', 'piecesCount') or 0))
-            except (TypeError, ValueError):
-                pass
-        if has('shade_degree', 'shadeDegree'):
-            rec.shade_degree = str(val('shade_degree', 'shadeDegree') or '').strip()[:100]
-        if has('notes') and can_cutting_notes:
-            rec.notes = str(data.get('notes') or '').strip()
-        if has('is_sub_cut', 'isSubCut'):
-            raw_sub_cut = val('is_sub_cut', 'isSubCut')
-            if isinstance(raw_sub_cut, str):
-                rec.is_sub_cut = raw_sub_cut.strip().lower() in ('1', 'true', 'yes', 'on')
-            else:
-                rec.is_sub_cut = bool(raw_sub_cut)
-        if has('sub_cut_label', 'subCutLabel'):
-            rec.sub_cut_label = str(val('sub_cut_label', 'subCutLabel') or '').strip()[:150]
-        if rec.is_sub_cut and not rec.sub_cut_label:
-            rec.sub_cut_label = 'قصة ' + {
-                'shirt': 'تيشرت', 'pants': 'بنطلون', 'jacket': 'جاكيت', 'single': 'قطعة',
-            }.get(rec.part_type, 'فرعية')
+        with transaction.atomic():
+            # نقفل سجل الفرشة والموديل معاً حتى لا تتصادم عمليات التعديل/الحذف
+            # المتزامنة مع إعادة حساب مجاميع القص.
+            rec = CuttingRecord.objects.select_for_update().select_related('model').get(pk=rec.pk)
+            model = ModelItem.objects.select_for_update().get(pk=rec.model_id)
+            rec.model = model
 
-        rec.save()
-        recompute_model_part_totals(rec.model)
+            if has('part_type', 'partType'):
+                rec.part_type = normalize_part_key(val('part_type', 'partType') or 'shirt')
+            if has('spread_number', 'spreadNumber'):
+                rec.spread_number = to_int(
+                    val('spread_number', 'spreadNumber'), default=1, minimum=1
+                )
+            if has('spreader_name', 'spreaderName'):
+                rec.spreader_name = str(val('spreader_name', 'spreaderName') or '').strip()[:150]
+            if has('cutter_name', 'cutterName'):
+                rec.cutter_name = str(val('cutter_name', 'cutterName') or '').strip()[:150]
+            if has('pieces_per_layer', 'piecesPerLayer'):
+                rec.pieces_per_layer = to_int(
+                    val('pieces_per_layer', 'piecesPerLayer'), default=0, minimum=0
+                )
+            if has('layer_weight', 'layerWeight'):
+                rec.layer_weight = to_float(
+                    val('layer_weight', 'layerWeight'), default=0.0, minimum=0.0
+                )
+            if has('shade_degree', 'shadeDegree'):
+                rec.shade_degree = str(val('shade_degree', 'shadeDegree') or '').strip()[:100]
+            if has('notes') and can_cutting_notes:
+                rec.notes = str(data.get('notes') or '').strip()
+            if has('is_sub_cut', 'isSubCut'):
+                raw_sub_cut = val('is_sub_cut', 'isSubCut')
+                if isinstance(raw_sub_cut, str):
+                    rec.is_sub_cut = raw_sub_cut.strip().lower() in ('1', 'true', 'yes', 'on')
+                else:
+                    rec.is_sub_cut = bool(raw_sub_cut)
+            if has('sub_cut_label', 'subCutLabel'):
+                rec.sub_cut_label = str(val('sub_cut_label', 'subCutLabel') or '').strip()[:150]
+
+            # استبدال ألوان/راقات الفرشة بالكامل عند إرسال قائمة color_layers.
+            raw_layers = data.get('color_layers') if 'color_layers' in data else data.get('colorLayers')
+            if isinstance(raw_layers, list):
+                parsed_layers = []
+                for item in raw_layers:
+                    if not isinstance(item, dict):
+                        continue
+                    c_name = str(item.get('color_name') or item.get('colorName') or '').strip()
+                    l_count = to_int(
+                        item.get('layers_count')
+                        if 'layers_count' in item
+                        else item.get('layersCount'),
+                        default=0,
+                        minimum=0,
+                    )
+                    if c_name and l_count > 0:
+                        parsed_layers.append({
+                            'id': item.get('id') or item.get('client_id'),
+                            'color_name': c_name,
+                            'layers_count': l_count,
+                            'shade_degree': str(
+                                item.get('shade_degree') or item.get('shadeDegree') or ''
+                            ).strip(),
+                            'notes': str(item.get('notes') or '').strip(),
+                        })
+
+                rec.color_layers.all().delete()
+                for item in parsed_layers:
+                    item_pcs = (
+                        item['layers_count'] * rec.pieces_per_layer
+                        if rec.pieces_per_layer > 0
+                        else 0
+                    )
+                    CuttingSpreadLayer.objects.create(
+                        client_id=item.get('id'),
+                        spread=rec,
+                        color_name=item['color_name'],
+                        layers_count=item['layers_count'],
+                        layer_weight=rec.layer_weight,
+                        pieces_count=item_pcs,
+                        shade_degree=item['shade_degree'],
+                        notes=item['notes'],
+                    )
+
+                rec.layers_count = sum(item['layers_count'] for item in parsed_layers)
+                rec.fabric_color = ' + '.join(
+                    f"{item['color_name']} ({item['layers_count']} راق)"
+                    for item in parsed_layers
+                )[:255]
+            else:
+                if has('fabric_color', 'color_name', 'colorName'):
+                    rec.fabric_color = str(
+                        val('fabric_color', 'color_name', 'colorName') or ''
+                    ).strip()[:255]
+                if has('layers_count', 'layersCount'):
+                    rec.layers_count = to_int(
+                        val('layers_count', 'layersCount'), default=0, minimum=0
+                    )
+
+            # إعادة حساب القطع المقصوصة تلقائياً = عدد الراقات × القطع في الراق.
+            if rec.pieces_per_layer > 0 and rec.layers_count > 0:
+                rec.pieces_count = rec.layers_count * rec.pieces_per_layer
+            elif has('pieces_count', 'piecesCount'):
+                rec.pieces_count = to_int(
+                    val('pieces_count', 'piecesCount'), default=0, minimum=0
+                )
+
+            if rec.is_sub_cut and not rec.sub_cut_label:
+                rec.sub_cut_label = 'قصة ' + {
+                    'shirt': 'تيشرت', 'pants': 'بنطلون', 'jacket': 'جاكيت', 'single': 'قطعة',
+                }.get(rec.part_type, 'فرعية')
+
+            rec.save()
+
+            # مزامنة اسم المقصدار/الفَرّاش على بطاقة الموديل.
+            if rec.cutter_name:
+                model.cutter_name = rec.cutter_name
+            if rec.spreader_name:
+                model.spreader_name = rec.spreader_name
+            model._skip_timeline_signal = True
+            model.save()
+            recompute_model_part_totals(model)
+
         rec = CuttingRecord.objects.select_related('model').prefetch_related('color_layers').get(pk=rec.pk)
         return Response(CuttingRecordSerializer(rec, context={'request': request}).data, status=status.HTTP_200_OK)
 
     def destroy(self, request, *args, **kwargs):
         rec = self.get_object()
-        model = rec.model
+        model_id = rec.model_id
         spread_number = rec.spread_number
-        rec.delete()
-        recompute_model_part_totals(model)
+        with transaction.atomic():
+            model = ModelItem.objects.select_for_update().get(pk=model_id)
+            rec.delete()
+            model._skip_timeline_signal = True
+            recompute_model_part_totals(model)
         return Response(
             {'detail': f'تم حذف فرشة القص #{spread_number} وإعادة حساب أعداد القطع'},
             status=status.HTTP_200_OK,

@@ -16,9 +16,11 @@ import {
   Printer,
   Ruler,
   StickyNote,
-  RotateCcw
+  RotateCcw,
+  Pencil
 } from 'lucide-react';
-import { CuttingSpreadLayer, GarmentPart, ModelRequirement, PART_EMOJI, getPartLabel, PART_STAGE_LABELS, PartStage } from '../types';
+import { CuttingRecord, CuttingSpreadLayer, GarmentPart, ModelRequirement, PART_EMOJI, getPartLabel, PART_STAGE_LABELS, PartStage } from '../types';
+import { EditSpreadModal } from './EditSpreadModal';
 import { printCuttingOrder } from '../utils/printCuttingOrder';
 import { EndedModelBadge } from './CompletedModelsToggle';
 import { ZoomableImage } from './ZoomableImage';
@@ -63,6 +65,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     sizeDefs,
     addCuttingRecord,
     updateCuttingRecord,
+    deleteCuttingRecord,
     finishCuttingToQC,
     exportCuttingCsv,
     returnFabricFromCutting,
@@ -150,6 +153,8 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   // نوع الفرشة: قطعة أساسية (تُجمع على العدد) أو قصة / جزء فرعي (قماش ووزن فقط).
   const [isSubCut, setIsSubCut] = useState<boolean>(false);
   const [subCutLabel, setSubCutLabel] = useState<string>('');
+  // نافذة تعديل فرشة قائمة (تعديل كامل لكل بياناتها: النوع، الأسماء، الألوان، الأوزان، الملاحظات).
+  const [editingRecord, setEditingRecord] = useState<CuttingRecord | null>(null);
 
   // إبقاء القطعة المختارة ضمن قطع الموديل الفعلية (بعد أي تعديل في التصميم)
   // وإعادة ضبط ألوان الفرشة على ألوان هذه القطعة فقط.
@@ -284,6 +289,19 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
         return next;
       });
     }
+  };
+
+  /** حذف فرشة قص نهائياً بعد تأكيد المستخدم (يُعاد حساب القطع وفائض القماش تلقائياً). */
+  const handleDeleteRecord = (rec: CuttingRecord) => {
+    const spreadNum = rec.spread_number ?? rec.spreadNumber ?? '';
+    if (
+      !window.confirm(
+        `هل أنت متأكد من حذف فرشة القص #${spreadNum} نهائياً؟\nسيتم إعادة حساب أعداد القطع المقصوصة وفائض القماش تلقائياً.`
+      )
+    ) {
+      return;
+    }
+    deleteCuttingRecord(rec.id);
   };
 
   const handleAddColorRow = () => {
@@ -1436,6 +1454,28 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                                   : '🧩 تحويل إلى قصة فرعية'}
                               </button>
                             )}
+                            {canEdit && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingRecord(rec)}
+                                  title="تعديل كل بيانات الفرشة (الألوان، الراقات، الأوزان، الأسماء، الملاحظات)"
+                                  className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-white text-blue-800 border border-blue-300 hover:bg-blue-50 font-black text-[11px] transition cursor-pointer"
+                                >
+                                  <Pencil className="w-3.5 h-3.5" />
+                                  <span>تعديل الفرشة</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteRecord(rec)}
+                                  title="حذف الفرشة نهائياً مع إعادة حساب أعداد القطع"
+                                  className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-white text-rose-800 border border-rose-300 hover:bg-rose-50 font-black text-[11px] transition cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>حذف</span>
+                                </button>
+                              </>
+                            )}
                             <span className="px-2.5 py-0.5 rounded-lg bg-blue-50 text-blue-800 border border-blue-200 font-bold text-[11px]">
                               إجمالي وزن الراق: {rec.layer_weight} كجم
                             </span>
@@ -1548,6 +1588,10 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
           </div>
         </div>
       </div>
+
+      {editingRecord && (
+        <EditSpreadModal record={editingRecord} onClose={() => setEditingRecord(null)} />
+      )}
     </div>
   );
 };

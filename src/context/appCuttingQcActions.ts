@@ -70,7 +70,7 @@ import { qcSavedColorMatches } from '../utils/qcCutDefaults';
  * ربط مرحلة التنبيه بمفتاح الصلاحية المطلوبة لرؤيته.
  * التنبيهات لا تظهر إلا لمن يملك صلاحية القسم — حساب sudo يرى كل شيء.
  */
-import { NOTIFICATION_STAGE_PERMISSION, FlashMessage, modelPartsOf, seedModelPartStages, patchModelPartStage, patchModelPartsStage, DEFAULT_GLOBAL_SETTINGS, DESIGN_STAGES, PRE_PRODUCTION_STAGES, auditHeadersForModel, AppInternalContext } from './appContextTypes';
+import { NOTIFICATION_STAGE_PERMISSION, FlashMessage, modelPartsOf, seedModelPartStages, patchModelPartStage, patchModelPartsStage, DEFAULT_GLOBAL_SETTINGS, DESIGN_STAGES, PRE_PRODUCTION_STAGES, auditHeadersForModel, CuttingRecordUpdate, AppInternalContext } from './appContextTypes';
 
 export const buildCuttingQcActions = (ctx: AppInternalContext) => {
   const {
@@ -98,7 +98,12 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
     const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
     const cleanNotes = canAddCuttingNotes() ? (data.notes?.trim() || '') : '';
     const existingModelSpreads = cuttingRecords.filter((r) => r.model_id === data.modelId);
-    const spreadNumber = data.spreadNumber || existingModelSpreads.length + 1;
+    // أكبر رقم فرشة موجود + 1 (وليس عدد السجلات) حتى لا يتكرر الرقم بعد حذف فرشة.
+    const lastSpreadNumber = existingModelSpreads.reduce(
+      (max, r) => Math.max(max, Number(r.spread_number ?? r.spreadNumber ?? 0) || 0),
+      0
+    );
+    const spreadNumber = data.spreadNumber || lastSpreadNumber + 1;
     const partType: GarmentPart = normalizePartKey(data.partType || 'shirt');
     // فرشة "قصة / جزء فرعي": تُستهلك قماشها وتُحسب أوزانها، لكنها لا تُجمع على عدد القطع.
     const isSubCut = Boolean(data.isSubCut);
@@ -349,36 +354,123 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
   };
 
   /**
-   * تحويل فرشة قائمة بين "قطعة أساسية" و"قصة / جزء فرعي".
-   * الفرشة الفرعية تبقى محسوبة في القماش والأوزان، لكنها تُستبعد من عدّاد القطع.
+   * تعديل كامل لفرشة قص قائمة (النوع، الفَرّاش، المقصدار، الألوان والراقات، القطع في
+   * الراق، وزن الراق، درجة الصبغة، الملاحظات، وتحويلها بين أساسية/فرعية).
+   * يعيد حساب layers_count والملخص اللوني وpieces_count محلياً ثم يرسل للباك إند
+   * مع ترويسات التدقيق، ويستدعي refreshState لتحديث مجاميع القص وفائض القماش.
    */
-  const updateCuttingRecord = (
-    recordId: string,
-    updates: { isSubCut?: boolean; subCutLabel?: string }
-  ) => {
+  const updateCuttingRecord = (recordId: string, updates: CuttingRecordUpdate) => {
     const record = cuttingRecords.find((r) => r.id === recordId);
     if (!record) return;
 
-    const partType = normalizePartKey(record.part_type || record.partType || 'shirt');
+    const targetModel = models.find((m) => m.id === record.model_id);
+    const partType: GarmentPart = normalizePartKey(
+      updates.partType || record.part_type || record.partType || 'shirt'
+    );
     const nextIsSubCut =
       typeof updates.isSubCut === 'boolean'
         ? updates.isSubCut
-        : !(record.is_sub_cut ?? record.isSubCut ?? false);
+        : Boolean(record.is_sub_cut ?? record.isSubCut ?? false);
     const nextLabel =
       (updates.subCutLabel ?? record.sub_cut_label ?? record.subCutLabel ?? '').trim() ||
       (nextIsSubCut ? `قصة ${getPartLabel(partType)}` : '');
 
-    const patchedRecords = cuttingRecords.map((r) =>
-      r.id === recordId
-        ? {
-            ...r,
-            is_sub_cut: nextIsSubCut,
-            isSubCut: nextIsSubCut,
-            sub_cut_label: nextLabel,
-            subCutLabel: nextLabel
-          }
-        : r
+    const spreaderName = (
+      updates.spreaderName ?? record.spreader_name ?? record.spreaderName ?? ''
+    ).trim();
+    const cutterName = (
+      updates.cutterName ?? record.cutter_name ?? record.cutterName ?? ''
+    ).trim();
+    const piecesPerLayer = Math.max(
+      0,
+      Number(updates.piecesPerLayer ?? record.pieces_per_layer ?? record.piecesPerLayer ?? 0) || 0
     );
+    const layerWeight = Math.max(
+      0,
+      Number(updates.layerWeight ?? record.layer_weight ?? record.layerWeight ?? 0) || 0
+    );
+    const shadeDegree = (
+      updates.shadeDegree ?? record.shade_degree ?? record.shadeDegree ?? ''
+    ).trim();
+    // الملاحظات مقيّدة بصلاحية إضافة ملاحظات القص.
+    const cleanNotes = canAddCuttingNotes()
+      ? (updates.notes ?? record.notes ?? '').trim()
+      : record.notes ?? '';
+
+    const sourceLayers = updates.colorLayers ?? record.color_layers ?? record.colorLayers ?? [];
+    const cleanLayers: CuttingSpreadLayer[] = sourceLayers
+      .filter((l) => (l.color_name || l.colorName) && Number(l.layers_count ?? l.layersCount ?? 0) > 0)
+      .map((l, idx) => {
+        const lCount = Math.max(0, Number(l.layers_count ?? l.layersCount ?? 0));
+        return {
+          id: l.id || `lay-${recordId}-${idx}`,
+          color_name: (l.color_name || l.colorName || '').trim(),
+          colorName: (l.color_name || l.colorName || '').trim(),
+          layers_count: lCount,
+          layersCount: lCount,
+          layer_weight: layerWeight,
+          layerWeight: layerWeight,
+          pieces_count: lCount * piecesPerLayer,
+          piecesCount: lCount * piecesPerLayer,
+          shade_degree: (l.shade_degree || l.shadeDegree || '').trim(),
+          shadeDegree: (l.shade_degree || l.shadeDegree || '').trim(),
+          notes: (l.notes || '').trim()
+        };
+      });
+
+    const totalLayersCount =
+      cleanLayers.length > 0
+        ? cleanLayers.reduce((sum, item) => sum + item.layers_count, 0)
+        : Math.max(
+            0,
+            Number(updates.layersCount ?? record.layers_count ?? record.layersCount ?? 0) || 0
+          );
+
+    const colorsSummary =
+      cleanLayers.length > 0
+        ? cleanLayers.map((item) => `${item.color_name} (${item.layers_count} راق)`).join(' + ')
+        : (updates.colorName ?? record.color_name ?? record.colorName ?? '').trim();
+
+    const totalPieces =
+      totalLayersCount > 0 && piecesPerLayer > 0
+        ? totalLayersCount * piecesPerLayer
+        : Math.max(
+            0,
+            Number(updates.piecesCount ?? record.pieces_count ?? record.piecesCount ?? 0) || 0
+          );
+
+    const spreadNo = record.spread_number ?? record.spreadNumber ?? '';
+
+    const patchedRecord: CuttingRecord = {
+      ...record,
+      part_type: partType,
+      partType,
+      is_sub_cut: nextIsSubCut,
+      isSubCut: nextIsSubCut,
+      sub_cut_label: nextLabel,
+      subCutLabel: nextLabel,
+      spreader_name: spreaderName,
+      spreaderName,
+      cutter_name: cutterName,
+      cutterName,
+      color_name: colorsSummary,
+      colorName: colorsSummary,
+      color_layers: cleanLayers,
+      colorLayers: cleanLayers,
+      layers_count: totalLayersCount,
+      layersCount: totalLayersCount,
+      pieces_per_layer: piecesPerLayer,
+      piecesPerLayer,
+      layer_weight: layerWeight,
+      layerWeight,
+      pieces_count: totalPieces,
+      piecesCount: totalPieces,
+      shade_degree: shadeDegree,
+      shadeDegree,
+      notes: cleanNotes
+    };
+
+    const patchedRecords = cuttingRecords.map((r) => (r.id === recordId ? patchedRecord : r));
 
     setCuttingRecords(patchedRecords);
     setModels((prev) =>
@@ -388,24 +480,78 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
     );
 
     api
-      .updateCuttingRecord(recordId, {
-        is_sub_cut: nextIsSubCut,
-        sub_cut_label: nextLabel
-      })
+      .updateCuttingRecord(
+        recordId,
+        {
+          part_type: partType,
+          is_sub_cut: nextIsSubCut,
+          sub_cut_label: nextLabel,
+          spreader_name: spreaderName,
+          cutter_name: cutterName,
+          color_name: colorsSummary,
+          color_layers: cleanLayers,
+          layers_count: totalLayersCount,
+          pieces_per_layer: piecesPerLayer,
+          layer_weight: layerWeight,
+          pieces_count: totalPieces,
+          shade_degree: shadeDegree,
+          notes: cleanNotes
+        },
+        auditHeadersForModel(targetModel, 'القص')
+      )
       .then((saved) => {
         setCuttingRecords((prev) => prev.map((r) => (r.id === recordId ? saved : r)));
-        const spreadNo = record.spread_number ?? record.spreadNumber ?? '';
-        if (nextIsSubCut) {
-          logAction('القص', `تحويل فرشة القص #${spreadNo} إلى قصة فرعية (${nextLabel}) — لا تُجمع على عدد القطع`);
-          addFlashMessage(`تم تحويل الفرشة #${spreadNo} إلى قصة فرعية (${nextLabel}) — تُحسب قماشاً فقط`);
-        } else {
-          logAction('القص', `إرجاع الفرشة #${spreadNo} إلى قطعة أساسية — أُعيد جمع قطعها على عدّاد الموديل`);
-          addFlashMessage(`تم إرجاع الفرشة #${spreadNo} إلى قطعة أساسية وحُسبت قطعها من جديد`);
-        }
+        refreshState();
+        logAction(
+          'القص',
+          `تعديل فرشة القص #${spreadNo} — ${getPartLabel(partType)} | ${totalLayersCount} راق × ${piecesPerLayer} قطعة/راق = ${totalPieces} قطعة`
+        );
+        addFlashMessage(
+          nextIsSubCut
+            ? `تم حفظ تعديلات القصة الفرعية #${spreadNo} (${nextLabel}) — تُحسب قماشاً فقط`
+            : `تم حفظ تعديلات الفرشة #${spreadNo} بنجاح (${totalPieces} قطعة)`
+        );
       })
       .catch((err) => {
         refreshState();
         addFlashMessage(err.message || 'فشل تعديل فرشة القص في الباك إند', 'danger');
+      });
+  };
+
+  /**
+   * حذف فرشة قص نهائياً مع إعادة حساب أعداد القطع وفائض القماش.
+   * يحدّث الحالة محلياً فوراً (Optimistic) ثم يزامن مع الباك إند، وأي فشل يُعيد
+   * تحميل الحالة من السيرفر حتى لا تبقى واجهة غير متطابقة.
+   */
+  const deleteCuttingRecord = (recordId: string) => {
+    const record = cuttingRecords.find((r) => r.id === recordId);
+    if (!record) return;
+
+    const targetModel = models.find((m) => m.id === record.model_id);
+    const spreadNo = record.spread_number ?? record.spreadNumber ?? '';
+    const partLabel = getPartLabel(normalizePartKey(record.part_type || record.partType || 'shirt'));
+
+    const remaining = cuttingRecords.filter((r) => r.id !== recordId);
+    setCuttingRecords(remaining);
+    setModels((prev) =>
+      prev.map((m) =>
+        m.id === record.model_id ? { ...m, ...computeCutTotalsPatch(m, remaining) } : m
+      )
+    );
+
+    api
+      .deleteCuttingRecord(recordId, auditHeadersForModel(targetModel, 'القص'))
+      .then(() => {
+        refreshState();
+        logAction(
+          'القص',
+          `حذف فرشة القص #${spreadNo} (${partLabel}) وإعادة حساب أعداد القطع وفائض القماش`
+        );
+        addFlashMessage(`تم حذف فرشة القص #${spreadNo} وإعادة حساب أعداد القطع`);
+      })
+      .catch((err) => {
+        refreshState();
+        addFlashMessage(err.message || 'فشل حذف فرشة القص في الباك إند', 'danger');
       });
   };
 
@@ -874,6 +1020,7 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
   return {
     addCuttingRecord,
     updateCuttingRecord,
+    deleteCuttingRecord,
     finishCuttingToQC,
     exportCuttingCsv,
     recordQCData,
