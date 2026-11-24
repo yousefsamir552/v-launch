@@ -836,9 +836,21 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
     setModels((prev) => prev.map((m) => (m.id === modelId ? { ...m, is_deleted: true } : m)));
     api
       .deleteModel(modelId)
-      .then(() => {
+      .then(async (res: any) => {
+        // حدّث كل الحالة فوراً حتى تظهر أرصدة المخزن بعد استرداد الخامات.
+        await refreshState();
         logAction('التصميم', `تم حذف الموديل ${target.model_code}`);
-        addFlashMessage(`تم حذف الموديل ${target.model_code}`);
+        const summary = res?.refund_summary;
+        const fabricQty = Number(summary?.fabric_total_quantity || 0);
+        const accQty = Number(summary?.accessories_total_quantity || 0);
+        let message = `تم حذف الموديل ${target.model_code} واسترداد خاماته وإكسسواراته للمخزن بنجاح`;
+        if (fabricQty > 0 || accQty > 0) {
+          const parts: string[] = [];
+          if (fabricQty > 0) parts.push(`قماش ${fabricQty}`);
+          if (accQty > 0) parts.push(`إكسسوارات ${accQty}`);
+          message += ` (المسترد: ${parts.join(' + ')})`;
+        }
+        addFlashMessage(message);
       })
       .catch((err) => {
         refreshState();

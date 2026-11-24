@@ -514,6 +514,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     }
   };
 
+  // -------------------------------------------------------------------------
+  // فحص واسترداد خامات الموديلات المحذوفة سابقاً (sudo / مدير النظام)
+  // -------------------------------------------------------------------------
+  const [refundBusy, setRefundBusy] = useState(false);
+  const [refundReport, setRefundReport] = useState<any | null>(null);
+
+  const handleRefundDeletedInventory = async () => {
+    if (!isSudo && !canManagePermissions()) return;
+    setRefundBusy(true);
+    setRefundReport(null);
+    try {
+      const result = await api.refundDeletedInventory();
+      setRefundReport(result);
+      const count = result?.total_models_refunded ?? 0;
+      if (count > 0) {
+        addFlashMessage(
+          `تم استرداد خامات وإكسسوارات ${count} موديل محذوف إلى المخزن بنجاح (قماش ${
+            result?.total_fabric_quantity ?? 0
+          } + إكسسوارات ${result?.total_accessories_quantity ?? 0})`,
+          'success'
+        );
+      } else {
+        addFlashMessage('لا توجد موديلات محذوفة لها خامات مصروفة بانتظار الاسترداد', 'info');
+      }
+      await refreshState();
+    } catch (err: any) {
+      addFlashMessage(err?.message || 'فشل فحص واسترداد خامات الموديلات المحذوفة', 'danger');
+    } finally {
+      setRefundBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* Top Header */}
@@ -626,6 +658,75 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
             <span>{backupBusy ? 'جارٍ تجهيز النسخة...' : '📊 تصدير نسخة احتياطية كاملة'}</span>
           </button>
         </div>
+
+        {/* فحص واسترداد خامات الموديلات المحذوفة سابقاً — sudo / مدير النظام */}
+        {(isSudo || canManagePermissions()) && (
+          <div className="bg-white rounded-3xl border border-indigo-200 shadow-xs p-5 space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-2xl bg-indigo-50 text-indigo-600">
+                <RotateCcw className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-slate-900">
+                  استرداد خامات الموديلات المحذوفة سابقاً
+                </h3>
+                <p className="text-[11px] font-semibold text-slate-500 leading-relaxed mt-1">
+                  فحص آمن للموديلات المحذوفة سابقاً وإعادة ما صُرف فعلياً من قماش وإكسسوارات
+                  إلى المخزن. لا يُكرَّر الاسترداد أبداً حتى عند الضغط أكثر من مرة.
+                </p>
+              </div>
+            </div>
+
+            {refundReport && (
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2 max-h-60 overflow-y-auto">
+                <p className="text-[11px] font-black text-slate-700">
+                  نتيجة الفحص: {refundReport.total_models_refunded ?? 0} موديل تم استرداد أرصدته
+                  {Number(refundReport.total_deleted_models ?? 0) > 0
+                    ? ` (من إجمالي ${refundReport.total_deleted_models} موديل محذوف)`
+                    : ''}
+                </p>
+                {(refundReport.refunded_models || []).map((m: any) => (
+                  <div
+                    key={m.model_id || m.model_code}
+                    className="border border-slate-200 rounded-lg p-2 space-y-0.5"
+                  >
+                    <p className="text-[11px] font-black text-slate-800">{m.model_code}</p>
+                    {(m.fabric_details || []).map((f: any) => (
+                      <p
+                        key={`fab-${m.model_code}-${f.color_id}`}
+                        className="text-[10px] font-semibold text-slate-600"
+                      >
+                        قماش: {f.fabric_name} ({f.color_code}) +{f.quantity} {f.unit}
+                      </p>
+                    ))}
+                    {(m.accessory_details || []).map((a: any) => (
+                      <p
+                        key={`acc-${m.model_code}-${a.accessory_id}`}
+                        className="text-[10px] font-semibold text-slate-600"
+                      >
+                        إكسسوار: {a.accessory_name} ({a.accessory_code}) +{a.quantity} {a.unit}
+                      </p>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleRefundDeletedInventory}
+              disabled={refundBusy}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black shadow-md transition disabled:opacity-60 cursor-pointer"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>
+                {refundBusy
+                  ? 'جارٍ الفحص والاسترداد...'
+                  : '↩️ فحص واسترداد خامات الموديلات المحذوفة سابقاً'}
+              </span>
+            </button>
+          </div>
+        )}
 
         {/* Selective factory reset — sudo only */}
         {isSudo && (

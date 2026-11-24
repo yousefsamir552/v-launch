@@ -395,6 +395,16 @@ export const api = {
     }),
   deleteModel: (id: string) =>
     request<any>(`/models/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  // فحص واسترداد خامات وإكسسوارات الموديلات المحذوفة سابقاً (sudo / مدير النظام)
+  refundDeletedInventory: () =>
+    request<{
+      status: string;
+      total_deleted_models: number;
+      total_models_refunded: number;
+      total_fabric_quantity: number;
+      total_accessories_quantity: number;
+      refunded_models: any[];
+    }>('/models/refund_deleted_inventory/', { method: 'POST' }),
   updateModelPlan: (modelId: string, data: any, auditHeaders?: Record<string, string>) => {
     const send = () =>
       request<any>(`/models/${encodeURIComponent(modelId)}/update_plan/`, {

@@ -1,4 +1,5 @@
 import os
+from collections import defaultdict
 from datetime import date, timedelta
 from django.db import transaction
 from django.db.models import Sum
@@ -18,7 +19,7 @@ from .models import (
     PACKAGING_STEP_ORDER, PACKAGING_STEP_LABELS, ASSEMBLY_STAGE_LABELS,
     PART_STAGE_ORDER, PART_STAGE_LABELS, PART_STAGE_TO_STATUS,
 )
-from .serializers import resolve_by_id
+from .serializers import resolve_by_id, get_ext_id
 
 
 # ---------------------------------------------------------------------------
@@ -862,5 +863,177 @@ def sync_reserved_quantities():
         if round(float(acc.reserved_quantity or 0.0), 2) != expected_acc_res:
             acc.reserved_quantity = expected_acc_res
             acc.save(update_fields=['reserved_quantity'])
+
+
+def _resolve_refund_supplier(item):
+    """يربط حركة الاسترداد بسجل المورد المسجل على الخامة/الإكسسوار.
+
+    يُكرّر منطق ``resolve_supplier_link`` الموجود في طبقة الـ views لكن دون
+    استيراد ``views_common`` (تفادياً للاستيراد الدائري لأن views يعتمد على services).
+    """
+    supplier_id_ref = getattr(item, 'supplier_id_ref', None)
+    if supplier_id_ref:
+        found = resolve_by_id(Supplier, supplier_id_ref)
+        if found:
+            return found
+    supplier_name = str(getattr(item, 'supplier', None) or '').strip()
+    if supplier_name:
+        return Supplier.objects.filter(name__iexact=supplier_name).first()
+    return None
+
+
+def refund_model_consumed_inventory(model, user_name=''):
+    """استرداد آمن (Idempotent) لخامات وإكسسوارات موديل محذوف إلى المخزن.
+
+    لكل ``color_id`` و``accessory_id`` مرتبط بالموديل (عبر ``model_code_ref``)
+    يُحسب الصافي المنصرف فعلياً = مجموع حركات ``deduct`` - مجموع حركات ``add``.
+    لا يُعاد إلا ما تبقّى مصروفاً فعلاً (الصافي موجب)؛ وبما أنّ حركة الاسترداد
+    نفسها تُسجَّل بـ ``operation='add'`` وبنفس ``model_code_ref``، فإن إعادة
+    استدعاء الدالة تُنتج صافياً صفرياً ولا يُكرَّر الاسترداد أبداً.
+
+    حركات ``defect`` (عيوب القماش) لا تُخصم من الصافي عمداً لأنها لم تُعَد
+    للمخزن أصلاً وتبقى ضمن كمية الصرف.
+
+    تعمل الكل داخل ``transaction.atomic()`` مع ``select_for_update()`` على صفوف
+    الأرصدة لمنع أي تعارض تزامني، وتُرجع ملخصاً بالكميات المستردة.
+    """
+    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+    model_code = (model.model_code or '').strip()
+
+    # 1. تجميع الصافي المنصرف لكل لون قماش / إكسسوار من الحركات المرتبطة بالموديل.
+    fabric_net = defaultdict(float)
+    accessory_net = defaultdict(float)
+    if model_code:
+        for txn in (
+            FabricTransaction.objects
+            .filter(model_code_ref__iexact=model_code)
+            .values('color_id', 'operation', 'amount')
+        ):
+            color_id = txn['color_id']
+            if color_id is None:
+                continue
+            amount = float(txn['amount'] or 0)
+            if txn['operation'] == 'deduct':
+                fabric_net[color_id] += amount
+            elif txn['operation'] == 'add':
+                fabric_net[color_id] -= amount
+
+        for txn in (
+            AccessoryTransaction.objects
+            .filter(model_code_ref__iexact=model_code)
+            .values('accessory_id', 'operation', 'amount')
+        ):
+            accessory_id = txn['accessory_id']
+            if accessory_id is None:
+                continue
+            amount = float(txn['amount'] or 0)
+            if txn['operation'] == 'deduct':
+                accessory_net[accessory_id] += amount
+            elif txn['operation'] == 'add':
+                accessory_net[accessory_id] -= amount
+
+    refund_note = f"استرداد تلقائي لخامات الموديل المحذوف {model_code}"
+    if user_name:
+        refund_note += f" بواسطة {user_name}"
+
+    fabric_details = []
+    accessory_details = []
+
+    with transaction.atomic():
+        # 2. استرداد القماش: إضافة الصافي للرصيد الفعلي وتسجيل حركة إضافة.
+        for color_id, raw_net in fabric_net.items():
+            net = round(float(raw_net), 2)
+            if net <= 0:
+                continue
+            try:
+                col = (
+                    FabricColor.objects.select_for_update()
+                    .select_related('fabric')
+                    .get(pk=color_id)
+                )
+            except FabricColor.DoesNotExist:
+                continue
+            col.quantity = round(float(col.quantity or 0) + net, 2)
+            col.save(update_fields=['quantity'])
+
+            fabric = col.fabric
+            FabricTransaction.objects.create(
+                color=col,
+                fabric=fabric,
+                model_code_ref=model.model_code,
+                notes=refund_note,
+                operation='add',
+                amount=net,
+                timestamp=now_str,
+                unit_price_snapshot=col.price_per_unit or 0,
+                supplier=_resolve_refund_supplier(fabric),
+            )
+            fabric_details.append({
+                'color_id': get_ext_id(col),
+                'color_code': col.color_code or '',
+                'color_name': col.color_name or '',
+                'fabric_name': fabric.name if fabric else '',
+                'quantity': net,
+                'unit': fabric.unit if fabric else '',
+            })
+
+        # 3. استرداد الإكسسوارات: إضافة الصافي للرصيد الفعلي وتسجيل حركة إضافة.
+        for accessory_id, raw_net in accessory_net.items():
+            net = round(float(raw_net), 2)
+            if net <= 0:
+                continue
+            try:
+                item = Accessory.objects.select_for_update().get(pk=accessory_id)
+            except Accessory.DoesNotExist:
+                continue
+            item.current_stock = int(round(float(item.current_stock or 0) + net))
+            item.save(update_fields=['current_stock'])
+
+            AccessoryTransaction.objects.create(
+                accessory=item,
+                accessory_code=item.code or '',
+                accessory_name=item.name or '',
+                operation='add',
+                amount=net,
+                model_code_ref=model.model_code,
+                notes=refund_note,
+                timestamp=now_str,
+                unit_price_snapshot=item.price_per_unit or 0,
+                supplier=_resolve_refund_supplier(item),
+            )
+            accessory_details.append({
+                'accessory_id': get_ext_id(item),
+                'accessory_code': item.code or '',
+                'accessory_name': item.name or '',
+                'quantity': net,
+                'unit': item.unit or 'قطعة',
+            })
+
+        # 4. تصفير حالة الصرف الفعلي لإكسسوارات الموديل إن كانت قد صُرفت فعلاً،
+        #    حتى لا تبقى معلّمة كـ«مصروفة» بعد عودة أرصدتها للمخزن.
+        reset_count = 0
+        for m_acc in ModelAccessory.objects.filter(model=model, is_issued=True):
+            m_acc.is_issued = False
+            m_acc.issued_quantity = 0
+            m_acc.issued_to = ''
+            m_acc.issued_at = ''
+            m_acc.issued_by = ''
+            m_acc.save(update_fields=[
+                'is_issued', 'issued_quantity', 'issued_to', 'issued_at', 'issued_by',
+            ])
+            reset_count += 1
+
+        if reset_count:
+            sync_reserved_quantities()
+
+    return {
+        'model_code': model.model_code,
+        'fabric_colors_count': len(fabric_details),
+        'fabric_total_quantity': round(sum(d['quantity'] for d in fabric_details), 2),
+        'fabric_details': fabric_details,
+        'accessories_count': len(accessory_details),
+        'accessories_total_quantity': round(sum(d['quantity'] for d in accessory_details), 2),
+        'accessory_details': accessory_details,
+    }
 
 

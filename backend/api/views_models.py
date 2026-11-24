@@ -1,5 +1,6 @@
 from .views_common import *
 from .views_common import _truthy_permission_keys, _accessory_price_snapshot
+from .services_pipeline import refund_model_consumed_inventory
 
 class ModelItemViewSet(BasePermViewSet):
     queryset = ModelItem.objects.filter(is_deleted=False).prefetch_related(
@@ -73,6 +74,9 @@ class ModelItemViewSet(BasePermViewSet):
         if action_name == 'issue_accessories' and (
             profile.has_perm('accessories_warehouse_edit') or profile.has_perm('sewing_edit')
         ):
+            return
+        # فحص واسترداد أرصدة الموديلات المحذوفة متاح لحساب sudo أو مدير النظام.
+        if action_name == 'refund_deleted_inventory' and profile.has_perm('manage_permissions'):
             return
         section = self.MODEL_ACTION_SECTIONS.get(action_name)
         if section:
@@ -259,12 +263,88 @@ class ModelItemViewSet(BasePermViewSet):
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
     def destroy(self, request, *args, **kwargs):
+        """حذف الموديل (حذف منطقي) مع استرداد ما صُرف فعلياً من قماش/إكسسوارات للمخزن."""
         model = self.get_object()
-        model.is_deleted = True
-        model._skip_timeline_signal = True
-        model.save()
-        sync_reserved_quantities()
-        return Response({'status': 'deleted'})
+        profile = getattr(request, 'user_profile', None)
+        data = getattr(request, 'data', {}) or {}
+        user_name = (
+            (data.get('user_name') or '').strip()
+            or (getattr(profile, 'real_name', '') if profile else '')
+            or 'مسؤول التصميم'
+        )
+        with transaction.atomic():
+            if not model.is_deleted:
+                model.is_deleted = True
+                model._skip_timeline_signal = True
+                model.save()
+                refund_summary = refund_model_consumed_inventory(model, user_name)
+            else:
+                refund_summary = {
+                    'model_code': model.model_code,
+                    'fabric_colors_count': 0,
+                    'fabric_total_quantity': 0,
+                    'fabric_details': [],
+                    'accessories_count': 0,
+                    'accessories_total_quantity': 0,
+                    'accessory_details': [],
+                }
+            sync_reserved_quantities()
+        return Response({'status': 'deleted', 'refund_summary': refund_summary})
+
+    @action(detail=False, methods=['post'])
+    def refund_deleted_inventory(self, request):
+        """فحص واسترداد أرصدة الموديلات المحذوفة سابقاً دفعة واحدة (sudo / manage_permissions).
+
+        العملية آمنة تماماً وقابلة للتكرار: لكل موديل محذوف يُحسب الصافي المنصرف
+        فعلياً (deduct - add) لكل لون قماش وكل إكسسوار، ولا يُضاف للمخزن إلا ما
+        لم يُعَد مسبقاً. تُرجع تقريراً مفصلاً بالكميات التي عادت لكل موديل.
+        """
+        profile = getattr(request, 'user_profile', None)
+        if not is_sudo_account(profile) and (
+            profile is None or not profile.has_perm('manage_permissions')
+        ):
+            raise PermissionDenied('هذا الإجراء متاح لحساب sudo أو مدير النظام فقط')
+
+        data = request.data or {}
+        user_name = (
+            (data.get('user_name') or '').strip()
+            or (getattr(profile, 'real_name', '') if profile else '')
+            or 'مدير النظام'
+        )
+
+        refunded_models = []
+        with transaction.atomic():
+            deleted_models = list(
+                ModelItem.objects.filter(is_deleted=True).order_by('model_code')
+            )
+            for model in deleted_models:
+                summary = refund_model_consumed_inventory(model, user_name)
+                if not (summary['fabric_colors_count'] or summary['accessories_count']):
+                    continue
+                refunded_models.append({
+                    'model_id': get_ext_id(model),
+                    'model_code': summary['model_code'],
+                    'fabric_colors_count': summary['fabric_colors_count'],
+                    'fabric_total_quantity': summary['fabric_total_quantity'],
+                    'fabric_details': summary['fabric_details'],
+                    'accessories_count': summary['accessories_count'],
+                    'accessories_total_quantity': summary['accessories_total_quantity'],
+                    'accessory_details': summary['accessory_details'],
+                })
+            sync_reserved_quantities()
+
+        return Response({
+            'status': 'ok',
+            'total_deleted_models': len(deleted_models),
+            'total_models_refunded': len(refunded_models),
+            'total_fabric_quantity': round(
+                sum(m['fabric_total_quantity'] for m in refunded_models), 2
+            ),
+            'total_accessories_quantity': round(
+                sum(m['accessories_total_quantity'] for m in refunded_models), 2
+            ),
+            'refunded_models': refunded_models,
+        })
 
     @action(detail=True, methods=['post'])
     def update_plan(self, request, pk=None):

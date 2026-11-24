@@ -21,6 +21,19 @@ export interface ManualCountSheetOptions {
 }
 
 /**
+ * يحدد ارتفاع خلية الكتابة بالقلم ديناميكياً حسب عدد صفوف الألوان في جدول القطعة،
+ * بحيث تملأ الخانات مساحة صفحة A4 بشكل مريح دون الخروج لصفحة ثانية:
+ *  - 1–4 صفوف  → خانات كبيرة وواسعة (135–155px).
+ *  - 5–6 صفوف  → خانات متوسطة (95–115px).
+ *  - 7 صفوف فأكثر → لا تقل عن ارتفاع مريح للكتابة (70–85px).
+ */
+const computeCellHeightPx = (rows: number): number => {
+  if (rows <= 4) return 145;
+  if (rows <= 6) return 105;
+  return 78;
+};
+
+/**
  * Opens a print-ready A4 manual counting sheet (one blank color × size table per
  * garment part) so floor workers can count with a pen, independently per part.
  */
@@ -35,6 +48,7 @@ export const printManualCountSheet = (options: ManualCountSheetOptions): void =>
   const partSections = parts
     .map((part) => {
       const colors = part.colors.length > 0 ? part.colors : ['', '', ''];
+      const cellHeightPx = computeCellHeightPx(colors.length);
       const bodyRows = colors
         .map((color) => {
           const cells = sizes.map(() => '<td class="cell"></td>').join('');
@@ -47,10 +61,17 @@ export const printManualCountSheet = (options: ManualCountSheetOptions): void =>
         })
         .join('');
       const headCells = sizes.map((s) => `<th>${escapeHtml(s)}</th>`).join('');
+      const cols = [
+        '<col class="c-color" />',
+        ...sizes.map(() => '<col />'),
+        '<col class="c-total" />',
+        '<col class="c-total" />'
+      ].join('');
       return `
         <section class="part">
           <h3>القطعة: ${escapeHtml(getPartLabel(part.key))}</h3>
-          <table>
+          <table style="--cell-h: ${cellHeightPx}px">
+            <colgroup>${cols}</colgroup>
             <thead>
               <tr>
                 <th class="color">اللون / المقاس</th>
@@ -99,13 +120,15 @@ export const printManualCountSheet = (options: ManualCountSheetOptions): void =>
       .muted { color: #888; font-weight: bold; font-size: 12px; }
       .part { margin-bottom: 16px; page-break-inside: avoid; }
       .part h3 { font-size: 14px; margin: 0 0 6px; padding: 4px 8px; background: #eee; border: 1px solid #999; }
-      table { width: 100%; border-collapse: collapse; font-size: 12px; }
-      th, td { border: 1px solid #333; text-align: center; padding: 4px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+      th, td { border: 1.5px solid #222; text-align: center; padding: 4px; }
       th { background: #f2f2f2; }
-      td.color, th.color { text-align: right; min-width: 120px; font-weight: bold; }
-      td.cell { height: 34px; }
+      td.color, th.color { text-align: right; width: 120px; font-weight: bold; font-size: 14px; padding-right: 8px; }
+      td.cell { height: var(--cell-h, 34px); }
       td.total { background: #fafafa; }
-      .signatures { display: flex; justify-content: space-between; margin-top: 26px; font-size: 12px; gap: 20px; }
+      col.c-color { width: 120px; }
+      col.c-total { width: 80px; }
+      .signatures { display: flex; justify-content: space-between; margin-top: 18px; font-size: 13px; gap: 20px; page-break-inside: avoid; }
       .signatures div { width: 48%; border-top: 1px dashed #333; padding-top: 6px; }
     </style>
   </head>
