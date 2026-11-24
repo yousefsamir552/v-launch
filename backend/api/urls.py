@@ -14,7 +14,8 @@ from .views import (
     HRAttendanceRecordViewSet, HRPenaltyViewSet, HRLoanViewSet,
     HRPayrollSnapshotViewSet,
     PackagingMaterialRuleViewSet, PackagingMaterialTransactionViewSet,
-    FactoryResetViewSet
+    FactoryResetViewSet,
+    pwa_manifest_view,
 )
 from .hr_reports import HRReportsViewSet
 
@@ -59,5 +60,6 @@ router.register(r'packaging-material-transactions', PackagingMaterialTransaction
 router.register(r'factory-reset', FactoryResetViewSet, basename='factory-reset')
 
 urlpatterns = [
+    path('manifest.webmanifest', pwa_manifest_view, name='pwa-manifest'),
     path('', include(router.urls)),
 ]

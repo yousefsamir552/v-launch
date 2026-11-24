@@ -753,7 +753,15 @@ export interface AppContextType {
   deleteUser: (userId: string, cascade?: boolean) => { success: boolean; message: string };
 
   // Log & Timeline helper
-  logAction: (action: string, details: string) => void;
+  logAction: (
+    action: string,
+    details: string,
+    options?: {
+      persist?: boolean;
+      actionType?: 'export' | 'print' | 'custom';
+      targetName?: string;
+    }
+  ) => void;
   addModelTimelineEvent: (modelId: string, event: Omit<ModelTimelineEvent, 'id' | 'timestamp'>) => void;
 }
 

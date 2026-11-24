@@ -6,7 +6,7 @@
  * تتبع نفس نمط `printManualCountSheet` في المشروع (نافذة مستقلة + document.write + window.print).
  */
 
-import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml, safeImageSrc } from './printShared';
+import { escapeHtml, logClientPrintAction, PRINT_LOGO_CSS, renderLogoHtml, safeImageSrc } from './printShared';
 
 export interface CuttingOrderOptions {
   siteName?: string;
@@ -30,6 +30,7 @@ const fmtInt = (value: number): string =>
   Math.round(Number.isFinite(value) ? value : 0).toLocaleString('ar-EG');
 
 export const printCuttingOrder = (options: CuttingOrderOptions): void => {
+  logClientPrintAction('القص', `طباعة أوردر قص رسمي للموديل ${options.modelCode}`, options.modelCode);
   const sizes = Array.isArray(options.sizes) ? options.sizes.filter(Boolean) : [];
   const today = new Date().toLocaleDateString('ar-EG');
   const blankRows = Math.max(6, Math.min(30, options.blankRows ?? 14));

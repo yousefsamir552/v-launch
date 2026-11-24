@@ -39,7 +39,7 @@ import {
   PACKAGING_STEP_ORDER,
   PACKAGING_STEP_LABELS
 } from '../types';
-import { isImageLogo } from '../utils/printShared';
+import { isImageLogo, logClientPrintAction } from '../utils/printShared';
 
 /* ------------------------------------------------------------------ */
 /* Canonical production stages (derived from real records, no dupes)  */
@@ -300,32 +300,34 @@ const AccessoriesTable: React.FC<{ accs: ModelAccessory[] }> = ({ accs }) => {
       <div className="bg-slate-100 px-4 py-2 font-black text-slate-800 text-xs">
         الإكسسوارات المربوطة بالموديل ({accs.length}):
       </div>
-      <table className="w-full text-right text-xs">
-        <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
-          <tr>
-            <th className="py-2 px-3">القطعة</th>
-            <th className="py-2 px-3">اسم الإكسسوار</th>
-            <th className="py-2 px-3">الكود</th>
-            <th className="py-2 px-3 text-center">استهلاك القطعة</th>
-            <th className="py-2 px-3 text-center">الكمية المخططة</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {accs.map((a) => (
-            <tr key={a.id} className="hover:bg-slate-50">
-              <td className="py-2 px-3 font-bold text-slate-800">
-                {getPartLabel(a.target_type)}
-              </td>
-              <td className="py-2 px-3 font-semibold text-slate-900">{a.accessory_name}</td>
-              <td className="py-2 px-3 font-mono text-slate-600">{a.accessory_code || '-'}</td>
-              <td className="py-2 px-3 text-center font-bold">{a.piece_consumption ?? '-'}</td>
-              <td className="py-2 px-3 text-center font-black text-slate-900">
-                {(a.planned_quantity || 0).toLocaleString('ar-EG')} {a.unit || ''}
-              </td>
+      <div className="overflow-x-auto">
+        <table className="w-full text-right text-xs">
+          <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
+            <tr>
+              <th className="py-2 px-3">القطعة</th>
+              <th className="py-2 px-3">اسم الإكسسوار</th>
+              <th className="py-2 px-3">الكود</th>
+              <th className="py-2 px-3 text-center">استهلاك القطعة</th>
+              <th className="py-2 px-3 text-center">الكمية المخططة</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {accs.map((a) => (
+              <tr key={a.id} className="hover:bg-slate-50">
+                <td className="py-2 px-3 font-bold text-slate-800">
+                  {getPartLabel(a.target_type)}
+                </td>
+                <td className="py-2 px-3 font-semibold text-slate-900">{a.accessory_name}</td>
+                <td className="py-2 px-3 font-mono text-slate-600">{a.accessory_code || '-'}</td>
+                <td className="py-2 px-3 text-center font-bold">{a.piece_consumption ?? '-'}</td>
+                <td className="py-2 px-3 text-center font-black text-slate-900">
+                  {(a.planned_quantity || 0).toLocaleString('ar-EG')} {a.unit || ''}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 };
@@ -343,39 +345,41 @@ const RequirementsTable: React.FC<{
       <div className="bg-slate-100 px-4 py-2 font-black text-slate-800 text-xs">
         الخامات المخططة للموديل ({reqs.length}):
       </div>
-      <table className="w-full text-right text-xs">
-        <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
-          <tr>
-            <th className="py-2 px-3">الخامة</th>
-            <th className="py-2 px-3">اللون</th>
-            <th className="py-2 px-3">البند / الجزء</th>
-            <th className="py-2 px-3 text-center">الكمية المخططة</th>
-            <th className="py-2 px-3 text-center">الكمية المطلوبة</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {reqs.map((r) => {
-            const color = fabricColors.find((c) => c.id === r.color_id);
-            const fabric = color ? fabrics.find((f) => f.id === color.fabric_id) : undefined;
-            return (
-              <tr key={r.id} className="hover:bg-slate-50">
-                <td className="py-2 px-3 font-bold text-slate-900">{fabric?.name || '-'}</td>
-                <td className="py-2 px-3 font-semibold text-slate-700">
-                  {color?.color_name || '-'}
-                  {color?.color_code ? ` (${color.color_code})` : ''}
-                </td>
-                <td className="py-2 px-3 text-slate-600">{r.part_name || '-'}</td>
-                <td className="py-2 px-3 text-center font-black text-slate-900">
-                  {(r.planned_quantity || 0).toLocaleString('ar-EG')}
-                </td>
-                <td className="py-2 px-3 text-center font-bold text-blue-700">
-                  {r.required_quantity != null ? r.required_quantity.toLocaleString('ar-EG') : '-'}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div className="overflow-x-auto">
+        <table className="w-full text-right text-xs">
+          <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
+            <tr>
+              <th className="py-2 px-3">الخامة</th>
+              <th className="py-2 px-3">اللون</th>
+              <th className="py-2 px-3">البند / الجزء</th>
+              <th className="py-2 px-3 text-center">الكمية المخططة</th>
+              <th className="py-2 px-3 text-center">الكمية المطلوبة</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {reqs.map((r) => {
+              const color = fabricColors.find((c) => c.id === r.color_id);
+              const fabric = color ? fabrics.find((f) => f.id === color.fabric_id) : undefined;
+              return (
+                <tr key={r.id} className="hover:bg-slate-50">
+                  <td className="py-2 px-3 font-bold text-slate-900">{fabric?.name || '-'}</td>
+                  <td className="py-2 px-3 font-semibold text-slate-700">
+                    {color?.color_name || '-'}
+                    {color?.color_code ? ` (${color.color_code})` : ''}
+                  </td>
+                  <td className="py-2 px-3 text-slate-600">{r.part_name || '-'}</td>
+                  <td className="py-2 px-3 text-center font-black text-slate-900">
+                    {(r.planned_quantity || 0).toLocaleString('ar-EG')}
+                  </td>
+                  <td className="py-2 px-3 text-center font-bold text-blue-700">
+                    {r.required_quantity != null ? r.required_quantity.toLocaleString('ar-EG') : '-'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 };
@@ -1461,8 +1465,8 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
         const currentKey = resolveCurrentStageKey(model);
 
         return (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-100 flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-150">
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+            <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-2xl p-4 sm:p-6 shadow-2xl border border-slate-100 flex flex-col max-h-[90vh] overflow-hidden animate-in zoom-in-95 duration-150">
               {/* Drawer Header */}
               <div className="flex items-start justify-between pb-4 border-b border-slate-200">
                 <div className="flex items-start gap-3">
@@ -1701,8 +1705,8 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
           const modelSews = sewingDispatches.filter((d) => d.model_id === model.id);
 
           return (
-            <div className="fixed inset-0 z-[60] bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-5xl w-full p-6 shadow-2xl border border-slate-100 flex flex-col max-h-[92vh] animate-in zoom-in-95 duration-150">
+            <div className="fixed inset-0 z-[60] bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+              <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-5xl p-4 sm:p-6 shadow-2xl border border-slate-100 flex flex-col max-h-[90vh] overflow-hidden animate-in zoom-in-95 duration-150">
                 <div className="flex items-start justify-between pb-4 border-b border-slate-200">
                   <div className="flex items-start gap-3">
                     <div
@@ -2069,8 +2073,8 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
 
       {/* MASTER PRINT INVENTORY MODAL */}
       {showMasterPrintModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-5xl w-full p-6 shadow-2xl border border-slate-100 flex flex-col max-h-[92vh]">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-5xl p-4 sm:p-6 shadow-2xl border border-slate-100 flex flex-col max-h-[90vh] overflow-hidden">
             <div className="flex items-center justify-between pb-4 border-b border-slate-200">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-2xl bg-blue-100 text-blue-700 flex items-center justify-center">
@@ -2086,7 +2090,10 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => window.print()}
+                  onClick={() => {
+                    logClientPrintAction('حركة الموديلات', 'طباعة كشف جرد الموديلات الشامل', 'كشف جرد الموديلات');
+                    window.print();
+                  }}
                   className="px-5 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-xs transition flex items-center gap-2 cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />
@@ -2102,7 +2109,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
             </div>
 
             {/* Printable Content */}
-            <div className="overflow-y-auto flex-grow p-4 print:p-0">
+            <div className="overflow-auto flex-grow p-3 sm:p-4 print:p-0">
               <div className="text-center mb-6 border-b-[3px] border-double border-slate-800 pb-3">
                 <div className="flex items-center justify-center mb-1">
                   {isImageLogo(globalSettings?.logo) ? (

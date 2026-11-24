@@ -10,7 +10,7 @@
  */
 
 import type { ImageCropRegion, ModelAccessory } from '../types';
-import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml, safeImageSrc } from './printShared';
+import { escapeHtml, logClientPrintAction, PRINT_LOGO_CSS, renderLogoHtml, safeImageSrc } from './printShared';
 
 export interface SewingSheetOptions {
   siteName?: string;
@@ -205,6 +205,12 @@ const renderSheet = (options: SewingSheetOptions): string => {
 export const printSewingSheets = (sheets: SewingSheetOptions[]): void => {
   const list = Array.isArray(sheets) ? sheets.filter(Boolean) : [];
   if (list.length === 0) return;
+  const modelCode = list[0].modelCode || '';
+  logClientPrintAction(
+    'المكن',
+    `طباعة أمر تشغيل ورشة المكن (${list.length} ورقة) للموديل ${modelCode}`,
+    modelCode
+  );
 
   const title =
     list.length > 1

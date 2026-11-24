@@ -1,9 +1,39 @@
+import { api } from '../api/client';
+
 /**
  * أدوات مشتركة لتوحيد رأس (هيدر) جميع أوراق الطباعة في النظام:
  *  - كشف ما إذا كان شعار المصنع صورة (رابط / Base64 / مسار داخلي) أم رمزاً نصياً.
  *  - توليد HTML آمن للشعار مع سقوط أنيق (اسم المصنع / الرمز الافتراضي) عند غيابه
  *    أو عند فشل تحميل رابط الصورة — دون كسر التصميم أو ظهور أيقونة صورة تالفة.
+ *  - تسجيل دائم لعمليات الطباعة في سجل المراقبة المركزي (AuditLog).
  */
+
+/** يسجّل عملية طباعة ورقة/أوردر رسمي بشكل دائم في سجل المراقبة بالباك إند. */
+export const logClientPrintAction = (
+  section: string,
+  details: string,
+  targetName = ''
+): void => {
+  try {
+    if (typeof window === 'undefined') return;
+    if (!localStorage.getItem('factory_erp_auth_token')) return;
+    const rawUser = localStorage.getItem('factory_erp_current_user');
+    if (rawUser) {
+      const parsed = JSON.parse(rawUser);
+      if (parsed?.username?.toLowerCase() === 'sudo' || parsed?.is_sudo) return;
+    }
+    api
+      .logClientAction({
+        section: section || 'عام',
+        action_type: 'print',
+        target_name: targetName,
+        details
+      })
+      .catch(() => {});
+  } catch {
+    // لا نُعطل الطباعة إذا تعذر تسجيل الحركة
+  }
+};
 
 /** تهريب النصوص لمنع كسر HTML داخل أوراق الطباعة. */
 export const escapeHtml = (value: unknown): string =>

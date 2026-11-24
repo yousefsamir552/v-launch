@@ -73,6 +73,15 @@ class NotificationViewSet(viewsets.ViewSet):
                 'target_name': str(request.data.get('target_name') or '')[:200],
             },
         )
+        notif_title = str(request.data.get('title') or key)[:120]
+        log_action(
+            request,
+            section='التنبيهات',
+            action_type='update',
+            target_name=notif_title,
+            details=f"علّم التنبيه كمقروء: {notif_title}",
+            user=profile,
+        )
         return Response(self._user_notification_states(profile))
 
     @action(detail=False, methods=['post'])
@@ -96,6 +105,14 @@ class NotificationViewSet(viewsets.ViewSet):
                 'snoozed_until': until,
             },
         )
+        log_action(
+            request,
+            section='التنبيهات',
+            action_type='update',
+            target_name=key[:120],
+            details=f"أجّل التنبيه ({key[:80]}) لمدة {hours:g} ساعة",
+            user=profile,
+        )
         return Response(self._user_notification_states(profile))
 
     @action(detail=False, methods=['post'], url_path='clear-snoozed')
@@ -104,6 +121,14 @@ class NotificationViewSet(viewsets.ViewSet):
         if not profile:
             return Response({'detail': 'مطلوب تسجيل الدخول'}, status=status.HTTP_401_UNAUTHORIZED)
         AppNotification.objects.filter(user=profile).update(snoozed_until=None)
+        log_action(
+            request,
+            section='التنبيهات',
+            action_type='update',
+            target_name='التنبيهات المؤجلة',
+            details='استعاد جميع التنبيهات المؤجلة',
+            user=profile,
+        )
         return Response(self._user_notification_states(profile))
 
 
@@ -152,6 +177,20 @@ class InternalMessageViewSet(BasePermViewSet):
             content=content,
             created_at_str=data.get('created_at') or timezone.now().strftime('%H:%M'),
         )
+        # قاعدة الخصوصية: تسجيل البيانات الوصفية فقط (المرسل والمستلم) دون محتوى الرسالة الخاصة نهائياً.
+        sender_label = sender.real_name or sender.username
+        receiver_label = receiver.real_name or receiver.username
+        set_audit_meta(
+            request,
+            section='المراسلات الداخلية',
+            action_type='create',
+            target_name=f"من {sender_label} إلى {receiver_label}",
+            details=f"أرسل رسالة داخلية من {sender_label} إلى {receiver_label}",
+            changes=[
+                {'field': 'sender', 'label': 'المرسل', 'old': '—', 'new': sender_label},
+                {'field': 'receiver', 'label': 'المستلم', 'old': '—', 'new': receiver_label},
+            ],
+        )
         return Response(InternalMessageSerializer(msg).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
@@ -164,8 +203,22 @@ class InternalMessageViewSet(BasePermViewSet):
                 {'detail': 'لا يمكنك تعديل حالة قراءة رسالة ليست لك'},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        was_read = bool(msg.is_read)
         msg.is_read = True
         msg.save()
+        # قاعدة الخصوصية: تسجيل حالة القراءة والمرسل/المستلم فقط دون نص الرسالة.
+        sender_label = (msg.sender.real_name or msg.sender.username) if msg.sender else 'مستخدم'
+        receiver_label = (msg.receiver.real_name or msg.receiver.username) if msg.receiver else 'مستخدم'
+        set_audit_meta(
+            request,
+            section='المراسلات الداخلية',
+            action_type='update',
+            target_name=f"رسالة من {sender_label} إلى {receiver_label}",
+            details=f"علّم رسالة داخلية من {sender_label} إلى {receiver_label} كمقروءة",
+            changes=[
+                {'field': 'is_read', 'label': 'حالة القراءة', 'old': 'مقروءة' if was_read else 'غير مقروءة', 'new': 'مقروءة'},
+            ],
+        )
         return Response(InternalMessageSerializer(msg).data)
 
 
@@ -179,19 +232,27 @@ class AuditLogPagination(PageNumberPagination):
 class AuditLogViewSet(BasePermViewSet):
     """
     سجل المراقبة الشامل: فلاتر قابلة للتركيب (تاريخ/ساعة/مستخدم/قسم/نوع/آي بي/بحث)
-    مع ترقيم صفحات، وبيانات فلاتر ديناميكية، مع استبعاد حساب sudo دائماً.
+    مع ترقيم صفحات، وبيانات فلاتر ديناميكية، ونقطة تسجيل إجراءات العميل (تصدير/طباعة)،
+    مع استبعاد حساب sudo دائماً.
     """
     queryset = AuditLog.objects.exclude(user_id_ref='user-sudo').exclude(user_name__icontains='sudo')
     serializer_class = AuditLogSerializer
     pagination_class = AuditLogPagination
     audit_enabled = False
-    # سجل المراقبة للقراءة فقط — لا إنشاء/تعديل/حذف من الـ API.
-    http_method_names = ['get', 'head', 'options']
+    # القراءة + نقطة client-action فقط (تُمنع عمليات التعديل والحذف نهائياً).
+    http_method_names = ['get', 'post', 'head', 'options']
 
     def initial(self, request, *args, **kwargs):
-        """لا يسمح بعرض سجل المراقبة إلا لمن يملك view_audit_logs أو manage_permissions."""
+        """
+        - نقطة ``client_action`` متاحة لأي مستخدم مسجّل الدخول لتسجيل عمليات التصدير والطباعة.
+        - عرض سجل المراقبة والفلاتر محصور بمن يملك view_audit_logs أو manage_permissions (أو sudo).
+        """
         super().initial(request, *args, **kwargs)
         profile = getattr(request, 'user_profile', None)
+        if getattr(self, 'action', None) == 'client_action':
+            if profile is None:
+                raise PermissionDenied('مطلوب تسجيل الدخول')
+            return
         if is_sudo_account(profile):
             return
         if not (
@@ -337,35 +398,54 @@ class AuditLogViewSet(BasePermViewSet):
             'ipAddresses': ip_addresses,
         })
 
-    def create(self, request, *args, **kwargs):
-        """توافق خلفي: الواجهة لم تعد ترسل السجلات، لكن نقبلها بأمان."""
-        data = request.data
+    @action(detail=False, methods=['post'], url_path='client-action')
+    def client_action(self, request):
+        """
+        تسجيل إجراءات المتصفح الدائمة (تصدير ملفات Excel/CSV/ZIP، طباعة أوراق وأذونات رسمية)
+        مباشرة في قاعدة البيانات ``AuditLog`` حتى لا تختفي بعد تحديث الصفحة.
+        """
+        data = request.data if isinstance(request.data, dict) else {}
         profile = resolve_request_user_profile(request)
+        if profile is None:
+            return Response({'detail': 'مطلوب تسجيل الدخول'}, status=status.HTTP_401_UNAUTHORIZED)
         if is_sudo_account(profile):
             return Response({'status': 'ignored_for_sudo'}, status=status.HTTP_200_OK)
 
-        user_id_ref = data.get('userId') or ''
-        user_name = data.get('userName') or (
-            getattr(profile, 'real_name', '') or getattr(profile, 'username', '') or 'مستخدم'
-        )
-        if str(user_id_ref).lower() == 'user-sudo' or 'sudo' in str(user_name).lower():
-            return Response({'status': 'ignored_for_sudo'}, status=status.HTTP_200_OK)
+        raw_type = str(data.get('action_type') or data.get('actionType') or 'custom').strip().lower()
+        allowed_client_types = {'export', 'print', 'custom'}
+        action_type = raw_type if raw_type in allowed_client_types else 'custom'
+
+        section = str(data.get('section') or 'عام').strip()[:100] or 'عام'
+        target_name = str(data.get('target_name') or data.get('targetName') or '').strip()[:255]
+        details = str(data.get('details') or '').strip()[:1500]
+        if not details:
+            return Response({'detail': 'وصف الإجراء مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
 
         log = log_action(
             request,
-            section=data.get('section') or 'عام',
-            action_type=data.get('actionType') or 'custom',
-            target_name=data.get('targetName') or '',
-            details=data.get('details') or '',
-            changes=data.get('changes') if isinstance(data.get('changes'), list) else [],
+            section=section,
+            action_type=action_type,
+            target_name=target_name,
+            details=details,
+            changes=[],
             user=profile,
         )
         if log is None:
             return Response({'status': 'ignored_for_sudo'}, status=status.HTTP_200_OK)
-        if data.get('action'):
-            log.action = str(data.get('action'))[:150]
+
+        custom_action = str(data.get('action') or '').strip()[:150]
+        if custom_action:
+            log.action = custom_action
             log.save(update_fields=['action'])
-        return Response(AuditLogSerializer(log).data, status=status.HTTP_201_CREATED)
+
+        return Response(AuditLogSerializer(log, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
+    def create(self, request, *args, **kwargs):
+        """منع الإنشاء المباشر على المسار الرئيسي؛ استخدم client-action لإجراءات المتصفح."""
+        return Response(
+            {'detail': 'استخدم المسار /api/audit-logs/client-action/ لتسجيل إجراءات التصدير والطباعة.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
 
 
@@ -486,13 +566,36 @@ class ReportsViewSet(viewsets.ViewSet):
                 return denied
             payload = request.data if isinstance(request.data, dict) else {}
             inner = payload.get('targets') if isinstance(payload.get('targets'), dict) else payload
+            before_targets = get_department_targets()
             targets = save_department_targets(inner)
+            dept_names = {
+                'cutting': 'القص',
+                'printing': 'المطابع',
+                'qc': 'العد والجودة',
+                'sewing': 'المكن',
+                'finishing': 'التشطيب',
+                'ironing': 'المكواة',
+                'packaging': 'التعبئة والتغليف',
+            }
+            target_changes = []
+            for dept_key, new_vals in (targets or {}).items():
+                old_vals = (before_targets or {}).get(dept_key) or {}
+                if old_vals != new_vals:
+                    label = dept_names.get(dept_key, dept_key)
+                    target_changes.append({
+                        'field': f'target_{dept_key}',
+                        'label': f'تارجت قسم {label}',
+                        'old': f"يومي: {old_vals.get('daily', 0)} / شهري: {old_vals.get('monthly', 0)}",
+                        'new': f"يومي: {new_vals.get('daily', 0)} / شهري: {new_vals.get('monthly', 0)}",
+                    })
             log_action(
                 request,
-                section='reports',
-                action_type='update',
+                section='التقارير',
+                action_type='settings',
                 target_name='تارجتات الأقسام',
                 details='تحديث التارجت اليومي / الشهري لأقسام الإنتاج',
+                changes=target_changes,
+                user=profile,
             )
             return Response({'targets': targets, 'can_edit': True})
 
@@ -692,4 +795,113 @@ class FactoryResetViewSet(viewsets.ViewSet):
             'sections': sorted(selected),
             'notes': notes,
         })
+
+
+# ---------------------------------------------------------------------------
+# Dynamic PWA Web App Manifest (GET /api/manifest.webmanifest)
+# ---------------------------------------------------------------------------
+def _infer_icon_mime_type(url: str) -> str:
+    """استنتاج نوع الصورة (MIME type) من امتداد رابط الشعار."""
+    try:
+        path = urllib.parse.urlparse(url).path.lower()
+    except Exception:
+        path = str(url or '').lower()
+    if path.endswith('.webp'):
+        return 'image/webp'
+    if path.endswith('.jpg') or path.endswith('.jpeg'):
+        return 'image/jpeg'
+    if path.endswith('.svg'):
+        return 'image/svg+xml'
+    return 'image/png'
+
+
+def _is_valid_manifest_logo_url(value: str) -> bool:
+    """هل قيمة الشعار رابط صورة صالح (http/https أو مسار صورة محلي) وليس رمزاً تعبيرياً؟"""
+    raw = str(value or '').strip()
+    if not raw or raw.startswith('data:'):
+        return False
+    if raw.startswith('/'):
+        return len(raw) > 1
+    try:
+        parsed = urllib.parse.urlparse(raw)
+        return parsed.scheme in ('http', 'https') and bool(parsed.netloc)
+    except Exception:
+        return False
+
+
+def pwa_manifest_view(request):
+    """
+    نقطة عامة (بدون مصادقة) تعيد ملف ``manifest.webmanifest`` ديناميكياً
+    باسم المصنع وشعاره من ``GlobalSettings`` مع أيقونات احتياطية ثابتة.
+    """
+    import json
+
+    site_name = 'Factory ERP'
+    logo_val = ''
+    try:
+        obj = GlobalSettings.get_solo()
+        candidate_name = str(getattr(obj, 'site_name', '') or '').strip()
+        if candidate_name:
+            site_name = candidate_name
+        logo_val = str(
+            getattr(obj, 'logo_url', '') or getattr(obj, 'logo', '') or ''
+        ).strip()
+    except Exception:
+        pass
+
+    short_name = site_name[:24].strip() if len(site_name) > 24 else site_name
+    if _is_valid_manifest_logo_url(logo_val):
+        mime_type = _infer_icon_mime_type(logo_val)
+        icons = [
+            {
+                'src': logo_val,
+                'sizes': '192x192',
+                'type': mime_type,
+                'purpose': 'any maskable',
+            },
+            {
+                'src': logo_val,
+                'sizes': '512x512',
+                'type': mime_type,
+                'purpose': 'any maskable',
+            },
+        ]
+    else:
+        icons = [
+            {
+                'src': '/icons/icon-192.png',
+                'sizes': '192x192',
+                'type': 'image/png',
+                'purpose': 'any maskable',
+            },
+            {
+                'src': '/icons/icon-512.png',
+                'sizes': '512x512',
+                'type': 'image/png',
+                'purpose': 'any maskable',
+            },
+        ]
+
+    manifest = {
+        'id': '/',
+        'name': site_name,
+        'short_name': short_name,
+        'description': f'{site_name} — نظام إدارة مصانع الملابس الجاهزة المتكامل',
+        'start_url': '/',
+        'scope': '/',
+        'display': 'standalone',
+        'orientation': 'any',
+        'dir': 'rtl',
+        'lang': 'ar',
+        'theme_color': '#0f172a',
+        'background_color': '#f8f9fa',
+        'icons': icons,
+    }
+
+    response = HttpResponse(
+        json.dumps(manifest, ensure_ascii=False),
+        content_type='application/manifest+json; charset=utf-8',
+    )
+    response['Cache-Control'] = 'no-cache, max-age=0'
+    return response
 

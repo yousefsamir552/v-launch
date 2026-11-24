@@ -215,10 +215,10 @@ export const EditSpreadModal: React.FC<EditSpreadModalProps> = ({ record, onClos
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-3xl max-w-2xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95">
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+      <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95">
         {/* HEADER */}
-        <div className="p-5 border-b border-slate-100 bg-rose-50/80 flex items-start justify-between gap-3">
+        <div className="p-4 sm:p-5 border-b border-slate-100 bg-rose-50/80 flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h3 className="text-sm font-black text-rose-950 flex items-center gap-2">
               <Scissors className="w-4 h-4 text-rose-700 shrink-0" />
@@ -269,7 +269,7 @@ export const EditSpreadModal: React.FC<EditSpreadModalProps> = ({ record, onClos
                 </button>
               ))}
             </div>
-            <div className="grid grid-cols-2 gap-2 pt-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
               <button
                 type="button"
                 onClick={() => setIsSubCut(false)}
@@ -439,18 +439,18 @@ export const EditSpreadModal: React.FC<EditSpreadModalProps> = ({ record, onClos
               ))}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
               <input
                 type="text"
                 value={customColorInput}
                 onChange={(e) => setCustomColorInput(e.target.value)}
                 placeholder="إضافة لون آخر سريع..."
-                className="flex-grow px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-[11px] focus:outline-hidden focus:border-rose-400"
+                className="flex-1 min-w-0 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-[11px] focus:outline-hidden focus:border-rose-400"
               />
               <button
                 type="button"
                 onClick={handleAddCustomColorRow}
-                className="shrink-0 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-[11px] font-bold cursor-pointer"
+                className="w-full sm:w-auto shrink-0 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-[11px] font-bold cursor-pointer"
               >
                 + أضف للفرشة
               </button>
@@ -469,7 +469,7 @@ export const EditSpreadModal: React.FC<EditSpreadModalProps> = ({ record, onClos
 
           {/* عدد القطع في الراق + وزن الراق + معاينة الحساب */}
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="mb-1 block text-xs font-bold text-slate-700">
                   عدد القطع في الراق *
@@ -499,7 +499,7 @@ export const EditSpreadModal: React.FC<EditSpreadModalProps> = ({ record, onClos
               </div>
             </div>
 
-            <div className="flex items-center justify-between rounded-2xl bg-blue-50 border border-blue-200 px-4 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-blue-50 border border-blue-200 px-3 sm:px-4 py-2.5">
               <span className="flex items-center gap-1.5 text-[11px] font-extrabold text-blue-900">
                 <Calculator className="w-4 h-4 text-blue-700" />
                 <span>

@@ -1,5 +1,5 @@
 import { GarmentPart, getPartLabel } from '../types';
-import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml, safeImageSrc } from './printShared';
+import { escapeHtml, logClientPrintAction, PRINT_LOGO_CSS, renderLogoHtml, safeImageSrc } from './printShared';
 
 export interface ManualCountSheetPart {
   key: GarmentPart;
@@ -38,6 +38,11 @@ const computeCellHeightPx = (rows: number): number => {
  * garment part) so floor workers can count with a pen, independently per part.
  */
 export const printManualCountSheet = (options: ManualCountSheetOptions): void => {
+  logClientPrintAction(
+    'العد والجودة',
+    `طباعة ورقة جرد يدوي (${options.stageLabel}) للموديل ${options.modelCode}`,
+    options.modelCode
+  );
   const sizes = options.sizes.length > 0 ? options.sizes : ['S', 'M', 'L', 'XL'];
   const parts: ManualCountSheetPart[] =
     options.parts.length > 0

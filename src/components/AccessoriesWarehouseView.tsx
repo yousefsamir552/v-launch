@@ -25,7 +25,7 @@ import {
   Layers
 } from 'lucide-react';
 import { AccessoryItem, AccessoryUnit, AccessoryUsageType, DesignModel, ModelAccessory, Supplier } from '../types';
-import { isImageLogo } from '../utils/printShared';
+import { isImageLogo, logClientPrintAction } from '../utils/printShared';
 import { printAccessoryIssueOrder } from '../utils/printAccessoryIssueOrder';
 
 type PermitGroup = { model: DesignModel; lines: ModelAccessory[] };
@@ -1567,8 +1567,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
       {/* MODAL 0: ADD ACCESSORY TYPE */}
       {showAddTypeModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-md max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b pb-3">
               <h3 className="font-extrabold text-base text-slate-900">إضافة تصنيف إكسسوارات جديد</h3>
               <button onClick={() => setShowAddTypeModal(false)} className="text-slate-400">
@@ -1619,8 +1619,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
       {/* MODAL 1: ADD ACCESSORY ITEM (No price fields, dynamic minThreshold) */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
               <div className="flex items-center gap-2">
                 <div className="p-2 bg-blue-600 text-white rounded-xl">
@@ -2020,8 +2020,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
       {/* MODAL 1.5: EDIT ACCESSORY ITEM (Allows editing min_threshold and all non-price fields) */}
       {showEditModal && editingItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
               <div className="flex items-center gap-2">
                 <div className="p-2 bg-blue-600 text-white rounded-xl">
@@ -2334,8 +2334,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
       {/* MODAL 1B: ACCESSORY TRANSACTION HISTORY */}
       {showHistoryModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-5xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 bg-indigo-50">
               <div className="flex items-center gap-2">
                 <div className="p-2 bg-indigo-600 text-white rounded-xl">
@@ -2506,8 +2506,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
       {/* MODAL 2: PRINT INVENTORY REPORT */}
       {showPrintInventoryModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-5 border-b border-slate-100 flex items-center justify-between no-print bg-slate-50">
               <div className="flex items-center gap-2">
                 <div className="p-2 bg-pink-600 text-white rounded-xl">
@@ -2523,7 +2523,10 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => window.print()}
+                  onClick={() => {
+                    logClientPrintAction('مخزن الإكسسوارات', 'طباعة تقرير جرد مخزن الإكسسوارات والمستلزمات', 'جرد الإكسسوارات');
+                    window.print();
+                  }}
                   className="px-5 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition flex items-center gap-1.5 cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />
@@ -2536,7 +2539,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
             </div>
 
             <div
-              className="p-8 overflow-y-auto space-y-6 print:p-0"
+              className="p-4 sm:p-8 overflow-auto space-y-6 print:p-0"
               style={{ fontFamily: 'Tahoma, Arial, sans-serif' }}
             >
               <div className="text-center border-b-[3px] border-double border-slate-900 pb-3">
@@ -2650,8 +2653,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
       {/* MODAL 3: PRINT DEFICIT SHEET FOR PROCUREMENT */}
       {showPrintAlertsModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-5 border-b border-slate-100 flex items-center justify-between no-print bg-amber-50">
               <div className="flex items-center gap-2">
                 <div className="p-2 bg-amber-500 text-white rounded-xl">
@@ -2669,7 +2672,10 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => window.print()}
+                  onClick={() => {
+                    logClientPrintAction('مخزن الإكسسوارات', 'طباعة ورقة طلبيات نواقص الإكسسوارات للمشتريات', 'نواقص الإكسسوارات');
+                    window.print();
+                  }}
                   className="px-5 py-2 rounded-full bg-amber-600 hover:bg-amber-700 text-white font-black text-xs shadow-md transition flex items-center gap-1.5 cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />
@@ -2719,7 +2725,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
             </div>
 
             <div
-              className="p-8 overflow-y-auto space-y-6 print:p-0"
+              className="p-4 sm:p-8 overflow-auto space-y-6 print:p-0"
               style={{ fontFamily: 'Tahoma, Arial, sans-serif' }}
             >
               <div className="text-center border-b-[3px] border-double border-slate-900 pb-3">
@@ -2873,8 +2879,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
       {/* MODAL 4: TRANSACTION (DEDUCT / ADD) */}
       {showTransactionModal && activeItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-md max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b pb-3">
               <h3 className="font-extrabold text-sm text-slate-900">
                 تسجيل حركة: {activeItem.name} ({activeItem.code})
@@ -2952,8 +2958,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
       {/* MODAL 5: REORDER / WHATSAPP ORDER MODAL */}
       {reorderItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-lg max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b pb-3">
               <h3 className="font-extrabold text-base text-slate-900">
                 طلب توريد: {reorderItem.item.name} ({reorderItem.item.code})

@@ -153,25 +153,25 @@ export const InternalMessagingModal: React.FC<InternalMessagingModalProps> = ({ 
 
   const modalContent = (
     <div
-      className="fixed inset-0 z-[100] bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-in fade-in duration-200"
+      className="fixed inset-0 z-[100] bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-2 sm:p-6 overflow-y-auto animate-in fade-in duration-200"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="المراسلات والمحادثات الداخلية"
     >
       <div
-        className="bg-white rounded-3xl max-w-4xl w-full h-[82vh] max-h-[720px] min-h-[460px] my-auto shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in zoom-in-95 duration-200"
+        className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl h-[90vh] sm:h-[82vh] max-h-[90vh] sm:max-h-[720px] my-auto shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header with prominent Close (X) button */}
-        <div className="p-4 sm:px-6 border-b border-slate-200 flex items-center justify-between bg-slate-50/90 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shadow-xs shrink-0">
-              <MessageSquare className="w-5 h-5" />
+        <div className="p-3 sm:px-6 sm:py-4 border-b border-slate-200 flex items-center justify-between gap-2 bg-slate-50/90 shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shadow-xs shrink-0">
+              <MessageSquare className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
-            <div>
-              <h3 className="font-black text-slate-900 text-base flex items-center gap-2">
-                <span>المراسلات والمحادثات الداخلية</span>
+            <div className="min-w-0">
+              <h3 className="font-black text-slate-900 text-sm sm:text-base flex items-center gap-2 flex-wrap">
+                <span className="truncate">المراسلات والمحادثات الداخلية</span>
                 {unreadMessagesCount > 0 && (
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-500 text-white">
                     {unreadMessagesCount} غير مقروءة
@@ -290,16 +290,16 @@ export const InternalMessagingModal: React.FC<InternalMessagingModalProps> = ({ 
             {selectedUser ? (
               <>
                 {/* Chat Top Banner */}
-                <div className="p-3.5 px-5 border-b border-slate-200 flex items-center justify-between bg-white shrink-0">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center font-black text-xs">
+                <div className="p-3 sm:px-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-white shrink-0">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center font-black text-xs shrink-0">
                       {selectedUser.real_name.charAt(0)}
                     </div>
-                    <div>
-                      <h4 className="font-black text-slate-900 text-xs sm:text-sm">
+                    <div className="min-w-0">
+                      <h4 className="font-black text-slate-900 text-xs sm:text-sm truncate">
                         {selectedUser.real_name}
                       </h4>
-                      <p className="text-[10px] text-slate-500 font-semibold">
+                      <p className="text-[10px] text-slate-500 font-semibold truncate">
                         الدور: {selectedUser.role || 'مسؤول'} • اسم المستخدم: @{selectedUser.username}
                       </p>
                     </div>
@@ -377,10 +377,10 @@ export const InternalMessagingModal: React.FC<InternalMessagingModalProps> = ({ 
                     <form onSubmit={handleSend} className="flex items-center gap-2">
                       <input
                         type="text"
-                        placeholder={`اكتب رسالتك إلى ${selectedUser.real_name}... (اضغط Enter للإرسال)`}
+                        placeholder={`اكتب رسالتك إلى ${selectedUser.real_name}...`}
                         value={messageText}
                         onChange={(e) => setMessageText(e.target.value)}
-                        className="flex-grow px-4 py-2.5 bg-slate-100 border border-slate-200 rounded-full text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 focus:bg-white transition"
+                        className="flex-1 min-w-0 px-3.5 sm:px-4 py-2.5 bg-slate-100 border border-slate-200 rounded-full text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 focus:bg-white transition"
                       />
                       <button
                         type="submit"

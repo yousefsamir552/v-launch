@@ -173,17 +173,17 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
   };
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
-      <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
+    <div className="fixed inset-0 z-[90] flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+      <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-[95vw] sm:w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-blue-600 text-white flex items-center justify-center font-bold text-sm shadow-xs">
+        <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-slate-100 flex items-start sm:items-center justify-between gap-2 bg-slate-50 shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-2xl bg-blue-600 text-white flex items-center justify-center font-bold text-sm shadow-xs shrink-0">
               {user.real_name ? user.real_name[0] : 'U'}
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-bold text-slate-900 text-base">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-bold text-slate-900 text-sm sm:text-base break-words">
                   تعديل صلاحيات الموظف: {user.real_name || user.username}
                 </h3>
               </div>
@@ -202,14 +202,14 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
           <button
             type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-500 transition cursor-pointer"
+            className="w-8 h-8 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-500 transition cursor-pointer shrink-0"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5 sm:space-y-6">
           {/* Password update section */}
           <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 space-y-2">
             <label className="block text-xs font-bold text-slate-700">
@@ -315,11 +315,11 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                   return (
                     <div
                       key={sec.key}
-                      className="flex items-center justify-between p-2.5 rounded-xl bg-white border border-slate-200 text-xs"
+                      className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-white border border-slate-200 text-xs"
                     >
-                      <div className="flex items-center gap-1.5 font-bold text-slate-800">
-                        <sec.icon className={`w-3.5 h-3.5 ${sec.color}`} />
-                        <span>{sec.label}</span>
+                      <div className="flex items-center gap-1.5 font-bold text-slate-800 min-w-0">
+                        <sec.icon className={`w-3.5 h-3.5 shrink-0 ${sec.color}`} />
+                        <span className="truncate">{sec.label}</span>
                       </div>
                       <div className="flex items-start gap-1.5">
                         <div className="flex flex-col items-center gap-1">
@@ -528,7 +528,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
           </div>
 
           {/* Footer Buttons */}
-          <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3 shrink-0">
+          <div className="pt-4 border-t border-slate-100 flex flex-wrap items-center justify-end gap-2 sm:gap-3 shrink-0">
             <button
               type="button"
               onClick={onClose}

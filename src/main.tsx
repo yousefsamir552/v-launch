@@ -11,3 +11,13 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     </AppProvider>
   </React.StrictMode>
 );
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker
+      .register('/sw.js', { scope: '/' })
+      .catch(() => {
+        // Ignore service worker registration errors in unsupported/restricted environments.
+      });
+  });
+}

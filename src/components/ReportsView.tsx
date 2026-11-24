@@ -40,7 +40,7 @@ import {
 import { api } from '../api/client';
 import { useApp } from '../context/AppContext';
 import { MaterialsReportSection, ModelConsumptionReportSection } from './MaterialsAndModelConsumptionReports';
-import { PRINT_LOGO_CSS, escapeHtml, renderLogoHtml } from '../utils/printShared';
+import { PRINT_LOGO_CSS, escapeHtml, logClientPrintAction, renderLogoHtml } from '../utils/printShared';
 import type {
   DepartmentReportCard,
   DepartmentTargetsMap,
@@ -680,6 +680,7 @@ export const ReportsView: React.FC = () => {
       </body></html>`);
     win.document.close();
     win.focus();
+    logClientPrintAction('التقارير', `طباعة تقرير: ${title}`, title);
     window.setTimeout(() => win.print(), 400);
   };
 
@@ -1793,8 +1794,8 @@ export const ReportsView: React.FC = () => {
           )}
 
           {targetsOpen && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" dir="rtl">
-              <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-2 sm:p-4" dir="rtl">
+              <div className="w-[95vw] sm:w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
                 <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
                   <div className="flex items-center gap-2">
                     <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">

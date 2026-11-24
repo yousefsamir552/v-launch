@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { api } from '../api/client';
-import { escapeHtml, renderLogoHtml } from '../utils/printShared';
+import { escapeHtml, logClientPrintAction, renderLogoHtml } from '../utils/printShared';
 import type {
   HRAttendanceSettings,
   HRReportDepartmentRow,
@@ -339,6 +339,7 @@ export const HRReportsView: React.FC = () => {
       </body></html>`);
     win.document.close();
     win.focus();
+    logClientPrintAction('الموارد البشرية', 'طباعة تقرير وتحليلات الموارد البشرية', 'تقارير الموارد البشرية');
     win.print();
   };
 
@@ -893,8 +894,8 @@ export const HRReportsView: React.FC = () => {
 
           {/* نافذة تفاصيل صرف يوم محدد */}
           {openDay && selectedDay && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" dir="rtl">
-              <div className="max-h-[88vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-2 sm:p-4" dir="rtl">
+              <div className="max-h-[90vh] w-[95vw] sm:w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-4 sm:p-5 shadow-2xl">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <Coins className="h-5 w-5 text-purple-600" />
@@ -956,8 +957,8 @@ export const HRReportsView: React.FC = () => {
 
           {/* نافذة تفاصيل شهر حسب القسم */}
           {openMonth && selectedMonthRow && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" dir="rtl">
-              <div className="max-h-[88vh] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-2 sm:p-4" dir="rtl">
+              <div className="max-h-[90vh] w-[95vw] sm:w-full max-w-3xl overflow-y-auto rounded-3xl bg-white p-4 sm:p-5 shadow-2xl">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <Wallet className="h-5 w-5 text-emerald-600" />

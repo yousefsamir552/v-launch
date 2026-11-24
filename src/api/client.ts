@@ -697,6 +697,17 @@ export const api = {
     return request<any>(`/audit-logs/${qs ? `?${qs}` : ''}`);
   },
   getAuditLogFilters: () => request<any>('/audit-logs/filters/'),
+  logClientAction: (data: {
+    section: string;
+    action_type?: 'export' | 'print' | 'custom';
+    action?: string;
+    target_name?: string;
+    details: string;
+  }) =>
+    request<any>('/audit-logs/client-action/', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
 
   // تصفير بيانات المصنع الانتقائي (sudo فقط)
   factoryReset: (sections: string[], confirmation: string) =>

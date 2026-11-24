@@ -11,7 +11,7 @@
  * تتبع نفس نمط `printCuttingOrder` في المشروع (نافذة مستقلة + document.write + print).
  */
 
-import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml } from './printShared';
+import { escapeHtml, logClientPrintAction, PRINT_LOGO_CSS, renderLogoHtml } from './printShared';
 
 export interface AccessoryIssueOrderLine {
   accessory_name: string;
@@ -48,6 +48,11 @@ const fmtNum = (value: number): string =>
   (Number.isFinite(value) ? value : 0).toLocaleString('ar-EG');
 
 export const printAccessoryIssueOrder = (options: AccessoryIssueOrderOptions): void => {
+  logClientPrintAction(
+    'مخزن الإكسسوارات',
+    `طباعة إذن صرف إكسسوارات للموديل ${options.modelCode}`,
+    options.modelCode
+  );
   const lines = Array.isArray(options.lines) ? options.lines : [];
   const today = options.date || new Date().toLocaleDateString('ar-EG');
   const totalQty = lines.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);

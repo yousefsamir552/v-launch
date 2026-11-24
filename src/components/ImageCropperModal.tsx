@@ -192,12 +192,12 @@ export const ImageCropperModal: React.FC<ImageCropperModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[70] bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4"
+      className="fixed inset-0 z-[70] bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4"
       onPointerMove={handlePointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
     >
-      <div className="bg-white rounded-3xl w-full max-w-4xl shadow-2xl border border-slate-100 flex flex-col max-h-[94vh] overflow-hidden">
+      <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl shadow-2xl border border-slate-100 flex flex-col max-h-[90vh] overflow-hidden">
         {/* Header */}
         <div className="flex items-start justify-between gap-3 px-5 py-3.5 border-b border-slate-200">
           <div className="flex items-center gap-2.5">

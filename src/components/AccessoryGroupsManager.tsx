@@ -292,14 +292,14 @@ export const AccessoryGroupsManager: React.FC<AccessoryGroupsManagerProps> = ({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-      <div className="bg-white rounded-3xl w-full max-w-5xl max-h-[94vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+      <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
         {/* Header */}
         <div className="p-4 sm:p-5 border-b border-slate-200 bg-slate-50 flex items-start justify-between gap-3">
-          <div>
-            <h3 className="font-black text-base text-slate-900 flex items-center gap-2">
-              <Layers className="w-5 h-5 text-indigo-600" />
-              إدارة الأدوات العامة ومجموعات الإكسسوارات
+          <div className="min-w-0">
+            <h3 className="font-black text-sm sm:text-base text-slate-900 flex items-center gap-2">
+              <Layers className="w-5 h-5 text-indigo-600 shrink-0" />
+              <span>إدارة الأدوات العامة ومجموعات الإكسسوارات</span>
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
               أنشئ مجموعات جاهزة (مثل تيكتات بيبي مقاسات 2-5) تُضاف بضغطة واحدة في شاشة
@@ -426,48 +426,52 @@ export const AccessoryGroupsManager: React.FC<AccessoryGroupsManagerProps> = ({
                         return (
                           <li
                             key={entry.accessory_id}
-                            className="flex items-center gap-2 bg-white rounded-xl border border-slate-200 p-2"
+                            className="flex flex-col sm:flex-row sm:items-center gap-2 bg-white rounded-xl border border-slate-200 p-2.5"
                           >
-                            <ItemThumb item={item} />
-                            <div className="min-w-0 flex-grow">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="font-mono text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
-                                  {item?.code || '—'}
-                                </span>
-                                <span className="text-xs font-bold text-slate-900 truncate">
-                                  {item?.name || 'صنف محذوف من المخزن'}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-                                <span className="text-[10px] text-slate-500">
-                                  {item?.type_name || '—'}
-                                </span>
-                                {item && <StockBadges item={item} />}
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <ItemThumb item={item} />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-mono text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
+                                    {item?.code || '—'}
+                                  </span>
+                                  <span className="text-xs font-bold text-slate-900 truncate">
+                                    {item?.name || 'صنف محذوف من المخزن'}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                                  <span className="text-[10px] text-slate-500">
+                                    {item?.type_name || '—'}
+                                  </span>
+                                  {item && <StockBadges item={item} />}
+                                </div>
                               </div>
                             </div>
-                            <label className="flex items-center gap-1 shrink-0">
-                              <span className="text-[9px] font-bold text-slate-500">
-                                استهلاك/قطعة
-                              </span>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.25"
-                                value={entry.piece_consumption}
-                                onChange={(e) =>
-                                  updateDraftConsumption(entry.accessory_id, e.target.value)
-                                }
-                                className="w-16 px-2 py-1 rounded-lg border border-slate-300 text-xs font-bold text-center"
-                              />
-                            </label>
-                            <button
-                              type="button"
-                              onClick={() => removeAccessoryFromDraft(entry.accessory_id)}
-                              className="w-7 h-7 rounded-lg bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100 flex items-center justify-center shrink-0 cursor-pointer"
-                              title="إزالة"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="flex items-center justify-between sm:justify-end gap-2 pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-100 shrink-0">
+                              <label className="flex items-center gap-1.5 shrink-0">
+                                <span className="text-[10px] font-bold text-slate-500">
+                                  استهلاك/قطعة
+                                </span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.25"
+                                  value={entry.piece_consumption}
+                                  onChange={(e) =>
+                                    updateDraftConsumption(entry.accessory_id, e.target.value)
+                                  }
+                                  className="w-16 px-2 py-1 rounded-lg border border-slate-300 text-xs font-bold text-center"
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => removeAccessoryFromDraft(entry.accessory_id)}
+                                className="w-8 h-8 rounded-lg bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100 flex items-center justify-center shrink-0 cursor-pointer"
+                                title="إزالة"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </li>
                         );
                       })}
@@ -570,8 +574,8 @@ export const AccessoryGroupsManager: React.FC<AccessoryGroupsManagerProps> = ({
               </div>
             ) : (
               <div className="space-y-3">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="relative flex-grow max-w-xs">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="relative flex-1 min-w-0 w-full sm:max-w-xs">
                     <Search className="w-3.5 h-3.5 text-slate-400 absolute top-1/2 -translate-y-1/2 start-2.5" />
                     <input
                       type="text"
@@ -584,7 +588,7 @@ export const AccessoryGroupsManager: React.FC<AccessoryGroupsManagerProps> = ({
                   <button
                     type="button"
                     onClick={openCreateEditor}
-                    className="px-4 py-2 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs flex items-center gap-1.5 shrink-0 cursor-pointer"
+                    className="w-full sm:w-auto justify-center px-4 py-2 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs flex items-center gap-1.5 shrink-0 cursor-pointer"
                   >
                     <Plus className="w-4 h-4" /> مجموعة جديدة
                   </button>
@@ -732,13 +736,13 @@ export const AccessoryGroupsManager: React.FC<AccessoryGroupsManagerProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3 flex-wrap">
+        <div className="p-3 sm:p-4 border-t border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
           <p className="text-[11px] text-slate-500">
             {canSave
               ? 'سيتم تطبيق المجموعات والأدوات المفضلة على شاشة التصميم فور الحفظ.'
               : 'لا تملك صلاحية تعديل الإعدادات العامة، لذلك لا يمكن الحفظ.'}
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-end gap-2 flex-wrap w-full sm:w-auto">
             <button
               type="button"
               onClick={onClose}

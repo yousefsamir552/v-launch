@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { QCStageType, Model, QCMatrixCellInput, GarmentPart, PartStage, PART_EMOJI, getPartLabel } from '../types';
 import { printManualCountSheet } from '../utils/printManualCountSheet';
-import { isImageLogo } from '../utils/printShared';
+import { isImageLogo, logClientPrintAction } from '../utils/printShared';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel, stageRank, stageBeyond } from '../utils/completedModels';
 import { resolveDefaultGoodQtyForCell, findSavedQcCell } from '../utils/qcCutDefaults';
@@ -875,8 +875,8 @@ export const QCView: React.FC = () => {
 
       {/* MODAL 1: Dynamic Matrix (Color x Size) for Good & Defect Counts */}
       {countingModel && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
-          <div className="bg-white rounded-3xl max-w-6xl w-full p-5 sm:p-6 shadow-2xl border border-slate-100 animate-in zoom-in-95 duration-150 my-auto max-h-[94vh] flex flex-col">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-6xl p-4 sm:p-6 shadow-2xl border border-slate-100 animate-in zoom-in-95 duration-150 my-auto max-h-[90vh] flex flex-col overflow-hidden">
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
               <div className="flex items-center gap-3">
@@ -1302,8 +1302,8 @@ export const QCView: React.FC = () => {
 
       {/* MODAL 2: Printable Stage Inventory Report */}
       {showPrintModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-100 flex flex-col max-h-[90vh]">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl p-4 sm:p-6 shadow-2xl border border-slate-100 flex flex-col max-h-[90vh] overflow-hidden">
             <div className="flex items-center justify-between pb-4 border-b border-slate-200">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center">
@@ -1321,7 +1321,14 @@ export const QCView: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => window.print()}
+                  onClick={() => {
+                    logClientPrintAction(
+                      'العد والجودة',
+                      `طباعة تقرير جرد مرحلة ${getStageTitle(activeTab)}`,
+                      getStageTitle(activeTab)
+                    );
+                    window.print();
+                  }}
                   className="px-4 py-2 rounded-full bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs shadow-xs transition flex items-center gap-1.5 cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />
@@ -1338,7 +1345,7 @@ export const QCView: React.FC = () => {
 
             {/* Printable Content Area */}
             <div
-              className="overflow-y-auto flex-grow p-4 print:p-0"
+              className="overflow-auto flex-grow p-3 sm:p-4 print:p-0"
               id="qc-printable-report"
             >
               <div className="text-center mb-6 border-b border-slate-300 pb-4">

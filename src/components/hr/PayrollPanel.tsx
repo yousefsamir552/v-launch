@@ -7,7 +7,7 @@ import {
   Lock, Unlock
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { escapeHtml, renderLogoHtml } from '../../utils/printShared';
+import { escapeHtml, logClientPrintAction, renderLogoHtml } from '../../utils/printShared';
 import { api } from '../../api/client';
 import {
   HRJobTitle, HREmployee, HRAttendanceSettings, HRAttendanceRule,
@@ -553,6 +553,11 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
       return;
     }
+    logClientPrintAction(
+      'الموارد البشرية',
+      `طباعة ورقة مرتب الموظف ${row.employee.name} لشهر ${month}`,
+      row.employee.name
+    );
     win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
       <title>ورقة مرتب ${escapeHtml(row.employee.name)}</title>
       <style>${workerSheetStyles}</style></head><body>${buildWorkerSheetHtml(row)}</body></html>`);
@@ -573,6 +578,11 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
       return;
     }
+    logClientPrintAction(
+      'الموارد البشرية',
+      `طباعة أوراق مرتبات جميع العمال (${rows.length} موظف) لشهر ${month}`,
+      `مرتبات شهر ${month}`
+    );
     win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
       <title>أوراق مرتبات العمال — ${escapeHtml(month)}</title>
       <style>${workerSheetStyles}</style></head><body>${sheets}</body></html>`);

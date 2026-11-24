@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { Boxes, Printer, X, CheckCircle2, Factory, Package, AlertTriangle } from 'lucide-react';
-import { isImageLogo } from '../utils/printShared';
+import { isImageLogo, logClientPrintAction } from '../utils/printShared';
 import { finishedSetsOf, photographyHoldLabel, photographyOutstandingOf } from '../utils/completedModels';
 import { ZoomableImage } from './ZoomableImage';
 import type { DesignModel } from '../types';
@@ -152,9 +152,9 @@ export const ProductionWarehouseView: React.FC = () => {
 
       {/* PRINT INVENTORY REPORT MODAL */}
       {showPrintModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between no-print bg-slate-50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 no-print bg-slate-50">
               <div className="flex items-center gap-2">
                 <div className="p-2 bg-indigo-600 text-white rounded-xl">
                   <Printer className="w-5 h-5" />
@@ -169,7 +169,10 @@ export const ProductionWarehouseView: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => window.print()}
+                  onClick={() => {
+                    logClientPrintAction('مخزن الإنتاج', 'طباعة تقرير جرد مخزن الإنتاج التام', 'جرد الإنتاج التام');
+                    window.print();
+                  }}
                   className="px-5 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition flex items-center gap-1.5 cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />
@@ -210,47 +213,49 @@ export const ProductionWarehouseView: React.FC = () => {
                 </p>
               </div>
 
-              <table className="w-full text-xs text-start border-collapse">
-                <thead className="bg-slate-100 text-slate-900 font-black">
-                  <tr>
-                    <th className="border border-slate-800 p-2.5">صورة الموديل</th>
-                    <th className="border border-slate-800 p-2.5">كود الموديل</th>
-                    <th className="border border-slate-800 p-2.5">النوع</th>
-                    <th className="border border-slate-800 p-2.5 text-center">الكمية المستهدفة</th>
-                    <th className="border border-slate-800 p-2.5 text-center">الكمية التامة الفعلية</th>
-                    <th className="border border-slate-800 p-2.5 text-center">الحالة</th>
-                  </tr>
-                </thead>
-                <tbody className="font-semibold">
-                  {finishedModels.map((m) => {
-                    const actual = finishedSetsOf(m);
-                    return (
-                      <tr key={m.id}>
-                        <td className="border border-slate-800 p-2.5">
-                          <img
-                            src={m.image}
-                            alt={m.model_code}
-                            className="w-10 h-10 rounded object-contain bg-slate-50 border border-slate-300 p-0.5"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).style.display = 'none';
-                            }}
-                          />
-                        </td>
-                        <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{m.model_code}</td>
-                        <td className="border border-slate-800 p-2.5 text-slate-700">{m.model_type}</td>
-                        <td className="border border-slate-800 p-2.5 text-center">{m.target_cut_quantity}</td>
-                        <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900">
-                          <span className="inline-flex items-center gap-1">
-                            {actual} طقم
-                            <PhotographyHoldBadge model={m} />
-                          </span>
-                        </td>
-                        <td className="border border-slate-800 p-2.5 text-center text-slate-700">{m.status}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div className="overflow-x-auto -mx-2 px-2">
+                <table className="w-full text-xs text-start border-collapse">
+                  <thead className="bg-slate-100 text-slate-900 font-black">
+                    <tr>
+                      <th className="border border-slate-800 p-2.5">صورة الموديل</th>
+                      <th className="border border-slate-800 p-2.5">كود الموديل</th>
+                      <th className="border border-slate-800 p-2.5">النوع</th>
+                      <th className="border border-slate-800 p-2.5 text-center">الكمية المستهدفة</th>
+                      <th className="border border-slate-800 p-2.5 text-center">الكمية التامة الفعلية</th>
+                      <th className="border border-slate-800 p-2.5 text-center">الحالة</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-semibold">
+                    {finishedModels.map((m) => {
+                      const actual = finishedSetsOf(m);
+                      return (
+                        <tr key={m.id}>
+                          <td className="border border-slate-800 p-2.5">
+                            <img
+                              src={m.image}
+                              alt={m.model_code}
+                              className="w-10 h-10 rounded object-contain bg-slate-50 border border-slate-300 p-0.5"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).style.display = 'none';
+                              }}
+                            />
+                          </td>
+                          <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{m.model_code}</td>
+                          <td className="border border-slate-800 p-2.5 text-slate-700">{m.model_type}</td>
+                          <td className="border border-slate-800 p-2.5 text-center">{m.target_cut_quantity}</td>
+                          <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900">
+                            <span className="inline-flex items-center gap-1">
+                              {actual} طقم
+                              <PhotographyHoldBadge model={m} />
+                            </span>
+                          </td>
+                          <td className="border border-slate-800 p-2.5 text-center text-slate-700">{m.status}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
 
               <div className="pt-6 border-t-2 border-slate-900 text-xs text-slate-700 flex justify-between font-bold">
                 <span>مسؤول مخزن الإنتاج: ______________________</span>

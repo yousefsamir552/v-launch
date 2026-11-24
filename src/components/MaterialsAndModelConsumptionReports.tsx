@@ -22,7 +22,7 @@ import {
   X
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { PRINT_LOGO_CSS, escapeHtml, renderLogoHtml, safeImageSrc } from '../utils/printShared';
+import { PRINT_LOGO_CSS, escapeHtml, logClientPrintAction, renderLogoHtml, safeImageSrc } from '../utils/printShared';
 import {
   DEFAULT_GARMENT_COMPOSITION,
   GARMENT_COMPOSITION_LABELS,
@@ -195,6 +195,7 @@ const usePrintWindow = () => {
       </body></html>`);
     win.document.close();
     win.focus();
+    logClientPrintAction('التقارير', `طباعة تقرير: ${title}`, title);
     window.setTimeout(() => win.print(), 350);
     return true;
   };

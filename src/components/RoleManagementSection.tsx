@@ -1005,16 +1005,16 @@ export const RoleManagementSection: React.FC = () => {
 
       {/* Add / Edit Role Modal */}
       {modalOpen && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             {/* Header */}
-            <div className="p-6 border-b border-slate-100 flex items-center justify-between shrink-0 bg-slate-50/70">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-blue-600 text-white shadow-xs">
+            <div className="p-4 sm:p-6 border-b border-slate-100 flex items-start sm:items-center justify-between gap-2 shrink-0 bg-slate-50/70">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2.5 rounded-xl bg-blue-600 text-white shadow-xs shrink-0">
                   <ShieldCheck className="w-5 h-5" />
                 </div>
-                <div>
-                  <h3 className="font-extrabold text-lg text-slate-900">
+                <div className="min-w-0">
+                  <h3 className="font-extrabold text-sm sm:text-lg text-slate-900 break-words">
                     {editingRole ? `تعديل صلاحيات دور: ${editingRole.name}` : 'إنشاء دور وظيفي ديناميكي جديد'}
                   </h3>
                   <p className="text-xs text-slate-500">
@@ -1025,14 +1025,14 @@ export const RoleManagementSection: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setModalOpen(false)}
-                className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-200/50 transition cursor-pointer"
+                className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-200/50 transition cursor-pointer shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {/* Scrollable Form Body */}
-            <form onSubmit={handleSubmit} className="flex-grow overflow-y-auto p-6 space-y-6">
+            <form onSubmit={handleSubmit} className="flex-grow overflow-y-auto p-4 sm:p-6 space-y-5 sm:space-y-6">
               {/* Basic Info */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -1851,7 +1851,7 @@ export const RoleManagementSection: React.FC = () => {
               )}
 
               {/* Form Action Buttons */}
-              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3 shrink-0">
+              <div className="pt-4 border-t border-slate-100 flex flex-wrap items-center justify-end gap-2 sm:gap-3 shrink-0">
                 <button
                   type="button"
                   onClick={() => setModalOpen(false)}

@@ -38,12 +38,42 @@ export const App: React.FC = () => {
   const isSudo =
     currentUser?.username?.toLowerCase() === 'sudo' || Boolean(currentUser?.is_sudo);
 
-  // Dynamically sync browser document title with globalSettings.site_name
+  // Dynamically sync browser title, favicon, and apple-touch-icon with globalSettings
   useEffect(() => {
-    if (globalSettings?.site_name) {
-      document.title = globalSettings.site_name;
+    const title = (globalSettings?.site_name || '').trim() || 'نظام إدارة المصنع - ERP';
+    document.title = title;
+
+    const rawLogo = (globalSettings?.logo || '').trim();
+    const isValidImageUrl =
+      rawLogo.startsWith('http://') ||
+      rawLogo.startsWith('https://') ||
+      rawLogo.startsWith('data:image/') ||
+      (rawLogo.startsWith('/') && rawLogo.length > 1);
+    const iconHref = isValidImageUrl ? rawLogo : '/icons/icon-192.png';
+
+    const upsertLink = (rel: string, href: string) => {
+      let el = document.querySelector<HTMLLinkElement>(`link[rel="${rel}"]`);
+      if (!el) {
+        el = document.createElement('link');
+        el.rel = rel;
+        document.head.appendChild(el);
+      }
+      el.href = href;
+    };
+
+    upsertLink('icon', iconHref);
+    upsertLink('apple-touch-icon', iconHref);
+
+    let appleTitle = document.querySelector<HTMLMetaElement>(
+      'meta[name="apple-mobile-web-app-title"]'
+    );
+    if (!appleTitle) {
+      appleTitle = document.createElement('meta');
+      appleTitle.name = 'apple-mobile-web-app-title';
+      document.head.appendChild(appleTitle);
     }
-  }, [globalSettings?.site_name]);
+    appleTitle.content = title;
+  }, [globalSettings?.site_name, globalSettings?.logo]);
 
   const HR_TAB_SECTIONS: Record<string, HRSectionKey> = {
     hr_jobs: 'jobs',
@@ -164,7 +194,7 @@ export const App: React.FC = () => {
     siteLogo.startsWith('/');
 
   return (
-    <div className="min-h-screen bg-[#f8f9fa] text-slate-900 flex flex-col lg:pl-72 antialiased">
+    <div className="min-h-screen w-full overflow-x-hidden bg-[#f8f9fa] text-slate-900 flex flex-col lg:pl-72 antialiased">
       <Navbar
         currentTab={currentTab}
         setCurrentTab={(tab) => handleNavigate(tab)}
@@ -173,7 +203,7 @@ export const App: React.FC = () => {
 
       <FlashAlerts />
 
-      <main className="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <main className="flex-grow min-w-0 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6">
         {currentTab === 'dashboard' && (
           <DashboardView onNavigate={(tab, id) => handleNavigate(tab, id)} />
         )}

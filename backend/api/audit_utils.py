@@ -30,6 +30,8 @@ ACTION_TYPE_LABELS = {
     'transaction': 'حركة مخزون',
     'settings': 'تعديل إعدادات',
     'import': 'استيراد بيانات',
+    'export': 'تصدير ملف',
+    'print': 'طباعة مستند',
     'permission': 'تعديل صلاحيات',
     'login': 'تسجيل دخول',
     'logout': 'تسجيل خروج',
@@ -157,6 +159,9 @@ ACTION_METHOD_LABELS = {
     'update_settings': ('settings', 'حدّث الإعدادات'),
     'upload_sheet': ('import', 'رفع شيت حضور الموظفين'),
     'reapply_rules': ('settings', 'أعاد تطبيق قواعد الحضور'),
+    'lock': ('status_change', 'اعتمد وأغلق كشف الرواتب الشهري'),
+    'unlock': ('status_change', 'أعاد فتح كشف الرواتب الشهري'),
+    'refund_deleted_inventory': ('transaction', 'فحص واسترداد خامات الموديلات المحذوفة'),
     'toggle_active': ('status_change', 'غيّر حالة تفعيل الحساب'),
     'login': ('login', 'سجّل الدخول'),
     'logout': ('logout', 'سجّل الخروج'),
@@ -383,14 +388,20 @@ def _normalize_compare(value):
     return _jsonable(value)
 
 
+PRIVATE_MODEL_FIELDS = {
+    'InternalMessage': {'content'},
+}
+
+
 def snapshot_instance(instance) -> dict:
-    """لقطة من كل حقول الكائن الفعلية (بدون الحقول التقنية/الرموز)."""
+    """لقطة من كل حقول الكائن الفعلية (بدون الحقول التقنية/الرموز/الخاصة)."""
     if instance is None:
         return {}
+    private_fields = PRIVATE_MODEL_FIELDS.get(instance.__class__.__name__, set())
     data = {}
     for field in instance._meta.concrete_fields:
         name = field.name
-        if name in SYSTEM_FIELDS:
+        if name in SYSTEM_FIELDS or name in private_fields:
             continue
         try:
             value = getattr(instance, field.attname if field.is_relation else name)
@@ -398,6 +409,39 @@ def snapshot_instance(instance) -> dict:
             continue
         data[name] = value
     return data
+
+
+def set_audit_meta(
+    request,
+    *,
+    section=None,
+    action_type=None,
+    target_name=None,
+    details=None,
+    changes=None,
+    extra_changes=None,
+):
+    """يرفق بيانات تدقيق تفصيلية (قبل/بعد ووصف عربي) بالطلب ليعتمدها AuditedModelViewSetMixin."""
+    if request is None:
+        return
+    meta = getattr(request, '_audit_meta', None)
+    if not isinstance(meta, dict):
+        meta = {}
+    if section is not None:
+        meta['section'] = section
+    if action_type is not None:
+        meta['action_type'] = action_type
+    if target_name is not None:
+        meta['target_name'] = target_name
+    if details is not None:
+        meta['details'] = details
+    if changes is not None:
+        meta['changes'] = list(changes)
+    if extra_changes:
+        existing_extra = list(meta.get('extra_changes') or [])
+        existing_extra.extend(extra_changes)
+        meta['extra_changes'] = existing_extra
+    request._audit_meta = meta
 
 
 def _truthy_keys(value) -> set:
@@ -942,6 +986,7 @@ class AuditedModelViewSetMixin:
         target_before = self.get_audit_target_name(before_obj) if before_obj is not None else ''
 
         request._audit_depth = 1
+        request._audit_meta = None
         try:
             response = call()
         finally:
@@ -1001,7 +1046,20 @@ class AuditedModelViewSetMixin:
                 )
             if not target:
                 target = _target_from_payload(getattr(request, 'data', None))
-            details = f"عدّل بيانات {noun}: {target}" if target else f"عدّل بيانات {noun}"
+            changed_fields = {c.get('field') for c in changes if isinstance(c, dict)}
+            model_name = getattr(after_obj or before_obj, '__class__', None).__name__ if (after_obj or before_obj) else ''
+            if model_name in ('Role', 'UserProfile') and (
+                changed_fields & (PERMISSION_FIELDS | {'role', 'rank_level'})
+            ):
+                action_type = 'permission'
+                if 'password_hash' in changed_fields:
+                    details = f"عدّل صلاحيات وكلمة مرور {noun}: {target}" if target else f"عدّل صلاحيات وكلمة مرور {noun}"
+                else:
+                    details = f"عدّل صلاحيات/دور {noun}: {target}" if target else f"عدّل صلاحيات/دور {noun}"
+            elif model_name == 'UserProfile' and 'password_hash' in changed_fields:
+                details = f"غيّر كلمة مرور {noun}: {target}" if target else f"غيّر كلمة مرور {noun}"
+            else:
+                details = f"عدّل بيانات {noun}: {target}" if target else f"عدّل بيانات {noun}"
         else:
             info = ACTION_METHOD_LABELS.get(method_name)
             if info:
@@ -1022,6 +1080,27 @@ class AuditedModelViewSetMixin:
             if not target:
                 target = _target_from_payload(getattr(response, 'data', None))
             details = f"{phrase}: {target}" if target else phrase
+
+        # تطبيق أي تخصيص/إثراء أُرفق بالطلب من داخل الـ ViewSet (خصوصاً إجراءات detail=False والرسائل الخاصة).
+        audit_meta = getattr(request, '_audit_meta', None)
+        if isinstance(audit_meta, dict):
+            if audit_meta.get('section'):
+                section = str(audit_meta['section'])
+            if audit_meta.get('action_type'):
+                action_type = str(audit_meta['action_type'])
+            if audit_meta.get('target_name') is not None:
+                target = str(audit_meta['target_name'])
+            if audit_meta.get('details'):
+                details = str(audit_meta['details'])
+            if 'changes' in audit_meta and audit_meta['changes'] is not None:
+                changes = list(audit_meta['changes'])
+            if audit_meta.get('extra_changes'):
+                changes = list(changes) + list(audit_meta['extra_changes'])
+            request._audit_meta = None
+
+        # حماية صارمة للخصوصية: لا يُسجَّل نص الرسالة الداخلية أبداً في سجل التدقيق.
+        if getattr(self._audit_model(), '__name__', '') == 'InternalMessage':
+            changes = [c for c in changes if not (isinstance(c, dict) and c.get('field') == 'content')]
 
         # تمييز أي تعديل/حذف يقع على موديل/قطعة منتهية (من الترويسات أو بالكشف التلقائي).
         completed_marker = _completed_model_marker(

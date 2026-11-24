@@ -239,14 +239,77 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
 
   return (
     <>
-      {/* Mobile Toggle Button (visible on small screens) */}
-      <button
-        onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-        className="no-print lg:hidden fixed top-4 left-4 z-50 p-2.5 rounded-xl bg-slate-900 text-white shadow-lg cursor-pointer"
-        title="القائمة الجانبية"
-      >
-        {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-      </button>
+      {/* Mobile Top Sticky Header (prevents floating button from overlapping page controls) */}
+      <header className="no-print lg:hidden sticky top-0 z-30 w-full bg-white/95 backdrop-blur-xs border-b border-slate-200/80 px-3 py-2.5 flex items-center justify-between gap-2 shadow-2xs">
+        <div className="flex items-center gap-2 min-w-0">
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            className="p-2 rounded-xl bg-slate-900 text-white shadow-xs cursor-pointer shrink-0"
+            title="القائمة الجانبية"
+            aria-label="القائمة الجانبية"
+          >
+            {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleNavClick('dashboard')}
+            className="flex items-center gap-2 font-black text-sm text-slate-900 min-w-0 cursor-pointer"
+          >
+            {isImageLogo ? (
+              <img
+                src={siteLogo}
+                alt={siteName}
+                className="w-7 h-7 rounded-lg object-contain bg-white border border-slate-200 p-0.5 shrink-0"
+              />
+            ) : (
+              <span className="text-lg shrink-0">{siteLogo || '🏭'}</span>
+            )}
+            <span className="truncate">{siteName}</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              setMessagesModalOpen(true);
+              setNotificationsOpen(false);
+            }}
+            className={`relative p-2 rounded-full border transition cursor-pointer ${
+              unreadMessagesCount > 0
+                ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                : 'bg-slate-100 border-slate-200 text-slate-700'
+            }`}
+            title="المراسلات والمحادثات الداخلية"
+          >
+            <MessageSquare className="w-4 h-4" />
+            {unreadMessagesCount > 0 && (
+              <span className="absolute -top-1 -end-1 min-w-[16px] h-[16px] px-1 bg-indigo-600 text-white rounded-full text-[9px] font-black flex items-center justify-center">
+                {unreadMessagesCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setNotificationsOpen(!notificationsOpen)}
+            className={`relative p-2 rounded-full border transition cursor-pointer ${
+              unreadNotificationsCount > 0
+                ? 'bg-rose-50 border-rose-200 text-rose-700'
+                : 'bg-slate-100 border-slate-200 text-slate-700'
+            }`}
+            title="التنبيهات والإشعارات"
+          >
+            <Bell className="w-4 h-4" />
+            {unreadNotificationsCount > 0 && (
+              <span className="absolute -top-1 -end-1 min-w-[16px] h-[16px] px-1 bg-rose-600 text-white rounded-full text-[9px] font-black flex items-center justify-center animate-pulse">
+                {unreadNotificationsCount}
+              </span>
+            )}
+          </button>
+        </div>
+      </header>
 
       {/* Mobile Backdrop */}
       {mobileMenuOpen && (
@@ -258,7 +321,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
 
       {/* Left Sidebar */}
       <aside
-        className={`no-print fixed top-0 left-0 bottom-0 z-40 w-72 bg-white border-r border-slate-200/80 shadow-xl lg:shadow-xs flex flex-col justify-between transition-transform duration-200 ${
+        className={`no-print fixed top-0 left-0 bottom-0 z-50 lg:z-40 w-[82vw] max-w-72 lg:w-72 bg-white border-r border-slate-200/80 shadow-xl lg:shadow-xs flex flex-col justify-between transition-transform duration-200 ${
           mobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
         }`}
       >
@@ -324,157 +387,6 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                     </span>
                   )}
                 </button>
-
-                {notificationsOpen && (
-                  <div className="fixed left-4 top-16 w-80 sm:w-96 bg-white rounded-3xl shadow-2xl border border-slate-200 py-3 z-50 animate-in fade-in zoom-in-95 duration-150">
-                    <div className="px-4 pb-2 border-b border-slate-100 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Bell className="w-4 h-4 text-rose-600" />
-                        <h4 className="font-black text-xs text-slate-900">
-                          إشعارات المواعيد وخامات التشغيل
-                        </h4>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                          {appNotifications.length} إشعار
-                        </span>
-                        <button
-                          type="button"
-                          onClick={clearSnoozedNotifications}
-                          title="استعادة كل التنبيهات المؤجلة"
-                          className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition cursor-pointer"
-                        >
-                          ↺ استعادة ({snoozedNotificationsCount})
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="max-h-80 overflow-y-auto divide-y divide-slate-100 p-2 space-y-1">
-                      {appNotifications.length > 0 ? (
-                        appNotifications.map((notif) => {
-                          const isCritical = notif.urgency === 'critical';
-                          const isOverdue = notif.urgency === 'overdue';
-                          const isToday = notif.urgency === 'today';
-
-                          return (
-                            <div
-                              key={notif.id}
-                              onClick={() => {
-                                markNotificationRead(notif.id);
-                                const assemblyStages = [
-                                  'finishing',
-                                  'ironing',
-                                  'packaging',
-                                  'dest',
-                                  'materials'
-                                ];
-                                setCurrentTab(
-                                  assemblyStages.includes(notif.stage)
-                                    ? 'assembly_packaging'
-                                    : 'production_control'
-                                );
-                                if (notif.kind === 'material') {
-                                  // Deep-link into the packaging-materials screen even if the
-                                  // assembly view is not mounted yet.
-                                  try {
-                                    localStorage.setItem(
-                                      'erp_packaging_materials_focus',
-                                      String(Date.now())
-                                    );
-                                  } catch {}
-                                  window.setTimeout(() => {
-                                    window.dispatchEvent(
-                                      new CustomEvent('erp:open-packaging-materials')
-                                    );
-                                  }, 60);
-                                }
-                                setNotificationsOpen(false);
-                              }}
-                              className={`p-3 rounded-2xl transition cursor-pointer text-xs flex flex-col gap-1 border ${
-                                isCritical
-                                  ? 'bg-purple-50/80 border-purple-300 text-purple-950 hover:bg-purple-100'
-                                  : isOverdue
-                                  ? 'bg-rose-50/80 border-rose-300 text-rose-950 hover:bg-rose-100'
-                                  : isToday
-                                  ? 'bg-amber-50/80 border-amber-300 text-amber-950 hover:bg-amber-100'
-                                  : 'bg-blue-50/60 border-blue-200 text-blue-950 hover:bg-blue-100'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between gap-1">
-                                <span
-                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-black text-[10px] ${
-                                    isCritical
-                                      ? 'bg-purple-700 text-white animate-pulse'
-                                      : isOverdue
-                                      ? 'bg-rose-600 text-white animate-pulse'
-                                      : isToday
-                                      ? 'bg-amber-500 text-slate-900'
-                                      : 'bg-blue-600 text-white'
-                                  }`}
-                                >
-                                  {isCritical && <AlertCircle className="w-3 h-3" />}
-                                  {isOverdue && <AlertCircle className="w-3 h-3" />}
-                                  {isToday && <Clock className="w-3 h-3" />}
-                                  {!isCritical && !isOverdue && !isToday && (
-                                    <Calendar className="w-3 h-3" />
-                                  )}
-                                  <span>{notif.title}</span>
-                                </span>
-                                <span className="text-[10px] text-slate-400 font-mono">
-                                  {notif.kind === 'material'
-                                    ? `خامة: ${notif.model_code}`
-                                    : `موديل ${notif.model_code}`}
-                                </span>
-                              </div>
-                              <p className="font-bold text-slate-800 text-[11px] leading-relaxed">
-                                {notif.message}
-                              </p>
-                              <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1">
-                                <span>
-                                  {notif.kind === 'material'
-                                    ? `المورد: ${notif.source_name}`
-                                    : `الموقع: ${notif.source_name}`}
-                                </span>
-                                <span className="font-mono font-bold">
-                                  {notif.kind === 'material'
-                                    ? `آخر تحديث: ${notif.expected_date}`
-                                    : `تاريخ الاستلام: ${notif.expected_date}`}
-                                </span>
-                              </div>
-                              <div className="flex flex-wrap items-center gap-1 pt-1.5 mt-1 border-t border-white/70">
-                                <span className="text-[9px] font-black text-slate-500">تأجيل مؤقت:</span>
-                                {SNOOZE_OPTIONS.map((opt) => (
-                                  <button
-                                    key={opt.hours}
-                                    type="button"
-                                    title={`إخفاء التنبيه لمدة ${opt.label}`}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      snoozeNotification(notif.id, opt.hours);
-                                    }}
-                                    className="px-1.5 py-0.5 rounded-md bg-white/90 border border-slate-200 text-[9px] font-bold text-slate-700 hover:bg-slate-900 hover:text-white transition cursor-pointer"
-                                  >
-                                    ⏰ {opt.label}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div className="py-8 text-center text-slate-400">
-                          <CheckCircle2 className="w-8 h-8 mx-auto mb-1 text-emerald-500" />
-                          <p className="font-bold text-xs text-slate-700">لا توجد تنبيهات متأخرة أو عاجلة حالياً</p>
-                          {snoozedNotificationsCount > 0 && (
-                            <p className="mt-1 text-[10px] font-bold text-amber-600">
-                              {snoozedNotificationsCount} تنبيه مؤجل — اضغط «↺ استعادة» لإظهاره.
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
             </div>
           </div>
@@ -633,14 +545,171 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
         )}
       </aside>
 
+      {/* Notifications Popover (rendered outside <aside> so it never clips when mobile drawer is closed) */}
+      {notificationsOpen && (
+        <>
+          <div
+            onClick={() => setNotificationsOpen(false)}
+            className="no-print fixed inset-0 z-40"
+          />
+          <div className="no-print fixed inset-x-3 sm:inset-x-auto sm:left-4 top-16 sm:w-96 max-w-[calc(100vw-1.5rem)] max-h-[80vh] flex flex-col bg-white rounded-3xl shadow-2xl border border-slate-200 py-3 z-50 animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-4 pb-2 border-b border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2 min-w-0">
+                <Bell className="w-4 h-4 text-rose-600 shrink-0" />
+                <h4 className="font-black text-xs text-slate-900 truncate">
+                  إشعارات المواعيد وخامات التشغيل
+                </h4>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                  {appNotifications.length} إشعار
+                </span>
+                <button
+                  type="button"
+                  onClick={clearSnoozedNotifications}
+                  title="استعادة كل التنبيهات المؤجلة"
+                  className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition cursor-pointer"
+                >
+                  ↺ استعادة ({snoozedNotificationsCount})
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-y-auto divide-y divide-slate-100 p-2 space-y-1 flex-1">
+              {appNotifications.length > 0 ? (
+                appNotifications.map((notif) => {
+                  const isCritical = notif.urgency === 'critical';
+                  const isOverdue = notif.urgency === 'overdue';
+                  const isToday = notif.urgency === 'today';
+
+                  return (
+                    <div
+                      key={notif.id}
+                      onClick={() => {
+                        markNotificationRead(notif.id);
+                        const assemblyStages = [
+                          'finishing',
+                          'ironing',
+                          'packaging',
+                          'dest',
+                          'materials'
+                        ];
+                        setCurrentTab(
+                          assemblyStages.includes(notif.stage)
+                            ? 'assembly_packaging'
+                            : 'production_control'
+                        );
+                        if (notif.kind === 'material') {
+                          try {
+                            localStorage.setItem(
+                              'erp_packaging_materials_focus',
+                              String(Date.now())
+                            );
+                          } catch {}
+                          window.setTimeout(() => {
+                            window.dispatchEvent(
+                              new CustomEvent('erp:open-packaging-materials')
+                            );
+                          }, 60);
+                        }
+                        setNotificationsOpen(false);
+                        setMobileMenuOpen(false);
+                      }}
+                      className={`p-3 rounded-2xl transition cursor-pointer text-xs flex flex-col gap-1 border ${
+                        isCritical
+                          ? 'bg-purple-50/80 border-purple-300 text-purple-950 hover:bg-purple-100'
+                          : isOverdue
+                          ? 'bg-rose-50/80 border-rose-300 text-rose-950 hover:bg-rose-100'
+                          : isToday
+                          ? 'bg-amber-50/80 border-amber-300 text-amber-950 hover:bg-amber-100'
+                          : 'bg-blue-50/60 border-blue-200 text-blue-950 hover:bg-blue-100'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1 flex-wrap">
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-black text-[10px] ${
+                            isCritical
+                              ? 'bg-purple-700 text-white animate-pulse'
+                              : isOverdue
+                              ? 'bg-rose-600 text-white animate-pulse'
+                              : isToday
+                              ? 'bg-amber-500 text-slate-900'
+                              : 'bg-blue-600 text-white'
+                          }`}
+                        >
+                          {isCritical && <AlertCircle className="w-3 h-3" />}
+                          {isOverdue && <AlertCircle className="w-3 h-3" />}
+                          {isToday && <Clock className="w-3 h-3" />}
+                          {!isCritical && !isOverdue && !isToday && (
+                            <Calendar className="w-3 h-3" />
+                          )}
+                          <span>{notif.title}</span>
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {notif.kind === 'material'
+                            ? `خامة: ${notif.model_code}`
+                            : `موديل ${notif.model_code}`}
+                        </span>
+                      </div>
+                      <p className="font-bold text-slate-800 text-[11px] leading-relaxed">
+                        {notif.message}
+                      </p>
+                      <div className="flex items-center justify-between gap-1 flex-wrap text-[10px] text-slate-500 pt-1">
+                        <span>
+                          {notif.kind === 'material'
+                            ? `المورد: ${notif.source_name}`
+                            : `الموقع: ${notif.source_name}`}
+                        </span>
+                        <span className="font-mono font-bold">
+                          {notif.kind === 'material'
+                            ? `آخر تحديث: ${notif.expected_date}`
+                            : `تاريخ الاستلام: ${notif.expected_date}`}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1 pt-1.5 mt-1 border-t border-white/70">
+                        <span className="text-[9px] font-black text-slate-500">تأجيل مؤقت:</span>
+                        {SNOOZE_OPTIONS.map((opt) => (
+                          <button
+                            key={opt.hours}
+                            type="button"
+                            title={`إخفاء التنبيه لمدة ${opt.label}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              snoozeNotification(notif.id, opt.hours);
+                            }}
+                            className="px-1.5 py-0.5 rounded-md bg-white/90 border border-slate-200 text-[9px] font-bold text-slate-700 hover:bg-slate-900 hover:text-white transition cursor-pointer"
+                          >
+                            ⏰ {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="py-8 text-center text-slate-400">
+                  <CheckCircle2 className="w-8 h-8 mx-auto mb-1 text-emerald-500" />
+                  <p className="font-bold text-xs text-slate-700">لا توجد تنبيهات متأخرة أو عاجلة حالياً</p>
+                  {snoozedNotificationsCount > 0 && (
+                    <p className="mt-1 text-[10px] font-bold text-amber-600">
+                      {snoozedNotificationsCount} تنبيه مؤجل — اضغط «↺ استعادة» لإظهاره.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
       {/* Coming Soon Modal for Accounting & HR */}
       {comingSoonModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-3 sm:p-4"
           onClick={() => setComingSoonModal(null)}
         >
           <div
-            className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-sm w-full p-6 text-center space-y-4 animate-in fade-in zoom-in-95 duration-150"
+            className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-[95vw] sm:w-full max-w-sm max-h-[90vh] overflow-y-auto p-5 sm:p-6 text-center space-y-4 animate-in fade-in zoom-in-95 duration-150"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center mx-auto text-2xl">

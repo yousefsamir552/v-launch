@@ -825,14 +825,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
       {/* Tab 2: Global Site Settings & General Tools */}
       {activeTab === 'global_settings' && hasGlobalSettingsPerm && (
         <form onSubmit={handleSaveGlobalSettings} className="space-y-6">
-          <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs space-y-6">
+          <div className="bg-white rounded-3xl p-4 sm:p-6 border border-slate-200/80 shadow-xs space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-2xl bg-emerald-600 text-white shadow-xs">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2.5 rounded-2xl bg-emerald-600 text-white shadow-xs shrink-0">
                   <Globe className="w-5 h-5" />
                 </div>
-                <div>
-                  <h3 className="text-lg font-black text-slate-900">
+                <div className="min-w-0">
+                  <h3 className="text-base sm:text-lg font-black text-slate-900">
                     الإعدادات والأدوات العامة (Global Settings & General Tools)
                   </h3>
                   <p className="text-xs text-slate-500">
@@ -844,7 +844,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
               <button
                 type="submit"
                 disabled={logoUploading || (!canEditHeaderSettings() && !canEditMessageTemplates())}
-                className="px-6 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-black text-xs shadow-md shadow-emerald-600/20 transition flex items-center gap-2 cursor-pointer self-start sm:self-auto"
+                className="w-full sm:w-auto justify-center px-6 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-black text-xs shadow-md shadow-emerald-600/20 transition flex items-center gap-2 cursor-pointer shrink-0"
               >
                 <Save className="w-4 h-4" />
                 <span>حفظ وتطبيق الإعدادات العامة</span>
@@ -852,8 +852,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
             </div>
 
             {/* Part A: Header, Logo & Footer Settings (Controlled by edit_header_settings) */}
-            <div className="bg-slate-50/70 rounded-3xl p-5 border border-slate-200/90 space-y-4">
-              <div className="flex items-center justify-between">
+            <div className="bg-slate-50/70 rounded-3xl p-4 sm:p-5 border border-slate-200/90 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
                   <span>🏢 هوية الموقع والهيدر والفوتر (Header, Logo & Footer)</span>
                 </h4>
@@ -866,7 +866,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
+                <div className="min-w-0">
                   <label className="block text-xs font-bold text-slate-700 mb-1.5">
                     اسم الموقع / المصنع (يظهر في القائمة والمطبوعات) *
                   </label>
@@ -881,29 +881,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                   />
                 </div>
 
-                <div>
+                <div className="min-w-0">
                   <label className="block text-xs font-bold text-slate-700 mb-1.5">
                     شعار الموقع (Logo — رابط صورة، رفع ملف، أو رمز)
                   </label>
-                  <div className="flex items-center gap-2">
-                    <div className="w-11 h-11 rounded-xl bg-white border border-slate-300 flex items-center justify-center shrink-0 overflow-hidden shadow-2xs">
-                      {isImageLogo ? (
-                        <img src={siteLogo} alt="Logo Preview" className="w-full h-full object-contain p-1" />
-                      ) : (
-                        <span className="text-xl">{siteLogo || '🏭'}</span>
-                      )}
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <div className="w-11 h-11 rounded-xl bg-white border border-slate-300 flex items-center justify-center shrink-0 overflow-hidden shadow-2xs">
+                        {isImageLogo ? (
+                          <img src={siteLogo} alt="Logo Preview" className="w-full h-full object-contain p-1" />
+                        ) : (
+                          <span className="text-xl">{siteLogo || '🏭'}</span>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        disabled={!canEditHeaderSettings()}
+                        value={siteLogo}
+                        onChange={(e) => setSiteLogo(e.target.value)}
+                        placeholder="رابط الشعار أو رمز (🏭)"
+                        className="flex-1 min-w-0 w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-hidden disabled:opacity-60"
+                      />
                     </div>
-                    <input
-                      type="text"
-                      disabled={!canEditHeaderSettings()}
-                      value={siteLogo}
-                      onChange={(e) => setSiteLogo(e.target.value)}
-                      placeholder="رابط الشعار أو رمز (🏭)"
-                      className="flex-grow px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-hidden disabled:opacity-60"
-                    />
                     {canEditHeaderSettings() && (
                       <label
-                        className={`px-3.5 py-2.5 rounded-xl text-white text-xs font-bold cursor-pointer flex items-center gap-1.5 shrink-0 transition ${
+                        className={`w-full sm:w-auto justify-center px-3.5 py-2.5 rounded-xl text-white text-xs font-bold cursor-pointer flex items-center gap-1.5 shrink-0 transition ${
                           logoUploading ? 'bg-slate-400 cursor-wait' : 'bg-slate-900 hover:bg-slate-800'
                         }`}
                       >
@@ -984,8 +986,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
             </div>
 
             {/* Part C: Message Templates & Default Sewing Print Instructions */}
-            <div className="bg-emerald-50/40 rounded-3xl p-5 border border-emerald-200/90 space-y-5">
-              <div className="flex items-center justify-between">
+            <div className="bg-emerald-50/40 rounded-3xl p-4 sm:p-5 border border-emerald-200/90 space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <h4 className="font-extrabold text-sm text-emerald-950 flex items-center gap-2">
                   <MessageCircle className="w-4 h-4 text-emerald-600" />
                   <span>💬 نصوص الرسائل الجاهزة وتعليمات طباعة المكن الافتراضية</span>
@@ -1082,18 +1084,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
                 </label>
 
                 {canEditMessageTemplates() && (
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                     <input
                       type="text"
                       value={newInternalTemplate}
                       onChange={(e) => setNewInternalTemplate(e.target.value)}
                       placeholder="أضف نص رسالة جاهزة جديدة..."
-                      className="flex-grow px-3.5 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                      className="flex-1 min-w-0 w-full px-3.5 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
                     />
                     <button
                       type="button"
                       onClick={handleAddInternalTemplate}
-                      className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition cursor-pointer shrink-0"
+                      className="w-full sm:w-auto px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition cursor-pointer shrink-0"
                     >
                       + إضافة قالب
                     </button>

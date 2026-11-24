@@ -723,6 +723,25 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
                 )
 
         sorted_months = sorted(months_processed)
+        month_label = '، '.join(sorted_months) if sorted_months else (
+            f'{parsed["rows"][0]["date"].strftime("%Y-%m")}' if parsed['rows'] else 'غير محدد'
+        )
+        set_audit_meta(
+            request,
+            section='الموارد البشرية',
+            action_type='import',
+            target_name=upload.name,
+            details=(
+                f"رفع شيت حضور الموظفين ({upload.name}) لشهر {month_label}: "
+                f"جديد {created_count}، محدّث {updated_count}، أخطاء {len(errors)}"
+            ),
+            changes=[
+                {'field': 'filename', 'label': 'ملف الشيت', 'old': '—', 'new': str(upload.name)},
+                {'field': 'months', 'label': 'الشهر', 'old': '—', 'new': month_label},
+                {'field': 'imported', 'label': 'سجلات مضافة', 'old': '0', 'new': str(created_count)},
+                {'field': 'updated', 'label': 'سجلات محدّثة', 'old': '0', 'new': str(updated_count)},
+            ],
+        )
         return Response({
             'month': sorted_months[0] if sorted_months else (f'{parsed["rows"][0]["date"].strftime("%Y-%m")}' if parsed['rows'] else ''),
             'months': sorted_months,
@@ -847,8 +866,20 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
                 preserve_decisions=preserve,
             )
 
+        month_str = month_start.strftime('%Y-%m')
+        set_audit_meta(
+            request,
+            section='الموارد البشرية',
+            action_type='settings',
+            target_name=f'قواعد حضور شهر {month_str}',
+            details=f"أعاد تطبيق قواعد الحضور لشهر {month_str} على {len(employees)} موظف (تم تحديث {changed} سجل)",
+            changes=[
+                {'field': 'month', 'label': 'الشهر', 'old': '—', 'new': month_str},
+                {'field': 'updated', 'label': 'السجلات المحدّثة', 'old': '0', 'new': str(changed)},
+            ],
+        )
         return Response({
-            'month': month_start.strftime('%Y-%m'),
+            'month': month_str,
             'month_start': month_start.isoformat(),
             'month_end': month_end.isoformat(),
             'employees': len(employees),
@@ -1197,6 +1228,21 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
                 'notes': str(request.data.get('notes') or '').strip(),
             },
         )
+        set_audit_meta(
+            request,
+            section='الموارد البشرية',
+            action_type='status_change',
+            target_name=f'كشف رواتب شهر {month_raw}',
+            details=(
+                f"اعتمد وأغلق كشف مرتبات شهر {month_raw} ({totals_json['employees_count']} موظف، "
+                f"إجمالي الصافي: {totals_json['net_pay']:g})"
+            ),
+            changes=[
+                {'field': 'is_locked', 'label': 'حالة كشف الرواتب', 'old': 'مفتوح', 'new': 'معتمد ومغلق'},
+                {'field': 'employees_count', 'label': 'عدد الموظفين', 'old': '—', 'new': str(totals_json['employees_count'])},
+                {'field': 'net_pay', 'label': 'إجمالي صافي المرتبات', 'old': '—', 'new': f"{totals_json['net_pay']:g}"},
+            ],
+        )
         return Response({
             'is_locked': True,
             'month': month_raw,
@@ -1212,6 +1258,16 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
         if not snap:
             return Response({'detail': f'لا يوجد إغلاق محفوظ لشهر {month_raw}'}, status=status.HTTP_404_NOT_FOUND)
         snap.delete()
+        set_audit_meta(
+            request,
+            section='الموارد البشرية',
+            action_type='status_change',
+            target_name=f'كشف رواتب شهر {month_raw}',
+            details=f"أعاد فتح كشف مرتبات شهر {month_raw} للتعديل",
+            changes=[
+                {'field': 'is_locked', 'label': 'حالة كشف الرواتب', 'old': 'معتمد ومغلق', 'new': 'مفتوح'},
+            ],
+        )
         return Response({'is_locked': False, 'month': month_raw, 'status': 'unlocked'})
 
 

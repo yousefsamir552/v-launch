@@ -439,23 +439,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSnoozedNotifications({});
   }, [setCurrentUser]);
 
-  const logAction = (action: string, details: string) => {
-    // Do not log sudo emergency account actions into visible audit logs (Task 2)
-    if (currentUser?.username?.toLowerCase() === 'sudo' || currentUser?.is_sudo) {
-      return;
-    }
-    const newLog: AuditLog = {
-      id: 'log-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
-      userName: currentUser?.real_name || currentUser?.username || 'مستخدم غير معروف',
-      userId: currentUser?.id,
-      action,
-      details,
-      ip_address: '127.0.0.1',
-      timestamp: new Date().toLocaleString('ar-EG', { hour12: false })
-    };
-    // السجل المركزي أصبح مصدر الحقيقة (Backend Audit Engine)؛ نحتفظ بالتحديث المحلي فقط.
-    setAuditLogs((prev) => [newLog, ...prev.slice(0, 200)]);
-  };
+  const logAction = useCallback(
+    (
+      action: string,
+      details: string,
+      options?: {
+        persist?: boolean;
+        actionType?: 'export' | 'print' | 'custom';
+        targetName?: string;
+      }
+    ) => {
+      // Do not log sudo emergency account actions into visible audit logs (Task 2)
+      if (currentUser?.username?.toLowerCase() === 'sudo' || currentUser?.is_sudo) {
+        return;
+      }
+      const combinedText = `${action} ${details}`;
+      const isPrint =
+        options?.actionType === 'print' || /طباعة|كشف للطباعة|ورقة|print/i.test(combinedText);
+      const isExport =
+        options?.actionType === 'export' ||
+        /تصدير|تحميل قالب|نسخة احتياطية|إكسيل|excel|csv|zip/i.test(combinedText);
+      const shouldPersist = Boolean(options?.persist || isPrint || isExport);
+      const resolvedType: 'export' | 'print' | 'custom' =
+        options?.actionType || (isPrint ? 'print' : isExport ? 'export' : 'custom');
+
+      const tempId = 'log-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5);
+      const newLog: AuditLog = {
+        id: tempId,
+        userName: currentUser?.real_name || currentUser?.username || 'مستخدم غير معروف',
+        userId: currentUser?.id,
+        section: action,
+        actionType: resolvedType,
+        action: resolvedType === 'print' ? 'طباعة مستند' : resolvedType === 'export' ? 'تصدير ملف' : action,
+        targetName: options?.targetName || '',
+        details,
+        ip_address: '',
+        timestamp: new Date().toLocaleString('ar-EG', { hour12: false })
+      };
+      setAuditLogs((prev) => [newLog, ...prev.slice(0, 200)]);
+
+      // حفظ دائم في قاعدة البيانات لعمليات التصدير والطباعة وإجراءات العميل حتى لا تختفي بعد التحديث.
+      if (shouldPersist && localStorage.getItem('factory_erp_auth_token')) {
+        api
+          .logClientAction({
+            section: action || 'عام',
+            action_type: resolvedType,
+            target_name: options?.targetName || '',
+            details
+          })
+          .then((saved) => {
+            if (saved && saved.id) {
+              setAuditLogs((prev) => prev.map((item) => (item.id === tempId ? saved : item)));
+            }
+          })
+          .catch(() => {
+            // لا نُعطل التصدير أو الطباعة إذا تعذر تسجيل الحركة
+          });
+      }
+    },
+    [currentUser]
+  );
 
   const updateGlobalSettings = async (updates: Partial<GlobalSiteSettings>): Promise<boolean> => {
     const previous = { ...globalSettings };

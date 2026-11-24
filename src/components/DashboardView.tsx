@@ -210,8 +210,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
       {/* Smart In-App Delivery Notifications Banner */}
       {appNotifications.length > 0 && (
-        <div className="bg-white rounded-3xl border border-slate-200/90 p-5 shadow-xs overflow-hidden">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+        <div className="bg-white rounded-3xl border border-slate-200/90 p-4 sm:p-5 shadow-xs overflow-hidden">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 mb-4">
             <div className="flex items-center gap-2.5">
               <div className="p-2 bg-rose-100 text-rose-700 rounded-xl">
                 <Bell className="w-5 h-5 animate-bounce" />
@@ -636,7 +636,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
       {/* Recent Models Table */}
       <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
-        <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+        <div className="p-4 sm:p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <Clock className="w-5 h-5 text-slate-700" />
             <h3 className="font-extrabold text-lg text-slate-900">🆕 أحدث الموديلات المسجلة</h3>

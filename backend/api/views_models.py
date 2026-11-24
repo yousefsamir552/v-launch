@@ -354,16 +354,30 @@ class ModelItemViewSet(BasePermViewSet):
                 })
             sync_reserved_quantities()
 
+        total_fab_qty = round(sum(m['fabric_total_quantity'] for m in refunded_models), 2)
+        total_acc_qty = round(sum(m['accessories_total_quantity'] for m in refunded_models), 2)
+        set_audit_meta(
+            request,
+            section='الإعدادات',
+            action_type='transaction',
+            target_name='الموديلات المحذوفة',
+            details=(
+                f"فحص واسترداد أرصدة الموديلات المحذوفة: تم استرداد {len(refunded_models)} موديل "
+                f"(قماش: {total_fab_qty:g}، إكسسوارات: {total_acc_qty:g})"
+            ),
+            changes=[
+                {'field': 'refunded_models', 'label': 'الموديلات المستردة', 'old': '0', 'new': str(len(refunded_models))},
+                {'field': 'fabric_quantity', 'label': 'كمية القماش المستردة', 'old': '0', 'new': f'{total_fab_qty:g}'},
+                {'field': 'accessories_quantity', 'label': 'كمية الإكسسوارات المستردة', 'old': '0', 'new': f'{total_acc_qty:g}'},
+            ],
+        )
+
         return Response({
             'status': 'ok',
             'total_deleted_models': len(deleted_models),
             'total_models_refunded': len(refunded_models),
-            'total_fabric_quantity': round(
-                sum(m['fabric_total_quantity'] for m in refunded_models), 2
-            ),
-            'total_accessories_quantity': round(
-                sum(m['accessories_total_quantity'] for m in refunded_models), 2
-            ),
+            'total_fabric_quantity': total_fab_qty,
+            'total_accessories_quantity': total_acc_qty,
             'refunded_models': refunded_models,
         })
 
@@ -377,18 +391,37 @@ class ModelItemViewSet(BasePermViewSet):
         req_quantities = data.get('reqQuantities') or {}
         acc_quantities = data.get('accQuantities') or {}
 
+        plan_changes = []
         with transaction.atomic():
             for req_id, qty in req_quantities.items():
                 req_obj = resolve_by_id(ModelRequirement, req_id)
                 if req_obj and req_obj.model_id == model.id:
-                    req_obj.planned_quantity = max(0.0, float(qty or 0))
-                    req_obj.save()
+                    old_q = float(req_obj.planned_quantity or 0)
+                    new_q = max(0.0, float(qty or 0))
+                    if old_q != new_q:
+                        req_obj.planned_quantity = new_q
+                        req_obj.save()
+                        plan_changes.append({
+                            'field': f'req_{req_obj.pk}',
+                            'label': f'كمية قماش ({req_obj.part_name or "متطلب"})',
+                            'old': f'{old_q:g}',
+                            'new': f'{new_q:g}',
+                        })
 
             for acc_id, qty in acc_quantities.items():
                 acc_obj = resolve_by_id(ModelAccessory, acc_id)
                 if acc_obj and acc_obj.model_id == model.id and not acc_obj.is_issued:
-                    acc_obj.planned_quantity = max(0.0, float(qty or 0))
-                    acc_obj.save()
+                    old_q = float(acc_obj.planned_quantity or 0)
+                    new_q = max(0.0, float(qty or 0))
+                    if old_q != new_q:
+                        acc_obj.planned_quantity = new_q
+                        acc_obj.save()
+                        plan_changes.append({
+                            'field': f'acc_{acc_obj.pk}',
+                            'label': f'كمية إكسسوار ({acc_obj.accessory_name or acc_obj.accessory_code})',
+                            'old': f'{old_q:g}',
+                            'new': f'{new_q:g}',
+                        })
 
             if 'mainMarkerUrl' in data:
                 model.main_marker_url = data['mainMarkerUrl'] or ''
@@ -413,6 +446,9 @@ class ModelItemViewSet(BasePermViewSet):
 
             # Sync reserved_quantity (deducted from Available for Design only, NOT from actual total stock)
             sync_reserved_quantities()
+
+        if plan_changes:
+            set_audit_meta(request, extra_changes=plan_changes)
 
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
@@ -759,6 +795,25 @@ class ModelItemViewSet(BasePermViewSet):
 
         # مسح كاش الـ prefetch حتى يعكس الرد أحدث حالة صرف للإكسسوارات.
         model._prefetched_objects_cache = {}
+        set_audit_meta(
+            request,
+            section='مخزن الإكسسوارات',
+            action_type='transaction',
+            target_name=model.model_code,
+            details=(
+                f"صرف وتسليم {len(issued_list)} صنف إكسسوار للموديل {model.model_code}"
+                + (f" — المستلم: {issued_to}" if issued_to else "")
+            ),
+            changes=[
+                {
+                    'field': f"issue_acc_{item['accessory_id']}",
+                    'label': f"{item['accessory_name']} ({item['accessory_code']})",
+                    'old': 'محجوز',
+                    'new': f"تم صرف {item['issued_quantity']:g} {item['unit']}",
+                }
+                for item in issued_list
+            ],
+        )
         return Response({
             'message': 'تم صرف وتسليم الإكسسوارات وتحديث رصيد المخزن بنجاح.',
             'model': ModelItemSerializer(model, context={'request': request}).data,
@@ -973,6 +1028,36 @@ class ModelItemViewSet(BasePermViewSet):
             )
         else:
             message = f'تم إرجاع {quantity:g} {unit} من فائض القص إلى مخزن القماش'
+        ret_changes = [
+            {
+                'field': 'planned_quantity',
+                'label': f'المتبقي بالموديل ({color_code or color_name})',
+                'old': f'{planned:g} {unit}',
+                'new': f'{new_planned:g} {unit}',
+            },
+        ]
+        if quantity > 0:
+            old_wh_qty = round(float(col.quantity or 0.0) - quantity, 2)
+            ret_changes.append({
+                'field': 'warehouse_quantity',
+                'label': f'رصيد المخزن ({color_code or color_name})',
+                'old': f'{old_wh_qty:g} {unit}',
+                'new': f'{float(col.quantity or 0.0):g} {unit}',
+            })
+        if defect_quantity > 0:
+            ret_changes.append({
+                'field': 'defect_quantity',
+                'label': 'عيوب قماش مسجلة',
+                'old': '0',
+                'new': f'{defect_quantity:g} {unit}',
+            })
+        set_audit_meta(
+            request,
+            action_type='transaction',
+            target_name=f'{model.model_code} - {color_code or color_name}',
+            details=f"{message} — الموديل {model.model_code} ({req.part_name})",
+            changes=ret_changes,
+        )
         return Response({
             'message': message,
             'model': ModelItemSerializer(model, context={'request': request}).data,
@@ -1509,6 +1594,26 @@ class ModelItemViewSet(BasePermViewSet):
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        step_labels = {
+            'photo_sent': 'إرسال للتصوير',
+            'photo_received': 'استلام من التصوير',
+            'cards_sent': 'إرسال الكروت للطباعة',
+            'cards_received': 'استلام الكروت',
+        }
+        step_label = step_labels.get(step, step)
+        step_changes = [{'field': step, 'label': step_label, 'old': '—', 'new': str(step_date or 'تم التحديث')}]
+        if sent_qty is not None:
+            step_changes.append({'field': 'sent_qty', 'label': 'الكمية المرسلة', 'old': '—', 'new': str(sent_qty)})
+        if received_qty is not None:
+            step_changes.append({'field': 'received_qty', 'label': 'الكمية المستلمة', 'old': '—', 'new': str(received_qty)})
+        set_audit_meta(
+            request,
+            section='الأسمبلي والأمبالاج',
+            action_type='status_change',
+            target_name=model.model_code,
+            details=f"حدّث خطوة الأمبالاج ({step_label}) للموديل: {model.model_code}",
+            changes=step_changes,
+        )
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
             'packagingRequirement': PackagingRequirementSerializer(requirement).data,

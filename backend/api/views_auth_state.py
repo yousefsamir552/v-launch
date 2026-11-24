@@ -465,18 +465,39 @@ class GlobalSettingsViewSet(viewsets.ViewSet):
             if 'internal_message_templates' in data and isinstance(data['internal_message_templates'], list):
                 obj.internal_message_templates = data['internal_message_templates']
 
+        extra_changes = []
         if 'favorite_accessory_ids' in data and isinstance(data['favorite_accessory_ids'], list):
+            prev_fav = SystemSetting.objects.filter(key='favorite_accessory_ids').first()
+            old_fav_ids = (prev_fav.value or {}).get('ids', []) if prev_fav and isinstance(prev_fav.value, dict) else []
+            new_fav_ids = data['favorite_accessory_ids']
             SystemSetting.objects.update_or_create(
                 key='favorite_accessory_ids',
-                defaults={'value': {'ids': data['favorite_accessory_ids']}}
+                defaults={'value': {'ids': new_fav_ids}}
             )
+            if old_fav_ids != new_fav_ids:
+                extra_changes.append({
+                    'field': 'favorite_accessory_ids',
+                    'label': 'الإكسسوارات المفضلة السريعة',
+                    'old': f'{len(old_fav_ids)} صنف',
+                    'new': f'{len(new_fav_ids)} صنف',
+                })
 
         # مجموعات الإكسسوارات الجاهزة (تُخزَّن كإعداد نظام بلا Migrations جديدة).
         if 'accessory_groups' in data and isinstance(data['accessory_groups'], list):
+            prev_grp = SystemSetting.objects.filter(key='accessory_groups').first()
+            old_groups = (prev_grp.value or {}).get('groups', []) if prev_grp and isinstance(prev_grp.value, dict) else []
+            new_groups = data['accessory_groups']
             SystemSetting.objects.update_or_create(
                 key='accessory_groups',
-                defaults={'value': {'groups': data['accessory_groups']}}
+                defaults={'value': {'groups': new_groups}}
             )
+            if old_groups != new_groups:
+                extra_changes.append({
+                    'field': 'accessory_groups',
+                    'label': 'مجموعات الإكسسوارات الجاهزة',
+                    'old': f'{len(old_groups)} مجموعة',
+                    'new': f'{len(new_groups)} مجموعة',
+                })
 
         if profile and not (profile.is_sudo or profile.username.lower() == 'sudo'):
             obj.updated_by = profile.real_name or profile.username
@@ -484,13 +505,13 @@ class GlobalSettingsViewSet(viewsets.ViewSet):
             obj.updated_by = str(data['updated_by'])
 
         obj.save()
-        changes = build_field_changes(before, snapshot_instance(obj), model=GlobalSettings)
+        changes = build_field_changes(before, snapshot_instance(obj), model=GlobalSettings) + extra_changes
         log_action(
             request,
             section='الإعدادات',
             action_type='settings',
             target_name='الإعدادات العامة للموقع',
-            details='حدّث إعدادات الموقع العامة وقوالب الرسائل',
+            details='حدّث إعدادات الموقع العامة والأدوات وقوالب الرسائل',
             changes=changes,
             user=profile,
         )
@@ -925,13 +946,27 @@ class UserProfileViewSet(BasePermViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
         cascade = bool(request.data.get('cascade'))
-        deleted_children_count = 0
+        deleted_children_names = []
         if cascade:
             for descendant in collect_created_descendants(user, request):
+                deleted_children_names.append(descendant.real_name or descendant.username)
                 descendant.auth_token = None
                 descendant.delete()
-                deleted_children_count += 1
+        deleted_children_count = len(deleted_children_names)
+        target_label = user.real_name or user.username
         user.delete()
+        if deleted_children_count > 0:
+            set_audit_meta(
+                request,
+                target_name=target_label,
+                details=f"حذف حساب الموظف: {target_label} مع {deleted_children_count} حساب تابع ({'، '.join(deleted_children_names[:5])})",
+                extra_changes=[{
+                    'field': 'cascade_deleted_users',
+                    'label': 'الحسابات التابعة المحذوفة',
+                    'old': '، '.join(deleted_children_names),
+                    'new': 'تم الحذف',
+                }],
+            )
         return Response({
             'status': 'deleted',
             'cascade': cascade,
@@ -971,6 +1006,7 @@ class UserProfileViewSet(BasePermViewSet):
         user.save()
         cascade = bool(request.data.get('cascade'))
         affected_user_ids = []
+        affected_names = []
         if cascade:
             for descendant in collect_created_descendants(user, request):
                 descendant.is_active = user.is_active
@@ -979,6 +1015,21 @@ class UserProfileViewSet(BasePermViewSet):
                     descendant.last_seen = None
                 descendant.save(update_fields=['is_active', 'auth_token', 'last_seen'])
                 affected_user_ids.append(get_ext_id(descendant))
+                affected_names.append(descendant.real_name or descendant.username)
+        status_phrase = 'فعّل حساب' if user.is_active else 'أوقف حساب'
+        target_label = user.real_name or user.username
+        cascade_suffix = f" مع {len(affected_names)} حساب تابع" if affected_names else ''
+        set_audit_meta(
+            request,
+            target_name=target_label,
+            details=f"{status_phrase} الموظف: {target_label}{cascade_suffix}",
+            extra_changes=([{
+                'field': 'cascade_affected_users',
+                'label': 'الحسابات التابعة المتأثرة',
+                'old': 'موقوف' if user.is_active else 'نشط',
+                'new': f"{'نشط' if user.is_active else 'موقوف'} ({'، '.join(affected_names[:5])})",
+            }] if affected_names else None),
+        )
         payload = UserProfileSerializer(user, context={'request': request}).data
         payload['cascade'] = cascade
         payload['affected_user_ids'] = affected_user_ids

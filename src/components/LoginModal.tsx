@@ -7,12 +7,20 @@ interface LoginModalProps {
 }
 
 export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess }) => {
-  const { login } = useApp();
+  const { login, globalSettings } = useApp();
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const siteLogo = globalSettings?.logo || '🏭';
+  const isImageLogo =
+    siteLogo.startsWith('http://') ||
+    siteLogo.startsWith('https://') ||
+    siteLogo.startsWith('data:image/') ||
+    siteLogo.startsWith('/');
+  const siteName = globalSettings?.site_name || 'نظام إدارة المصنع';
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -40,16 +48,24 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess }) => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900/90 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl border border-slate-100 text-center animate-in fade-in zoom-in-95 duration-200">
-        <div className="w-16 h-16 rounded-3xl bg-slate-900 text-white flex items-center justify-center mx-auto mb-4 text-3xl shadow-lg">
-          🏭
+    <div className="min-h-screen w-full overflow-x-hidden bg-slate-900/90 backdrop-blur-md flex items-center justify-center p-3 sm:p-4">
+      <div className="bg-white rounded-3xl p-5 sm:p-8 max-w-md w-full shadow-2xl border border-slate-100 text-center animate-in fade-in zoom-in-95 duration-200">
+        <div className="w-16 h-16 rounded-3xl bg-slate-900 text-white flex items-center justify-center mx-auto mb-4 text-3xl shadow-lg overflow-hidden p-1.5">
+          {isImageLogo ? (
+            <img
+              src={siteLogo}
+              alt={siteName}
+              className="w-full h-full object-contain rounded-2xl bg-white"
+            />
+          ) : (
+            <span>{siteLogo}</span>
+          )}
         </div>
 
-        <h2 className="text-2xl font-black text-slate-900 tracking-tight mb-1">
+        <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight mb-1">
           تسجيل الدخول
         </h2>
-        <p className="text-slate-500 text-xs mb-6">نظام إدارة مصنع الملابس الجاهزة المتكامل</p>
+        <p className="text-slate-500 text-xs mb-6">{siteName}</p>
 
         {error && (
           <div className="mb-4 p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold">

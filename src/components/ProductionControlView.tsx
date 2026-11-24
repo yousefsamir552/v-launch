@@ -47,9 +47,9 @@ export const ProductionControlView: React.FC<ProductionControlViewProps> = ({
             <div className="p-3 bg-indigo-600 text-white rounded-2xl shadow-xs">
               <Activity className="w-6 h-6" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-black text-slate-900">مراقبة وتشغيل الإنتاج (Production Control)</h1>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-lg sm:text-xl font-black text-slate-900">مراقبة وتشغيل الإنتاج (Production Control)</h1>
                 <span className="text-xs font-bold px-2.5 py-0.5 bg-indigo-50 text-indigo-700 rounded-full border border-indigo-200">
                   مطابع • فرز • مكن
                 </span>
@@ -63,13 +63,13 @@ export const ProductionControlView: React.FC<ProductionControlViewProps> = ({
           <button
             type="button"
             onClick={exportPrintDispatchesCsv}
-            className="flex items-center gap-2 px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition cursor-pointer shrink-0"
+            className="w-full sm:w-auto justify-center flex items-center gap-2 px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition cursor-pointer shrink-0"
           >
             <span>📊 تصدير Excel</span>
           </button>
 
           {/* Sub-tab Navigation */}
-          <div className="flex items-center gap-1.5 bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80">
+          <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 w-full sm:w-auto">
             {canViewPrinting && (
               <button
                 type="button"

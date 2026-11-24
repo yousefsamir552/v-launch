@@ -6,7 +6,7 @@ import {
   CheckCircle2, XCircle, UsersRound, LayoutList, History, Printer, BarChart3
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { escapeHtml, renderLogoHtml } from '../../utils/printShared';
+import { escapeHtml, logClientPrintAction, renderLogoHtml } from '../../utils/printShared';
 import { api } from '../../api/client';
 import {
   HRJobTitle, HREmployee, HRAttendanceSettings, HRAttendanceRule,
@@ -314,6 +314,7 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
       </body></html>`);
     win.document.close();
     win.focus();
+    logClientPrintAction('الموارد البشرية', 'طباعة نموذج طلب سلفة فارغ', 'نموذج طلب سلفة');
     win.print();
   };
 
@@ -381,6 +382,11 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
       </body></html>`);
     win.document.close();
     win.focus();
+    logClientPrintAction(
+      'الموارد البشرية',
+      `طباعة تقرير السُلف والمستحقات لشهر ${duePeriod.monthKey}`,
+      `سُلف شهر ${duePeriod.monthKey}`
+    );
     win.print();
   };
 

@@ -34,7 +34,7 @@ import {
 } from 'lucide-react';
 import { DesignModel, Fabric, FabricColor, FabricTransaction, ModelRequirement, Supplier } from '../types';
 import { api } from '../api/client';
-import { isImageLogo } from '../utils/printShared';
+import { isImageLogo, logClientPrintAction } from '../utils/printShared';
 import { AccessoriesWarehouseView } from './AccessoriesWarehouseView';
 import { ProductionWarehouseView } from './ProductionWarehouseView';
 
@@ -1994,8 +1994,8 @@ export const WarehouseView: React.FC = () => {
 
           {/* Modal 1: Add Fabric / Receive Fabric (addModal) */}
           {showAddModal && (
-            <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
+            <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+              <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-lg max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
                 <div className="flex items-center justify-between pb-4 border-b border-slate-100">
                   <h3 className="font-extrabold text-lg text-slate-900">إضافة خامة / استلام قماش</h3>
                   <button
@@ -2138,8 +2138,8 @@ export const WarehouseView: React.FC = () => {
 
           {/* Modal 2: Stock Deduct / Add (transactionModal) */}
           {showTransactionModal && activeColor && (
-            <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
+            <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+              <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-md max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
                 <div className="flex items-center justify-between pb-4 border-b border-slate-100">
                   <h3 className="font-extrabold text-base text-slate-900">
                     تحديث الكمية للون:{' '}
@@ -2231,8 +2231,8 @@ export const WarehouseView: React.FC = () => {
 
           {/* Modal: Edit Fabric Color Details (تعديل كود/اسم/درجة/سعر اللون) */}
           {editingColor && (
-            <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto">
+            <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+              <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-lg max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
                 <div className="flex items-center justify-between pb-4 border-b border-slate-100">
                   <div className="flex items-center gap-2.5">
                     <div className="p-2 rounded-xl bg-blue-50 text-blue-600">
@@ -2380,8 +2380,8 @@ export const WarehouseView: React.FC = () => {
 
           {/* Modal 3: Transaction History Drawer */}
           {showHistoryModal && (
-            <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-3xl w-full p-6 shadow-2xl border border-slate-100 max-h-[85vh] flex flex-col">
+            <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+              <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-3xl p-4 sm:p-6 shadow-2xl border border-slate-100 max-h-[90vh] flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between pb-4 border-b border-slate-100">
                   <div className="flex items-center gap-2">
                     <History className="w-5 h-5 text-blue-600" />
@@ -2395,7 +2395,7 @@ export const WarehouseView: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="overflow-y-auto mt-4 flex-grow">
+                <div className="overflow-auto mt-4 flex-grow">
                   <table className="w-full text-xs text-start">
                     <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
                       <tr>
@@ -2470,8 +2470,8 @@ export const WarehouseView: React.FC = () => {
 
           {/* Modal 4: Reorder Fabric Modal */}
           {reorderModalItem && (
-            <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-amber-300 animate-in fade-in zoom-in-95 duration-150 space-y-4">
+            <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+              <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-lg max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-amber-300 animate-in fade-in zoom-in-95 duration-150 space-y-4">
                 {/* Header */}
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                   <div className="flex items-center gap-2.5">
@@ -2654,9 +2654,9 @@ export const WarehouseView: React.FC = () => {
 
           {/* PRINT INVENTORY REPORT MODAL */}
           {showPrintInventoryModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
-              <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-                <div className="p-6 border-b border-slate-100 flex items-center justify-between no-print bg-slate-50">
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+              <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+                <div className="p-4 sm:p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 no-print bg-slate-50">
                   <div className="flex items-center gap-3">
                     <div className="p-2.5 rounded-2xl bg-blue-600 text-white shadow-xs">
                       <Printer className="w-5 h-5" />
@@ -2673,7 +2673,10 @@ export const WarehouseView: React.FC = () => {
 
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => window.print()}
+                      onClick={() => {
+                        logClientPrintAction('مخزن القماش', 'طباعة تقرير جرد مخزن الأقمشة والخامات', 'جرد مخزن القماش');
+                        window.print();
+                      }}
                       className="px-5 py-2.5 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md shadow-blue-500/20 transition flex items-center gap-1.5 cursor-pointer"
                     >
                       <Printer className="w-4 h-4" />

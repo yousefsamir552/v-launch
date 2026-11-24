@@ -21,7 +21,7 @@ import {
   getPartLabel
 } from '../types';
 import { printManualCountSheet } from '../utils/printManualCountSheet';
-import { isImageLogo } from '../utils/printShared';
+import { isImageLogo, logClientPrintAction } from '../utils/printShared';
 import { stageBeyond } from '../utils/completedModels';
 import { ZoomableImage } from './ZoomableImage';
 import {
@@ -404,7 +404,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
           <span>← العودة لقائمة الفرز</span>
         </button>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {modelQCRecords.length > 0 && (
             <button
               type="button"
@@ -443,7 +443,14 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
             <span>🖐️ ورقة جرد يدوي (فارغة)</span>
           </button>
           <button
-            onClick={() => window.print()}
+            onClick={() => {
+              logClientPrintAction(
+                'العد والجودة',
+                `طباعة ورقة جرد الفرز (${printStageLabel}) للموديل ${model.model_code}`,
+                model.model_code
+              );
+              window.print();
+            }}
             className="flex items-center gap-2 px-5 py-2 rounded-full bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition cursor-pointer"
           >
             <Printer className="w-4 h-4" />
@@ -453,9 +460,9 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
       </div>
 
       {/* Model Info Header Card */}
-      <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-        <div className="flex items-center gap-6">
-          <div className="w-28 h-28 rounded-2xl overflow-hidden bg-slate-100 shrink-0 border border-slate-200">
+      <div className="bg-white rounded-3xl p-4 sm:p-6 border border-slate-200/80 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4 sm:gap-6">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6 min-w-0 w-full md:w-auto">
+          <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden bg-slate-100 shrink-0 border border-slate-200">
             <ZoomableImage
               src={model.image}
               alt={model.model_code}
@@ -464,8 +471,8 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
             />
           </div>
 
-          <div className="flex-grow">
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight mb-1">
+          <div className="flex-grow min-w-0">
+            <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight mb-1 break-words">
               مصفوفة فرز موديل:{' '}
               <span className="text-purple-700">{model.model_code}</span>
             </h1>
@@ -492,7 +499,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
         </div>
 
         {/* Stage Selector Tabs */}
-        <div className="no-print flex bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
+        <div className="no-print flex flex-wrap gap-1 w-full md:w-auto bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
           {(
             [
               ['before_print', 'العد قبل الطباعة'],

@@ -15,6 +15,7 @@ import {
   History,
 } from 'lucide-react';
 import { api } from '../api/client';
+import { useApp } from '../context/AppContext';
 import { exportCsv, datedFileName } from '../utils/exportExcel';
 import { COMPLETED_MODEL_MARKER, isCompletedModelAudit } from '../utils/completedModels';
 import type { AuditLog, AuditLogFiltersMeta, AuditLogListResponse } from '../types';
@@ -34,6 +35,8 @@ const ACTION_TYPE_STYLES: Record<string, string> = {
   transaction: 'bg-sky-50 text-sky-700 border-sky-200',
   settings: 'bg-violet-50 text-violet-700 border-violet-200',
   import: 'bg-teal-50 text-teal-700 border-teal-200',
+  export: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  print: 'bg-blue-50 text-blue-700 border-blue-200',
   permission: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200',
   login: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   logout: 'bg-slate-100 text-slate-700 border-slate-200',
@@ -79,6 +82,7 @@ const inputClass =
 const labelClass = 'mb-1.5 block text-[11px] font-black text-slate-500';
 
 export const AuditLogsView: React.FC<AuditLogsViewProps> = ({ onBack }) => {
+  const { logAction } = useApp();
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [logs, setLogs] = useState<AuditLog[]>([]);
@@ -213,6 +217,11 @@ export const AuditLogsView: React.FC<AuditLogsViewProps> = ({ onBack }) => {
         log.ip_address || '-'
       ])
     );
+    logAction('سجل المراقبة', `تصدير سجل المراقبة إلى إكسيل (${logs.length} سجل)`, {
+      persist: true,
+      actionType: 'export',
+      targetName: 'سجل المراقبة'
+    });
   };
 
   return (

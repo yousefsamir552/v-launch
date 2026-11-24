@@ -9,7 +9,7 @@
  */
 
 import type { ImageCropRegion } from '../types';
-import { escapeHtml, PRINT_LOGO_CSS, renderLogoHtml, safeHttpUrl, safeImageSrc } from './printShared';
+import { escapeHtml, logClientPrintAction, PRINT_LOGO_CSS, renderLogoHtml, safeHttpUrl, safeImageSrc } from './printShared';
 
 export interface PrintShopOrderOptions {
   siteName?: string;
@@ -156,6 +156,11 @@ const renderSheet = (options: PrintShopOrderOptions): string => {
  * يفتح نافذة طباعة مستقلة لأوردر المطبعة (A4) جاهزة للحفظ كـ PDF.
  */
 export const printPrintShopOrder = (options: PrintShopOrderOptions): void => {
+  logClientPrintAction(
+    'المطابع',
+    `طباعة أوردر مطبعة (${options.shopName || 'مطبعة'}) للموديل ${options.modelCode}`,
+    options.modelCode
+  );
   const title = `أوردر مطبعة - ${options.modelCode}`;
 
   const html = `<!DOCTYPE html>

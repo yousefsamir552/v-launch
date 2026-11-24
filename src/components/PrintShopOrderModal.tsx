@@ -78,8 +78,8 @@ export const PrintShopOrderModal: React.FC<PrintShopOrderModalProps> = ({
 
   return (
     <>
-      <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-        <div className="bg-white rounded-3xl max-w-4xl w-full p-5 shadow-2xl border border-slate-100 flex flex-col max-h-[94vh]">
+      <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+        <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl p-3 sm:p-5 shadow-2xl border border-slate-100 flex flex-col max-h-[90vh] overflow-hidden">
           {/* هيدر النافذة */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-200 gap-3">
             <div className="flex items-center gap-3">

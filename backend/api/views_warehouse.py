@@ -165,6 +165,8 @@ class FabricViewSet(BasePermViewSet):
                 .filter(fabric=fab, color_code__iexact=clean_code)
                 .first()
             )
+            was_existing = existing_color is not None
+            old_qty = round(float(existing_color.quantity or 0), 2) if existing_color else 0.0
             if existing_color:
                 existing_color.quantity = round(float(existing_color.quantity or 0) + qty, 2)
                 if can_edit_price and data.get('pricePerUnit') not in (None, ''):
@@ -201,6 +203,34 @@ class FabricViewSet(BasePermViewSet):
                         getattr(fab, 'supplier', None),
                     ),
                 )
+
+        color_label = f"{fab.name} - {color_obj.color_code}" + (f" ({color_obj.color_name})" if color_obj.color_name else "")
+        audit_changes = [
+            {
+                'field': 'quantity',
+                'label': f'الرصيد ({fab.unit})',
+                'old': f'{old_qty:g}',
+                'new': f'{float(color_obj.quantity or 0):g}',
+            }
+        ]
+        if can_edit_price and data.get('pricePerUnit') not in (None, ''):
+            audit_changes.append({
+                'field': 'price_per_unit',
+                'label': 'سعر الوحدة',
+                'old': '—',
+                'new': f'{price_per_unit:g}',
+            })
+        set_audit_meta(
+            request,
+            action_type='transaction' if was_existing else 'create',
+            target_name=color_label,
+            details=(
+                f"أضاف رصيد وارد (+{qty:g} {fab.unit}) للون موجود: {color_label}"
+                if was_existing
+                else f"أضاف قماش/لون جديد: {color_label} (رصيد افتتاحي {qty:g} {fab.unit})"
+            ),
+            changes=audit_changes,
+        )
 
         return Response({
             'fabric': FabricSerializer(fab, context={'request': request}).data,
@@ -290,6 +320,7 @@ class FabricColorViewSet(BasePermViewSet):
         # nor eat into stock reserved for models in Design.
         with transaction.atomic():
             col = FabricColor.objects.select_for_update().select_related('fabric').get(pk=target.pk)
+            old_qty = round(float(col.quantity or 0), 2)
             if op == 'deduct':
                 live_reserved = float(
                     ModelRequirement.objects.filter(
@@ -313,6 +344,7 @@ class FabricColorViewSet(BasePermViewSet):
             else:
                 col.quantity = max(0.0, round(float(col.quantity or 0) - amount, 2))
             col.save()
+            new_qty = round(float(col.quantity or 0), 2)
 
             tr = FabricTransaction.objects.create(
                 client_id=data.get('id') or data.get('client_id'),
@@ -335,6 +367,23 @@ class FabricColorViewSet(BasePermViewSet):
                 'color': FabricColorSerializer(col, context={'request': request}).data,
                 'transaction': FabricTransactionSerializer(tr, context={'request': request}).data,
             }
+        unit_label = getattr(col.fabric, 'unit', 'كيلو') or 'كيلو'
+        fabric_name = getattr(col.fabric, 'name', '') or ''
+        color_label = f"{fabric_name} - {col.color_code}" + (f" ({col.color_name})" if col.color_name else "")
+        op_verb = 'وارد (إضافة رصيد)' if op == 'add' else 'منصرف (خصم رصيد)'
+        sign = '+' if op == 'add' else '-'
+        note_suffix = f" | {tr.notes}" if tr.notes else ''
+        set_audit_meta(
+            request,
+            action_type='transaction',
+            target_name=color_label,
+            details=f"{op_verb} {sign}{amount:g} {unit_label} على {color_label}{note_suffix}",
+            changes=[
+                {'field': 'operation', 'label': 'نوع الحركة', 'old': '—', 'new': op_verb},
+                {'field': 'amount', 'label': f'الكمية ({unit_label})', 'old': '—', 'new': f'{sign}{amount:g}'},
+                {'field': 'quantity', 'label': f'الرصيد ({unit_label})', 'old': f'{old_qty:g}', 'new': f'{new_qty:g}'},
+            ],
+        )
         return Response(payload)
 
 
@@ -568,6 +617,7 @@ class AccessoryViewSet(BasePermViewSet):
         with transaction.atomic():
             acc = Accessory.objects.select_for_update().get(pk=acc.pk)
             current_dec = to_decimal(acc.current_stock, Decimal('0'))
+            old_stock_num = float(current_dec)
             if op == 'deduct' and current_dec < amount_dec:
                 return Response({'detail': 'الرصيد المتاح لا يكفي للصرف'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -578,6 +628,7 @@ class AccessoryViewSet(BasePermViewSet):
             else:
                 acc.current_stock = max(Decimal('0'), current_dec - amount_dec)
             acc.save()
+            new_stock_num = float(acc.current_stock)
 
             tr = AccessoryTransaction.objects.create(
                 client_id=data.get('id') or data.get('client_id'),
@@ -601,6 +652,22 @@ class AccessoryViewSet(BasePermViewSet):
                 'accessory': AccessorySerializer(acc, context={'request': request}).data,
                 'transaction': AccessoryTransactionSerializer(tr, context={'request': request}).data,
             }
+        acc_label = f"{acc.name} ({acc.code})" if acc.code else acc.name
+        unit_label = acc.unit or 'قطعة'
+        op_verb = 'وارد (إضافة رصيد)' if op == 'add' else 'منصرف (خصم رصيد)'
+        sign = '+' if op == 'add' else '-'
+        note_suffix = f" | {tr.notes}" if tr.notes else ''
+        set_audit_meta(
+            request,
+            action_type='transaction',
+            target_name=acc_label,
+            details=f"{op_verb} {sign}{amount:g} {unit_label} على الإكسسوار {acc_label}{note_suffix}",
+            changes=[
+                {'field': 'operation', 'label': 'نوع الحركة', 'old': '—', 'new': op_verb},
+                {'field': 'amount', 'label': f'الكمية ({unit_label})', 'old': '—', 'new': f'{sign}{amount:g}'},
+                {'field': 'current_stock', 'label': f'الرصيد ({unit_label})', 'old': f'{old_stock_num:g}', 'new': f'{new_stock_num:g}'},
+            ],
+        )
         return Response(payload)
 
     @action(detail=False, methods=['get'])

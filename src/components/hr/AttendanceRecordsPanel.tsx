@@ -6,7 +6,7 @@ import {
   CheckCircle2, XCircle, UsersRound, LayoutList, History, Printer, BarChart3
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { escapeHtml, renderLogoHtml } from '../../utils/printShared';
+import { escapeHtml, logClientPrintAction, renderLogoHtml } from '../../utils/printShared';
 import { api } from '../../api/client';
 import {
   HRJobTitle, HREmployee, HRAttendanceSettings, HRAttendanceRule,
@@ -538,6 +538,7 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
       </body></html>`);
     win.document.close();
     win.focus();
+    logClientPrintAction('الموارد البشرية', `طباعة ${title} (${list.length} سجل)`, title);
     win.print();
   };
 

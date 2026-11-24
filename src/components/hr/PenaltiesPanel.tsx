@@ -631,34 +631,36 @@ export const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employee
                           {items.length} جزاء — {daysTotal} يوم — {hoursTotal} ساعة
                         </p>
                       </div>
-                      <table className="w-full text-xs">
-                        <thead className="bg-white text-slate-400">
-                          <tr>
-                            <th className="text-right px-3 py-2 font-black">التاريخ</th>
-                            <th className="text-center px-3 py-2 font-black">النوع</th>
-                            <th className="text-center px-3 py-2 font-black">القيمة</th>
-                            <th className="text-right px-3 py-2 font-black">السبب</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {items.map((penalty) => (
-                            <tr key={penalty.id}>
-                              <td className="px-3 py-2 font-mono font-bold text-slate-600">
-                                {penalty.date}
-                              </td>
-                              <td className="px-3 py-2 text-center font-bold text-slate-600">
-                                {PENALTY_TYPE_LABELS[penalty.penalty_type] || penalty.penalty_type}
-                              </td>
-                              <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
-                                {Number(penalty.value) || 0}
-                              </td>
-                              <td className="px-3 py-2 font-bold text-slate-600">
-                                {penalty.reason || '—'}
-                              </td>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead className="bg-white text-slate-400">
+                            <tr>
+                              <th className="text-right px-3 py-2 font-black">التاريخ</th>
+                              <th className="text-center px-3 py-2 font-black">النوع</th>
+                              <th className="text-center px-3 py-2 font-black">القيمة</th>
+                              <th className="text-right px-3 py-2 font-black">السبب</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {items.map((penalty) => (
+                              <tr key={penalty.id}>
+                                <td className="px-3 py-2 font-mono font-bold text-slate-600">
+                                  {penalty.date}
+                                </td>
+                                <td className="px-3 py-2 text-center font-bold text-slate-600">
+                                  {PENALTY_TYPE_LABELS[penalty.penalty_type] || penalty.penalty_type}
+                                </td>
+                                <td className="px-3 py-2 text-center font-mono font-black text-rose-600">
+                                  {Number(penalty.value) || 0}
+                                </td>
+                                <td className="px-3 py-2 font-bold text-slate-600">
+                                  {penalty.reason || '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   );
                 })}

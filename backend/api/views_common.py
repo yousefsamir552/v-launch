@@ -108,6 +108,7 @@ from .audit_utils import (
     build_field_changes,
     is_sudo_account,
     log_action,
+    set_audit_meta,
     snapshot_instance,
 )
 from .throttles import LoginRateThrottle, ProfileRateThrottle, SyncRateThrottle

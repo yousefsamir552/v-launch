@@ -520,6 +520,25 @@ class QCRecordViewSet(BasePermViewSet):
             model.save()
             recompute_model_part_totals(model)
 
+        stage_label = {
+            'before_print': 'قبل الطباعة',
+            'after_print': 'بعد الطباعة',
+            'after_sewing': 'بعد المكن',
+        }.get(stage, stage)
+        total_good = sum(int(r.counted_pieces or 0) for r in saved_list)
+        total_def = sum(int(r.defect_pieces or 0) for r in saved_list)
+        set_audit_meta(
+            request,
+            action_type='update',
+            target_name=model.model_code,
+            details=f"حفظ مصفوفة الجودة ({stage_label}) للموديل {model.model_code}: {len(saved_list)} خلية (سليم: {total_good}، تالف: {total_def})",
+            changes=[
+                {'field': 'stage', 'label': 'المرحلة', 'old': '—', 'new': stage_label},
+                {'field': 'counted_pieces', 'label': 'إجمالي السليم', 'old': '—', 'new': str(total_good)},
+                {'field': 'defect_pieces', 'label': 'إجمالي التالف', 'old': '—', 'new': str(total_def)},
+            ],
+        )
+
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
             'qcRecords': QCRecordSerializer(saved_list, many=True).data,
@@ -791,6 +810,15 @@ class PrintDispatchViewSet(BasePermViewSet):
                 'operator_name': user_name,
             }
         )
+        set_audit_meta(
+            request,
+            action_type='status_change',
+            target_name=f'{model.model_code} - {label}',
+            details=f"تخطى مرحلة المطابع للقطعة [{label}] بالموديل {model.model_code} وحوّلها لقسم المكن",
+            changes=[
+                {'field': 'stage', 'label': f'مرحلة القطعة ({label})', 'old': 'المطابع', 'new': 'قسم المكن'},
+            ],
+        )
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
 
@@ -970,9 +998,22 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
             request, getattr(request, 'user_profile', None),
             'edit_assembly_prices', 'أسعار خامات التشغيل',
         )
+        old_stock = float(size_rule.current_stock or 0)
         txn = apply_packaging_material_transaction(
             size_rule, operation, data.get('amount'), data.get('notes') or '',
             data.get('timestamp') or '', price_per_unit=price_per_unit,
+        )
+        new_stock = float(size_rule.current_stock or 0)
+        op_label = {'add': 'وارد (إضافة)', 'deduct': 'منصرف (خصم)', 'adjust': 'تعديل رصيد'}.get(operation, operation)
+        set_audit_meta(
+            request,
+            action_type='transaction',
+            target_name=str(size_rule),
+            details=f"سجّل حركة خامات تشغيل ({op_label}) بكمية {data.get('amount')} على {size_rule}",
+            changes=[
+                {'field': 'operation', 'label': 'نوع الحركة', 'old': '—', 'new': op_label},
+                {'field': 'current_stock', 'label': 'الرصيد', 'old': f'{old_stock:g}', 'new': f'{new_stock:g}'},
+            ],
         )
         log_price_change(
             request, 'خامات التشغيل', str(size_rule),
@@ -1011,9 +1052,22 @@ class PackagingMaterialTransactionViewSet(BasePermViewSet):
             request, getattr(request, 'user_profile', None),
             'edit_assembly_prices', 'أسعار خامات التشغيل',
         )
+        old_stock = float(size_rule.current_stock or 0)
         txn = apply_packaging_material_transaction(
             size_rule, operation, data.get('amount'), data.get('notes') or '',
             data.get('timestamp') or '', price_per_unit=price_per_unit,
+        )
+        new_stock = float(size_rule.current_stock or 0)
+        op_label = {'add': 'وارد (إضافة)', 'deduct': 'منصرف (خصم)', 'adjust': 'تعديل رصيد'}.get(operation, operation)
+        set_audit_meta(
+            request,
+            action_type='transaction',
+            target_name=str(size_rule),
+            details=f"سجّل حركة خامات تشغيل ({op_label}) بكمية {data.get('amount')} على {size_rule}",
+            changes=[
+                {'field': 'operation', 'label': 'نوع الحركة', 'old': '—', 'new': op_label},
+                {'field': 'current_stock', 'label': 'الرصيد', 'old': f'{old_stock:g}', 'new': f'{new_stock:g}'},
+            ],
         )
         log_price_change(
             request, 'خامات التشغيل', str(size_rule),
