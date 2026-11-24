@@ -28,6 +28,7 @@ import {
   resolveDefaultGoodQtyForCell,
   findSavedQcCell
 } from '../utils/qcCutDefaults';
+import { qcPartStageCounts } from '../utils/qcStageCounts';
 
 interface QCDetailsViewProps {
   modelId: string;
@@ -48,6 +49,8 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
     getModelSizeList,
     qcRecords,
     cuttingRecords,
+    printDispatches,
+    sewingDispatches,
     normalizePartKey,
     saveQCMatrix,
     recordQCStageCount,
@@ -258,6 +261,16 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
       </div>
     );
   }
+
+  // أرقام القطعة المختارة فقط (من سجلات القص/المطابع/المكن) — شريط مرجعي قبل الجدول.
+  const partCounts = qcPartStageCounts({
+    model,
+    part: selectedPart,
+    qcRecords,
+    printDispatches,
+    sewingDispatches,
+    normalizePartKey
+  });
 
   const handleCellChange = (
     color: string,
@@ -718,6 +731,102 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
             </div>
           </div>
         </div>
+
+        {/* شريط مرجعي موحّد: من أين دخلت قطع هذه القطعة، وما المتوقع، وما سُجّل فعلياً */}
+        {(() => {
+          const stageEntry =
+            selectedStage === 'before_print'
+              ? partCounts.cutPieces
+              : selectedStage === 'after_print'
+              ? partCounts.printReceived + partCounts.embroideryReceived ||
+                partCounts.beforePrintGood ||
+                partCounts.cutPieces
+              : partCounts.sewingReceived ||
+                partCounts.sewingSent ||
+                partCounts.afterPrintGood ||
+                partCounts.cutPieces;
+          const stageDiff = Math.max(0, stageEntry - totalGood);
+          return (
+            <div className="rounded-2xl border border-purple-200 bg-purple-50/60 p-3.5">
+              <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-3 lg:grid-cols-5">
+                <div>
+                  <span className="block text-slate-500">
+                    المقصوص الفعلي ({getPartLabel(selectedPart)}):
+                  </span>
+                  <strong className="text-sm font-black text-slate-900">
+                    {partCounts.cutPieces.toLocaleString('ar-EG')}
+                  </strong>
+                </div>
+
+                {selectedStage === 'before_print' && (
+                  <div>
+                    <span className="block text-slate-500">التالف قبل الطباعة:</span>
+                    <strong className="text-sm font-black text-rose-700">
+                      {partCounts.beforePrintDefect.toLocaleString('ar-EG')}
+                    </strong>
+                  </div>
+                )}
+
+                {selectedStage === 'after_print' && (
+                  <>
+                    <div>
+                      <span className="block text-slate-500">السليم قبل الطباعة:</span>
+                      <strong className="text-sm font-black text-blue-700">
+                        {partCounts.beforePrintGood.toLocaleString('ar-EG')}
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="block text-slate-500">الداخل من الطباعة/التطريز:</span>
+                      <strong className="text-sm font-black text-indigo-700">
+                        {(partCounts.printReceived + partCounts.embroideryReceived).toLocaleString(
+                          'ar-EG'
+                        )}
+                      </strong>
+                      <span className="block text-[10px] text-slate-400">
+                        مرسل: {(partCounts.printSent + partCounts.embroiderySent).toLocaleString(
+                          'ar-EG'
+                        )}
+                        {partCounts.embroiderySent > 0
+                          ? ` • تطريز: ${partCounts.embroideryReceived.toLocaleString('ar-EG')}/${partCounts.embroiderySent.toLocaleString('ar-EG')}`
+                          : ''}
+                      </span>
+                    </div>
+                  </>
+                )}
+
+                {selectedStage === 'after_sewing' && (
+                  <>
+                    <div>
+                      <span className="block text-slate-500">المسلّم للمكن:</span>
+                      <strong className="text-sm font-black text-amber-700">
+                        {partCounts.sewingSent.toLocaleString('ar-EG')}
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="block text-slate-500">الداخل من المكن:</span>
+                      <strong className="text-sm font-black text-emerald-700">
+                        {partCounts.sewingReceived.toLocaleString('ar-EG')}
+                      </strong>
+                    </div>
+                  </>
+                )}
+
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5">
+                  <span className="block font-bold text-emerald-700">المسجل هنا (سليم):</span>
+                  <strong className="text-base font-black text-emerald-900">
+                    {totalGood.toLocaleString('ar-EG')}
+                  </strong>
+                </div>
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5">
+                  <span className="block font-bold text-rose-700">فرق هذه المرحلة:</span>
+                  <strong className="text-base font-black text-rose-900">
+                    {stageDiff.toLocaleString('ar-EG')}
+                  </strong>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         <form onSubmit={handleSaveMatrix} className="space-y-5">
           {/* Auto-fill good cells from cutting spreads */}

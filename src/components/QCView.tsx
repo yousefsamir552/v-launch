@@ -20,6 +20,7 @@ import { isImageLogo } from '../utils/printShared';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel, stageRank, stageBeyond } from '../utils/completedModels';
 import { resolveDefaultGoodQtyForCell, findSavedQcCell } from '../utils/qcCutDefaults';
+import { qcPartStageCounts } from '../utils/qcStageCounts';
 import { ZoomableImage } from './ZoomableImage';
 
 type QCPartCard = { model: Model; part: GarmentPart };
@@ -36,6 +37,8 @@ export const QCView: React.FC = () => {
     models,
     qcRecords,
     cuttingRecords,
+    printDispatches,
+    sewingDispatches,
     normalizePartKey,
     getModelParts,
     getPartStages,
@@ -383,6 +386,18 @@ export const QCView: React.FC = () => {
     0
   );
 
+  // أرقام القطعة المختارة داخل النافذة (من سجلات القص/المطابع/المكن — وليس إجمالي الموديل).
+  const modalCounts = countingModel
+    ? qcPartStageCounts({
+        model: countingModel,
+        part: modalPart,
+        qcRecords,
+        printDispatches,
+        sewingDispatches,
+        normalizePartKey
+      })
+    : null;
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* Top Header */}
@@ -579,26 +594,44 @@ export const QCView: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
         {currentTabCards.length > 0 ? (
           currentTabCards.map(({ model, part }) => {
-            const cutPieces = Number(model.cut_summary?.[part] ?? 0);
-            const targetPieces = model.target_cut_quantity || 0;
-            const beforePrint = model.count_before_print;
-            const afterPrint = model.count_after_print;
+            // كل رقم هنا يخص هذه القطعة وحدها (وليس إجمالي الموديل).
+            const counts = qcPartStageCounts({
+              model,
+              part,
+              qcRecords,
+              printDispatches,
+              sewingDispatches,
+              normalizePartKey
+            });
             const mColors = getModelColorList(model.id, part);
             const mSizes = getModelSizeList(model.id);
-            const stageSavedRecs = qcRecords.filter(
-              (r) =>
-                r.model_id === model.id &&
-                r.stage === activeTab &&
-                (r.part_type || 'shirt') === part
-            );
-            const stageSavedGood = stageSavedRecs.reduce(
-              (s, r) => s + (r.good_qty ?? r.counted_pieces ?? 0),
-              0
-            );
-            const stageSavedDefect = stageSavedRecs.reduce(
-              (s, r) => s + (r.defect_qty ?? r.defect_pieces ?? 0),
-              0
-            );
+
+            const stageGood =
+              activeTab === 'before_print'
+                ? counts.beforePrintGood
+                : activeTab === 'after_print'
+                ? counts.afterPrintGood
+                : counts.afterSewingGood;
+            const stageDefect =
+              activeTab === 'before_print'
+                ? counts.beforePrintDefect
+                : activeTab === 'after_print'
+                ? counts.afterPrintDefect
+                : counts.afterSewingDefect;
+            // العدد الذي دخل هذه المرحلة فعلياً لهذه القطعة.
+            const stageEntry =
+              activeTab === 'before_print'
+                ? counts.cutPieces
+                : activeTab === 'after_print'
+                ? counts.printReceived + counts.embroideryReceived ||
+                  counts.beforePrintGood ||
+                  counts.cutPieces
+                : counts.sewingReceived ||
+                  counts.sewingSent ||
+                  counts.afterPrintGood ||
+                  counts.cutPieces;
+            const stageLoss = Math.max(0, stageEntry - stageGood);
+            const hasStageData = stageGood > 0 || stageDefect > 0;
 
             return (
               <div
@@ -654,44 +687,76 @@ export const QCView: React.FC = () => {
                       </span>
                     </div>
 
-                    {/* Stats summary table */}
+                    {/* Stats summary table — كل الأرقام لهذه القطعة فقط */}
                     <div className="bg-slate-50 rounded-2xl p-3 border border-slate-100 space-y-1.5 text-xs mt-3">
                       <div className="flex justify-between items-center text-slate-600">
-                        <span>العدد المستهدف للقص:</span>
-                        <strong className="text-slate-900">
-                          {targetPieces.toLocaleString('ar-EG')} ق
-                        </strong>
-                      </div>
-                      <div className="flex justify-between items-center text-slate-600">
-                        <span>العدد المقصوص الفعلي:</span>
+                        <span>المقصوص لهذه القطعة:</span>
                         <strong className="text-purple-700 font-extrabold">
-                          {cutPieces.toLocaleString('ar-EG')} ق
+                          {counts.cutPieces.toLocaleString('ar-EG')} ق
                         </strong>
                       </div>
 
-                      {stageSavedRecs.length > 0 && (
-                        <div className="flex justify-between items-center text-emerald-700 pt-1 border-t border-slate-200/70">
-                          <span>مسجل بالجدول حالياً:</span>
+                      {activeTab === 'before_print' && (
+                        <div className="flex justify-between items-center text-slate-600">
+                          <span>المستهدف (الموديل):</span>
+                          <strong className="text-slate-900">
+                            {counts.targetPieces.toLocaleString('ar-EG')} ق
+                          </strong>
+                        </div>
+                      )}
+
+                      {activeTab === 'after_print' && (
+                        <>
+                          <div className="flex justify-between items-center text-slate-600">
+                            <span>السليم قبل الطباعة:</span>
+                            <strong className="text-blue-700 font-bold">
+                              {counts.beforePrintGood.toLocaleString('ar-EG')} ق
+                            </strong>
+                          </div>
+                          <div className="flex justify-between items-center text-slate-600">
+                            <span>الداخل من الطباعة/التطريز:</span>
+                            <strong className="text-indigo-700 font-bold">
+                              {(counts.printReceived + counts.embroideryReceived).toLocaleString('ar-EG')} ق
+                            </strong>
+                          </div>
+                        </>
+                      )}
+
+                      {activeTab === 'after_sewing' && (
+                        <>
+                          <div className="flex justify-between items-center text-slate-600">
+                            <span>المسلّم للمكن:</span>
+                            <strong className="text-amber-700 font-bold">
+                              {counts.sewingSent.toLocaleString('ar-EG')} ق
+                            </strong>
+                          </div>
+                          <div className="flex justify-between items-center text-slate-600">
+                            <span>الداخل من المكن:</span>
+                            <strong className="text-emerald-700 font-bold">
+                              {counts.sewingReceived.toLocaleString('ar-EG')} ق
+                            </strong>
+                          </div>
+                        </>
+                      )}
+
+                      <div className="flex justify-between items-center text-emerald-700 pt-1 border-t border-slate-200/70">
+                        <span>{hasStageData ? 'مسجل بالجدول هنا:' : 'لا يوجد عد مسجّل لهذه القطعة بعد:'}</span>
+                        <strong className="font-black">
+                          {hasStageData
+                            ? `سليم: ${stageGood} | تالف: ${stageDefect}`
+                            : '—'}
+                        </strong>
+                      </div>
+
+                      {hasStageData && (
+                        <div
+                          className={`flex justify-between items-center font-bold ${
+                            stageLoss > 0 ? 'text-rose-600' : 'text-emerald-600'
+                          }`}
+                        >
+                          <span>{stageLoss > 0 ? 'فاقد هذه المرحلة:' : 'مطابق تماماً (لا فاقد):'}</span>
                           <strong className="font-black">
-                            سليم: {stageSavedGood} | تالف: {stageSavedDefect}
-                          </strong>
-                        </div>
-                      )}
-
-                      {activeTab !== 'before_print' && beforePrint !== undefined && (
-                        <div className="flex justify-between items-center text-slate-600">
-                          <span>العدد قبل الطباعة:</span>
-                          <strong className="text-blue-700 font-bold">
-                            {beforePrint.toLocaleString('ar-EG')} ق
-                          </strong>
-                        </div>
-                      )}
-
-                      {activeTab === 'after_sewing' && afterPrint !== undefined && (
-                        <div className="flex justify-between items-center text-slate-600">
-                          <span>العدد بعد الطباعة:</span>
-                          <strong className="text-emerald-700 font-bold">
-                            {afterPrint.toLocaleString('ar-EG')} ق
+                            {stageLoss.toLocaleString('ar-EG')} ق
                           </strong>
                         </div>
                       )}
@@ -864,24 +929,72 @@ export const QCView: React.FC = () => {
               onSubmit={handleApproveAndAdvance}
               className="space-y-4 pt-4 overflow-y-auto flex-grow"
             >
-              {/* Reference Summary Banner */}
-              <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-200/80 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              {/* Reference Summary Banner — أرقام القطعة المختارة فقط */}
+              <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-200/80 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 text-xs">
                 <div>
-                  <span className="text-slate-500 block">المقصوص الفعلي ({getPartLabel(modalPart)}):</span>
+                  <span className="text-slate-500 block">
+                    المقصوص الفعلي ({getPartLabel(modalPart)}):
+                  </span>
                   <strong className="text-slate-900 text-sm font-black">
-                    {Number(
-                      countingModel.cut_summary?.[modalPart] ??
-                        countingModel.total_cut_pieces ??
-                        0
-                    ).toLocaleString('ar-EG')} قطعة
+                    {(modalCounts?.cutPieces || 0).toLocaleString('ar-EG')} قطعة
                   </strong>
                 </div>
-                <div>
-                  <span className="text-slate-500 block">العدد المستهدف:</span>
-                  <strong className="text-slate-800 text-sm font-black">
-                    {(countingModel.target_cut_quantity || 0).toLocaleString('ar-EG')} قطعة
-                  </strong>
-                </div>
+
+                {activeTab === 'before_print' && (
+                  <div>
+                    <span className="text-slate-500 block">المستهدف (الموديل):</span>
+                    <strong className="text-slate-800 text-sm font-black">
+                      {(countingModel.target_cut_quantity || 0).toLocaleString('ar-EG')} قطعة
+                    </strong>
+                  </div>
+                )}
+
+                {activeTab === 'after_print' && (
+                  <>
+                    <div>
+                      <span className="text-slate-500 block">
+                        السليم قبل الطباعة ({getPartLabel(modalPart)}):
+                      </span>
+                      <strong className="text-blue-700 text-sm font-black">
+                        {(modalCounts?.beforePrintGood || 0).toLocaleString('ar-EG')} قطعة
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block">الداخل من الطباعة/التطريز:</span>
+                      <strong className="text-indigo-700 text-sm font-black">
+                        {(
+                          (modalCounts?.printReceived || 0) +
+                          (modalCounts?.embroideryReceived || 0)
+                        ).toLocaleString('ar-EG')}{' '}
+                        قطعة
+                      </strong>
+                      <span className="block text-[10px] text-slate-400">
+                        مرسل: {(
+                          (modalCounts?.printSent || 0) +
+                          (modalCounts?.embroiderySent || 0)
+                        ).toLocaleString('ar-EG')}
+                      </span>
+                    </div>
+                  </>
+                )}
+
+                {activeTab === 'after_sewing' && (
+                  <>
+                    <div>
+                      <span className="text-slate-500 block">المسلّم للمكن:</span>
+                      <strong className="text-amber-700 text-sm font-black">
+                        {(modalCounts?.sewingSent || 0).toLocaleString('ar-EG')} قطعة
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block">الداخل من المكن:</span>
+                      <strong className="text-emerald-700 text-sm font-black">
+                        {(modalCounts?.sewingReceived || 0).toLocaleString('ar-EG')} قطعة
+                      </strong>
+                    </div>
+                  </>
+                )}
+
                 <div className="bg-emerald-50/90 border border-emerald-200 rounded-xl px-3 py-1.5">
                   <span className="text-emerald-700 font-bold block">إجمالي السليم بالجدول:</span>
                   <strong className="text-emerald-900 text-base font-black">
@@ -1073,9 +1186,9 @@ export const QCView: React.FC = () => {
                 </table>
               </div>
 
-              {/* Deficit Calculation Preview against Cut Pieces */}
+              {/* Deficit Calculation Preview against Cut Pieces (لهذه القطعة فقط) */}
               {(() => {
-                const cutCount = countingModel.total_cut_pieces || 0;
+                const cutCount = modalCounts?.cutPieces || 0;
                 const deficit = cutCount - modalTotalGood;
                 return (
                   <div
@@ -1266,8 +1379,8 @@ export const QCView: React.FC = () => {
                     <th className="py-2.5 px-3">القطعة</th>
                     <th className="py-2.5 px-3">نوع الموديل</th>
                     <th className="py-2.5 px-3">المقصدار</th>
-                    <th className="py-2.5 px-3 text-center">العدد المستهدف</th>
-                    <th className="py-2.5 px-3 text-center">العدد المقصوص</th>
+                    <th className="py-2.5 px-3 text-center">الداخل للمرحلة</th>
+                    <th className="py-2.5 px-3 text-center">المقصوص لهذه القطعة</th>
                     <th className="py-2.5 px-3 text-center">العدد السليم</th>
                     <th className="py-2.5 px-3 text-center">التالف</th>
                     <th className="py-2.5 px-3 text-center">العجز / الفاقد</th>
@@ -1276,29 +1389,41 @@ export const QCView: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-slate-200">
                   {currentTabCards.map(({ model, part }, idx) => {
-                    const cut = Number(model.cut_summary?.[part] ?? 0);
-                    const target = model.target_cut_quantity || 0;
-                    const stageRecs = qcRecords.filter(
-                      (r) =>
-                        r.model_id === model.id &&
-                        r.stage === activeTab &&
-                        (r.part_type || 'shirt') === part
-                    );
-                    const stageDefects = stageRecs.reduce(
-                      (s, r) => s + (r.defect_qty ?? r.defect_pieces ?? 0),
-                      0
-                    );
-
-                    let actual = 0;
-                    if (activeTab === 'before_print') {
-                      actual = model.count_before_print ?? 0;
-                    } else if (activeTab === 'after_print') {
-                      actual = model.count_after_print ?? 0;
-                    } else {
-                      actual = model.count_after_sewing ?? 0;
-                    }
-
-                    const deficit = cut - actual;
+                    // أرقام هذه القطعة فقط (وليس إجمالي الموديل) — نفس مصدر بطاقة الفرز.
+                    const counts = qcPartStageCounts({
+                      model,
+                      part,
+                      qcRecords,
+                      printDispatches,
+                      sewingDispatches,
+                      normalizePartKey
+                    });
+                    const cut = counts.cutPieces;
+                    const actual =
+                      activeTab === 'before_print'
+                        ? counts.beforePrintGood
+                        : activeTab === 'after_print'
+                        ? counts.afterPrintGood
+                        : counts.afterSewingGood;
+                    const stageDefects =
+                      activeTab === 'before_print'
+                        ? counts.beforePrintDefect
+                        : activeTab === 'after_print'
+                        ? counts.afterPrintDefect
+                        : counts.afterSewingDefect;
+                    // العدد الذي دخل هذه المرحلة فعلياً لهذه القطعة.
+                    const stageEntry =
+                      activeTab === 'before_print'
+                        ? cut
+                        : activeTab === 'after_print'
+                        ? counts.printReceived + counts.embroideryReceived ||
+                          counts.beforePrintGood ||
+                          cut
+                        : counts.sewingReceived ||
+                          counts.sewingSent ||
+                          counts.afterPrintGood ||
+                          cut;
+                    const deficit = stageEntry - actual;
 
                     return (
                       <tr key={`${model.id}-${part}`} className="hover:bg-slate-50">
@@ -1318,7 +1443,7 @@ export const QCView: React.FC = () => {
                           {model.cutter_name || '-'}
                         </td>
                         <td className="py-2 px-3 text-center text-slate-600">
-                          {target.toLocaleString('ar-EG')}
+                          {stageEntry.toLocaleString('ar-EG')}
                         </td>
                         <td className="py-2 px-3 text-center font-bold text-slate-900">
                           {cut.toLocaleString('ar-EG')}

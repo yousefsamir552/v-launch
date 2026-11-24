@@ -1035,6 +1035,325 @@ def get_production_departments_report(period='today', date_from=None, date_to=No
 # ---------------------------------------------------------------------------
 # تبويب المشاكل والعجز — العجز بين المراحل + الهالك
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# تفصيل الفقد على المراحل الأربع (القص / الطباعة / التطريز / الخياطة)
+# ---------------------------------------------------------------------------
+
+# المراحل التي يفصّلها تقرير العجز. المفاتيح ثابتة في الواجهة أيضاً.
+STAGE_LOSS_LABELS = [
+    ('cutting', 'القص والفرز قبل الطباعة'),
+    ('printing', 'الطباعة'),
+    ('embroidery', 'التطريز'),
+    ('sewing', 'الخياطة (المكن)'),
+]
+STAGE_LOSS_LABEL_MAP = dict(STAGE_LOSS_LABELS)
+STAGE_LOSS_KEYS = [key for key, _label in STAGE_LOSS_LABELS]
+
+# حالات تعني أن الإرسالية استُلمت فعلياً (احتياط للسجلات القديمة بلا كمية مستلمة).
+RECEIVED_DISPATCH_STATUSES = {'تم الاستلام', 'تم الاستلام بالمصنع'}
+
+
+def _part_key(value):
+    """مفتاح القطعة الموحّد من أي مسمّى عربي/إنجليزي مخزَّن."""
+    text = str(value or '').strip()
+    key = PART_KEY_ALIASES.get(text.lower()) or PART_KEY_ALIASES.get(text)
+    return key or text or 'shirt'
+
+
+def _chunked(values, size=400):
+    for index in range(0, len(values), size):
+        yield values[index:index + size]
+
+
+def _part_stage_numbers(
+    *,
+    cut,
+    before_print_good=0,
+    before_print_defect=0,
+    after_print_good=0,
+    after_print_defect=0,
+    after_sewing_good=0,
+    after_sewing_defect=0,
+    print_sent=0,
+    print_received=0,
+    embroidery_sent=0,
+    embroidery_received=0,
+    sewing_sent=0,
+    sewing_received=0,
+):
+    """يحسب مدخل/مخرج/فقد كل مرحلة لقطعة واحدة بالاعتماد على أرقامها وحدها.
+
+    ملاحظة مهمة: ``counted_pieces`` (السليم) لا يشمل التالف، لذلك فقد القص
+    والفرز قبل الطباعة = المقصوص − السليم المسجّل، وهو يتضمّن الهالك بطبيعته.
+    لا نضيف ``before_print_defect`` مرة ثانية حتى لا يتضاعف الهالك.
+    """
+    cut = _to_int(cut)
+    before_print_good = _to_int(before_print_good)
+    before_print_defect = _to_int(before_print_defect)
+    after_print_good = _to_int(after_print_good)
+    after_print_defect = _to_int(after_print_defect)
+    after_sewing_good = _to_int(after_sewing_good)
+    after_sewing_defect = _to_int(after_sewing_defect)
+    print_sent = _to_int(print_sent)
+    print_received = _to_int(print_received)
+    embroidery_sent = _to_int(embroidery_sent)
+    embroidery_received = _to_int(embroidery_received)
+    sewing_sent = _to_int(sewing_sent)
+    sewing_received = _to_int(sewing_received)
+
+    # 1) القص + الفرز قبل الطباعة: المخرج هو السليم المسجّل (أو المقصوص إن لم يُعدّ بعد).
+    has_before_print_qc = before_print_good > 0 or before_print_defect > 0
+    cut_out = before_print_good if has_before_print_qc else cut
+    if cut:
+        cut_out = min(cut, cut_out)
+    cutting_loss = max(0, cut - cut_out)
+
+    # 2) الطباعة و3) التطريز: مخرج كل مرحلة هو السليم المسجّل في العد بعد الطباعة
+    #    (لأن التالف لا يُحتسب سليماً)، وإلا فالكمية المستلمة فعلياً من الورشة.
+    has_after_print_qc = after_print_good > 0 or after_print_defect > 0
+    print_entry = 0
+    print_exit = 0
+    embroidery_entry = 0
+    embroidery_exit = 0
+
+    if print_sent > 0 and embroidery_sent == 0:
+        print_entry = print_sent
+        if has_after_print_qc:
+            print_exit = after_print_good
+        else:
+            print_exit = print_received if print_received > 0 else print_sent
+    elif embroidery_sent > 0 and print_sent == 0:
+        embroidery_entry = embroidery_sent
+        if has_after_print_qc:
+            embroidery_exit = after_print_good
+        else:
+            embroidery_exit = embroidery_received if embroidery_received > 0 else embroidery_sent
+    elif print_sent > 0 and embroidery_sent > 0:
+        # قطعة مرّت على المسارين: نستخدم ما استُلم فعلياً لكل مسار (نادر).
+        print_entry = print_sent
+        print_exit = print_received if print_received > 0 else print_sent
+        embroidery_entry = embroidery_sent
+        embroidery_exit = embroidery_received if embroidery_received > 0 else embroidery_sent
+    else:
+        # لا توجد إرساليات مطابع/تطريز: نعتمد عد ما قبل/بعد الطباعة فقط.
+        print_entry = cut_out
+        print_exit = after_print_good if has_after_print_qc else print_entry
+        if print_entry:
+            print_exit = min(print_entry, print_exit)
+
+    printing_loss = max(0, print_entry - print_exit)
+    embroidery_loss = max(0, embroidery_entry - embroidery_exit)
+
+    # 4) الخياطة (المكن): مخرجها هو السليم المسجّل بعد المكن، وإلا المستلم من الورشة.
+    has_after_sewing_qc = after_sewing_good > 0 or after_sewing_defect > 0
+    fallback_entry = max(print_exit, embroidery_exit, after_print_good or 0) or cut_out
+    sewing_entry = sewing_sent if sewing_sent > 0 else fallback_entry
+    if sewing_sent > 0 or sewing_received > 0:
+        if has_after_sewing_qc:
+            sewing_exit = after_sewing_good
+        else:
+            sewing_exit = sewing_received if sewing_received > 0 else sewing_sent or sewing_entry
+    else:
+        sewing_exit = after_sewing_good if has_after_sewing_qc else sewing_entry
+    if sewing_entry:
+        sewing_exit = min(sewing_entry, sewing_exit)
+    sewing_loss = max(0, sewing_entry - sewing_exit)
+
+    # العدد السليم النهائي = أحدث مرحلة فرز فيها بيانات فعلية (سليم أو تالف).
+    if after_sewing_good > 0 or after_sewing_defect > 0:
+        final_good = after_sewing_good
+    elif after_print_good > 0 or after_print_defect > 0:
+        final_good = after_print_good
+    elif before_print_good > 0 or before_print_defect > 0:
+        final_good = before_print_good
+    elif sewing_sent > 0 or sewing_received > 0:
+        final_good = sewing_exit
+    elif (
+        print_sent > 0 or print_received > 0
+        or embroidery_sent > 0 or embroidery_received > 0
+    ):
+        final_good = max(print_exit, embroidery_exit)
+    else:
+        final_good = cut
+
+    loss_by_stage = {
+        'cutting': cutting_loss,
+        'printing': printing_loss,
+        'embroidery': embroidery_loss,
+        'sewing': sewing_loss,
+    }
+
+    stages = [
+        {'key': 'cutting', 'label': STAGE_LOSS_LABEL_MAP['cutting'],
+         'in_qty': cut, 'out_qty': cut_out, 'loss': cutting_loss},
+        {'key': 'printing', 'label': STAGE_LOSS_LABEL_MAP['printing'],
+         'in_qty': print_entry, 'out_qty': print_exit, 'loss': printing_loss},
+        {'key': 'embroidery', 'label': STAGE_LOSS_LABEL_MAP['embroidery'],
+         'in_qty': embroidery_entry, 'out_qty': embroidery_exit, 'loss': embroidery_loss},
+        {'key': 'sewing', 'label': STAGE_LOSS_LABEL_MAP['sewing'],
+         'in_qty': sewing_entry, 'out_qty': sewing_exit, 'loss': sewing_loss},
+    ]
+
+    return {
+        'cut_pieces': cut,
+        'good_pieces': final_good,
+        'printed_pieces': print_sent + embroidery_sent,
+        'sewn_pieces': sewing_sent,
+        'shortage': max(0, cut - final_good),
+        'qc_before_print': before_print_good,
+        'before_print_defect': before_print_defect,
+        'qc_after_print': after_print_good,
+        'after_print_defect': after_print_defect,
+        'qc_after_sewing': after_sewing_good,
+        'after_sewing_defect': after_sewing_defect,
+        'print_sent': print_sent,
+        'print_received': print_received,
+        'print_loss': printing_loss,
+        'embroidery_sent': embroidery_sent,
+        'embroidery_received': embroidery_received,
+        'embroidery_loss': embroidery_loss,
+        'sewing_sent': sewing_sent,
+        'sewing_received': sewing_received,
+        'sewing_loss': sewing_loss,
+        'stages': stages,
+        'loss_by_stage': loss_by_stage,
+    }
+
+
+def _model_part_cut_pieces(model, part):
+    """المقصوص الفعلي لقطعة واحدة من أعمدة الموديل (بدون خلط بين القطع)."""
+    if part in ('shirt', 'pants', 'jacket'):
+        value = int(getattr(model, f'cut_{part}_pieces', 0) or 0)
+        if value:
+            return value
+    if part == 'single':
+        total = int(model.total_cut_pieces or 0)
+        if total:
+            return total
+    # الموديلات القديمة (بلا garment_parts) تحفظ الإجمالي فقط: ننسبه لأول قطعة
+    # حتى لا يتكرر الإجمالي على كل قطعة ولا يظهر صفراً مضللاً.
+    if not (getattr(model, 'garment_parts', None) or []):
+        parts = _model_parts(model)
+        if parts and parts[0] == part:
+            return int(model.total_cut_pieces or 0)
+    return 0
+
+
+def _bulk_part_stage_numbers(model_ids):
+    """أرقام كل قطعة/مرحلة لكل الموديلات باستعلامات مجمّعة (بدون N+1).
+
+    يعيد ``{model_id: {part: numbers}}`` بنفس شكل ``_part_stage_numbers`` حتى
+    تتطابق أرقام تبويب العجز مع تفصيل الموديل تماماً.
+    """
+    model_ids = [int(model_id) for model_id in model_ids if model_id is not None]
+    result = {}
+    if not model_ids:
+        return result
+
+    cut_map = defaultdict(int)
+    qc_map = defaultdict(dict)
+    print_map = defaultdict(lambda: [0, 0, 0, 0])
+    sewing_map = defaultdict(lambda: [0, 0])
+
+    for chunk in _chunked(model_ids):
+        for row in (
+            CuttingRecord.objects.filter(model_id__in=chunk, is_sub_cut=False)
+            .values('model_id', 'part_type')
+            .annotate(total=Sum('pieces_count'))
+        ):
+            cut_map[(row['model_id'], _part_key(row['part_type']))] += int(row['total'] or 0)
+
+        for row in (
+            QCRecord.objects.filter(model_id__in=chunk)
+            .values('model_id', 'part_type', 'stage')
+            .annotate(good=Sum('counted_pieces'), defect=Sum('defect_pieces'))
+        ):
+            key = (row['model_id'], _part_key(row['part_type']))
+            qc_map[key][row['stage']] = (int(row['good'] or 0), int(row['defect'] or 0))
+
+        for row in (
+            PrintDispatch.objects.filter(model_id__in=chunk)
+            .values('model_id', 'piece_type', 'print_type', 'print_location', 'status')
+            .annotate(sent=Sum('pieces_count'), received=Sum('received_pieces'))
+        ):
+            key = (row['model_id'], _part_key(row['piece_type']))
+            sent = int(row['sent'] or 0)
+            received = int(row['received'] or 0)
+            if not received and str(row['status'] or '') in RECEIVED_DISPATCH_STATUSES:
+                received = sent
+            is_embroidery = (
+                'تطريز' in str(row['print_type'] or '')
+                or 'تطريز' in str(row['print_location'] or '')
+            )
+            bucket = print_map[key]
+            if is_embroidery:
+                bucket[2] += sent
+                bucket[3] += received
+            else:
+                bucket[0] += sent
+                bucket[1] += received
+
+        for row in (
+            SewingDispatch.objects.filter(model_id__in=chunk)
+            .values('model_id', 'piece_type', 'status')
+            .annotate(sent=Sum('pieces_count'), received=Sum('received_pieces'))
+        ):
+            key = (row['model_id'], _part_key(row['piece_type']))
+            sent = int(row['sent'] or 0)
+            received = int(row['received'] or 0)
+            if not received and str(row['status'] or '') in RECEIVED_DISPATCH_STATUSES:
+                received = sent
+            sewing_map[key][0] += sent
+            sewing_map[key][1] += received
+
+    for model_id, part in set(cut_map) | set(qc_map) | set(print_map) | set(sewing_map):
+        stages = qc_map.get((model_id, part), {})
+        before_print_good, before_print_defect = stages.get('before_print', (0, 0))
+        after_print_good, after_print_defect = stages.get('after_print', (0, 0))
+        after_sewing_good, after_sewing_defect = stages.get('after_sewing', (0, 0))
+        print_sent, print_received, embroidery_sent, embroidery_received = print_map.get(
+            (model_id, part), [0, 0, 0, 0]
+        )
+        sewing_sent, sewing_received = sewing_map.get((model_id, part), [0, 0])
+        result.setdefault(model_id, {})[part] = _part_stage_numbers(
+            cut=cut_map.get((model_id, part), 0),
+            before_print_good=before_print_good,
+            before_print_defect=before_print_defect,
+            after_print_good=after_print_good,
+            after_print_defect=after_print_defect,
+            after_sewing_good=after_sewing_good,
+            after_sewing_defect=after_sewing_defect,
+            print_sent=print_sent,
+            print_received=print_received,
+            embroidery_sent=embroidery_sent,
+            embroidery_received=embroidery_received,
+            sewing_sent=sewing_sent,
+            sewing_received=sewing_received,
+        )
+    return result
+
+
+def _combine_part_numbers(items):
+    """يدمج أرقام عدة قطع في رقم واحد (يُستخدم للموديلات أحادية القطعة القديمة)."""
+    def _sum(key):
+        return sum(int(item.get(key, 0) or 0) for item in items)
+
+    return _part_stage_numbers(
+        cut=_sum('cut_pieces'),
+        before_print_good=_sum('qc_before_print'),
+        before_print_defect=_sum('before_print_defect'),
+        after_print_good=_sum('qc_after_print'),
+        after_print_defect=_sum('after_print_defect'),
+        after_sewing_good=_sum('qc_after_sewing'),
+        after_sewing_defect=_sum('after_sewing_defect'),
+        print_sent=_sum('print_sent'),
+        print_received=_sum('print_received'),
+        embroidery_sent=_sum('embroidery_sent'),
+        embroidery_received=_sum('embroidery_received'),
+        sewing_sent=_sum('sewing_sent'),
+        sewing_received=_sum('sewing_received'),
+    )
+
 
 def get_quality_shortage_report(search=None, sort='shortage', date_from=None, date_to=None):
     """تبويب "المشاكل والعجز": المقصوص مقابل العدد الحالي السليم لكل موديل + الهالك."""
@@ -1051,6 +1370,7 @@ def get_quality_shortage_report(search=None, sort='shortage', date_from=None, da
         qs = qs.filter(created_at__date__lte=end)
 
     models = list(qs)
+    numbers_by_model = _bulk_part_stage_numbers([model.id for model in models])
     rows = []
     total_cut = 0
     total_current = 0
@@ -1062,6 +1382,13 @@ def get_quality_shortage_report(search=None, sort='shortage', date_from=None, da
         total_cut += cut
         total_current += current
         stage = _coarse_stage(model.status)
+
+        # فقد هذا الموديل موزّعاً على المراحل (مجموع القطع، وليس إجمالي الموديل).
+        stage_losses = {key: 0 for key in STAGE_LOSS_KEYS}
+        for numbers in numbers_by_model.get(model.id, {}).values():
+            for key in STAGE_LOSS_KEYS:
+                stage_losses[key] += numbers['loss_by_stage'][key]
+
         rows.append({
             'model_id': model.id,
             'client_id': model.client_id or '',
@@ -1077,6 +1404,7 @@ def get_quality_shortage_report(search=None, sort='shortage', date_from=None, da
             'current_pieces': current,
             'shortage': shortage,
             'shortage_percent': shortage_percent,
+            'stage_losses': stage_losses,
         })
 
     if sort == 'code':
@@ -1085,8 +1413,24 @@ def get_quality_shortage_report(search=None, sort='shortage', date_from=None, da
         rows.sort(key=lambda item: item['cut_pieces'], reverse=True)
     elif sort == 'percent':
         rows.sort(key=lambda item: item['shortage_percent'], reverse=True)
+    elif sort == 'loss':
+        rows.sort(key=lambda item: sum(item['stage_losses'].values()), reverse=True)
     else:
         rows.sort(key=lambda item: item['shortage'], reverse=True)
+
+    # إجمالي الفقد لكل مرحلة على مستوى كل الموديلات المعروضة.
+    stage_loss_totals = []
+    for key, label in STAGE_LOSS_LABELS:
+        total_loss = sum(int(row['stage_losses'].get(key, 0) or 0) for row in rows)
+        models_count = sum(1 for row in rows if int(row['stage_losses'].get(key, 0) or 0) > 0)
+        stage_loss_totals.append({
+            'key': key,
+            'label': label,
+            'loss': total_loss,
+            'models_count': models_count,
+        })
+    stage_loss_totals.sort(key=lambda item: item['loss'], reverse=True)
+    loss_by_stage = {item['key']: item['loss'] for item in stage_loss_totals}
 
     stage_defect_labels = dict(QCRecord.STAGE_TYPES)
     defect_rows = (
@@ -1122,8 +1466,10 @@ def get_quality_shortage_report(search=None, sort='shortage', date_from=None, da
             'total_shortage_percent': total_shortage_percent,
             'total_defects': total_defects,
             'worst_stage': worst_stage,
+            'loss_by_stage': loss_by_stage,
         },
         'defects_by_stage': defects_by_stage,
+        'stage_loss_totals': stage_loss_totals,
         'models': rows,
         'sort': sort,
         'search': search or '',
@@ -1132,63 +1478,41 @@ def get_quality_shortage_report(search=None, sort='shortage', date_from=None, da
 
 
 def _model_stage_waterfall(model):
-    """تفصيل مراحل الموديل (مدخل/مخرج/نقص) مع فصل القطع حيث تتوفر أرقام لكل قطعة."""
+    """تفصيل مراحل الموديل (مدخل/مخرج/فقد) لكل قطعة على حدة.
+
+    يعتمد على نفس دالة الحساب المستخدمة في تبويب العجز حتى تتطابق الأرقام تماماً،
+    ويفصل الفقد على أربع مراحل: القص والفرز قبل الطباعة، الطباعة، التطريز، الخياطة.
+    """
     parts = _model_parts(model)
     target = int(model.target_cut_quantity or 0)
-
-    print_by_part = {}
-    for rec in PrintDispatch.objects.filter(model=model):
-        key = PART_KEY_ALIASES.get((rec.piece_type or '').strip().lower()) or rec.piece_type or 'shirt'
-        print_by_part[key] = print_by_part.get(key, 0) + int(rec.pieces_count or 0)
-
-    sewing_by_part = {}
-    for rec in SewingDispatch.objects.filter(model=model):
-        key = PART_KEY_ALIASES.get((rec.piece_type or '').strip().lower()) or rec.piece_type or 'shirt'
-        sewing_by_part[key] = sewing_by_part.get(key, 0) + int(rec.pieces_count or 0)
+    numbers_by_part = _bulk_part_stage_numbers([model.id]).get(model.id, {})
+    # الموديلات أحادية القطعة القديمة قد تخزّن سجلاتها تحت مفاتيح أخرى (مثل shirt):
+    # نجمعها في قطعة واحدة حتى لا يظهر التفصيل أصفاراً.
+    if 'single' in parts and 'single' not in numbers_by_part and numbers_by_part:
+        numbers_by_part['single'] = _combine_part_numbers(list(numbers_by_part.values()))
 
     part_rows = []
     cut_total = 0
     good_total = 0
     sewn_total = 0
+    loss_totals = {key: 0 for key in STAGE_LOSS_KEYS}
+
     for part in parts:
-        cut = int(getattr(model, f'cut_{part}_pieces', 0) or 0)
-        good = int(getattr(model, f'qc_{part}_pieces', 0) or 0)
-        printed = print_by_part.get(part, 0)
-        sewn = sewing_by_part.get(part, 0)
-
-        cut_in = target if len(parts) == 1 else cut
-        cut_out = cut
-        print_in = cut_out
-        print_out = min(print_in, printed) if printed else print_in
-        qc_in = print_out
-        qc_out = min(qc_in, good) if good else qc_in
-        sew_in = qc_out
-        sew_out = min(sew_in, sewn) if sewn else sew_in
-
-        stages = [
-            {'key': 'cutting', 'label': 'القص', 'in_qty': cut_in, 'out_qty': cut_out,
-             'loss': max(0, cut_in - cut_out)},
-            {'key': 'printing', 'label': 'المطابع', 'in_qty': print_in, 'out_qty': print_out,
-             'loss': max(0, print_in - print_out)},
-            {'key': 'qc', 'label': 'الفرز والجودة', 'in_qty': qc_in, 'out_qty': qc_out,
-             'loss': max(0, qc_in - qc_out)},
-            {'key': 'sewing', 'label': 'المكن', 'in_qty': sew_in, 'out_qty': sew_out,
-             'loss': max(0, sew_in - sew_out)},
-        ]
+        numbers = numbers_by_part.get(part)
+        if numbers is None:
+            # لا توجد أي سجلات لهذه القطعة: نعرض مقصوصها فقط بصفر فقد.
+            numbers = _part_stage_numbers(cut=_model_part_cut_pieces(model, part))
 
         part_rows.append({
             'part': part,
             'label': PART_LABELS.get(part, part),
-            'cut_pieces': cut,
-            'good_pieces': good,
-            'printed_pieces': printed,
-            'sewn_pieces': sewn,
-            'shortage': max(0, cut - (good or cut)),
-            'stages': stages,
+            **numbers,
         })
-        cut_total += cut
-        good_total += (good or cut)
-        sewn_total += sewn or good
+        cut_total += numbers['cut_pieces']
+        good_total += numbers['good_pieces']
+        sewn_total += numbers['sewn_pieces']
+        for key in STAGE_LOSS_KEYS:
+            loss_totals[key] += numbers['loss_by_stage'][key]
 
     assembly_in = (
         int(model.count_after_sewing or 0)
@@ -1253,6 +1577,7 @@ def _model_stage_waterfall(model):
             'shortage_percent': (
                 round((max(0, cut_total - good_total) / cut_total) * 100, 1) if cut_total else 0.0
             ),
+            'loss_by_stage': loss_totals,
         },
         'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
     }

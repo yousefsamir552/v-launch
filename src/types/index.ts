@@ -1718,6 +1718,20 @@ export interface ProductionDepartmentsResponse {
   generated_at: string;
 }
 
+/** مفاتيح مراحل الفقد الأربع التي يفصّلها تقرير العجز. */
+export type StageLossKey = 'cutting' | 'printing' | 'embroidery' | 'sewing';
+
+/** مقدار الفقد لكل مرحلة (بالقطع). */
+export type StageLosses = Record<StageLossKey, number>;
+
+/** إجمالي الفقد في مرحلة واحدة على مستوى كل الموديلات المعروضة. */
+export interface StageLossTotal {
+  key: StageLossKey;
+  label: string;
+  loss: number;
+  models_count: number;
+}
+
 /** صف موديل في تبويب "المشاكل والعجز". */
 export interface ShortageReportRow {
   model_id: number;
@@ -1734,6 +1748,8 @@ export interface ShortageReportRow {
   current_pieces: number;
   shortage: number;
   shortage_percent: number;
+  /** فقد هذا الموديل موزّعاً على مراحل الإنتاج (مجموع القطع). */
+  stage_losses: StageLosses;
 }
 
 export interface DefectStageRow {
@@ -1752,8 +1768,12 @@ export interface QualityShortageResponse {
     total_shortage_percent: number;
     total_defects: number;
     worst_stage: DefectStageRow;
+    /** إجمالي الفقد لكل مرحلة على مستوى الموديلات المعروضة. */
+    loss_by_stage?: StageLosses;
   };
   defects_by_stage: DefectStageRow[];
+  /** إجمالي الفقد موزّعاً على مراحل الإنتاج (مرتّب تنازلياً). */
+  stage_loss_totals?: StageLossTotal[];
   models: ShortageReportRow[];
   sort: string;
   search: string;
@@ -1777,6 +1797,27 @@ export interface ModelWaterfallPart {
   printed_pieces: number;
   sewn_pieces: number;
   shortage: number;
+  /** أرقام العد لكل مرحلة لهذه القطعة (سليم/تالف). */
+  qc_before_print: number;
+  before_print_defect: number;
+  qc_after_print: number;
+  after_print_defect: number;
+  qc_after_sewing: number;
+  after_sewing_defect: number;
+  /** أرقام المطابع (بدون التطريز). */
+  print_sent: number;
+  print_received: number;
+  print_loss: number;
+  /** أرقام التطريز. */
+  embroidery_sent: number;
+  embroidery_received: number;
+  embroidery_loss: number;
+  /** أرقام المكن. */
+  sewing_sent: number;
+  sewing_received: number;
+  sewing_loss: number;
+  /** فقد هذه القطعة موزّعاً على المراحل الأربع. */
+  loss_by_stage: StageLosses;
   stages: ModelWaterfallStage[];
 }
 
@@ -1814,6 +1855,8 @@ export interface ModelStageWaterfallResponse {
     good_total: number;
     shortage_total: number;
     shortage_percent: number;
+    /** إجمالي الفقد لكل مرحلة (مجموع القطع). */
+    loss_by_stage: StageLosses;
   };
   generated_at: string;
 }

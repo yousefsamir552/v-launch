@@ -47,7 +47,8 @@ import type {
   ModelsReportResponse,
   ModelStageWaterfallResponse,
   ProductionDepartmentsResponse,
-  QualityShortageResponse
+  QualityShortageResponse,
+  StageLossKey
 } from '../types';
 
 /* ------------------------------------------------------------------ */
@@ -57,7 +58,7 @@ import type {
 type ReportTab = 'models' | 'production' | 'quality' | 'materials' | 'model_consumption';
 type MetricMode = 'models' | 'pieces';
 type PeriodKey = 'today' | 'week' | 'month' | 'custom';
-type SortKey = 'shortage' | 'percent' | 'cut' | 'code';
+type SortKey = 'shortage' | 'percent' | 'cut' | 'code' | 'loss';
 
 const BOYS_COLOR = '#3B82F6';
 const GIRLS_COLOR = '#EC4899';
@@ -86,6 +87,54 @@ const STAGE_FILTER_LABELS: Record<string, string> = {
   dest: 'الدَست',
   completed: 'الإنتاج التام'
 };
+
+/** بيانات عرض مراحل الفقد الأربع في تبويب "المشاكل والعجز". */
+const STAGE_LOSS_META: Array<{
+  key: StageLossKey;
+  label: string;
+  short: string;
+  icon: React.ComponentType<{ className?: string }>;
+  gradient: string;
+  badge: string;
+  ring: string;
+}> = [
+  {
+    key: 'cutting',
+    label: 'القص والفرز قبل الطباعة',
+    short: 'قص وفرز',
+    icon: Scissors,
+    gradient: 'from-rose-500 to-rose-600',
+    badge: 'border-rose-200 bg-rose-50 text-rose-700',
+    ring: 'ring-rose-400/60'
+  },
+  {
+    key: 'printing',
+    label: 'الطباعة',
+    short: 'طباعة',
+    icon: Printer,
+    gradient: 'from-blue-500 to-indigo-600',
+    badge: 'border-blue-200 bg-blue-50 text-blue-700',
+    ring: 'ring-blue-400/60'
+  },
+  {
+    key: 'embroidery',
+    label: 'التطريز',
+    short: 'تطريز',
+    icon: Sparkles,
+    gradient: 'from-amber-500 to-orange-600',
+    badge: 'border-amber-200 bg-amber-50 text-amber-700',
+    ring: 'ring-amber-400/60'
+  },
+  {
+    key: 'sewing',
+    label: 'الخياطة (المكن)',
+    short: 'خياطة',
+    icon: Shirt,
+    gradient: 'from-emerald-500 to-teal-600',
+    badge: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    ring: 'ring-emerald-400/60'
+  }
+];
 
 const TAB_META: Array<{
   key: ReportTab;
@@ -292,6 +341,20 @@ const WaterfallPanel: React.FC<{ data: ModelStageWaterfallResponse }> = ({ data 
         ({pct(data.summary.shortage_percent)})
       </span>
       <span>المستهدف: {fmt(data.model.target_cut_quantity)}</span>
+      {data.summary.loss_by_stage && (
+        <span className="flex flex-wrap items-center gap-1">
+          {STAGE_LOSS_META.filter(
+            (meta) => (data.summary.loss_by_stage?.[meta.key] || 0) > 0
+          ).map((meta) => (
+            <span
+              key={meta.key}
+              className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${meta.badge}`}
+            >
+              {meta.short}: فقد {fmt(data.summary.loss_by_stage?.[meta.key] || 0)}
+            </span>
+          ))}
+        </span>
+      )}
     </div>
 
     <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -303,6 +366,20 @@ const WaterfallPanel: React.FC<{ data: ModelStageWaterfallResponse }> = ({ data 
               مقصوص {fmt(part.cut_pieces)} • سليم {fmt(part.good_pieces)}
             </span>
           </div>
+          {part.loss_by_stage && (
+            <div className="mb-2 flex flex-wrap gap-1">
+              {STAGE_LOSS_META.filter(
+                (meta) => (part.loss_by_stage?.[meta.key] || 0) > 0
+              ).map((meta) => (
+                <span
+                  key={meta.key}
+                  className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${meta.badge}`}
+                >
+                  {meta.short}: {fmt(part.loss_by_stage?.[meta.key] || 0)}
+                </span>
+              ))}
+            </div>
+          )}
           <div className="space-y-2">
             {part.stages.map((stage) => {
               const outWidth = stage.in_qty > 0 ? (stage.out_qty / stage.in_qty) * 100 : 0;
@@ -395,6 +472,7 @@ export const ReportsView: React.FC = () => {
   const [qualitySearch, setQualitySearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [qualitySort, setQualitySort] = useState<SortKey>('shortage');
+  const [qualityStageFilter, setQualityStageFilter] = useState<StageLossKey | ''>('');
   const [qualityFrom, setQualityFrom] = useState('');
   const [qualityTo, setQualityTo] = useState('');
   const [qualityReport, setQualityReport] = useState<QualityShortageResponse | null>(null);
@@ -668,9 +746,17 @@ export const ReportsView: React.FC = () => {
 
   const printQualityReport = () => {
     if (!qualityReport) return;
+    const stageSummary = (qualityReport.stage_loss_totals || [])
+      .filter((item) => item.loss > 0)
+      .map((item) => `${escapeHtml(item.label)}: ${fmt(item.loss)}`)
+      .join(' • ');
     const rows = qualityReport.models
-      .map(
-        (row) => `<tr>
+      .map((row) => {
+        const lossText =
+          STAGE_LOSS_META.filter((meta) => (row.stage_losses?.[meta.key] || 0) > 0)
+            .map((meta) => `${meta.short}: ${fmt(row.stage_losses?.[meta.key] || 0)}`)
+            .join(' • ') || '—';
+        return `<tr>
           <td>${escapeHtml(row.model_code)}</td>
           <td>${escapeHtml(row.model_type || '—')}</td>
           <td>${escapeHtml(row.stage_label || '—')}</td>
@@ -678,23 +764,26 @@ export const ReportsView: React.FC = () => {
           <td class="num">${fmt(row.current_pieces)}</td>
           <td class="num">${fmt(row.shortage)}</td>
           <td class="num">${row.shortage_percent}%</td>
-        </tr>`
-      )
+          <td>${escapeHtml(lossText)}</td>
+        </tr>`;
+      })
       .join('');
     openPrintWindow(
       'تقرير المشاكل والعجز',
-      `<table>
+      `<p class="meta" style="margin:0 0 8px">أين ضاعت القطع؟ ${escapeHtml(stageSummary || 'لا يوجد فقد مسجّل')}</p>
+      <table>
         <thead><tr>
           <th>الموديل</th><th>النوع</th><th>المرحلة</th><th>المقصوص</th>
-          <th>السليم الحالي</th><th>العجز</th><th>نسبة العجز</th>
+          <th>السليم الحالي</th><th>العجز</th><th>نسبة العجز</th><th>أين الفقد</th>
         </tr></thead>
-        <tbody>${rows || '<tr><td colspan="7">لا توجد بيانات</td></tr>'}</tbody>
+        <tbody>${rows || '<tr><td colspan="8">لا توجد بيانات</td></tr>'}</tbody>
         <tfoot><tr class="total">
           <td colspan="3">الإجمالي</td>
           <td class="num">${fmt(qualityReport.summary.total_cut_pieces)}</td>
           <td class="num">${fmt(qualityReport.summary.total_current_pieces)}</td>
           <td class="num">${fmt(qualityReport.summary.total_shortage)}</td>
           <td class="num">${pct(qualityReport.summary.total_shortage_percent)}</td>
+          <td></td>
         </tr></tfoot>
       </table>`
     );
@@ -732,6 +821,13 @@ export const ReportsView: React.FC = () => {
     stageFilter;
   const defectRows = qualityReport?.defects_by_stage || [];
   const defectsMax = Math.max(...defectRows.map((item) => item.defects), 1);
+  const stageLossTotals = qualityReport?.stage_loss_totals || [];
+  const stageLossTotalMax = Math.max(...stageLossTotals.map((item) => item.loss), 1);
+  // عند اختيار مرحلة، نعرض فقط الموديلات التي فقدت قطعاً فيها فعلاً.
+  const visibleQualityRows = qualityStageFilter
+    ? qualityRows.filter((row) => (row.stage_losses?.[qualityStageFilter] || 0) > 0)
+    : qualityRows;
+  const activeStageLossMeta = STAGE_LOSS_META.find((meta) => meta.key === qualityStageFilter);
 
   const productionTotals = useMemo(() => {
     const list = productionReport?.departments || [];
@@ -1413,6 +1509,7 @@ export const ReportsView: React.FC = () => {
                       className={inputClass}
                     >
                       <option value="shortage">أكبر عجز</option>
+                      <option value="loss">أكبر فاقد بين المراحل</option>
                       <option value="percent">أعلى نسبة عجز</option>
                       <option value="cut">أكبر كمية مقصوصة</option>
                       <option value="code">كود الموديل</option>
@@ -1492,17 +1589,93 @@ export const ReportsView: React.FC = () => {
                 </SectionCard>
               )}
 
+              {stageLossTotals.length > 0 && (
+              <SectionCard
+                title="أين ضاعت القطع؟"
+                subtitle="فقد كل مرحلة على حدة — اضغط على المرحلة لعرض الموديلات التي فقدت قطعاً فيها فقط"
+              >
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  {STAGE_LOSS_META.map((meta) => {
+                    const item = stageLossTotals.find((entry) => entry.key === meta.key);
+                    const loss = item?.loss || 0;
+                    const active = qualityStageFilter === meta.key;
+                    const Icon = meta.icon;
+                    return (
+                      <button
+                        key={meta.key}
+                        type="button"
+                        onClick={() => setQualityStageFilter(active ? '' : meta.key)}
+                        title={active ? 'إلغاء فلتر هذه المرحلة' : `عرض موديلات ${meta.label} فقط`}
+                        className={`rounded-2xl border p-3 text-right transition ${
+                          active
+                            ? 'border-slate-300 bg-slate-50 ring-2 shadow-sm'
+                            : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
+                        } ${active ? meta.ring : ''}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br text-white ${meta.gradient}`}>
+                            <Icon className="h-4 w-4" />
+                          </span>
+                          {active ? (
+                            <span className="rounded-md bg-slate-900 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                              مفلتر
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="mt-2 text-[11px] font-medium text-slate-500">{meta.label}</p>
+                        <p className={`text-2xl font-black tabular-nums ${loss > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                          {fmt(loss)}
+                        </p>
+                        <p className="text-[11px] text-slate-500">
+                          قطعة • {fmt(item?.models_count || 0)} موديل
+                        </p>
+                        <div className="mt-2">
+                          <ProgressBar
+                            value={(loss / stageLossTotalMax) * 100}
+                            color={loss > 0 ? '#F43F5E' : '#10B981'}
+                          />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                {activeStageLossMeta && (
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                    <span className="font-semibold text-slate-700">
+                      الفلتر الحالي: موديلات فقدت قطعاً في «{activeStageLossMeta.label}» (
+                      {fmt(visibleQualityRows.length)} موديل)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setQualityStageFilter('')}
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-1 font-semibold text-slate-600 hover:bg-slate-100"
+                    >
+                      إلغاء الفلتر ✕
+                    </button>
+                  </div>
+                )}
+              </SectionCard>
+              )}
+
               <SectionCard
                 title="الموديلات والعجز"
-                subtitle="اضغط على أي موديل لعرض تفصيل المراحل والفاقد"
-                action={<span className="text-xs text-slate-500">{fmt(qualityRows.length)} موديل</span>}
+                subtitle={
+                  activeStageLossMeta
+                    ? `موديلات فقدت قطعاً في «${activeStageLossMeta.label}» — اضغط على أي موديل لتفصيل المراحل`
+                    : 'اضغط على أي موديل لعرض تفصيل المراحل والفاقد'
+                }
+                action={<span className="text-xs text-slate-500">{fmt(visibleQualityRows.length)} موديل</span>}
               >
                 {qualityLoading && !qualityReport ? (
                   <LoadingBlock />
-                ) : qualityRows.length === 0 ? (
+                ) : visibleQualityRows.length === 0 ? (
                   <EmptyState
-                    title="لا توجد موديلات مطابقة"
-                    hint="جرّب تغيير البحث أو الفترة الزمنية."
+                    title={qualityStageFilter ? 'لا يوجد موديلات بفقد في هذه المرحلة' : 'لا توجد موديلات مطابقة'}
+                    hint={
+                      qualityStageFilter
+                        ? 'اضغط «إلغاء الفلتر» لعرض كل الموديلات.'
+                        : 'جرّب تغيير البحث أو الفترة الزمنية.'
+                    }
                     icon={<AlertTriangle className="h-5 w-5" />}
                   />
                 ) : (
@@ -1521,7 +1694,7 @@ export const ReportsView: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {qualityRows.map((row) => {
+                        {visibleQualityRows.map((row) => {
                           const expanded = expandedModelId === row.model_id;
                           const waterfall = waterfalls[row.model_id];
                           return (
@@ -1546,6 +1719,20 @@ export const ReportsView: React.FC = () => {
                                   <span className="mt-0.5 block text-[11px] text-slate-400">
                                     {row.composition_label}
                                   </span>
+                                  {row.stage_losses && (
+                                    <span className="mt-1 flex flex-wrap gap-1">
+                                      {STAGE_LOSS_META.filter(
+                                        (meta) => (row.stage_losses?.[meta.key] || 0) > 0
+                                      ).map((meta) => (
+                                        <span
+                                          key={meta.key}
+                                          className={`rounded border px-1 py-0.5 text-[10px] font-semibold ${meta.badge}`}
+                                        >
+                                          {meta.short}: {fmt(row.stage_losses?.[meta.key] || 0)}
+                                        </span>
+                                      ))}
+                                    </span>
+                                  )}
                                 </td>
                                 <td className="py-2 text-center text-xs">{row.model_type || '—'}</td>
                                 <td className="py-2 text-center">
