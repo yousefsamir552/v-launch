@@ -133,9 +133,9 @@ class AuthViewSet(viewsets.ViewSet):
 # the frontend keeps its shape (no crash on `undefined.map`).
 # ---------------------------------------------------------------------------
 STATE_SECTION_KEYS = {
-    'models': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'models': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'accessories'),
     'requirements': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
-    'accessories': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'accessories': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'accessories'),
     'cuttingRecords': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
     'qcRecords': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
     'printDispatches': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),

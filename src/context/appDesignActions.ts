@@ -695,7 +695,6 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
     });
 
     const modelReqs = effectiveReqs.filter((r) => r.model_id === modelId && r.planned_quantity > 0);
-    const modelAccs = effectiveAccs.filter((a) => a.model_id === modelId && a.planned_quantity > 0);
 
     // Check that actual total stock is sufficient for deduction
     const colorDeductMap: Record<string, number> = {};
@@ -733,26 +732,9 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
       })
     );
 
-    const accDeductMap: Record<string, number> = {};
-    for (const mAcc of modelAccs) {
-      if (mAcc.accessory_id) {
-        accDeductMap[mAcc.accessory_id] = Number(
-          ((accDeductMap[mAcc.accessory_id] || 0) + mAcc.planned_quantity).toFixed(2)
-        );
-      }
-    }
-    setAccessoryItems((prev) =>
-      prev.map((it) => {
-        const deductAmt = accDeductMap[it.id];
-        if (!deductAmt) return it;
-        return {
-          ...it,
-          quantity: Math.max(0, Math.round(it.quantity - deductAmt))
-        };
-      })
-    );
+    // الإكسسوارات لا تُخصم هنا؛ تبقى محجوزة حتى يؤكّد أمين مخزن الإكسسوارات الصرف الفعلي.
 
-    // Move model status to 'في القص' (which also automatically releases its design reservation)
+    // Move model status to 'في القص' (which also automatically releases its fabric reservation)
     setModels((prev) =>
       prev.map((m) =>
         m.id === modelId ? { ...m, status: 'في القص', cut_at: new Date().toISOString() } : m
@@ -763,15 +745,15 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
       .issueFabricToCutting(modelId, currentUser?.real_name || 'مسؤول التصميم', extraData)
       .then(async () => {
         await refreshState();
-        logAction('التصميم', `صرف خامات وإكسسوارات الموديل ${targetModel.model_code} من المخزون الفعلي الكلي وتحويله للقص`);
-        addFlashMessage('تم صرف القماش والإكسسوارات من المخزون الفعلي الكلي وتوجيه الموديل للقص بنجاح');
+        logAction('التصميم', `صرف قماش الموديل ${targetModel.model_code} من المخزون الفعلي الكلي وتحويله للقص (الإكسسوارات تبقى محجوزة)`);
+        addFlashMessage('تم صرف القماش من المخزون الفعلي الكلي وتوجيه الموديل للقص بنجاح — الإكسسوارات تبقى محجوزة حتى صرفها من مخزن الإكسسوارات');
       })
       .catch((err) => {
         refreshState();
         addFlashMessage(err.message || 'فشل صرف الخامات في الباك إند', 'danger');
       });
 
-    return { success: true, message: 'تم صرف الخامات والإكسسوارات وتحويل الموديل للقص.' };
+    return { success: true, message: 'تم صرف القماش وتحويل الموديل للقص (الإكسسوارات تبقى محجوزة حتى صرفها).' };
   };
 
   const returnFabricFromCutting = async (

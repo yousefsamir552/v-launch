@@ -32,6 +32,7 @@ import {
 import { SewingPrintModal } from './SewingPrintModal';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { stageBeyond } from '../utils/completedModels';
+import { printAccessoryIssueOrder } from '../utils/printAccessoryIssueOrder';
 
 // Per-part card styling (kept independent so every part has its own colour identity).
 const PART_CARD_STYLES: Record<string, { accentColor: string; badgeColor: string; button: string }> = {
@@ -110,6 +111,35 @@ export const SewingView: React.FC = () => {
   const [extraAccessoryQty, setExtraAccessoryQty] = useState<number>(1);
 
   const allowSewingNotes = canAddSewingNotes();
+
+  /** طباعة إذن صرف إكسسوارات موديل من شاشة المكن (نفس ورقة مخزن الإكسسوارات). */
+  const handlePrintAccessoryPermit = (modelId: string) => {
+    const model = models.find((m) => m.id === modelId);
+    if (!model) return;
+    const modelAccs = accessories.filter((a) => a.model_id === modelId);
+    if (modelAccs.length === 0) return;
+    const firstIssued = modelAccs.find((a) => a.is_issued);
+    printAccessoryIssueOrder({
+      siteName: globalSettings?.site_name,
+      logo: globalSettings?.logo,
+      modelCode: model.model_code,
+      modelType: model.model_type,
+      targetQuantity: model.target_cut_quantity,
+      issuedTo: modelAccs.find((a) => a.issued_to)?.issued_to || '',
+      issuedBy: firstIssued?.issued_by || '',
+      date: firstIssued?.issued_at || undefined,
+      lines: modelAccs.map((a) => ({
+        accessory_name: a.accessory_name,
+        accessory_code: a.accessory_code,
+        target_type: a.target_type,
+        quantity: a.is_issued
+          ? Number(a.issued_quantity ?? a.planned_quantity ?? 0)
+          : Number(a.planned_quantity || 0),
+        unit: a.unit,
+        is_issued: a.is_issued
+      }))
+    });
+  };
 
   /** المتبقي داخل الورشة = الكمية المرسلة − الكمية المستلمة فعلياً. */
   const getRemainingPieces = (dispatch: SewingDispatch) =>
@@ -672,14 +702,25 @@ export const SewingView: React.FC = () => {
                     <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-black ${item.badgeColor}`}>
                       {PART_EMOJI[item.pieceType]} {item.pieceLabel}
                     </span>
-                    <button
-                      onClick={() => setPrintTarget({ modelId: item.model.id, tab: item.pieceType })}
-                      className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition text-xs cursor-pointer flex items-center gap-1"
-                      title="طباعة ورقة التشغيل الفردية لهذه القطعة"
-                    >
-                      <Printer className="w-3.5 h-3.5" />
-                      <span className="text-[10px] font-bold">طباعة الورقة</span>
-                    </button>
+                    <div className="flex items-center gap-1">
+                      {accessories.some((a) => a.model_id === item.model.id) && (
+                        <button
+                          onClick={() => handlePrintAccessoryPermit(item.model.id)}
+                          className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition cursor-pointer"
+                          title="طباعة إذن صرف إكسسوارات الموديل (A4)"
+                        >
+                          <ClipboardList className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setPrintTarget({ modelId: item.model.id, tab: item.pieceType })}
+                        className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition text-xs cursor-pointer flex items-center gap-1"
+                        title="طباعة ورقة التشغيل الفردية لهذه القطعة"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span className="text-[10px] font-bold">طباعة الورقة</span>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Thumbnail and Info */}

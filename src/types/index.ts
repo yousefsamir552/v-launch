@@ -524,6 +524,12 @@ export interface ModelAccessory {
   image?: string;
   /** سعر الوحدة التاريخي — يُعاد null لمن لا يملك صلاحية عرض أسعار الإكسسوارات. */
   unit_price_snapshot?: number | null;
+  /** حالة الصرف الفعلي من مخزن الإكسسوارات (يبقى محجوزاً حتى is_issued = true). */
+  is_issued?: boolean;
+  issued_quantity?: number;
+  issued_to?: string;
+  issued_at?: string;
+  issued_by?: string;
 }
 
 export interface CuttingSpreadLayer {

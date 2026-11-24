@@ -417,6 +417,15 @@ export interface AppContextType {
   }) => { success: boolean; message: string };
   exportAccessoryInventoryCsv: () => void;
   markAccessoryWithdrawn: (accessoryId: string) => void;
+  issueModelAccessories: (
+    modelId: string,
+    data?: {
+      issuedTo?: string;
+      notes?: string;
+      accessoryIds?: string[];
+      quantities?: Record<string, number>;
+    }
+  ) => Promise<{ success: boolean; message: string }>;
 
   // Design Actions
   addDesignModel: (data: {

@@ -155,6 +155,12 @@ class ModelAccessory(models.Model):
     image = models.TextField(blank=True, null=True, verbose_name="صورة الإكسسوار")
     # سعر الوحدة التاريخي وقت الصرف للموديل (لحساب التكلفة الفعلية لاحقاً).
     unit_price_snapshot = models.DecimalField(max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر الوحدة وقت العملية")
+    # دورة صرف الإكسسوار: يبقى محجوزاً حتى يؤكّد أمين مخزن الإكسسوارات الصرف الفعلي.
+    is_issued = models.BooleanField(default=False, verbose_name="تم صرف الإكسسوار فعلياً")
+    issued_quantity = models.FloatField(default=0.0, verbose_name="الكمية المصروفة فعلياً")
+    issued_to = models.CharField(max_length=150, blank=True, default='', verbose_name="اسم المستلم")
+    issued_at = models.CharField(max_length=100, blank=True, default='', verbose_name="تاريخ ووقت الصرف")
+    issued_by = models.CharField(max_length=150, blank=True, default='', verbose_name="أمين المخزن المنفذ للصرف")
 
     def save(self, *args, **kwargs):
         guard_image_field(self, 'image', 'صورة الإكسسوار')

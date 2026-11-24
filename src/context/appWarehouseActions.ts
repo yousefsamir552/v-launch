@@ -678,6 +678,42 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
 
   // Design Actions
 
+  const issueModelAccessories = async (
+    modelId: string,
+    data: {
+      issuedTo?: string;
+      notes?: string;
+      accessoryIds?: string[];
+      quantities?: Record<string, number>;
+    } = {}
+  ): Promise<{ success: boolean; message: string }> => {
+    const targetModel = models.find((m) => m.id === modelId);
+    try {
+      const res = await api.issueAccessories(modelId, {
+        issued_to: data.issuedTo || '',
+        notes: data.notes || '',
+        accessory_ids: data.accessoryIds || [],
+        quantities: data.quantities || {},
+        user_name: currentUser?.real_name || ''
+      });
+      await refreshState();
+      const modelCode = targetModel?.model_code || res?.model?.model_code || '';
+      const count = Array.isArray(res?.issued_accessories) ? res.issued_accessories.length : 0;
+      logAction(
+        'مخزن الإكسسوارات',
+        `صرف وتسليم إكسسوارات الموديل ${modelCode} من مخزن الإكسسوارات (${count} صنف)`
+      );
+      const message = res?.message || 'تم صرف وتسليم الإكسسوارات بنجاح';
+      addFlashMessage(message);
+      return { success: true, message };
+    } catch (err: any) {
+      refreshState();
+      const message = err?.message || 'فشل صرف الإكسسوارات في الباك إند';
+      addFlashMessage(message, 'danger');
+      return { success: false, message };
+    }
+  };
+
   return {
     addFabricOrColor,
     recordTransaction,
@@ -690,6 +726,7 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
     deleteAccessoryItem,
     markAccessoryWithdrawn,
     recordAccessoryTransaction,
-    exportAccessoryInventoryCsv
+    exportAccessoryInventoryCsv,
+    issueModelAccessories
   };
 };

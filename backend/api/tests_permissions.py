@@ -31,6 +31,7 @@ from .serializers import (
     ModelItemSerializer, HREmployeeSerializer,
 )
 from .services import dispatch_model_to_sewing_service
+from .services_pipeline import sync_reserved_quantities
 from .hr_reports import HRReportsViewSet
 from .views import (
     AuthViewSet, StateViewSet, InternalMessageViewSet, ModelItemViewSet,
@@ -295,14 +296,79 @@ class SupplierLinkAutoFallbackTests(PermissionTestBase):
         self.assertEqual(fabric_tr.supplier_id, self.supplier.id)
         self.assertEqual(float(fabric_tr.unit_price_snapshot), 25.5)
 
+        # دورة الإكسسوار الجديدة: صرف القماش للقص لا يخصم الإكسسوار من الرصيد الفعلي.
+        self.assertFalse(
+            AccessoryTransaction.objects.filter(
+                model_code_ref=self.model.model_code,
+            ).exists()
+        )
+        self.accessory.refresh_from_db()
+        self.assertEqual(self.accessory.current_stock, 500)
+
+        self.model.refresh_from_db()
+        self.assertEqual(self.model.status, 'في القص')
+
+    def test_issue_accessories_deducts_stock_and_links_supplier_and_price(self):
+        model_accessory = ModelAccessory.objects.create(
+            model=self.model,
+            accessory_id_ref=self.accessory.client_id,
+            accessory_name=self.accessory.name,
+            target_type='shirt',
+            planned_quantity=3,
+        )
+
+        request = self._post_request({
+            'user_name': 'أمين المخزن',
+            'issued_to': 'مسؤول المكن',
+            'quantities': {model_accessory.client_id: 3},
+        })
+        response = self._call_action(
+            ModelItemViewSet(), 'issue_accessories', request,
+            pk=str(self.model.pk),
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
         acc_tr = AccessoryTransaction.objects.filter(
             model_code_ref=self.model.model_code,
         ).latest('id')
         self.assertEqual(acc_tr.supplier_id, self.supplier.id)
         self.assertEqual(float(acc_tr.unit_price_snapshot), 1.25)
+        self.assertEqual(float(acc_tr.amount), 3)
 
-        self.model.refresh_from_db()
-        self.assertEqual(self.model.status, 'في القص')
+        self.accessory.refresh_from_db()
+        self.assertEqual(self.accessory.current_stock, 497)
+
+        model_accessory.refresh_from_db()
+        self.assertTrue(model_accessory.is_issued)
+        self.assertEqual(model_accessory.issued_quantity, 3)
+        self.assertEqual(model_accessory.issued_to, 'مسؤول المكن')
+        self.assertEqual(model_accessory.issued_by, 'أمين المخزن')
+
+    def test_issue_accessories_rejects_insufficient_stock_without_changes(self):
+        model_accessory = ModelAccessory.objects.create(
+            model=self.model,
+            accessory_id_ref=self.accessory.client_id,
+            accessory_name=self.accessory.name,
+            target_type='shirt',
+            planned_quantity=600,
+        )
+
+        request = self._post_request({'user_name': 'أمين المخزن'})
+        response = self._call_action(
+            ModelItemViewSet(), 'issue_accessories', request,
+            pk=str(self.model.pk),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.accessory.refresh_from_db()
+        self.assertEqual(self.accessory.current_stock, 500)
+        model_accessory.refresh_from_db()
+        self.assertFalse(model_accessory.is_issued)
+        self.assertFalse(
+            AccessoryTransaction.objects.filter(
+                model_code_ref=self.model.model_code,
+            ).exists()
+        )
 
 
 class DepartmentPriceIsolationTests(PermissionTestBase):
@@ -903,3 +969,62 @@ class HRReportsSalaryMaskingTests(PermissionTestBase):
         self.assertEqual(dept_row['net'], 5030.0)
 
 
+
+
+
+class AccessoryReservationLifecycleTests(PermissionTestBase):
+    """الإكسسوار يبقى محجوزاً بعد صرف القماش للقص حتى الصرف الفعلي من مخزن الإكسسوارات."""
+
+    def setUp(self):
+        super().setUp()
+        self.model_accessory = ModelAccessory.objects.create(
+            model=self.model,
+            accessory_id_ref=self.accessory.client_id,
+            accessory_name=self.accessory.name,
+            target_type='shirt',
+            planned_quantity=4,
+        )
+        sync_reserved_quantities()
+
+    def _call_model_action(self, action_name, data):
+        request = self._request(self.fabric_user, method='post', data=data)
+        view = ModelItemViewSet()
+        view.format_kwarg = None
+        view.request = request
+        view.kwargs = {'pk': str(self.model.pk)}
+        return getattr(view, action_name)(request, pk=str(self.model.pk))
+
+    def test_accessory_stays_reserved_after_fabric_issue(self):
+        self.accessory.refresh_from_db()
+        self.assertEqual(float(self.accessory.reserved_quantity), 4)
+
+        response = self._call_model_action(
+            'issue_fabric_to_cutting', {'user_name': 'مسؤول التصميم'},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.accessory.refresh_from_db()
+        # لا يزال محجوزاً: لم يتم صرفه فعلياً من مخزن الإكسسوارات بعد.
+        self.assertEqual(float(self.accessory.reserved_quantity), 4)
+        self.assertEqual(self.accessory.current_stock, 500)
+
+    def test_accessory_reservation_released_after_actual_issue(self):
+        self._call_model_action('issue_fabric_to_cutting', {'user_name': 'مسؤول التصميم'})
+
+        response = self._call_model_action(
+            'issue_accessories',
+            {
+                'user_name': 'أمين المخزن',
+                'issued_to': 'مشرف المكن',
+                'quantities': {self.model_accessory.client_id: 4},
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.accessory.refresh_from_db()
+        self.assertEqual(float(self.accessory.reserved_quantity), 0)
+        self.assertEqual(self.accessory.current_stock, 496)
+
+        self.model_accessory.refresh_from_db()
+        self.assertTrue(self.model_accessory.is_issued)
+        self.assertEqual(self.model_accessory.issued_quantity, 4)

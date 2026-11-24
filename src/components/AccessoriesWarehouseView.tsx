@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { api } from '../api/client';
 import {
@@ -19,15 +19,29 @@ import {
   Trash2,
   Printer,
   PackageCheck,
-  Pencil
+  Pencil,
+  ClipboardList,
+  CheckCircle2,
+  Layers
 } from 'lucide-react';
-import { AccessoryItem, AccessoryUnit, AccessoryUsageType, Supplier } from '../types';
+import { AccessoryItem, AccessoryUnit, AccessoryUsageType, DesignModel, ModelAccessory, Supplier } from '../types';
 import { isImageLogo } from '../utils/printShared';
+import { printAccessoryIssueOrder } from '../utils/printAccessoryIssueOrder';
+
+type PermitGroup = { model: DesignModel; lines: ModelAccessory[] };
+
+const PERMIT_PART_LABELS: Record<string, string> = {
+  shirt: 'تيشرت',
+  pants: 'بنطلون',
+  jacket: 'جاكيت',
+  single: 'قطعة واحدة'
+};
 
 export const AccessoriesWarehouseView: React.FC = () => {
   const {
     accessoryTypes,
     accessoryItems,
+    accessories,
     suppliers,
     hasPermission,
     canSendWhatsApp,
@@ -35,12 +49,14 @@ export const AccessoriesWarehouseView: React.FC = () => {
     addAccessoryType,
     accessoryTransactions,
     models,
+    currentUser,
     addAccessoryItem,
     updateAccessoryItem,
     deleteAccessoryItem,
     canViewAccessoryPrices,
     canEditAccessoryPrices,
     recordAccessoryTransaction,
+    issueModelAccessories,
     exportAccessoryInventoryCsv,
     exportAccessoryTransactionsCsv,
     markAccessoryWithdrawn,
@@ -72,6 +88,15 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [alertSectionTab, setAlertSectionTab] = useState<'all' | 'stock' | 'custom_model'>('all');
   const [modalAlertTab, setModalAlertTab] = useState<'all' | 'stock' | 'custom_model'>('all');
+
+  // Top-level tabs: inventory grid vs. model accessory issue permits (أذونات الصرف).
+  const [activeTab, setActiveTab] = useState<'inventory' | 'permits'>('inventory');
+  const [permitSearch, setPermitSearch] = useState<string>('');
+  const [permitStatusFilter, setPermitStatusFilter] = useState<'pending' | 'issued'>('pending');
+  const [permitBusy, setPermitBusy] = useState<string | null>(null);
+  const [permitForms, setPermitForms] = useState<
+    Record<string, { issuedTo: string; notes: string; quantities: Record<string, number> }>
+  >({});
 
   // Transaction active item
   const [activeItem, setActiveItem] = useState<AccessoryItem | null>(null);
@@ -210,7 +235,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const totalQuantitySum = accessoryItems.reduce((acc, it) => acc + it.quantity, 0);
 
   // Active (non-deleted) models used for linking model-specific accessories.
-  const activeModels = models.filter((m) => !m.is_deleted);
+  const activeModels = useMemo(() => models.filter((m) => !m.is_deleted), [models]);
 
   // Transaction history rows: filtered by the selected accessory + quick search, newest first.
   const historyTransactions = accessoryTransactions
@@ -238,6 +263,136 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const historyFilterItem = historyItemFilter
     ? accessoryItems.find((item) => item.id === historyItemFilter)
     : null;
+
+  // ---------------------------------------------------------------------------
+  // أذونات صرف إكسسوارات الموديلات (Model Issue Permits)
+  // الإكسسوار يبقى محجوزاً حتى يؤكّد أمين المخزن الصرف الفعلي من هذا التبويب.
+  // ---------------------------------------------------------------------------
+  const permitGroups = useMemo(() => {
+    const pendingByModel: Record<string, PermitGroup> = {};
+    const issuedByModel: Record<string, PermitGroup> = {};
+    const modelById: Record<string, DesignModel> = {};
+    activeModels.forEach((m) => {
+      modelById[m.id] = m;
+    });
+
+    accessories.forEach((acc) => {
+      // البنود غير المرتبطة بصنف بالمخزن لا يمكن صرفها من المخزن.
+      if (!acc.accessory_id) return;
+      const model = modelById[acc.model_id];
+      if (!model) return;
+      const bucket = acc.is_issued ? issuedByModel : pendingByModel;
+      if (!bucket[model.id]) bucket[model.id] = { model, lines: [] };
+      bucket[model.id].lines.push(acc);
+    });
+
+    const q = permitSearch.trim().toLowerCase();
+    const matches = (group: PermitGroup) => {
+      if (!q) return true;
+      if (String(group.model.model_code || '').toLowerCase().includes(q)) return true;
+      return group.lines.some(
+        (line) =>
+          String(line.accessory_name || '').toLowerCase().includes(q) ||
+          String(line.accessory_code || '').toLowerCase().includes(q)
+      );
+    };
+
+    const sortByCode = (a: PermitGroup, b: PermitGroup, desc = false) => {
+      const cmp = String(a.model.model_code || '').localeCompare(String(b.model.model_code || ''));
+      return desc ? -cmp : cmp;
+    };
+
+    return {
+      pending: Object.values(pendingByModel).filter(matches).sort((a, b) => sortByCode(a, b)),
+      issued: Object.values(issuedByModel).filter(matches).sort((a, b) => sortByCode(a, b, true))
+    };
+  }, [accessories, activeModels, permitSearch]);
+
+  const pendingPermitsCount = permitGroups.pending.length;
+
+  const getPermitForm = (modelId: string) =>
+    permitForms[modelId] || { issuedTo: '', notes: '', quantities: {} };
+
+  const setPermitFormField = (
+    modelId: string,
+    field: 'issuedTo' | 'notes',
+    value: string
+  ) => {
+    setPermitForms((prev) => {
+      const current = prev[modelId] || { issuedTo: '', notes: '', quantities: {} };
+      return { ...prev, [modelId]: { ...current, [field]: value } };
+    });
+  };
+
+  const setPermitQuantity = (modelId: string, lineId: string, value: number) => {
+    setPermitForms((prev) => {
+      const current = prev[modelId] || { issuedTo: '', notes: '', quantities: {} };
+      return {
+        ...prev,
+        [modelId]: {
+          ...current,
+          quantities: { ...current.quantities, [lineId]: value }
+        }
+      };
+    });
+  };
+
+  const resolvePermitQuantity = (modelId: string, line: ModelAccessory): number => {
+    const form = getPermitForm(modelId);
+    const raw = form.quantities[line.id];
+    return raw === undefined ? Number(line.planned_quantity || 0) : Number(raw);
+  };
+
+  const handlePrintPermit = (group: PermitGroup, issuedMode: boolean) => {
+    const form = getPermitForm(group.model.id);
+    const firstLine = group.lines[0];
+    printAccessoryIssueOrder({
+      siteName: globalSettings?.site_name,
+      logo: globalSettings?.logo,
+      modelCode: group.model.model_code,
+      modelType: group.model.model_type,
+      targetQuantity: group.model.target_cut_quantity,
+      issuedTo: form.issuedTo || (issuedMode ? firstLine?.issued_to || '' : ''),
+      issuedBy:
+        (issuedMode ? firstLine?.issued_by || '' : '') || currentUser?.real_name || '',
+      date: issuedMode ? firstLine?.issued_at || undefined : undefined,
+      lines: group.lines.map((line) => ({
+        accessory_name: line.accessory_name,
+        accessory_code: line.accessory_code,
+        target_type: line.target_type,
+        quantity: issuedMode
+          ? Number(line.issued_quantity ?? line.planned_quantity ?? 0)
+          : resolvePermitQuantity(group.model.id, line),
+        unit: line.unit
+      })),
+      notes: form.notes
+    });
+  };
+
+  const handleConfirmIssue = async (group: PermitGroup) => {
+    const form = getPermitForm(group.model.id);
+    const quantities: Record<string, number> = {};
+    for (const line of group.lines) {
+      quantities[line.id] = resolvePermitQuantity(group.model.id, line);
+    }
+    setPermitBusy(group.model.id);
+    try {
+      const res = await issueModelAccessories(group.model.id, {
+        issuedTo: form.issuedTo,
+        notes: form.notes,
+        quantities
+      });
+      if (res.success) {
+        setPermitForms((prev) => {
+          const next = { ...prev };
+          delete next[group.model.id];
+          return next;
+        });
+      }
+    } finally {
+      setPermitBusy(null);
+    }
+  };
 
   const handleOpenTransaction = (item: AccessoryItem, op: 'add' | 'deduct' = 'deduct') => {
     setActiveItem(item);
@@ -500,8 +655,60 @@ export const AccessoriesWarehouseView: React.FC = () => {
     }
   };
 
+  const visiblePermitGroups =
+    permitStatusFilter === 'pending' ? permitGroups.pending : permitGroups.issued;
+  const permitIssuedMode = permitStatusFilter === 'issued';
+
   return (
     <div className="space-y-6">
+      {/* Top Tabs: Inventory grid vs. Model Issue Permits (أذونات صرف الموديلات) */}
+      <div className="flex items-center gap-2 bg-white rounded-2xl p-1.5 border border-slate-200/80 shadow-xs w-full sm:w-fit">
+        <button
+          type="button"
+          onClick={() => setActiveTab('inventory')}
+          className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer ${
+            activeTab === 'inventory'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Layers className="w-4 h-4" />
+          <span>جرد المخزن</span>
+          <span
+            className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+              activeTab === 'inventory'
+                ? 'bg-white/20 text-white'
+                : 'bg-slate-200 text-slate-700'
+            }`}
+          >
+            {totalItemsCount}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('permits')}
+          className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer ${
+            activeTab === 'permits'
+              ? 'bg-blue-600 text-white shadow-xs'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <ClipboardList className="w-4 h-4" />
+          <span>أذونات صرف الموديلات</span>
+          <span
+            className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+              activeTab === 'permits'
+                ? 'bg-white/20 text-white'
+                : 'bg-amber-100 text-amber-800'
+            }`}
+          >
+            {pendingPermitsCount}
+          </span>
+        </button>
+      </div>
+
+      {activeTab === 'inventory' && (
+        <>
       {/* Automatic Alert Bar for Low Stock & Deficit Accessories */}
       {lowStockCount > 0 && (
         <section
@@ -954,37 +1161,50 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     )}
                   </div>
 
-                  <div className="p-2.5 rounded-2xl bg-slate-50 border border-slate-100 flex items-center justify-between">
-                    <div>
-                      <span className="text-[10px] text-slate-400 block">الرصيد المتاح:</span>
-                      <strong className={`text-base font-black ${isLow ? 'text-amber-600' : 'text-slate-900'}`}>
-                        {available} {item.unit}
-                      </strong>
+                  <div className="p-2.5 rounded-2xl bg-slate-50 border border-slate-100 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">المتاح للتصميم:</span>
+                        <strong className={`text-base font-black ${isLow ? 'text-amber-600' : 'text-slate-900'}`}>
+                          {available} {item.unit}
+                        </strong>
+                      </div>
+
+                      <div className="text-end">
+                        <span className="text-[10px] text-slate-400 block">
+                          {isCustom ? 'الكمية المستهدفة:' : 'حد التنبيه:'}
+                        </span>
+                        <div className="flex items-center gap-1 justify-end">
+                          <span className="text-xs font-bold text-slate-700">
+                            {isCustom
+                              ? `${item.target_quantity ?? threshold} ${item.unit}`
+                              : isCarryover || threshold <= 0
+                              ? 'ملغي (0)'
+                              : `${threshold} ${item.unit}`}
+                          </span>
+                          {canEdit && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(item)}
+                              className="text-blue-600 hover:text-blue-800 p-0.5 rounded cursor-pointer"
+                              title="تعديل حد التنبيه"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="text-end">
-                      <span className="text-[10px] text-slate-400 block">
-                        {isCustom ? 'الكمية المستهدفة:' : 'حد التنبيه:'}
+                    <div className="flex items-center justify-between gap-2 border-t border-slate-200/70 pt-1.5 text-[10px] font-bold">
+                      <span className="text-slate-500">
+                        الرصيد الفعلي:{' '}
+                        <strong className="text-slate-800">{item.quantity} {item.unit}</strong>
                       </span>
-                      <div className="flex items-center gap-1 justify-end">
-                        <span className="text-xs font-bold text-slate-700">
-                          {isCustom
-                            ? `${item.target_quantity ?? threshold} ${item.unit}`
-                            : isCarryover || threshold <= 0
-                            ? 'ملغي (0)'
-                            : `${threshold} ${item.unit}`}
-                        </span>
-                        {canEdit && (
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEdit(item)}
-                            className="text-blue-600 hover:text-blue-800 p-0.5 rounded cursor-pointer"
-                            title="تعديل حد التنبيه"
-                          >
-                            <Pencil className="w-3 h-3" />
-                          </button>
-                        )}
-                      </div>
+                      <span className="text-slate-500">
+                        محجوز للموديلات:{' '}
+                        <strong className="text-pink-700">{item.reserved_quantity} {item.unit}</strong>
+                      </span>
                     </div>
                   </div>
 
@@ -1049,6 +1269,287 @@ export const AccessoriesWarehouseView: React.FC = () => {
           );
         })}
       </div>
+        </>
+      )}
+
+      {/* Model Issue Permits Tab (أذونات صرف الموديلات) */}
+      {activeTab === 'permits' && (
+        <div className="space-y-5">
+          <div className="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="p-2 bg-blue-100 text-blue-700 rounded-2xl">
+                    <ClipboardList className="w-5 h-5" />
+                  </span>
+                  <h2 className="text-lg font-black text-slate-900">أذونات صرف إكسسوارات الموديلات</h2>
+                  <span className="text-xs font-bold px-2.5 py-0.5 bg-amber-100 text-amber-800 rounded-full border border-amber-200">
+                    {permitGroups.pending.length} موديل بانتظار الصرف
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  الإكسسوار يبقى محجوزاً (خارج «المتاح للتصميم») حتى يؤكّد أمين المخزن الصرف الفعلي هنا.
+                  يتم خصم الكميات من الرصيد الفعلي وإصدار إذن صرف A4 قابل للطباعة.
+                </p>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1">
+                  <button
+                    type="button"
+                    onClick={() => setPermitStatusFilter('pending')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      permitStatusFilter === 'pending'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    بانتظار الصرف ({permitGroups.pending.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPermitStatusFilter('issued')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      permitStatusFilter === 'issued'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    تم صرفها ({permitGroups.issued.length})
+                  </button>
+                </div>
+                <div className="relative w-full sm:w-60">
+                  <Search className="w-4 h-4 text-slate-400 absolute start-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={permitSearch}
+                    onChange={(e) => setPermitSearch(e.target.value)}
+                    placeholder="بحث بكود الموديل أو اسم الإكسسوار..."
+                    className="w-full ps-9 pe-3 py-1.5 bg-slate-50 border border-slate-200 rounded-full text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+          {visiblePermitGroups.length === 0 ? (
+            <div className="bg-white rounded-3xl border border-dashed border-slate-300 p-10 text-center">
+              <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
+              <p className="text-sm font-black text-slate-800">
+                {permitIssuedMode
+                  ? 'لا توجد أذونات صرف مؤكّدة بعد.'
+                  : 'لا توجد إكسسوارات بانتظار الصرف حالياً.'}
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                {permitIssuedMode
+                  ? 'ستظهر هنا الموديلات التي تم تسليم إكسسواراتها من المخزن.'
+                  : 'عند إضافة إكسسوارات لموديل في التصميم سيظهر إذن صرفه هنا تلقائياً.'}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              {visiblePermitGroups.map((group) => {
+                const model = group.model;
+                const form = getPermitForm(model.id);
+                const busy = permitBusy === model.id;
+                return (
+                  <div
+                    key={model.id}
+                    className="bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden flex flex-col"
+                  >
+                    <div className="p-4 border-b border-slate-100 bg-slate-50/70 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono text-xs font-black bg-slate-900 text-white px-2 py-0.5 rounded-md">
+                            {model.model_code}
+                          </span>
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200">
+                            {model.status || '—'}
+                          </span>
+                          <span
+                            className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${
+                              permitIssuedMode
+                                ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                                : 'bg-amber-100 text-amber-800 border-amber-200'
+                            }`}
+                          >
+                            {permitIssuedMode
+                              ? 'تم الصرف'
+                              : `${group.lines.length} صنف بانتظار الصرف`}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          نوع الموديل:{' '}
+                          <strong className="text-slate-700">{model.model_type || '—'}</strong>
+                          {' | '}العدد المستهدف:{' '}
+                          <strong className="text-slate-700">
+                            {Number(model.target_cut_quantity || 0).toLocaleString('ar-EG')}
+                          </strong>{' '}
+                          قطعة
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handlePrintPermit(group, permitIssuedMode)}
+                        className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold rounded-lg transition cursor-pointer"
+                        title="طباعة إذن الصرف A4"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>طباعة</span>
+                      </button>
+                    </div>
+
+                    {!permitIssuedMode && (
+                      <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3 border-b border-slate-100">
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                            اسم المستلم (اختياري)
+                          </label>
+                          <input
+                            type="text"
+                            value={form.issuedTo}
+                            onChange={(e) => setPermitFormField(model.id, 'issuedTo', e.target.value)}
+                            placeholder="اسم من يستلم الإكسسوارات"
+                            className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                            ملاحظات (اختياري)
+                          </label>
+                          <input
+                            type="text"
+                            value={form.notes}
+                            onChange={(e) => setPermitFormField(model.id, 'notes', e.target.value)}
+                            placeholder="ملاحظات تُطبع على الإذن"
+                            className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {permitIssuedMode && (
+                      <div className="px-4 py-2.5 bg-emerald-50/60 border-b border-emerald-100 text-[11px] font-bold text-emerald-900 flex flex-wrap gap-x-4 gap-y-1">
+                        <span>المستلم: {group.lines[0]?.issued_to || '—'}</span>
+                        <span>المنفّذ: {group.lines[0]?.issued_by || '—'}</span>
+                        <span>التاريخ: {group.lines[0]?.issued_at || '—'}</span>
+                      </div>
+                    )}
+
+                    <div className="p-4 space-y-2 flex-1">
+                      <div className="grid grid-cols-12 gap-2 text-[10px] font-black text-slate-500 px-1">
+                        <span className="col-span-5">الإكسسوار</span>
+                        <span className="col-span-2 text-center">القسم</span>
+                        <span className="col-span-2 text-center">المطلوب</span>
+                        <span className="col-span-3 text-center">
+                          {permitIssuedMode ? 'المصروف' : 'الكمية للصرف'}
+                        </span>
+                      </div>
+
+                      {group.lines.map((line) => {
+                        const stockItem = line.accessory_id
+                          ? accessoryItems.find((it) => it.id === line.accessory_id)
+                          : undefined;
+                        const stockQty = Number(stockItem?.quantity ?? 0);
+                        const required = resolvePermitQuantity(model.id, line);
+                        const insufficient = !permitIssuedMode && required > stockQty;
+                        const partLabel = PERMIT_PART_LABELS[line.target_type || ''] || 'تيشرت';
+                        return (
+                          <div
+                            key={line.id}
+                            className={`grid grid-cols-12 gap-2 items-center rounded-xl border px-2 py-1.5 ${
+                              insufficient
+                                ? 'border-rose-300 bg-rose-50/60'
+                                : 'border-slate-200 bg-slate-50/50'
+                            }`}
+                          >
+                            <div className="col-span-5 min-w-0">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="font-mono text-[10px] bg-slate-200 text-slate-700 px-1 py-0.5 rounded shrink-0">
+                                  {line.accessory_code || '—'}
+                                </span>
+                                <span
+                                  className="text-xs font-bold text-slate-800 truncate"
+                                  title={line.accessory_name}
+                                >
+                                  {line.accessory_name}
+                                </span>
+                              </div>
+                              <span
+                                className={`text-[10px] font-bold ${
+                                  insufficient ? 'text-rose-700' : 'text-slate-500'
+                                }`}
+                              >
+                                رصيد المخزن: {stockQty} {line.unit || 'قطعة'}
+                                {insufficient && ' — غير كافٍ'}
+                              </span>
+                            </div>
+                            <div className="col-span-2 text-center">
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-700">
+                                {partLabel}
+                              </span>
+                            </div>
+                            <div className="col-span-2 text-center text-xs font-black text-slate-700">
+                              {Number(line.planned_quantity || 0)}
+                            </div>
+                            <div className="col-span-3 flex justify-center">
+                              {permitIssuedMode ? (
+                                <span className="text-xs font-black text-emerald-700">
+                                  {Number(line.issued_quantity ?? line.planned_quantity ?? 0)}{' '}
+                                  {line.unit || 'قطعة'}
+                                </span>
+                              ) : (
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step="0.01"
+                                  value={Number.isFinite(required) ? required : 0}
+                                  onChange={(e) =>
+                                    setPermitQuantity(
+                                      model.id,
+                                      line.id,
+                                      Math.max(0, Number(e.target.value) || 0)
+                                    )
+                                  }
+                                  className="w-20 px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs text-center font-bold focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                                />
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {!permitIssuedMode && (
+                      <div className="p-3 border-t border-slate-100 bg-slate-50/60 flex items-center justify-between gap-2">
+                        <div className="text-[11px] font-bold text-slate-600">
+                          إجمالي القطع المطلوب صرفها:{' '}
+                          <strong className="text-slate-900">
+                            {group.lines
+                              .reduce(
+                                (sum, line) => sum + resolvePermitQuantity(model.id, line),
+                                0
+                              )
+                              .toLocaleString('ar-EG')}
+                          </strong>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => handleConfirmIssue(group)}
+                          className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-black rounded-xl shadow-xs transition cursor-pointer"
+                        >
+                          <PackageCheck className="w-4 h-4" />
+                          <span>{busy ? 'جارٍ الصرف...' : 'تأكيد الصرف والخصم'}</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* MODAL 0: ADD ACCESSORY TYPE */}
       {showAddTypeModal && (

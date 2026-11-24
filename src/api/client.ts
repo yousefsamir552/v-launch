@@ -441,6 +441,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_name: userName, ...(extraData || {}) })
     }),
+  issueAccessories: (modelId: string, data: any) =>
+    request<any>(`/models/${encodeURIComponent(modelId)}/issue_accessories/`, {
+      method: 'POST',
+      body: JSON.stringify(data || {})
+    }),
   returnFabricFromCutting: (
     modelId: string,
     requirementId: string,

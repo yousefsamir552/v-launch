@@ -451,6 +451,12 @@ class ModelAccessorySerializer(serializers.ModelSerializer):
             'accessory_name': instance.accessory_name,
             'unit': instance.unit or 'قطعة',
             'image': instance.image or '',
+            # حالة صرف الإكسسوار الفعلي من مخزن الإكسسوارات.
+            'is_issued': bool(instance.is_issued),
+            'issued_quantity': float(instance.issued_quantity or 0),
+            'issued_to': instance.issued_to or '',
+            'issued_at': instance.issued_at or '',
+            'issued_by': instance.issued_by or '',
             # سعر الوحدة التاريخي يُخفى (None) لمن لا يملك صلاحية عرض أسعار الإكسسوارات.
             'unit_price_snapshot': (
                 float(instance.unit_price_snapshot or 0)

@@ -188,6 +188,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   }, [models]);
 
+  const activeModelIdsSet = useMemo(() => {
+    return new Set(models.filter((m) => !m.is_deleted).map((m) => m.id));
+  }, [models]);
+
   const fabricColors = useMemo<FabricColor[]>(() => {
     const reservedByColor: Record<string, number> = {};
     requirements.forEach((req) => {
@@ -205,9 +209,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [fabricColorsRaw, requirements, designModelIdsSet]);
 
   const accessoryItems = useMemo<AccessoryItem[]>(() => {
+    // الإكسسوار يبقى محجوزاً عبر كل مراحل التشغيل حتى يتم صرفه فعلياً (is_issued = false).
     const reservedByAcc: Record<string, number> = {};
     accessories.forEach((acc) => {
-      if (acc.accessory_id && designModelIdsSet.has(acc.model_id)) {
+      if (acc.accessory_id && !acc.is_issued && activeModelIdsSet.has(acc.model_id)) {
         const qty = Math.max(0, Number(acc.planned_quantity) || 0);
         reservedByAcc[acc.accessory_id] = Number(
           ((reservedByAcc[acc.accessory_id] || 0) + qty).toFixed(2)
@@ -218,7 +223,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...it,
       reserved_quantity: reservedByAcc[it.id] ?? 0
     }));
-  }, [accessoryItemsRaw, accessories, designModelIdsSet]);
+  }, [accessoryItemsRaw, accessories, activeModelIdsSet]);
 
   const removeFlashMessage = useCallback((id: string) => {
     setFlashMessages((prev) => prev.filter((m) => m.id !== id));
@@ -830,7 +835,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const designActions = buildDesignActions(ctxWithPerms);
   const { addDesignModel, cloneDesignModel, updateModelPlan, updateModelNotesAndTarget, updateDesignModelBasicInfo, addModelRequirement, deleteModelRequirement, addModelAccessory, deleteModelAccessory, issueFabricToCutting, returnFabricFromCutting, deleteDesignModel } = designActions;
   const fullCtx: any = { ...ctxWithPerms, ...designActions };
-  const { addFabricOrColor, recordTransaction, exportWarehouseInventoryCsv, updateColorPrice, updateFabricColorDetails, addAccessoryType, addAccessoryItem, updateAccessoryItem, deleteAccessoryItem, markAccessoryWithdrawn, recordAccessoryTransaction, exportAccessoryInventoryCsv } = buildWarehouseActions(fullCtx);
+  const { addFabricOrColor, recordTransaction, exportWarehouseInventoryCsv, updateColorPrice, updateFabricColorDetails, addAccessoryType, addAccessoryItem, updateAccessoryItem, deleteAccessoryItem, markAccessoryWithdrawn, recordAccessoryTransaction, exportAccessoryInventoryCsv, issueModelAccessories } = buildWarehouseActions(fullCtx);
   const { addCuttingRecord, updateCuttingRecord, finishCuttingToQC, exportCuttingCsv, recordQCData, saveQCMatrix, recordQCStageCount, finishQCApproval, exportQcCsv } = buildCuttingQcActions(fullCtx);
   const { modelCodeOf, exportDesignModelsCsv, exportFabricTransactionsCsv, exportAccessoryTransactionsCsv, exportProductionWarehouseCsv, exportPrintDispatchesCsv, exportSewingDispatchesCsv, exportAssemblyPackagingCsv, exportPackagingMaterialsCsv, exportSuppliersCsv, exportWorkshopsCsv, exportAuditLogsCsv, buildHRSectionsSheets, exportHRSectionsZip, exportFullBackupZip } = buildExportActions(fullCtx);
   const { addPrintDispatch, updateDispatchStatus, skipPrintToSewing, dispatchModelToSewing, receiveModelFromSewing, finishSewingToQC, finishQCToProduction } = buildPrintSewingActions(fullCtx);
@@ -978,6 +983,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         recordAccessoryTransaction,
         exportAccessoryInventoryCsv,
         markAccessoryWithdrawn,
+        issueModelAccessories,
         addDesignModel,
         cloneDesignModel,
         updateModelPlan,

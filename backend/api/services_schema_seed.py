@@ -234,6 +234,27 @@ def ensure_schema_columns():
                         )
 
 
+            # ------------------------------------------------------------------
+            # دورة صرف الإكسسوار: حقول تتبع الصرف الفعلي من مخزن الإكسسوارات
+            # (ترحيل ذاتي آمن لقواعد البيانات القائمة على Render).
+            # ------------------------------------------------------------------
+            if 'api_modelaccessory' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_modelaccessory')]
+                if 'is_issued' not in cols:
+                    cursor.execute('ALTER TABLE api_modelaccessory ADD COLUMN is_issued boolean NOT NULL DEFAULT false;')
+                if 'issued_quantity' not in cols:
+                    if connection.vendor == 'postgresql':
+                        cursor.execute('ALTER TABLE api_modelaccessory ADD COLUMN issued_quantity double precision NOT NULL DEFAULT 0.0;')
+                    else:
+                        cursor.execute('ALTER TABLE api_modelaccessory ADD COLUMN issued_quantity real NOT NULL DEFAULT 0.0;')
+                if 'issued_to' not in cols:
+                    cursor.execute("ALTER TABLE api_modelaccessory ADD COLUMN issued_to varchar(150) NOT NULL DEFAULT '';")
+                if 'issued_at' not in cols:
+                    cursor.execute("ALTER TABLE api_modelaccessory ADD COLUMN issued_at varchar(100) NOT NULL DEFAULT '';")
+                if 'issued_by' not in cols:
+                    cursor.execute("ALTER TABLE api_modelaccessory ADD COLUMN issued_by varchar(150) NOT NULL DEFAULT '';")
+
+
             if 'api_cuttingspreadlayer' not in table_names:
                 if connection.vendor == 'postgresql':
                     cursor.execute('''
@@ -402,6 +423,47 @@ def apply_packaging_material_transaction(size_rule, operation, amount, notes='',
     return txn
 
 
+def backfill_issued_accessories_once():
+    """ترحيل لمرة واحدة: تعلّم إكسسوارات الموديلات القديمة التي صُرفت فعلياً قبل إضافة
+    حقل ``is_issued`` كـ«مصروفة» حتى لا يُعاد حجزها أو خصمها مرة أخرى.
+
+    الشرط الوحيد: وجود حركة خصم فعلية (``AccessoryTransaction`` operation='deduct') لنفس
+    الموديل ونفس الإكسسوار. هذا يجعل الترحيل آمناً للتكرار ولا يمس موديلات دورة الصرف
+    الجديدة (لأنها تُعلَّم مباشرة عند تأكيد الصرف من مخزن الإكسسوارات).
+    """
+    if SystemSetting.objects.filter(key='accessory_issue_backfill_v1').exists():
+        return
+    try:
+        pending = (
+            ModelAccessory.objects.select_related('model')
+            .filter(is_issued=False, model__is_deleted=False)
+            .exclude(model__status__in=('مرحلة التصميم', 'تصميم'))
+            .exclude(accessory_id_ref__isnull=True)
+            .exclude(accessory_id_ref='')
+        )
+        for m_acc in pending:
+            model_code = (m_acc.model.model_code or '').strip()
+            if not model_code:
+                continue
+            acc_item = resolve_by_id(Accessory, m_acc.accessory_id_ref)
+            if not acc_item:
+                continue
+            already_deducted = AccessoryTransaction.objects.filter(
+                accessory=acc_item,
+                operation='deduct',
+                model_code_ref__iexact=model_code,
+            ).exists()
+            if not already_deducted:
+                continue
+            m_acc.is_issued = True
+            m_acc.issued_quantity = float(m_acc.planned_quantity or 0)
+            m_acc.save(update_fields=['is_issued', 'issued_quantity'])
+    except Exception:
+        # فشل الترحيل لا يجب أن يمنع تشغيل النظام؛ يُعاد المحاولة في الإقلاع التالي.
+        return
+    SystemSetting.objects.create(key='accessory_issue_backfill_v1', value={'seeded': True})
+
+
 def ensure_initial_seed():
     """
     Ensures the Sudo emergency superuser account, GlobalSettings, and initial roles/catalog exist.
@@ -412,6 +474,8 @@ def ensure_initial_seed():
     ensure_schema_columns()
     # Ensure GlobalSettings singleton exists
     GlobalSettings.get_solo()
+    # ترحيل لمرة واحدة لإكسسوارات الموديلات القديمة التي صُرفت قبل إضافة حقل is_issued.
+    backfill_issued_accessories_once()
 
     # 1. Always ensure Sudo role & Sudo emergency account exist so admin is never locked out
     sudo_role = Role.objects.filter(client_id='role-1').first() or Role.objects.filter(name='مدير عام المصنع').first()

@@ -12,7 +12,8 @@ import {
   Layers,
   FileText,
   Lock,
-  Star
+  Star,
+  Printer
 } from 'lucide-react';
 import { ZoomableImage } from './ZoomableImage';
 import { EditModelModal } from './EditModelModal';
@@ -28,8 +29,10 @@ import {
   getPartLabel
 } from '../types';
 import { FabricColorPicker } from './FabricColorPicker';
+import { AccessoryPicker } from './AccessoryPicker';
 import { EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel } from '../utils/completedModels';
+import { printAccessoryIssueOrder } from '../utils/printAccessoryIssueOrder';
 
 /** ألوان شارات القطع في جدول الأقمشة المخصصة للموديل. */
 const PART_BADGE_STYLES: Record<GarmentPart, string> = {
@@ -97,6 +100,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     suppliers,
     requirements,
     accessories,
+    accessoryTypes,
     accessoryItems,
     globalSettings,
     addModelRequirement,
@@ -119,6 +123,31 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
 
   const modelReqs = requirements.filter((r) => r.model_id === modelId);
   const modelAccs = accessories.filter((a) => a.model_id === modelId);
+
+  const handlePrintAccessoryPermit = () => {
+    if (!model) return;
+    const firstIssued = modelAccs.find((a) => a.is_issued);
+    printAccessoryIssueOrder({
+      siteName: globalSettings?.site_name,
+      logo: globalSettings?.logo,
+      modelCode: model.model_code,
+      modelType: model.model_type,
+      targetQuantity: model.target_cut_quantity,
+      issuedTo: modelAccs.find((a) => a.issued_to)?.issued_to || '',
+      issuedBy: firstIssued?.issued_by || '',
+      date: firstIssued?.issued_at || undefined,
+      lines: modelAccs.map((acc) => ({
+        accessory_name: acc.accessory_name,
+        accessory_code: acc.accessory_code,
+        target_type: acc.target_type,
+        quantity: acc.is_issued
+          ? Number(acc.issued_quantity ?? acc.planned_quantity ?? 0)
+          : Number(acc.planned_quantity || 0),
+        unit: acc.unit,
+        is_issued: acc.is_issued
+      }))
+    });
+  };
 
   const [targetCutQuantity, setTargetCutQuantity] = useState<number>(
     model?.target_cut_quantity || 500
@@ -492,6 +521,13 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     ? Number((selectedColorObj.quantity - selectedColorObj.reserved_quantity).toFixed(2))
     : 0;
 
+  const selectedAccessoryObj = accessoryItems.find((a) => a.id === selectedAccessoryId);
+  const selectedAccessoryAvailable = selectedAccessoryObj
+    ? Number(
+        (selectedAccessoryObj.quantity - selectedAccessoryObj.reserved_quantity).toFixed(2)
+      )
+    : 0;
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* Return Link */}
@@ -594,6 +630,17 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 ✏️ <span>تعديل بيانات الموديل</span>
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={handlePrintAccessoryPermit}
+              disabled={modelAccs.length === 0}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-full border border-slate-300 bg-white text-slate-800 hover:bg-slate-900 hover:text-white disabled:opacity-50 disabled:hover:bg-white disabled:hover:text-slate-800 font-bold text-xs shadow-xs transition cursor-pointer"
+              title="طباعة إذن صرف إكسسوارات الموديل A4"
+            >
+              <Printer className="w-4 h-4" />
+              <span>🖨️ طباعة إذن الإكسسوارات</span>
+            </button>
 
             {canEdit && (
               <button
@@ -884,22 +931,29 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   اختر الصنف من مخزن الإكسسوارات *
                 </label>
-                <select
-                  disabled={!canEdit}
+                <AccessoryPicker
+                  items={accessoryItems}
+                  types={accessoryTypes}
                   value={selectedAccessoryId}
-                  onChange={(e) => setSelectedAccessoryId(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden"
-                >
-                  <option value="">-- اختر إكسسوار --</option>
-                  {accessoryItems.map((acc) => {
-                    const avail = acc.quantity - acc.reserved_quantity;
-                    return (
-                      <option key={acc.id} value={acc.id}>
-                        {acc.code} - {acc.name} ({acc.type_name}) [متاح: {avail} {acc.unit}]
-                      </option>
-                    );
-                  })}
-                </select>
+                  onChange={setSelectedAccessoryId}
+                  disabled={!canEdit}
+                />
+                {selectedAccessoryObj && (
+                  <div className="mt-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between text-[11px]">
+                    <span className="text-slate-600">
+                      الرصيد الفعلي:{' '}
+                      <strong className="text-blue-700 font-black">
+                        {selectedAccessoryObj.quantity} {selectedAccessoryObj.unit}
+                      </strong>
+                    </span>
+                    <span className="text-emerald-800 font-bold">
+                      المتاح للتصميم:{' '}
+                      <strong className="font-black">
+                        {selectedAccessoryAvailable} {selectedAccessoryObj.unit}
+                      </strong>
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div>

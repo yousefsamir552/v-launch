@@ -809,12 +809,13 @@ DESIGN_STAGES = ('مرحلة التصميم', 'تصميم')
 def sync_reserved_quantities():
     """
     Synchronizes `reserved_quantity` across all FabricColor and Accessory items:
-    - When a model is in the Design stage ('مرحلة التصميم' or 'تصميم') and not deleted,
-      any fabric/accessory quantities assigned to it are reserved (deducted from
-      'Available for Design' only, NOT from actual total stock `quantity`).
-    - Once the model's fabric is issued to Cutting (`issue_fabric_to_cutting`),
-      the model moves out of Design stage, its planned quantities are deducted from
-      actual total stock (`quantity` / `current_stock`), and its reservation is released.
+    - Fabric: while a model is in the Design stage ('مرحلة التصميم' or 'تصميم') and not
+      deleted, its planned fabric quantities are reserved (deducted from 'Available for
+      Design' only, NOT from actual total stock `quantity`). Once the fabric is issued to
+      Cutting (`issue_fabric_to_cutting`) the reservation is released.
+    - Accessories: the reservation is kept across ALL pipeline stages until the accessory
+      warehouse keeper confirms the actual issue (`is_issued = True`). Only then is the
+      reservation released and the real `current_stock` deducted.
     """
     # 1. Sync FabricColor reserved_quantity
     design_reqs = (
@@ -836,11 +837,11 @@ def sync_reserved_quantities():
             col.reserved_quantity = expected_res
             col.save(update_fields=['reserved_quantity'])
 
-    # 2. Sync Accessory reserved_quantity
+    # 2. Sync Accessory reserved_quantity — يبقى محجوزاً حتى الصرف الفعلي (is_issued=False).
     design_accs = (
         ModelAccessory.objects.filter(
             model__is_deleted=False,
-            model__status__in=DESIGN_STAGES
+            is_issued=False,
         )
         .exclude(accessory_id_ref__isnull=True)
         .exclude(accessory_id_ref='')

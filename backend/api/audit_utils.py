@@ -129,6 +129,7 @@ ACTION_METHOD_LABELS = {
     'mark_withdrawn': ('status_change', 'علّم الصنف كمسحوب للموديل'),
     'update_plan': ('update', 'حدّث خطة وخامات الموديل'),
     'issue_fabric_to_cutting': ('status_change', 'صرف خامات الموديل إلى القص'),
+    'issue_accessories': ('transaction', 'صرف وتسليم إكسسوارات الموديل'),
     'return_fabric_to_warehouse': ('transaction', 'أرجع فائض قماش من القص إلى المخزن'),
     'finish_cutting': ('status_change', 'أنهى القص'),
     'dispatch_to_sewing': ('status_change', 'حوّل الموديل إلى المكن'),

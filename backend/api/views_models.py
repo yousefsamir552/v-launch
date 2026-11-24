@@ -69,6 +69,11 @@ class ModelItemViewSet(BasePermViewSet):
         # إرجاع فائض القماش للمخزن متاح لقسم القص أو لمخزن القماش (تعديل).
         if action_name == 'return_fabric_to_warehouse' and profile.has_perm('fabric_warehouse_edit'):
             return
+        # صرف وتسليم إكسسوارات الموديل متاح لأمين مخزن الإكسسوارات أو قسم المكن.
+        if action_name == 'issue_accessories' and (
+            profile.has_perm('accessories_warehouse_edit') or profile.has_perm('sewing_edit')
+        ):
+            return
         section = self.MODEL_ACTION_SECTIONS.get(action_name)
         if section:
             require_edit = request.method not in permissions.SAFE_METHODS
@@ -327,7 +332,7 @@ class ModelItemViewSet(BasePermViewSet):
         user_name = request.data.get('user_name') or 'مسؤول التصميم'
 
         issued_fabrics = []
-        issued_accessories = []
+        pending_accessories = []
 
         with transaction.atomic():
             # Optional: if reqQuantities or accQuantities were sent in the same payload, apply them first
@@ -380,47 +385,15 @@ class ModelItemViewSet(BasePermViewSet):
                         'unit': col.fabric.unit,
                     })
 
-            for m_acc in model.accessories.all():
-                planned_qty = float(m_acc.planned_quantity or 0)
-                if m_acc.accessory_id_ref and planned_qty > 0:
-                    acc_item = resolve_by_id(Accessory, m_acc.accessory_id_ref)
-                    if acc_item:
-                        acc_item = Accessory.objects.select_for_update().get(pk=acc_item.pk)
-                        acc_item.current_stock = max(0, int(round(float(acc_item.current_stock or 0) - planned_qty)))
-                        acc_item.reserved_quantity = max(0.0, round(float(acc_item.reserved_quantity or 0) - planned_qty, 2))
-                        acc_item.save()
-                        if not m_acc.unit_price_snapshot:
-                            # التقاط السعر التاريخي للإكسسوار إن لم يُلتقط وقت الربط.
-                            m_acc.unit_price_snapshot = acc_item.price_per_unit or 0
-                            m_acc.save(update_fields=['unit_price_snapshot'])
-                        target_label = (
-                            'جاكيت' if m_acc.target_type == 'jacket'
-                            else 'بنطلون' if m_acc.target_type == 'pants'
-                            else 'قطعة واحدة' if m_acc.target_type == 'single'
-                            else 'تيشرت'
-                        )
-                        AccessoryTransaction.objects.create(
-                            accessory=acc_item,
-                            accessory_code=acc_item.code,
-                            accessory_name=acc_item.name,
-                            operation='deduct',
-                            amount=planned_qty,
-                            model_code_ref=model.model_code,
-                            notes=f"صرف إكسسوار للتشغيل والقص ({target_label}) - موديل: {model.model_code}",
-                            timestamp=now_str,
-                            # سعر الوحدة التاريخي وقت الصرف (يُستخدم في قسم الحسابات لاحقاً).
-                            unit_price_snapshot=acc_item.price_per_unit or 0,
-                            # ربط المورد تلقائياً من بطاقة الإكسسوار المسجل عليها المورد.
-                            supplier=resolve_supplier_link(
-                                None,
-                                getattr(acc_item, 'supplier_id_ref', None),
-                                getattr(acc_item, 'supplier', None),
-                            ),
-                        )
-                issued_accessories.append({
+            # الإكسسوارات لا تُخصم من الرصيد الفعلي هنا؛ تبقى محجوزة (reserved) حتى
+            # يؤكّد أمين مخزن الإكسسوارات الصرف الفعلي من شاشة «أذونات صرف الموديلات».
+            # نسجّل فقط قائمة معلوماتية بما هو بانتظار الصرف في التايم لاين.
+            # استعلام جديد يتجاوز كاش الـ prefetch حتى تعكس الكميات آخر تعديل من التصميم.
+            for m_acc in ModelAccessory.objects.filter(model=model).order_by('id'):
+                pending_accessories.append({
                     'accessory_name': m_acc.accessory_name,
                     'target_type': m_acc.target_type,
-                    'planned_quantity': planned_qty,
+                    'planned_quantity': float(m_acc.planned_quantity or 0),
                     'unit': m_acc.unit,
                 })
 
@@ -434,14 +407,15 @@ class ModelItemViewSet(BasePermViewSet):
             # Re-sync reserved quantities after moving model to 'في القص'
             sync_reserved_quantities()
 
-            combined_notes = f"تم صرف الأقمشة والإكسسوارات للعدد المستهدف {model.target_cut_quantity} قطعة"
+            combined_notes = f"تم صرف الأقمشة للعدد المستهدف {model.target_cut_quantity} قطعة"
             if model.design_notes:
                 combined_notes += f" | ملاحظات التصميم: {model.design_notes}"
+            combined_notes += " | الإكسسوارات تبقى محجوزة حتى يتم صرفها من مخزن الإكسسوارات"
 
             ModelTimeline.objects.create(
                 model=model,
                 stage='في القص',
-                title='صرف الخامات والتحويل لقسم القص',
+                title='صرف القماش والتحويل لقسم القص',
                 notes=combined_notes,
                 user=user_name,
                 timestamp_str=now_str,
@@ -454,13 +428,210 @@ class ModelItemViewSet(BasePermViewSet):
                     'notes_shirt': model.notes_shirt or '',
                     'notes_pants': model.notes_pants or '',
                     'issued_fabrics': issued_fabrics,
-                    'issued_accessories': issued_accessories,
+                    'pending_accessories': pending_accessories,
                     'operator_name': user_name,
                     'worker_notes': model.design_notes or model.notes_shirt or model.notes_pants,
                 }
             )
 
         return Response(ModelItemSerializer(model, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'])
+    def issue_accessories(self, request, pk=None):
+        """صرف وتسليم إكسسوارات الموديل فعلياً من مخزن الإكسسوارات.
+
+        - يخصم الكمية نهائياً من الرصيد الفعلي ``Accessory.current_stock``.
+        - يحرّر الحجز تلقائياً (is_issued = True ثم ``sync_reserved_quantities``).
+        - يسجّل حركة خصم ``AccessoryTransaction`` + اسم المستلم + المنفّذ.
+        - يدعم اختيارياً ``accessory_ids`` و ``quantities`` (إذا تغيّرت الكمية حسب العدد الفعلي).
+        """
+        model = self.get_object()
+        profile = getattr(request, 'user_profile', None)
+        data = request.data or {}
+
+        issued_to = (data.get('issued_to') or data.get('issuedTo') or '').strip()
+        notes = (data.get('notes') or '').strip()
+        profile_name = ''
+        if profile and not is_sudo_account(profile):
+            profile_name = (getattr(profile, 'real_name', '') or '').strip()
+        user_name = (
+            (data.get('user_name') or '').strip()
+            or profile_name
+            or 'أمين مخزن الإكسسوارات'
+        )
+        now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+
+        accessory_ids = data.get('accessory_ids') or data.get('accessoryIds') or []
+        if isinstance(accessory_ids, str):
+            accessory_ids = [accessory_ids]
+        target_keys = {str(x).strip() for x in accessory_ids if str(x).strip()}
+
+        raw_quantities = data.get('quantities') or data.get('accQuantities') or {}
+        if not isinstance(raw_quantities, dict):
+            raw_quantities = {}
+        quantities = {str(k).strip(): v for k, v in raw_quantities.items()}
+
+        target_label_map = {
+            'jacket': 'جاكيت',
+            'pants': 'بنطلون',
+            'single': 'قطعة واحدة',
+            'shirt': 'تيشرت',
+        }
+
+        issued_list = []
+
+        with transaction.atomic():
+            pending_qs = (
+                ModelAccessory.objects.select_for_update()
+                .filter(model=model, is_issued=False)
+                .exclude(accessory_id_ref__isnull=True)
+                .exclude(accessory_id_ref='')
+            )
+            pending = list(pending_qs)
+            if target_keys:
+                pending = [
+                    m_acc for m_acc in pending
+                    if str(m_acc.id) in target_keys or str(get_ext_id(m_acc)) in target_keys
+                ]
+
+            if not pending:
+                return Response(
+                    {'error': 'لا توجد إكسسوارات بانتظار الصرف لهذا الموديل.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # تجميع الكميات المطلوبة لكل إكسسوار لضمان كفاية الرصيد قبل أي خصم.
+            resolved = []
+            required_by_acc = {}
+            for m_acc in pending:
+                acc_item = resolve_by_id(Accessory, m_acc.accessory_id_ref)
+                if not acc_item:
+                    continue
+                qty = quantities.get(str(m_acc.id))
+                if qty is None:
+                    qty = quantities.get(str(get_ext_id(m_acc)))
+                try:
+                    qty = float(qty) if qty is not None else float(m_acc.planned_quantity or 0)
+                except (TypeError, ValueError):
+                    qty = float(m_acc.planned_quantity or 0)
+                qty = round(max(0.0, qty), 2)
+                if qty <= 0:
+                    continue
+                resolved.append((m_acc, acc_item, qty))
+                required_by_acc[acc_item.pk] = round(
+                    required_by_acc.get(acc_item.pk, 0.0) + qty, 2
+                )
+
+            if not resolved:
+                return Response(
+                    {'error': 'الكميات المطلوبة للصرف صفرية؛ لا يوجد ما يتم صرفه.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # قفل أصناف المخزن والتحقق من كفاية الرصيد داخل نفس المعاملة.
+            locked_items = {}
+            shortages = []
+            for acc_pk, need in required_by_acc.items():
+                item = Accessory.objects.select_for_update().get(pk=acc_pk)
+                locked_items[acc_pk] = item
+                available = float(item.current_stock or 0)
+                if available < need:
+                    shortages.append(f"{item.name}: المتاح {available:g} والمطلوب {need:g}")
+            if shortages:
+                return Response(
+                    {
+                        'error': 'الرصيد الفعلي غير كافٍ لصرف بعض الإكسسوارات: '
+                                 + ' | '.join(shortages)
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            for m_acc, acc_item, qty in resolved:
+                item = locked_items[acc_item.pk]
+                item.current_stock = max(0, int(round(float(item.current_stock or 0) - qty)))
+                item.save(update_fields=['current_stock'])
+
+                if not m_acc.unit_price_snapshot:
+                    m_acc.unit_price_snapshot = item.price_per_unit or 0
+
+                label = target_label_map.get(m_acc.target_type, 'تيشرت')
+                txn_notes = f"صرف إكسسوار للتسليم ({label}) - موديل: {model.model_code}"
+                if issued_to:
+                    txn_notes += f" | المستلم: {issued_to}"
+                if notes:
+                    txn_notes += f" | ملاحظات: {notes}"
+                AccessoryTransaction.objects.create(
+                    accessory=item,
+                    accessory_code=item.code,
+                    accessory_name=item.name,
+                    operation='deduct',
+                    amount=qty,
+                    model_code_ref=model.model_code,
+                    notes=txn_notes,
+                    timestamp=now_str,
+                    unit_price_snapshot=item.price_per_unit or 0,
+                    supplier=resolve_supplier_link(
+                        None,
+                        getattr(item, 'supplier_id_ref', None),
+                        getattr(item, 'supplier', None),
+                    ),
+                )
+
+                m_acc.is_issued = True
+                m_acc.issued_quantity = qty
+                m_acc.issued_to = issued_to
+                m_acc.issued_at = now_str
+                m_acc.issued_by = user_name
+                m_acc.save(update_fields=[
+                    'is_issued', 'issued_quantity', 'issued_to', 'issued_at',
+                    'issued_by', 'unit_price_snapshot',
+                ])
+
+                issued_list.append({
+                    'accessory_id': get_ext_id(item),
+                    'accessory_code': item.code,
+                    'accessory_name': item.name,
+                    'target_type': m_acc.target_type,
+                    'issued_quantity': qty,
+                    'unit': m_acc.unit,
+                })
+
+            # تحرير الحجز: يُعاد احتساب reserved_quantity من البنود غير المصروفة فقط.
+            sync_reserved_quantities()
+
+            notes_parts = [
+                f"تم صرف {len(issued_list)} صنف إكسسوار للموديل {model.model_code}"
+            ]
+            if issued_to:
+                notes_parts.append(f"المستلم: {issued_to}")
+            notes_parts.append(f"المنفّذ: {user_name}")
+            if notes:
+                notes_parts.append(notes)
+            combined_notes = ' | '.join(notes_parts)
+
+            ModelTimeline.objects.create(
+                model=model,
+                stage=model.status or 'في القص',
+                title='صرف وتسليم الإكسسوارات من مخزن الإكسسوارات',
+                notes=combined_notes,
+                user=user_name,
+                timestamp_str=now_str,
+                details={
+                    'phase_type': 'accessory_issue',
+                    'issued_to': issued_to,
+                    'issued_by': user_name,
+                    'issued_accessories': issued_list,
+                    'notes': notes,
+                },
+            )
+
+        # مسح كاش الـ prefetch حتى يعكس الرد أحدث حالة صرف للإكسسوارات.
+        model._prefetched_objects_cache = {}
+        return Response({
+            'message': 'تم صرف وتسليم الإكسسوارات وتحديث رصيد المخزن بنجاح.',
+            'model': ModelItemSerializer(model, context={'request': request}).data,
+            'issued_accessories': issued_list,
+        })
 
     @action(detail=True, methods=['post'])
     def return_fabric_to_warehouse(self, request, pk=None):
