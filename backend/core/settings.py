@@ -163,6 +163,9 @@ CORS_ALLOW_HEADERS = [
     'x-user-username',
     'x-current-user',
     'x-auth-token',
+    # ترويسات سياق تدقيق الموديلات المنتهية (تُرسل من الواجهة).
+    'x-audit-context',
+    'x-audit-section',
 ]
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,27 @@ import type {
  */
 export { auditContextHeaders };
 
+/**
+ * حماية شاملة لترويسات fetch:
+ * المتصفح يرفض أي قيمة ترويسة تحتوي حرفاً خارج نطاق ISO-8859-1 (مثل العربية)
+ * ويرمي الخطأ "String contains non ISO-8859-1 code point" قبل إرسال الطلب.
+ * لذلك نرمّز أي قيمة كهذه بـ encodeURIComponent حتى لا ينهار fetch في أي قسم.
+ * (القيم المُرمَّزة مسبقاً ASCII فقط، فلا يحدث ترميز مزدوج.)
+ */
+const NON_ISO_8859_1 = /[^\x00-\xFF]/;
+
+const sanitizeHeaderValue = (value: string): string =>
+  NON_ISO_8859_1.test(value) ? encodeURIComponent(value) : value;
+
+const sanitizeHeaders = (headers?: Record<string, string>): Record<string, string> => {
+  const clean: Record<string, string> = {};
+  if (!headers) return clean;
+  Object.entries(headers).forEach(([key, value]) => {
+    clean[key] = sanitizeHeaderValue(String(value ?? ''));
+  });
+  return clean;
+};
+
 const getBaseUrl = (): string => {
   const envUrl = (import.meta as any).env?.VITE_API_URL;
   if (envUrl) {
@@ -50,7 +71,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     'Content-Type': 'application/json',
     Accept: 'application/json',
     ...(token ? { Authorization: `Bearer ${token}`, 'X-Auth-Token': token } : {}),
-    ...((options.headers as Record<string, string>) || {})
+    ...sanitizeHeaders(options.headers as Record<string, string> | undefined)
   };
 
   const res = await fetch(`${BASE_URL}${endpoint}`, {
@@ -75,7 +96,7 @@ function buildAuthHeaders(extra: Record<string, string> = {}): Record<string, st
   return {
     Accept: 'application/json',
     ...(token ? { Authorization: `Bearer ${token}`, 'X-Auth-Token': token } : {}),
-    ...extra
+    ...sanitizeHeaders(extra)
   };
 }
 

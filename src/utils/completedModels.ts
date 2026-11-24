@@ -12,10 +12,15 @@ export const COMPLETED_MODEL_AUDIT_CONTEXT = 'completed_model';
  */
 export const COMPLETED_MODEL_MARKER = '[تعديل على موديل منتهي]';
 
-/** ترويسات سياق التدقيق التي تُمرَّر مع أي طلب تعديل/إجراء على موديل منتهٍ. */
+/**
+ * ترويسات سياق التدقيق التي تُمرَّر مع أي طلب تعديل/إجراء على موديل منتهٍ.
+ * قيمة X-Audit-Section تُرمَّز بـ encodeURIComponent لأن fetch يرفض أي حرف
+ * عربي (خارج ISO-8859-1) داخل الـ Headers ويتوقف الطلب قبل إرساله للسيرفر.
+ * الباك إند يفك الترميز بـ urllib.parse.unquote قبل حفظ اسم القسم.
+ */
 export const auditContextHeaders = (section: string): Record<string, string> => ({
   'X-Audit-Context': COMPLETED_MODEL_AUDIT_CONTEXT,
-  'X-Audit-Section': String(section || '').trim()
+  'X-Audit-Section': encodeURIComponent(String(section || '').trim())
 });
 
 /**

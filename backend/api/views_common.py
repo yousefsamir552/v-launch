@@ -13,6 +13,7 @@ from django.utils.dateparse import parse_date, parse_time
 from datetime import date, timedelta
 import re
 import secrets
+import urllib.parse
 
 from .models import (
     SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier, Workshop,
@@ -526,6 +527,9 @@ class BasePermViewSet(AuditedModelViewSetMixin, viewsets.ModelViewSet):
         """
         try:
             header_section = (self.request.headers.get('X-Audit-Section') or '').strip()
+            # الواجهة ترسل القسم مُرمَّزاً بـ encodeURIComponent لتجنّب رفض fetch
+            # للأحرف العربية داخل الترويسات، لذا نفك الترميز قبل حفظه في سجل التدقيق.
+            header_section = urllib.parse.unquote(header_section)
         except Exception:
             header_section = ''
         return header_section or super().get_audit_section()

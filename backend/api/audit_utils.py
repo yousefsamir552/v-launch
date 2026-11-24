@@ -11,6 +11,7 @@
 """
 import functools
 import json
+import urllib.parse
 
 from django.apps import apps
 from django.utils import timezone
@@ -755,12 +756,14 @@ def _header_value(request, name: str) -> str:
         if headers is not None:
             value = headers.get(name)
             if value:
-                return str(value).strip()
+                # الواجهة ترسل بعض الترويسات (مثل اسم القسم العربي) مُرمَّزة بـ
+                # encodeURIComponent لأن fetch يرفض الأحرف خارج ISO-8859-1.
+                return urllib.parse.unquote(str(value).strip())
     except Exception:
         pass
     try:
         meta_key = 'HTTP_' + str(name).upper().replace('-', '_')
-        return str(request.META.get(meta_key) or '').strip()
+        return urllib.parse.unquote(str(request.META.get(meta_key) or '').strip())
     except Exception:
         return ''
 
