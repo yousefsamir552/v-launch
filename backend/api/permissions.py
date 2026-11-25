@@ -1,5 +1,5 @@
 from rest_framework import permissions
-from .models import UserProfile, HR_PERM_KEYS
+from .models import UserProfile, HR_PERM_KEYS, READINESS_PERM_KEYS
 
 
 def resolve_profile_from_request(request):
@@ -55,6 +55,35 @@ HR_SECTION_PERM_MAP = {
     'payroll': 'hr_payroll',
     'reports': 'hr_reports',
 }
+
+# ---------------------------------------------------------------------------
+# Per-stage Model Readiness permissions (جاهزية الموديلات — 6 مراحل مستقلة).
+# ---------------------------------------------------------------------------
+READINESS_STAGE_PERM_MAP = {
+    'print': 'readiness_print',
+    'sewing': 'readiness_sewing',
+    'finishing': 'readiness_finishing',
+    'ironing': 'readiness_ironing',
+    'packaging': 'readiness_packaging',
+    'dest': 'readiness_dest',
+}
+
+
+class CanAccessModelReadiness(permissions.BasePermission):
+    """Enforces independent stage-level access to Model Readiness views."""
+
+    def has_permission(self, request, view):
+        profile = resolve_profile_from_request(request)
+        if profile is None:
+            return False
+        request.user_profile = profile
+        if profile.is_sudo or profile.username.lower() == 'sudo':
+            return True
+        required_stage = getattr(view, 'required_readiness_stage', None)
+        if required_stage:
+            perm_key = READINESS_STAGE_PERM_MAP.get(required_stage, required_stage)
+            return profile.has_perm(perm_key)
+        return any(profile.has_perm(key) for key in READINESS_PERM_KEYS)
 
 class HasDynamicSectionPermission(permissions.BasePermission):
     """

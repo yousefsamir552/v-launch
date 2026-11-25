@@ -235,6 +235,12 @@ PERMISSION_LABELS = {
     'can_add_qc_after_print_notes': 'إضافة ملاحظات العد بعد الطباعة',
     'can_add_sewing_notes': 'إضافة ملاحظات المكن',
     'can_add_printing_notes': 'إضافة ملاحظات المطابع',
+    'readiness_print': 'جاهزية الموديلات — المطابع',
+    'readiness_sewing': 'جاهزية الموديلات — المكن',
+    'readiness_finishing': 'جاهزية الموديلات — التشطيب',
+    'readiness_ironing': 'جاهزية الموديلات — المكواة',
+    'readiness_packaging': 'جاهزية الموديلات — التغليف',
+    'readiness_dest': 'جاهزية الموديلات — الدَست',
     'can_reports': 'التقارير',
     'can_settings': 'الإعدادات',
 }

@@ -6,6 +6,7 @@ import {
   NOTES_PERMISSIONS_LIST,
   ADMIN_AND_SETTINGS_PERMISSIONS_LIST,
   HR_PERMISSIONS_LIST,
+  READINESS_PERMISSIONS_LIST,
   DEFAULT_PERMISSIONS,
   DelegationBadge
 } from './RoleManagementSection';
@@ -442,6 +443,48 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onS
                 ))}
               </div>
             </div>
+
+            {/* Model Readiness per-stage permissions */}
+            {READINESS_PERMISSIONS_LIST.some((rp) => isPermissionVisible(String(rp.permKey))) && (
+              <div className="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-200 space-y-3">
+                <div className="flex items-center gap-2 text-xs font-extrabold text-emerald-950">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <span>صلاحيات جاهزية الموديلات (مستقلة لكل مرحلة):</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {READINESS_PERMISSIONS_LIST.filter((rp) =>
+                    isPermissionVisible(String(rp.permKey))
+                  ).map((rp) => {
+                    const permKey = String(rp.permKey);
+                    return (
+                      <label
+                        key={rp.key}
+                        className="flex items-center gap-2.5 p-2.5 rounded-xl bg-white border border-emerald-200 cursor-pointer hover:border-emerald-400 transition"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={Boolean(customPerms[permKey])}
+                          onChange={() => togglePermKey(permKey)}
+                          className="w-4 h-4 text-emerald-600 rounded-sm"
+                        />
+                        <div className="text-start flex-1">
+                          <span className="font-bold text-xs text-slate-900 block">{rp.label}</span>
+                          <span className="text-[10px] text-slate-500">{rp.description}</span>
+                        </div>
+                        <DelegationBadge
+                          permKey={permKey}
+                          granted={Boolean(customPerms[permKey])}
+                          isDelegatable={delegatablePerms.includes(permKey)}
+                          canDelegate={canDelegatePermission(permKey)}
+                          onToggle={toggleDelegatable}
+                          tone="emerald"
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* HR per-tab permissions */}
             <div className="p-4 rounded-2xl bg-rose-50/60 border border-rose-200 space-y-3">

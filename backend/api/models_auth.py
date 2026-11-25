@@ -49,6 +49,16 @@ HR_PERM_KEYS = (
     'hr_reports',
 )
 
+# مفاتيح صلاحيات «جاهزية الموديلات» المستقلة لكل مرحلة من المراحل الست.
+READINESS_PERM_KEYS = (
+    'readiness_print',
+    'readiness_sewing',
+    'readiness_finishing',
+    'readiness_ironing',
+    'readiness_packaging',
+    'readiness_dest',
+)
+
 # صلاحيات قراءة/تعديل المرتب الشهري — مطابقة لواجهة canAccessHRSection('payroll')
 # في الفرونت إند (hr_payroll أو can_manage_hr أو manage_permissions) مع تجاوز sudo.
 SALARY_PERMISSION_KEYS = ('hr_payroll', 'can_manage_hr', 'manage_permissions')
@@ -401,6 +411,13 @@ class Role(models.Model):
             'can_add_qc_after_print_notes': False,
             'can_add_sewing_notes': False,
             'can_add_printing_notes': False,
+            # Granular Model Readiness permissions (جاهزية الموديلات — 6 مراحل مستقلة)
+            'readiness_print': False,
+            'readiness_sewing': False,
+            'readiness_finishing': False,
+            'readiness_ironing': False,
+            'readiness_packaging': False,
+            'readiness_dest': False,
         }
         if isinstance(self.permissions_json, dict) and self.permissions_json:
             base.update(self.permissions_json)

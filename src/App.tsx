@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from './context/AppContext';
-import { HRSectionKey } from './types';
+import { HRSectionKey, ReadinessStageKey } from './types';
 import { Navbar } from './components/Navbar';
 import { FlashAlerts } from './components/FlashAlerts';
 import { DashboardView } from './components/DashboardView';
@@ -9,6 +9,7 @@ import { AccessoriesWarehouseView } from './components/AccessoriesWarehouseView'
 import { PackagingMaterialsView } from './components/PackagingMaterialsView';
 import { ProductionWarehouseView } from './components/ProductionWarehouseView';
 import { PurchaseRequestsView } from './components/PurchaseRequestsView';
+import { ModelReadinessView } from './components/ModelReadinessView';
 import { DesignView } from './components/DesignView';
 import { ModelDetailsView } from './components/ModelDetailsView';
 import { CuttingView } from './components/CuttingView';
@@ -34,6 +35,7 @@ export const App: React.FC = () => {
     canAccessSettings,
     canViewAuditLogs,
     canAccessHRSection,
+    canAccessReadinessStage,
     globalSettings
   } = useApp();
 
@@ -109,9 +111,21 @@ export const App: React.FC = () => {
     return canAccessHRSection(HR_TAB_SECTIONS[tab]);
   };
 
+  const READINESS_TAB_STAGE: Record<string, ReadinessStageKey> = {
+    readiness_print: 'print',
+    readiness_sewing: 'sewing',
+    readiness_finishing: 'finishing',
+    readiness_ironing: 'ironing',
+    readiness_packaging: 'packaging',
+    readiness_dest: 'dest'
+  };
+
   const canAccessTab = (tab: string): boolean => {
     if (isSudo) return true;
     if (tab === 'dashboard') return true;
+    if (tab in READINESS_TAB_STAGE) {
+      return canAccessReadinessStage(READINESS_TAB_STAGE[tab]);
+    }
     if (tab === 'warehouse') return hasPermission('fabric_warehouse');
     if (tab === 'accessories_warehouse') return hasPermission('accessories_warehouse');
     if (tab === 'packaging_materials') return hasAssemblyPackagingAccess();
@@ -256,6 +270,14 @@ export const App: React.FC = () => {
 
         {/* Assembly & Packaging Section (الأسمبلي والأمبالاج) */}
         {currentTab === 'assembly_packaging' && <AssemblyPackagingView />}
+
+        {/* Model Readiness Views (جاهزية الموديلات — 6 مراحل مستقلة) */}
+        {currentTab in READINESS_TAB_STAGE && (
+          <ModelReadinessView
+            stage={READINESS_TAB_STAGE[currentTab]}
+            onNavigate={(tab, id) => handleNavigate(tab, id)}
+          />
+        )}
 
         {/* Master Model Tracking */}
         {currentTab === 'models_tracking' && (

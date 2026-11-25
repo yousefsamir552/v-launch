@@ -20,14 +20,7 @@ import {
   PartStage,
   getPartLabel
 } from '../types';
-import { printManualCountSheet } from '../utils/printManualCountSheet';
-import {
-  escapeHtml,
-  logClientPrintAction,
-  openUnifiedPrintWindow,
-  renderSignatureBar,
-  safeImageSrc
-} from '../utils/printShared';
+import { QCPrintPreviewConfig, QCPrintPreviewModal } from './QCPrintPreviewModal';
 import { stageBeyond } from '../utils/completedModels';
 import { ZoomableImage } from './ZoomableImage';
 import {
@@ -92,6 +85,8 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
     const stages = getPartStages(modelId);
     return modelParts.find((part) => stages[part] === targetStage) || modelParts[0] || 'shirt';
   });
+
+  const [qcPrintPreview, setQcPrintPreview] = useState<QCPrintPreviewConfig | null>(null);
 
   const selectedPartStages = getPartStages(modelId);
   const selectedStageKey = (
@@ -399,162 +394,25 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
       : 'العد بعد المكن';
 
   const handlePrintWorkerSheet = () => {
-    logClientPrintAction(
-      'العد والجودة',
-      `طباعة ورقة جرد الفرز (${printStageLabel}) للموديل ${model.model_code}`,
-      model.model_code
-    );
-
-    const totalColorsCount = modelParts.reduce(
-      (sum, part) => sum + (printMatrixByPart[part]?.colors?.length || 0),
-      0
-    );
-    const useLandscape =
-      sizeList.length > 5 || (modelParts.length > 1 && totalColorsCount > 6);
-    const imageSrc = safeImageSrc(model.image);
-    const today = new Date().toLocaleDateString('ar-EG');
-
-    const partTablesHtml = modelParts
-      .map((part) => {
-        const partData = printMatrixByPart[part] || {
-          colors: [] as string[],
-          matrix: {} as Record<string, { good: number; defect: number }>
-        };
-        const partColors = partData.colors;
-        const partMatrix = partData.matrix;
-        let partGoodTotal = 0;
-        let partDefTotal = 0;
-
-        const rowsHtml = partColors.length
-          ? partColors
-              .map((col) => {
-                let rGood = 0;
-                let rDef = 0;
-                const sizeCells = sizeList
-                  .map((sz) => {
-                    const c = partMatrix[makeCellKey(col, sz)];
-                    const g = Number(c?.good) || 0;
-                    const d = Number(c?.defect) || 0;
-                    rGood += g;
-                    rDef += d;
-                    if (g > 0 || d > 0) {
-                      return `<td class="num"><span class="ok">${g}</span> / <span class="${
-                        d > 0 ? 'bad' : 'muted'
-                      }">${d}</span></td>`;
-                    }
-                    return '<td class="cell-blank"></td>';
-                  })
-                  .join('');
-                partGoodTotal += rGood;
-                partDefTotal += rDef;
-                return `<tr>
-                  <td class="text-right"><strong>${escapeHtml(col)}</strong></td>
-                  ${sizeCells}
-                  <td class="num ok">${rGood > 0 ? rGood.toLocaleString('ar-EG') : '—'}</td>
-                  <td class="num ${rDef > 0 ? 'bad' : 'muted'}">${
-                  rDef > 0 ? rDef.toLocaleString('ar-EG') : '—'
-                }</td>
-                </tr>`;
-              })
-              .join('')
-          : `<tr><td colspan="${sizeList.length + 3}" class="muted">لا توجد ألوان مسجلة لهذه القطعة</td></tr>`;
-
-        return `<div class="part-wrap">
-          <div class="p-sec">القطعة: ${escapeHtml(getPartLabel(part))} — الإجمالي (سليم: ${partGoodTotal.toLocaleString('ar-EG')} | هالك: ${partDefTotal.toLocaleString('ar-EG')})</div>
-          <table class="qc-sheet-table">
-            <thead>
-              <tr>
-                <th class="text-right" style="width:${useLandscape ? '15%' : '18%'}">اللون / المقاس</th>
-                ${sizeList
-                  .map((sz) => `<th>${escapeHtml(sz)}<div class="th-sub">سليم / تالف</div></th>`)
-                  .join('')}
-                <th style="width:10%">المجموع السليم</th>
-                <th style="width:9%">الهالك</th>
-              </tr>
-            </thead>
-            <tbody>${rowsHtml}</tbody>
-            <tfoot>
-              <tr class="total">
-                <td class="text-right" colspan="${sizeList.length + 1}">إجمالي ${escapeHtml(getPartLabel(part))}</td>
-                <td class="num ok">${partGoodTotal.toLocaleString('ar-EG')}</td>
-                <td class="num ${partDefTotal > 0 ? 'bad' : ''}">${partDefTotal.toLocaleString('ar-EG')}</td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>`;
-      })
-      .join('');
-
-    const notesText = [model.design_notes, model.notes_shirt, model.notes_pants]
+    const notesText = [model.design_notes, model.notes_shirt, model.notes_pants, model.notes_jacket]
       .filter((t) => t && String(t).trim())
       .join(' • ');
 
-    const bodyHtml = `
-      <div class="p-info-card">
-        <div class="thumb">
-          ${
-            imageSrc
-              ? `<img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(model.model_code)}" onerror="this.style.display='none'" />`
-              : '<span class="muted">لا توجد صورة</span>'
-          }
-        </div>
-        <div class="p-fields">
-          <div class="p-field"><span class="p-k">كود الموديل</span><span class="p-v">${escapeHtml(model.model_code)}</span></div>
-          <div class="p-field"><span class="p-k">نوع الموديل</span><span class="p-v">${escapeHtml(model.model_type || '—')}</span></div>
-          <div class="p-field"><span class="p-k">مرحلة العد</span><span class="p-v">${escapeHtml(printStageLabel)}</span></div>
-          <div class="p-field"><span class="p-k">التاريخ</span><span class="p-v num">${escapeHtml(today)}</span></div>
-          <div class="p-field full"><span class="p-k">القطع</span><span class="p-v">${escapeHtml(modelParts.map((p) => getPartLabel(p)).join(' + '))}</span></div>
-          <div class="p-field full"><span class="p-k">المقاسات</span><span class="p-v chips">${sizeList.map((s) => `<span class="chip">${escapeHtml(s)}</span>`).join('')}</span></div>
-        </div>
-      </div>
-
-      ${partTablesHtml}
-
-      ${
-        notesText
-          ? `<div class="p-note-box">
-               <div class="p-note-title">ملاحظات الموديل</div>
-               <div class="p-note-body">${escapeHtml(notesText)}</div>
-             </div>`
-          : ''
-      }
-
-      ${renderSignatureBar(['توقيع مستلم الفرز', 'اعتماد مشرف الجودة', 'توقيع الكنترول'], true)}
-    `;
-
-    openUnifiedPrintWindow({
-      documentTitle: `ورقة جرد الفرز - ${model.model_code}`,
-      mode: 'fit-single-page',
-      orientation: useLandscape ? 'landscape' : 'portrait',
-      header: {
-        siteName: globalSettings?.site_name,
-        logo: globalSettings?.logo,
-        title: `مصفوفة الفرز والعد — ${printStageLabel}`,
-        subtitle: `قسم الفرز والكنترول والجودة — موديل ${model.model_code}`,
-        compact: true
-      },
-      bodyHtml,
-      extraCss: `
-        .thumb {
-          width: ${useLandscape ? '88px' : '112px'};
-          height: ${useLandscape ? '88px' : '112px'};
-          flex: 0 0 auto;
-          border: 1px solid #cbd5e1;
-          border-radius: 6px;
-          overflow: hidden;
-          background: #f8fafc;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-        .thumb img { width: 100%; height: 100%; object-fit: contain; }
-        .part-wrap { margin-bottom: 5px; break-inside: avoid; page-break-inside: avoid; }
-        table.qc-sheet-table { table-layout: fixed; font-size: 10px; margin-bottom: 4px; }
-        table.qc-sheet-table th, table.qc-sheet-table td { border: 1.2px solid #334155; padding: 4px 4px; }
-        table.qc-sheet-table td.cell-blank { height: 24px; background: #ffffff !important; }
-        .th-sub { font-size: 8px; font-weight: 600; color: #475569; margin-top: 1px; }
-      `,
-      popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة ورقة الفرز.'
+    setQcPrintPreview({
+      mode: 'worker_matrix',
+      siteName: globalSettings?.site_name,
+      logo: globalSettings?.logo,
+      imageUrl: model.image,
+      modelCode: model.model_code,
+      modelType: model.model_type,
+      stageLabel: printStageLabel,
+      sizes: sizeList,
+      parts: modelParts.map((part) => ({
+        key: part,
+        colors: printMatrixByPart[part]?.colors || [],
+        matrix: printMatrixByPart[part]?.matrix || {}
+      })),
+      notes: notesText
     });
   };
 
@@ -584,18 +442,14 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
           <button
             type="button"
             onClick={() =>
-              printManualCountSheet({
+              setQcPrintPreview({
+                mode: 'manual',
                 siteName: globalSettings?.site_name,
                 logo: globalSettings?.logo,
                 imageUrl: model.image,
                 modelCode: model.model_code,
                 modelType: model.model_type,
-                stageLabel:
-                  selectedStage === 'before_print'
-                    ? 'العد قبل الطباعة'
-                    : selectedStage === 'after_print'
-                    ? 'العد بعد الطباعة'
-                    : 'العد بعد المكن',
+                stageLabel: printStageLabel,
                 sizes: sizeList,
                 parts: modelParts.map((part) => ({
                   key: part,
@@ -1113,6 +967,13 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
           )}
         </form>
       </div>
+
+      {qcPrintPreview && (
+        <QCPrintPreviewModal
+          config={qcPrintPreview}
+          onClose={() => setQcPrintPreview(null)}
+        />
+      )}
     </div>
   );
 };

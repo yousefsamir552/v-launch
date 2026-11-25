@@ -4,7 +4,8 @@ import {
   CustomRole,
   RolePermissions,
   SystemSectionKey,
-  HRSectionKey
+  HRSectionKey,
+  ReadinessStageKey
 } from '../types';
 import {
   ShieldAlert,
@@ -35,7 +36,8 @@ import {
   Users,
   Lock,
   KeyRound,
-  ShoppingCart
+  ShoppingCart,
+  CheckCircle2
 } from 'lucide-react';
 
 /**
@@ -443,6 +445,51 @@ export const HR_PERMISSIONS_LIST: {
   }
 ];
 
+/** الصلاحيات الست المستقلة لشاشات «جاهزية الموديلات». */
+export const READINESS_PERMISSIONS_LIST: {
+  key: ReadinessStageKey;
+  permKey: keyof RolePermissions;
+  label: string;
+  description: string;
+}[] = [
+  {
+    key: 'print',
+    permKey: 'readiness_print',
+    label: 'جاهزية المطابع',
+    description: 'متابعة الموديلات الجاهزة للدخول أو قيد التشغيل أو المنتهية من المطابع'
+  },
+  {
+    key: 'sewing',
+    permKey: 'readiness_sewing',
+    label: 'جاهزية المكن',
+    description: 'متابعة الموديلات الجاهزة للدخول أو قيد التشغيل أو المنتهية من المكن'
+  },
+  {
+    key: 'finishing',
+    permKey: 'readiness_finishing',
+    label: 'جاهزية التشطيب',
+    description: 'متابعة الموديلات الجاهزة للدخول أو قيد التشغيل أو المنتهية من التشطيب'
+  },
+  {
+    key: 'ironing',
+    permKey: 'readiness_ironing',
+    label: 'جاهزية المكواة',
+    description: 'متابعة الموديلات الجاهزة للدخول أو قيد التشغيل أو المنتهية من المكواة'
+  },
+  {
+    key: 'packaging',
+    permKey: 'readiness_packaging',
+    label: 'جاهزية التغليف',
+    description: 'متابعة الموديلات الجاهزة للدخول أو قيد التشغيل أو المنتهية من التغليف'
+  },
+  {
+    key: 'dest',
+    permKey: 'readiness_dest',
+    label: 'جاهزية الدَست',
+    description: 'متابعة الموديلات الجاهزة للدخول أو قيد التشغيل أو المنتهية من الدَست'
+  }
+];
+
 export const DEFAULT_PERMISSIONS: RolePermissions = {
   fabric_warehouse_view: false,
   fabric_warehouse_edit: false,
@@ -508,7 +555,13 @@ export const DEFAULT_PERMISSIONS: RolePermissions = {
   can_add_qc_before_print_notes: false,
   can_add_qc_after_print_notes: false,
   can_add_sewing_notes: false,
-  can_add_printing_notes: false
+  can_add_printing_notes: false,
+  readiness_print: false,
+  readiness_sewing: false,
+  readiness_finishing: false,
+  readiness_ironing: false,
+  readiness_packaging: false,
+  readiness_dest: false
 };
 
 export const RoleManagementSection: React.FC = () => {
@@ -731,6 +784,12 @@ export const RoleManagementSection: React.FC = () => {
         next.can_add_qc_after_print_notes = true;
         next.can_add_sewing_notes = true;
         next.can_add_printing_notes = true;
+        next.readiness_print = true;
+        next.readiness_sewing = true;
+        next.readiness_finishing = true;
+        next.readiness_ironing = true;
+        next.readiness_packaging = true;
+        next.readiness_dest = true;
       } else if (preset === 'all_view') {
         SYSTEM_SECTIONS.forEach((s) => {
           (next as any)[`${s.key}_view`] = true;
@@ -766,6 +825,12 @@ export const RoleManagementSection: React.FC = () => {
         next.can_add_qc_after_print_notes = false;
         next.can_add_sewing_notes = false;
         next.can_add_printing_notes = false;
+        next.readiness_print = true;
+        next.readiness_sewing = true;
+        next.readiness_finishing = true;
+        next.readiness_ironing = true;
+        next.readiness_packaging = true;
+        next.readiness_dest = true;
       } else if (preset === 'warehouse_only') {
         SYSTEM_SECTIONS.forEach((s) => {
           const isWh = s.key.includes('warehouse') || s.key === 'purchase_requests';
@@ -786,6 +851,12 @@ export const RoleManagementSection: React.FC = () => {
         next.can_add_qc_after_print_notes = true;
         next.can_add_sewing_notes = true;
         next.can_add_printing_notes = true;
+        next.readiness_print = true;
+        next.readiness_sewing = true;
+        next.readiness_finishing = true;
+        next.readiness_ironing = true;
+        next.readiness_packaging = true;
+        next.readiness_dest = true;
       }
       // لا يمنح النمط السريع أي صلاحية لا يملكها المدير أو لا يحق له تفويضها.
       Object.keys(next).forEach((key) => {
@@ -1327,6 +1398,55 @@ export const RoleManagementSection: React.FC = () => {
                   ))}
                 </div>
               </div>
+
+              {/* Model Readiness Per-Stage Permissions (جاهزية الموديلات — 6 مراحل مستقلة) */}
+              {READINESS_PERMISSIONS_LIST.some((rp) => isPermissionVisible(String(rp.permKey))) && (
+                <div className="bg-emerald-50/60 rounded-3xl p-5 border border-emerald-200/90 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-emerald-600 text-white rounded-xl shadow-xs">
+                      <CheckCircle2 className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-black text-sm text-emerald-950">
+                        صلاحيات جاهزية الموديلات (Model Readiness — مستقلة لكل مرحلة)
+                      </h4>
+                      <p className="text-[11px] text-emerald-800">
+                        حدّد بدقة مراحل الجاهزية التي يحق لهذا الدور فتحها ومتابعتها من القائمة الجانبية.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    {READINESS_PERMISSIONS_LIST.filter((rp) =>
+                      isPermissionVisible(String(rp.permKey))
+                    ).map((rp) => (
+                      <label
+                        key={rp.key}
+                        className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-emerald-200 hover:border-emerald-400 cursor-pointer transition shadow-2xs"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={Boolean(permissions[rp.permKey])}
+                          onChange={() => handleToggleBooleanPerm(rp.permKey)}
+                          className="w-4 h-4 text-emerald-600 rounded-sm focus:ring-emerald-500"
+                        />
+                        <div className="text-start flex-1">
+                          <span className="font-bold text-xs text-slate-900 block">{rp.label}</span>
+                          <span className="text-[10px] text-slate-500">{rp.description}</span>
+                        </div>
+                        <DelegationBadge
+                          permKey={String(rp.permKey)}
+                          granted={Boolean(permissions[rp.permKey])}
+                          isDelegatable={delegatable.includes(String(rp.permKey))}
+                          canDelegate={canDelegatePermission(String(rp.permKey))}
+                          onToggle={toggleDelegatable}
+                          tone="emerald"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
 
                 </>
               )}

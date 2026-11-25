@@ -15,7 +15,12 @@ import {
   Save
 } from 'lucide-react';
 import { QCStageType, Model, QCMatrixCellInput, GarmentPart, PartStage, PART_EMOJI, getPartLabel } from '../types';
-import { printManualCountSheet } from '../utils/printManualCountSheet';
+import {
+  QC_STAGE_BANNER_CSS,
+  normalizeQcBannerStageLabel,
+  renderQcStageBannerHtml
+} from '../utils/printManualCountSheet';
+import { QCPrintPreviewConfig, QCPrintPreviewModal } from './QCPrintPreviewModal';
 import {
   escapeHtml,
   isImageLogo,
@@ -64,6 +69,7 @@ export const QCView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showCompleted, setShowCompleted] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
+  const [qcPrintPreview, setQcPrintPreview] = useState<QCPrintPreviewConfig | null>(null);
   const [countingModel, setCountingModel] = useState<Model | null>(null);
   const [modalPart, setModalPart] = useState<GarmentPart>('shirt');
   // Only parts currently waiting in this QC stage can be counted here, plus the
@@ -350,10 +356,11 @@ export const QCView: React.FC = () => {
     }
   };
 
-  // Prints a blank A4 manual-count sheet (one table per garment part) for floor workers.
+  // Opens the QC Print Preview & Image Cropper modal before printing a blank A4 manual-count sheet.
   const handlePrintManualSheet = (model: Model, onlyPart?: GarmentPart) => {
     const parts = onlyPart ? [onlyPart] : getModelParts(model.id);
-    printManualCountSheet({
+    setQcPrintPreview({
+      mode: 'manual',
       siteName: globalSettings?.site_name,
       logo: globalSettings?.logo,
       imageUrl: model.image,
@@ -473,7 +480,9 @@ export const QCView: React.FC = () => {
       })
       .join('');
 
+    const bannerStage = normalizeQcBannerStageLabel(stageTitle);
     const bodyHtml = `
+      ${renderQcStageBannerHtml(stageTitle)}
       <table>
         <thead>
           <tr>
@@ -496,17 +505,18 @@ export const QCView: React.FC = () => {
     `;
 
     openUnifiedPrintWindow({
-      documentTitle: `تقرير جرد مرحلة الفرز - ${stageTitle}`,
+      documentTitle: `تقرير جرد مرحلة الفرز - ${bannerStage}`,
       mode: 'multi-page-table',
       orientation: 'landscape',
       header: {
         siteName: globalSettings?.site_name,
         logo: globalSettings?.logo,
-        title: `تقرير تدقيق ومطابقة مرحلة الفرز: ${stageTitle}`,
+        title: `تقرير تدقيق ومطابقة مرحلة الفرز: ${bannerStage}`,
         subtitle: 'كشف تفصيلي (الداخل للمرحلة، المقصوص، السليم، التالف، والعجز)',
         metaItems: [`عدد قطع الفرز: ${currentTabCards.length.toLocaleString('ar-EG')}`]
       },
       bodyHtml,
+      extraCss: QC_STAGE_BANNER_CSS,
       popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة تقرير الفرز.'
     });
   };
@@ -1621,6 +1631,13 @@ export const QCView: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {qcPrintPreview && (
+        <QCPrintPreviewModal
+          config={qcPrintPreview}
+          onClose={() => setQcPrintPreview(null)}
+        />
       )}
     </div>
   );

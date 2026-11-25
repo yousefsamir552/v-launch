@@ -32,7 +32,10 @@ import {
   Search,
   Printer,
   Shirt,
-  PackageOpen
+  PackageOpen,
+  Flame,
+  PackageCheck,
+  ClipboardCheck
 } from 'lucide-react';
 import { InternalMessagingModal } from './InternalMessagingModal';
 import { SNOOZE_OPTIONS } from '../types';
@@ -52,6 +55,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     canAccessSettings,
     canManageHR,
     canAccessHRSection,
+    canAccessReadinessStage,
     globalSettings,
     appNotifications,
     unreadNotificationsCount,
@@ -68,6 +72,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
   const [productionOpen, setProductionOpen] = useState(true);
   const [warehousesOpen, setWarehousesOpen] = useState(false);
   const [productionControlOpen, setProductionControlOpen] = useState(false);
+  const [readinessOpen, setReadinessOpen] = useState(false);
   const [hrOpen, setHrOpen] = useState(true);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [messagesModalOpen, setMessagesModalOpen] = useState(false);
@@ -155,6 +160,52 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     }
   ].filter((item) => item.isVisible);
 
+  // Nested Group C: جاهزية الموديلات (6 independent permission-gated stages)
+  const readinessSubItems = [
+    {
+      id: 'readiness_print',
+      label: 'المطابع',
+      icon: Printer,
+      color: 'text-teal-600',
+      isVisible: canAccessReadinessStage('print')
+    },
+    {
+      id: 'readiness_sewing',
+      label: 'المكن',
+      icon: Shirt,
+      color: 'text-emerald-600',
+      isVisible: canAccessReadinessStage('sewing')
+    },
+    {
+      id: 'readiness_finishing',
+      label: 'التشطيب',
+      icon: Sparkles,
+      color: 'text-purple-600',
+      isVisible: canAccessReadinessStage('finishing')
+    },
+    {
+      id: 'readiness_ironing',
+      label: 'المكواة',
+      icon: Flame,
+      color: 'text-rose-600',
+      isVisible: canAccessReadinessStage('ironing')
+    },
+    {
+      id: 'readiness_packaging',
+      label: 'التغليف',
+      icon: Package,
+      color: 'text-orange-600',
+      isVisible: canAccessReadinessStage('packaging')
+    },
+    {
+      id: 'readiness_dest',
+      label: 'الدَست',
+      icon: PackageCheck,
+      color: 'text-indigo-600',
+      isVisible: canAccessReadinessStage('dest')
+    }
+  ].filter((item) => item.isVisible);
+
   type ProductionNavEntry =
     | {
         kind: 'item';
@@ -166,7 +217,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
       }
     | {
         kind: 'group';
-        id: 'warehouses_group' | 'production_control_group';
+        id: 'warehouses_group' | 'production_control_group' | 'readiness_group';
         label: string;
         icon: any;
         color: string;
@@ -235,6 +286,15 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
         isVisible: hasAssemblyPackagingAccess()
       },
       {
+        kind: 'group',
+        id: 'readiness_group',
+        label: 'جاهزية الموديلات',
+        icon: ClipboardCheck,
+        color: 'text-emerald-600',
+        isVisible: readinessSubItems.length > 0,
+        children: readinessSubItems
+      },
+      {
         kind: 'item',
         id: 'models_tracking',
         label: 'حركة الموديلات',
@@ -280,6 +340,9 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
       currentTab === 'production_control'
     ) {
       setProductionControlOpen(true);
+    }
+    if (currentTab.startsWith('readiness_')) {
+      setReadinessOpen(true);
     }
   }, [currentTab]);
 
@@ -577,12 +640,18 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                   if (entry.kind === 'group') {
                     const GroupIcon = entry.icon;
                     const isGroupOpen =
-                      entry.id === 'warehouses_group' ? warehousesOpen : productionControlOpen;
+                      entry.id === 'warehouses_group'
+                        ? warehousesOpen
+                        : entry.id === 'production_control_group'
+                        ? productionControlOpen
+                        : readinessOpen;
                     const toggleGroup = () => {
                       if (entry.id === 'warehouses_group') {
                         setWarehousesOpen((v) => !v);
-                      } else {
+                      } else if (entry.id === 'production_control_group') {
                         setProductionControlOpen((v) => !v);
+                      } else {
+                        setReadinessOpen((v) => !v);
                       }
                     };
                     const isGroupActive = entry.children.some((c) => isTabActive(c.id));

@@ -32,6 +32,9 @@ import {
   HRSectionKey,
   HR_SECTION_KEYS,
   HR_SECTION_PERM_MAP,
+  ReadinessStageKey,
+  READINESS_STAGE_KEYS,
+  READINESS_STAGE_PERM_MAP,
   RankLevel,
   RankOption,
   GlobalSiteSettings,
@@ -138,7 +141,13 @@ export const buildPermissionHelpers = (ctx: AppInternalContext) => {
         can_add_qc_before_print_notes: true,
         can_add_qc_after_print_notes: true,
         can_add_sewing_notes: true,
-        can_add_printing_notes: true
+        can_add_printing_notes: true,
+        readiness_print: true,
+        readiness_sewing: true,
+        readiness_finishing: true,
+        readiness_ironing: true,
+        readiness_packaging: true,
+        readiness_dest: true
       };
     }
 
@@ -359,6 +368,16 @@ export const buildPermissionHelpers = (ctx: AppInternalContext) => {
   // أي صلاحية من صلاحيات HR المستقلة تفتح القسم العام.
   const canManageHR = (): boolean => HR_SECTION_KEYS.some((section) => canAccessHRSection(section));
 
+  // صلاحيات «جاهزية الموديلات» المستقلة لكل مرحلة من المراحل الست.
+  const canAccessReadinessStage = (stage: ReadinessStageKey): boolean => {
+    if (!currentUser) return false;
+    if (isCurrentUserSudo()) return true;
+    return hasSpecificPermission(READINESS_STAGE_PERM_MAP[stage]);
+  };
+
+  const canAccessAnyReadiness = (): boolean =>
+    READINESS_STAGE_KEYS.some((stage) => canAccessReadinessStage(stage));
+
   // -------------------------------------------------------------------------
   // Strict Hierarchical Ranks (الرتب الهرمية الصارمة والمخفية)
   // 0 = Sudo → {0,1,2,3} | 1 → {2,3} | 2 → {3} | 3 → {3} (أقران فقط)
@@ -551,6 +570,8 @@ export const buildPermissionHelpers = (ctx: AppInternalContext) => {
     isCurrentUserSudo,
     canAccessHRSection,
     canManageHR,
+    canAccessReadinessStage,
+    canAccessAnyReadiness,
     currentUserRank,
     visibleRankLevels,
     visibleRankOptions,

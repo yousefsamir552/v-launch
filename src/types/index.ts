@@ -46,6 +46,33 @@ export const HR_SECTION_PERM_MAP: Record<HRSectionKey, string> = {
   reports: 'hr_reports'
 };
 
+/** المراحل الست المستقلة لقسم «جاهزية الموديلات». */
+export type ReadinessStageKey =
+  | 'print'
+  | 'sewing'
+  | 'finishing'
+  | 'ironing'
+  | 'packaging'
+  | 'dest';
+
+export const READINESS_STAGE_KEYS: ReadinessStageKey[] = [
+  'print',
+  'sewing',
+  'finishing',
+  'ironing',
+  'packaging',
+  'dest'
+];
+
+export const READINESS_STAGE_PERM_MAP: Record<ReadinessStageKey, keyof RolePermissions> = {
+  print: 'readiness_print',
+  sewing: 'readiness_sewing',
+  finishing: 'readiness_finishing',
+  ironing: 'readiness_ironing',
+  packaging: 'readiness_packaging',
+  dest: 'readiness_dest'
+};
+
 /**
  * الرتب الهرمية الصارمة:
  * 0 = Sudo (محصورة في حساب الطوارئ)، 1 = إدارة عليا، 2 = إشرافية، 3 = عام.
@@ -135,6 +162,14 @@ export interface RolePermissions {
   can_add_qc_after_print_notes?: boolean;
   can_add_sewing_notes?: boolean;
   can_add_printing_notes?: boolean;
+
+  // Granular Model Readiness permissions (جاهزية الموديلات — 6 مراحل مستقلة)
+  readiness_print?: boolean;
+  readiness_sewing?: boolean;
+  readiness_finishing?: boolean;
+  readiness_ironing?: boolean;
+  readiness_packaging?: boolean;
+  readiness_dest?: boolean;
 }
 
 /**
@@ -241,6 +276,14 @@ export interface UserPermissions {
   can_add_qc_after_print_notes?: boolean;
   can_add_sewing_notes?: boolean;
   can_add_printing_notes?: boolean;
+
+  // Model Readiness overrides
+  readiness_print?: boolean;
+  readiness_sewing?: boolean;
+  readiness_finishing?: boolean;
+  readiness_ironing?: boolean;
+  readiness_packaging?: boolean;
+  readiness_dest?: boolean;
 
   [key: string]: any;
 }

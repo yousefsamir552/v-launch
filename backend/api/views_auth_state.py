@@ -133,16 +133,16 @@ class AuthViewSet(viewsets.ViewSet):
 # the frontend keeps its shape (no crash on `undefined.map`).
 # ---------------------------------------------------------------------------
 STATE_SECTION_KEYS = {
-    'models': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'accessories', 'purchase_requests'),
-    'requirements': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
-    'accessories': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'accessories'),
-    'cuttingRecords': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
-    'qcRecords': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
-    'printDispatches': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
-    'sewingDispatches': ('printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
-    'packagingRequirements': ('assembly_packaging', 'tracking', 'reports', 'production_wh'),
-    'finishingRecords': ('assembly_packaging', 'tracking', 'reports', 'production_wh'),
-    'assemblyStageRecords': ('assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'models': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'accessories', 'purchase_requests', 'readiness'),
+    'requirements': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'readiness'),
+    'accessories': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'accessories', 'readiness'),
+    'cuttingRecords': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'readiness'),
+    'qcRecords': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'readiness'),
+    'printDispatches': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'readiness'),
+    'sewingDispatches': ('printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'readiness'),
+    'packagingRequirements': ('assembly_packaging', 'tracking', 'reports', 'production_wh', 'readiness'),
+    'finishingRecords': ('assembly_packaging', 'tracking', 'reports', 'production_wh', 'readiness'),
+    'assemblyStageRecords': ('assembly_packaging', 'tracking', 'reports', 'production_wh', 'readiness'),
     'workshopEvaluations': ('printing', 'sewing', 'assembly_packaging', 'tracking', 'reports'),
     'packagingMaterialRules': ('assembly_packaging', 'production_wh', 'reports'),
     'packagingMaterialTransactions': ('assembly_packaging', 'production_wh', 'reports'),
@@ -173,6 +173,8 @@ def visible_sections_for(profile):
     }
     if profile.has_perm('reports_view') or profile.has_perm('can_reports'):
         allowed.add('reports')
+    if any(profile.has_perm(key) for key in READINESS_PERM_KEYS):
+        allowed.add('readiness')
     return allowed
 
 

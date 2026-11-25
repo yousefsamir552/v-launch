@@ -32,6 +32,7 @@ import {
   HRSectionKey,
   HR_SECTION_KEYS,
   HR_SECTION_PERM_MAP,
+  ReadinessStageKey,
   RankLevel,
   RankOption,
   GlobalSiteSettings,
@@ -360,6 +361,10 @@ export interface AppContextType {
 
   // Per-tab HR permissions (الصلاحيات المستقلة لتبويبات الموارد البشرية)
   canAccessHRSection: (section: HRSectionKey) => boolean;
+
+  // Per-stage Model Readiness permissions (الصلاحيات المستقلة لجاهزية الموديلات)
+  canAccessReadinessStage: (stage: ReadinessStageKey) => boolean;
+  canAccessAnyReadiness: () => boolean;
 
   // Department Notes Permission Checkers (Task 4)
   canAddDesignNotes: () => boolean;
