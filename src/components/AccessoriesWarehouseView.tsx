@@ -25,7 +25,14 @@ import {
   Layers
 } from 'lucide-react';
 import { AccessoryItem, AccessoryUnit, AccessoryUsageType, DesignModel, ModelAccessory, Supplier } from '../types';
-import { isImageLogo, logClientPrintAction } from '../utils/printShared';
+import {
+  escapeHtml,
+  isImageLogo,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar,
+  safeImageSrc
+} from '../utils/printShared';
 import { printAccessoryIssueOrder } from '../utils/printAccessoryIssueOrder';
 
 type PermitGroup = { model: DesignModel; lines: ModelAccessory[] };
@@ -664,6 +671,266 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const visiblePermitGroups =
     permitStatusFilter === 'pending' ? permitGroups.pending : permitGroups.issued;
   const permitIssuedMode = permitStatusFilter === 'issued';
+
+  const handlePrintAccessoriesInventory = () => {
+    logClientPrintAction(
+      'مخزن الإكسسوارات',
+      'طباعة تقرير جرد مخزن الإكسسوارات والمستلزمات',
+      'جرد الإكسسوارات'
+    );
+    const showPrices = canViewAccessoryPrices();
+    const totalQty = accessoryItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const totalReserved = accessoryItems.reduce((sum, item) => sum + Number(item.reserved_quantity || 0), 0);
+    const totalAvailable = totalQty - totalReserved;
+    const totalValue = accessoryItems.reduce(
+      (sum, item) => sum + Number(item.price_per_unit || 0) * Number(item.quantity || 0),
+      0
+    );
+
+    const rowsHtml = accessoryItems
+      .map((item, idx) => {
+        const imgSrc = safeImageSrc(item.image);
+        const usageLabel =
+          item.usage_type === 'custom_model'
+            ? `خاص بموديل ${item.custom_model_code || ''}`
+            : item.usage_type === 'carryover'
+            ? 'رصيد سابق / مرحّل'
+            : 'رصيد مستمر';
+        const thresholdLabel =
+          item.usage_type === 'custom_model'
+            ? String(item.target_quantity ?? item.min_threshold ?? 0)
+            : item.usage_type === 'carryover' || Number(item.min_threshold ?? 0) <= 0
+            ? '0 (ملغي)'
+            : String(item.min_threshold ?? 0);
+        const avail = Number(item.quantity || 0) - Number(item.reserved_quantity || 0);
+        const rowValue = Number((Number(item.price_per_unit || 0) * Number(item.quantity || 0)).toFixed(2));
+
+        return `<tr>
+          <td class="num muted">${idx + 1}</td>
+          <td>${
+            imgSrc
+              ? `<img src="${escapeHtml(imgSrc)}" alt="${escapeHtml(item.name)}" class="acc-thumb" onerror="this.style.display='none'" />`
+              : '<span class="muted">—</span>'
+          }</td>
+          <td class="mono"><strong>${escapeHtml(item.code)}</strong></td>
+          <td>${escapeHtml(item.type_name || '—')}</td>
+          <td class="text-right"><strong>${escapeHtml(item.name)}</strong></td>
+          <td class="text-right">${escapeHtml(usageLabel)}</td>
+          <td class="num"><strong>${Number(item.quantity || 0).toLocaleString('ar-EG')}</strong></td>
+          <td class="num">${Number(item.reserved_quantity || 0).toLocaleString('ar-EG')}</td>
+          <td class="num ${avail <= 0 ? 'bad' : 'ok'}">${avail.toLocaleString('ar-EG')}</td>
+          <td class="num">${escapeHtml(thresholdLabel)}</td>
+          <td>${escapeHtml(item.unit || 'قطعة')}</td>
+          ${
+            showPrices
+              ? `<td class="num">${Number(item.price_per_unit || 0).toLocaleString('ar-EG')}</td>
+                 <td class="num ok">${rowValue.toLocaleString('ar-EG')}</td>`
+              : ''
+          }
+        </tr>`;
+      })
+      .join('');
+
+    const bodyHtml = `
+      <div class="p-kpis">
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الأصناف</span><span class="p-kpi-val">${accessoryItems.length.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الرصيد الفعلي</span><span class="p-kpi-val">${Math.round(totalQty).toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي المحجوز</span><span class="p-kpi-val warn">${Math.round(totalReserved).toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي المتاح</span><span class="p-kpi-val ok">${Math.round(totalAvailable).toLocaleString('ar-EG')}</span></div>
+        ${
+          showPrices
+            ? `<div class="p-kpi"><span class="p-kpi-label">إجمالي قيمة المخزون</span><span class="p-kpi-val ok">${Math.round(totalValue).toLocaleString('ar-EG')} ج.م</span></div>`
+            : ''
+        }
+      </div>
+
+      <table class="acc-inv-table">
+        <thead>
+          <tr>
+            <th style="width:3%">#</th>
+            <th style="width:5%">الصورة</th>
+            <th style="width:9%">الكود</th>
+            <th style="width:9%">النوع</th>
+            <th class="text-right" style="width:17%">اسم الصنف</th>
+            <th class="text-right" style="width:13%">نوع الاستخدام</th>
+            <th>الرصيد الفعلي</th>
+            <th>المحجوز</th>
+            <th>المتاح</th>
+            <th>حد التنبيه / المطلوب</th>
+            <th>الوحدة</th>
+            ${showPrices ? '<th>سعر الوحدة</th><th>قيمة الرصيد</th>' : ''}
+          </tr>
+        </thead>
+        <tbody>${rowsHtml || `<tr><td colspan="${showPrices ? 13 : 11}" class="muted">لا توجد أصناف إكسسوارات مسجلة.</td></tr>`}</tbody>
+        <tfoot>
+          <tr class="total">
+            <td colspan="6" class="text-right">الإجمالي</td>
+            <td class="num">${Math.round(totalQty).toLocaleString('ar-EG')}</td>
+            <td class="num">${Math.round(totalReserved).toLocaleString('ar-EG')}</td>
+            <td class="num">${Math.round(totalAvailable).toLocaleString('ar-EG')}</td>
+            <td colspan="2"></td>
+            ${showPrices ? `<td>—</td><td class="num">${Math.round(totalValue).toLocaleString('ar-EG')} ج.م</td>` : ''}
+          </tr>
+        </tfoot>
+      </table>
+
+      ${renderSignatureBar(['أمين مخزن الإكسسوارات', 'المراجعة والجرد', 'اعتماد مدير المصنع'], true)}
+    `;
+
+    openUnifiedPrintWindow({
+      documentTitle: 'كشف جرد مخزن الإكسسوارات والمستلزمات',
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings?.site_name,
+        logo: globalSettings?.logo,
+        title: 'كشف جرد مخزن الإكسسوارات والمستلزمات',
+        subtitle: 'جرد شامل لجميع أصناف الإكسسوارات والكميات الفعلية والمحجوزة والمتاحة',
+        metaItems: [`عدد الأصناف: ${accessoryItems.length.toLocaleString('ar-EG')}`]
+      },
+      bodyHtml,
+      extraCss: `
+        .acc-thumb { width: 24px; height: 24px; object-fit: contain; border: 1px solid #cbd5e1; border-radius: 3px; background: #fff; display: block; margin: 0 auto; }
+        table.acc-inv-table { font-size: ${showPrices ? '8.8px' : '9.3px'}; }
+        table.acc-inv-table th, table.acc-inv-table td { padding: 3px 4px; }
+      `,
+      popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة كشف جرد الإكسسوارات.'
+    });
+  };
+
+  const handlePrintAccessoriesAlerts = () => {
+    logClientPrintAction(
+      'مخزن الإكسسوارات',
+      'طباعة ورقة طلبيات نواقص الإكسسوارات للمشتريات',
+      'نواقص الإكسسوارات'
+    );
+    const scopeLabel =
+      modalAlertTab === 'stock'
+        ? 'إكسسوارات مستمرة (Stock)'
+        : modalAlertTab === 'custom_model'
+        ? 'إكسسوارات موديلات خاصة'
+        : 'كافة النواقص المستمرة والمخصصة';
+
+    const stockSection =
+      modalAlertTab === 'all' || modalAlertTab === 'stock'
+        ? `<div class="p-sec">أولاً: نواقص الإكسسوارات المستمرة (رصيد المخزن العام — ${stockDeficits.length} صنف دون حد التنبيه)</div>
+          ${
+            stockDeficits.length > 0
+              ? `<table>
+                  <thead>
+                    <tr>
+                      <th style="width:4%">م</th>
+                      <th style="width:6%">الصورة</th>
+                      <th style="width:10%">الكود</th>
+                      <th class="text-right" style="width:20%">اسم الإكسسوار</th>
+                      <th style="width:10%">التصنيف</th>
+                      <th style="width:11%">الرصيد المتاح</th>
+                      <th style="width:11%">حد التنبيه</th>
+                      <th style="width:12%">العجز المطلوب شراؤه</th>
+                      <th class="text-right" style="width:16%">المورد المقترح والهاتف</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${stockDeficits
+                      .map(({ item, supplier, available, threshold, deficit }, idx) => {
+                        const imgSrc = safeImageSrc(item.image);
+                        return `<tr>
+                          <td class="num muted">${idx + 1}</td>
+                          <td>${
+                            imgSrc
+                              ? `<img src="${escapeHtml(imgSrc)}" alt="${escapeHtml(item.name)}" class="acc-thumb" onerror="this.style.display='none'" />`
+                              : '—'
+                          }</td>
+                          <td class="mono"><strong>${escapeHtml(item.code)}</strong></td>
+                          <td class="text-right"><strong>${escapeHtml(item.name)}</strong></td>
+                          <td>${escapeHtml(item.type_name || '—')}</td>
+                          <td class="num">${available} ${escapeHtml(item.unit)}</td>
+                          <td class="num"><strong>${threshold} ${escapeHtml(item.unit)}</strong></td>
+                          <td class="num bad"><strong>${deficit} ${escapeHtml(item.unit)}</strong></td>
+                          <td class="text-right">${escapeHtml(supplier?.name || 'مورد عام')}${
+                            supplier?.phone ? ` (${escapeHtml(supplier.phone)})` : ''
+                          }</td>
+                        </tr>`;
+                      })
+                      .join('')}
+                  </tbody>
+                </table>`
+              : '<p class="muted">لا توجد نواقص في الإكسسوارات المستمرة.</p>'
+          }`
+        : '';
+
+    const modelSection =
+      modalAlertTab === 'all' || modalAlertTab === 'custom_model'
+        ? `<div class="p-sec">ثانياً: نواقص إكسسوارات الموديلات المخصصة (Model-Specific — ${modelDeficits.length} صنف)</div>
+          ${
+            modelDeficits.length > 0
+              ? `<table>
+                  <thead>
+                    <tr>
+                      <th style="width:4%">م</th>
+                      <th style="width:6%">الصورة</th>
+                      <th style="width:10%">الكود</th>
+                      <th class="text-right" style="width:20%">اسم الإكسسوار</th>
+                      <th style="width:11%">الموديل المخصص</th>
+                      <th style="width:10%">الكمية الموردة</th>
+                      <th style="width:11%">الكمية المستهدفة</th>
+                      <th style="width:12%">العجز المطلوب توريده</th>
+                      <th class="text-right" style="width:16%">المورد ورقم الهاتف</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${modelDeficits
+                      .map(({ item, supplier, threshold, deficit }, idx) => {
+                        const imgSrc = safeImageSrc(item.image);
+                        return `<tr>
+                          <td class="num muted">${idx + 1}</td>
+                          <td>${
+                            imgSrc
+                              ? `<img src="${escapeHtml(imgSrc)}" alt="${escapeHtml(item.name)}" class="acc-thumb" onerror="this.style.display='none'" />`
+                              : '—'
+                          }</td>
+                          <td class="mono"><strong>${escapeHtml(item.code)}</strong></td>
+                          <td class="text-right"><strong>${escapeHtml(item.name)}</strong></td>
+                          <td><strong>موديل ${escapeHtml(item.custom_model_code || 'خاص')}</strong></td>
+                          <td class="num">${item.delivered_quantity ?? item.quantity} ${escapeHtml(item.unit)}</td>
+                          <td class="num"><strong>${threshold} ${escapeHtml(item.unit)}</strong></td>
+                          <td class="num bad"><strong>${deficit} ${escapeHtml(item.unit)}</strong></td>
+                          <td class="text-right">${escapeHtml(supplier?.name || 'مورد عام')}${
+                            supplier?.phone ? ` (${escapeHtml(supplier.phone)})` : ''
+                          }</td>
+                        </tr>`;
+                      })
+                      .join('')}
+                  </tbody>
+                </table>`
+              : '<p class="muted">لا توجد نواقص في إكسسوارات الموديلات المخصصة.</p>'
+          }`
+        : '';
+
+    const bodyHtml = `
+      ${stockSection}
+      ${modelSection}
+      ${renderSignatureBar(['أمين مخزن الإكسسوارات', 'مسؤول المشتريات', 'اعتماد مدير الإنتاج'], true)}
+    `;
+
+    openUnifiedPrintWindow({
+      documentTitle: 'كشف طلبيات ونواقص الإكسسوارات العاجلة',
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings?.site_name,
+        logo: globalSettings?.logo,
+        title: 'كشف طلبيات ونواقص الإكسسوارات العاجلة (شراء وتوريد)',
+        subtitle: `التصنيف: ${scopeLabel}`,
+        metaItems: [`إجمالي النواقص: ${lowStockItems.length.toLocaleString('ar-EG')} صنف`]
+      },
+      bodyHtml,
+      extraCss: `
+        .acc-thumb { width: 24px; height: 24px; object-fit: contain; border: 1px solid #cbd5e1; border-radius: 3px; background: #fff; display: block; margin: 0 auto; }
+      `,
+      popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة ورقة النواقص.'
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -2523,14 +2790,12 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => {
-                    logClientPrintAction('مخزن الإكسسوارات', 'طباعة تقرير جرد مخزن الإكسسوارات والمستلزمات', 'جرد الإكسسوارات');
-                    window.print();
-                  }}
+                  type="button"
+                  onClick={handlePrintAccessoriesInventory}
                   className="px-5 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition flex items-center gap-1.5 cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />
-                  <span>طباعة الكشف</span>
+                  <span>طباعة الكشف (A4 أفقي)</span>
                 </button>
                 <button onClick={() => setShowPrintInventoryModal(false)} className="text-slate-400 hover:text-slate-700">
                   <X className="w-5 h-5" />
@@ -2672,14 +2937,12 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => {
-                    logClientPrintAction('مخزن الإكسسوارات', 'طباعة ورقة طلبيات نواقص الإكسسوارات للمشتريات', 'نواقص الإكسسوارات');
-                    window.print();
-                  }}
+                  type="button"
+                  onClick={handlePrintAccessoriesAlerts}
                   className="px-5 py-2 rounded-full bg-amber-600 hover:bg-amber-700 text-white font-black text-xs shadow-md transition flex items-center gap-1.5 cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />
-                  <span>طباعة ورقة المشتريات</span>
+                  <span>طباعة ورقة المشتريات (A4 أفقي)</span>
                 </button>
                 <button onClick={() => setShowPrintAlertsModal(false)} className="text-slate-400 hover:text-slate-700 cursor-pointer">
                   <X className="w-5 h-5" />

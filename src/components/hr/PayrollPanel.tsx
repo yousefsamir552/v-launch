@@ -7,7 +7,13 @@ import {
   Lock, Unlock
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { escapeHtml, logClientPrintAction, renderLogoHtml } from '../../utils/printShared';
+import {
+  escapeHtml,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar,
+  renderUnifiedPrintHeader
+} from '../../utils/printShared';
 import { api } from '../../api/client';
 import {
   HRJobTitle, HREmployee, HRAttendanceSettings, HRAttendanceRule,
@@ -458,17 +464,20 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
         ? ` + عمل إجازة ${row.workedWeeklyOffDays}×${weeklyOffMultiplier} (${row.weeklyOffExtraDays.toFixed(2)} يوم)`
         : '';
 
-    return `<div class="sheet">
-      <div class="head">
-        <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 46)}</div>
-        <div class="title">
-          <h1>${escapeHtml(globalSettings.site_name || 'مصنع الملابس الجاهزة')}</h1>
-          <p>ورقة مرتب عامل — شهر ${escapeHtml(month)}</p>
-        </div>
-      </div>
+    const headerHtml = renderUnifiedPrintHeader({
+      siteName: globalSettings.site_name,
+      logo: globalSettings.logo,
+      title: `ورقة مرتب عامل — شهر ${month}`,
+      subtitle: `${row.employee.name} (${row.employee.employee_code || '—'})`,
+      metaItems: [`القسم: ${workerDepartment(row)}`],
+      compact: true
+    });
+
+    return `
+      ${headerHtml}
       <table class="info">
         <tr>
-          <td class="label">اسم العامل</td><td>${escapeHtml(row.employee.name)}</td>
+          <td class="label">اسم العامل</td><td><strong>${escapeHtml(row.employee.name)}</strong></td>
           <td class="label">كود البصمة</td><td class="mono">${escapeHtml(row.employee.employee_code || '-')}</td>
         </tr>
         <tr>
@@ -477,7 +486,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
         </tr>
         <tr>
           <td class="label">الأيام المستحقة</td>
-          <td class="mono">${row.earnedDays.toFixed(2)} يوم</td>
+          <td class="mono"><strong>${row.earnedDays.toFixed(2)} يوم</strong></td>
           <td class="label">تفصيل الأيام</td>
           <td class="mono">حضور ${row.attendedDays.toFixed(2)} + ${escapeHtml(weeklyOffLabel)} ${row.paidSundayDays.toFixed(2)}${escapeHtml(extraOffText)}</td>
         </tr>
@@ -490,80 +499,71 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       </table>
       <table class="days">
         <thead><tr>
-          <th>الأيام / التاريخ</th><th>حضور</th><th>انصراف</th>
-          <th>الإضافي</th><th>السُلف</th><th>الخصومات</th><th>ملاحظات</th>
+          <th style="width:19%">الأيام / التاريخ</th>
+          <th style="width:8%">حضور</th>
+          <th style="width:8%">انصراف</th>
+          <th style="width:11%">الإضافي</th>
+          <th style="width:11%">السُلف</th>
+          <th style="width:11%">الخصومات</th>
+          <th class="text-right" style="width:32%">ملاحظات</th>
         </tr></thead>
         <tbody>${dayRowsHtml}</tbody>
       </table>
-      <table class="totals">
-        <tr><td>الأجر المكتسب (${row.earnedDays.toFixed(2)} يوم)</td><td class="mono">${formatMoney(row.earnedBase)}</td></tr>
-        <tr><td>إجمالي الإضافي (${overtimeText})</td><td class="mono pos">${formatMoney(row.overtimePay)}</td></tr>
-        <tr><td>خصم التأخير والانصراف المبكر (${attendanceText})</td><td class="mono neg">${formatMoney(row.attendanceDeduction)}</td></tr>
-        <tr><td>خصم أيام ${escapeHtml(weeklyOffLabel)} (${row.sundayDeductionDays.toFixed(2)} يوم — مطبّق ضمن الأيام المستحقة)</td><td class="mono">—</td></tr>
-        <tr><td>الجزاءات (${penaltyText})</td><td class="mono neg">${formatMoney(row.penaltyDeduction)}</td></tr>
-        <tr><td>السُلف</td><td class="mono neg">${formatMoney(row.loanDeduction)}</td></tr>
-        <tr><td>إجمالي الخصومات</td><td class="mono neg">${formatMoney(row.totalDeduction)}</td></tr>
-        <tr class="net-row"><td>صافي المستحق</td><td class="mono">${formatMoney(row.netPay)}</td></tr>
-      </table>
-      <div class="sign"><span>توقيع العامل: ....................</span><span>توقيع الإدارة: ....................</span></div>
-    </div>`;
+      <div class="bottom-summary">
+        <table class="totals">
+          <tr><td>الأجر المكتسب (${row.earnedDays.toFixed(2)} يوم)</td><td class="mono">${formatMoney(row.earnedBase)}</td></tr>
+          <tr><td>إجمالي الإضافي (${overtimeText})</td><td class="mono pos">${formatMoney(row.overtimePay)}</td></tr>
+          <tr><td>خصم التأخير والانصراف المبكر (${attendanceText})</td><td class="mono neg">${formatMoney(row.attendanceDeduction)}</td></tr>
+          <tr><td>خصم أيام ${escapeHtml(weeklyOffLabel)} (${row.sundayDeductionDays.toFixed(2)} يوم — مطبّق ضمن الأيام المستحقة)</td><td class="mono">—</td></tr>
+          <tr><td>الجزاءات (${penaltyText})</td><td class="mono neg">${formatMoney(row.penaltyDeduction)}</td></tr>
+          <tr><td>السُلف</td><td class="mono neg">${formatMoney(row.loanDeduction)}</td></tr>
+          <tr><td>إجمالي الخصومات</td><td class="mono neg">${formatMoney(row.totalDeduction)}</td></tr>
+          <tr class="net-row"><td>صافي المستحق</td><td class="mono">${formatMoney(row.netPay)}</td></tr>
+        </table>
+      </div>
+      ${renderSignatureBar(['توقيع العامل بالاستلام', 'مسؤول الموارد البشرية', 'اعتماد الإدارة'], true)}
+    `;
   };
 
-
-  const workerSheetStyles = `
-    @page{size:A4 portrait;margin:8mm}
-    *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-    body{font-family:Tahoma,Arial,sans-serif;padding:3mm;color:#0f172a;margin:0;background:#fff}
-    .sheet{width:100%;margin:0 auto;page-break-after:always;break-after:page}
-    .sheet:last-child{page-break-after:auto;break-after:auto}
-    .head{display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:2px solid #334155;padding-bottom:3mm;margin-bottom:3mm}
-    .brand{text-align:right}
-    .title{text-align:left}
-    h1{font-size:15px;margin:0 0 1mm}
-    .title p{font-size:11px;color:#475569;margin:0;font-weight:bold}
-    table{width:100%;border-collapse:collapse;font-size:9px;margin-bottom:3mm}
-    th,td{border:1px solid #94a3b8;padding:4px 5px;text-align:center;vertical-align:middle}
-    th{background:#e2e8f0;font-weight:bold;font-size:9px}
-    td.label{background:#f1f5f9;font-weight:bold;width:18%}
-    td.note{text-align:right;font-size:8.5px;color:#334155}
-    .mono{font-family:'Courier New',monospace;font-size:8.5px}
-    .pos{color:#047857;font-weight:bold}
-    .neg{color:#b91c1c;font-weight:bold}
-    .days tbody td{padding:3px 4px}
-    .row-ok{background:#f0fdf4}
-    .row-warn{background:#fef9c3}
-    .row-absent{background:#fee2e2;color:#991b1b;font-weight:bold}
-    .row-overtime{background:#dbeafe;color:#1e40af}
-    .row-info{background:#eef2ff}
-    .row-off{background:#f8fafc;color:#64748b}
-    .totals{width:62%;margin-left:auto}
-    .totals td{font-size:10px;padding:5px 8px}
-    .totals td:first-child{background:#f1f5f9;font-weight:bold;text-align:right;width:64%}
-    .totals .net-row td{background:#dcfce7;color:#047857;font-weight:bold;font-size:12px;border-top:2px solid #059669}
-    .sign{margin-top:8mm;display:flex;justify-content:space-between;font-size:10px}
-    @media print{
-      .screen-only{display:none !important}
-      .sheet{page-break-after:always}
-    }
+  const workerSheetExtraCss = `
+    table.info { font-size: 8.8px; margin-bottom: 4px; }
+    table.info td { padding: 2.5px 5px; }
+    table.info td.label { background: #f1f5f9 !important; font-weight: 800; width: 16%; text-align: right; }
+    table.days { font-size: 8px; margin-bottom: 4px; table-layout: fixed; }
+    table.days th { font-size: 8.2px; padding: 2.5px 3px; }
+    table.days tbody td { padding: 1.6px 3px; line-height: 1.18; }
+    table.days td.note { text-align: right; font-size: 7.8px; color: #334155; }
+    .pos { color: #047857; font-weight: 800; }
+    .neg { color: #be123c; font-weight: 800; }
+    table.days tbody tr.row-ok td { background: #f0fdf4 !important; }
+    table.days tbody tr.row-warn td { background: #fefce8 !important; }
+    table.days tbody tr.row-absent td { background: #fef2f2 !important; color: #991b1b; font-weight: 700; }
+    table.days tbody tr.row-overtime td { background: #eff6ff !important; color: #1e40af; }
+    table.days tbody tr.row-info td { background: #eef2ff !important; }
+    table.days tbody tr.row-off td { background: #f8fafc !important; color: #64748b; }
+    .bottom-summary { break-inside: avoid; page-break-inside: avoid; }
+    table.totals { width: 64%; margin-left: auto; margin-right: 0; font-size: 8.8px; margin-bottom: 4px; }
+    table.totals td { padding: 2.5px 6px; line-height: 1.2; }
+    table.totals td:first-child { background: #f1f5f9 !important; font-weight: 800; text-align: right; width: 68%; }
+    table.totals tr.net-row td { background: #dcfce7 !important; color: #047857; font-weight: 800; font-size: 10.5px; border-top: 2px solid #047857; }
   `;
 
   const printWorkerSheet = (row: PayrollRow) => {
-    const win = window.open('', '_blank', 'width=900,height=800');
-    if (!win) {
-      addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
-      return;
+    const opened = openUnifiedPrintWindow({
+      documentTitle: `ورقة مرتب ${row.employee.name} - ${month}`,
+      mode: 'fit-single-page',
+      orientation: 'portrait',
+      sheetsHtml: [buildWorkerSheetHtml(row)],
+      extraCss: workerSheetExtraCss,
+      onPopupBlocked: () => addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger')
+    });
+    if (opened) {
+      logClientPrintAction(
+        'الموارد البشرية',
+        `طباعة ورقة مرتب الموظف ${row.employee.name} لشهر ${month}`,
+        row.employee.name
+      );
     }
-    logClientPrintAction(
-      'الموارد البشرية',
-      `طباعة ورقة مرتب الموظف ${row.employee.name} لشهر ${month}`,
-      row.employee.name
-    );
-    win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
-      <title>ورقة مرتب ${escapeHtml(row.employee.name)}</title>
-      <style>${workerSheetStyles}</style></head><body>${buildWorkerSheetHtml(row)}</body></html>`);
-    win.document.close();
-    win.focus();
-    win.print();
   };
 
   const printAllEnvelopes = () => {
@@ -571,24 +571,122 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       addFlashMessage('لا يوجد موظفون لطباعة أوراقهم', 'danger');
       return;
     }
-    // ورقة A4 كاملة لكل عامل، مع فاصل صفحات بين الأوراق.
-    const sheets = rows.map((row) => buildWorkerSheetHtml(row)).join('');
-    const win = window.open('', '_blank', 'width=1000,height=800');
-    if (!win) {
-      addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
+    const opened = openUnifiedPrintWindow({
+      documentTitle: `أوراق مرتبات العمال — ${month}`,
+      mode: 'fit-single-page',
+      orientation: 'portrait',
+      sheetsHtml: rows.map((row) => buildWorkerSheetHtml(row)),
+      extraCss: workerSheetExtraCss,
+      onPopupBlocked: () => addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger')
+    });
+    if (opened) {
+      logClientPrintAction(
+        'الموارد البشرية',
+        `طباعة أوراق مرتبات جميع العمال (${rows.length} موظف) لشهر ${month}`,
+        `مرتبات شهر ${month}`
+      );
+    }
+  };
+
+  const printGroupPayrollTable = () => {
+    if (rows.length === 0) {
+      addFlashMessage('لا يوجد موظفون لطباعة كشف المرتبات', 'danger');
       return;
     }
-    logClientPrintAction(
-      'الموارد البشرية',
-      `طباعة أوراق مرتبات جميع العمال (${rows.length} موظف) لشهر ${month}`,
-      `مرتبات شهر ${month}`
-    );
-    win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
-      <title>أوراق مرتبات العمال — ${escapeHtml(month)}</title>
-      <style>${workerSheetStyles}</style></head><body>${sheets}</body></html>`);
-    win.document.close();
-    win.focus();
-    win.print();
+    const rowsHtml = rows
+      .map(
+        (row, idx) => `<tr>
+          <td class="num muted">${idx + 1}</td>
+          <td class="mono">${escapeHtml(row.employee.employee_code || '-')}</td>
+          <td class="text-right"><strong>${escapeHtml(row.employee.name)}</strong></td>
+          <td class="text-right">${escapeHtml(row.employee.job_title || '—')} / ${escapeHtml(workerDepartment(row))}</td>
+          <td class="num"><strong>${row.earnedDays.toFixed(2)}</strong><div class="sub">ح ${row.attendedDays.toFixed(1)} + إ ${row.paidSundayDays.toFixed(1)}</div></td>
+          <td class="num">${formatMoney(row.baseSalary)}</td>
+          <td class="num"><strong>${formatMoney(row.earnedBase)}</strong></td>
+          <td class="num ok">${formatMoney(row.overtimePay)}</td>
+          <td class="num bad">${formatMoney(row.attendanceDeduction)}</td>
+          <td class="num bad">${formatMoney(row.penaltyDeduction)}</td>
+          <td class="num bad">${formatMoney(row.loanDeduction)}</td>
+          <td class="num bad"><strong>${formatMoney(row.totalDeduction)}</strong></td>
+          <td class="num ${row.netPay >= 0 ? 'ok' : 'bad'}"><strong>${formatMoney(row.netPay)}</strong></td>
+          <td></td>
+        </tr>`
+      )
+      .join('');
+
+    const bodyHtml = `
+      <div class="p-kpis">
+        <div class="p-kpi"><span class="p-kpi-label">عدد الموظفين</span><span class="p-kpi-val">${rows.length.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الأجور المكتسبة</span><span class="p-kpi-val">${formatMoney(totals.earnedBase)}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الإضافي</span><span class="p-kpi-val ok">${formatMoney(totals.overtimePay)}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الخصومات والسُلف</span><span class="p-kpi-val bad">${formatMoney(totals.totalDeduction)}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">صافي المرتبات المستحقة</span><span class="p-kpi-val ok">${formatMoney(totals.netPay)}</span></div>
+      </div>
+
+      <table class="group-payroll-table">
+        <thead>
+          <tr>
+            <th style="width:3%">#</th>
+            <th style="width:6%">الكود</th>
+            <th class="text-right" style="width:13%">الموظف</th>
+            <th class="text-right" style="width:12%">الوظيفة / القسم</th>
+            <th style="width:8%">الأيام المستحقة</th>
+            <th style="width:7%">المرتب</th>
+            <th style="width:7%">الأجر المكتسب</th>
+            <th style="width:7%">الإضافي</th>
+            <th style="width:7%">التأخير</th>
+            <th style="width:6%">الجزاءات</th>
+            <th style="width:6%">السُلف</th>
+            <th style="width:7%">إجمالي الخصم</th>
+            <th style="width:7%">الصافي</th>
+            <th style="width:6%">التوقيع</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+        <tfoot>
+          <tr class="total">
+            <td colspan="6" class="text-right">الإجمالي العام (${rows.length} موظف)</td>
+            <td class="num">${formatMoney(totals.earnedBase)}</td>
+            <td class="num ok">${formatMoney(totals.overtimePay)}</td>
+            <td class="num bad">${formatMoney(totals.attendanceDeduction)}</td>
+            <td class="num bad">${formatMoney(totals.penaltyDeduction)}</td>
+            <td class="num bad">${formatMoney(totals.loanDeduction)}</td>
+            <td class="num bad">${formatMoney(totals.totalDeduction)}</td>
+            <td class="num ok">${formatMoney(totals.netPay)}</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+
+      ${renderSignatureBar(['إعداد الموارد البشرية', 'المراجعة والحسابات', 'اعتماد المدير العام'], true)}
+    `;
+
+    const opened = openUnifiedPrintWindow({
+      documentTitle: `كشف المرتبات الجماعي — ${month}`,
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings.site_name,
+        logo: globalSettings.logo,
+        title: `كشف المرتبات الجماعي — شهر ${month}`,
+        subtitle: lockedSnapshot ? 'كشف معتمد ومغلق نهائياً' : 'كشف مرتبات الشهر التفصيلي لجميع العاملين',
+        metaItems: [`عدد العمال: ${rows.length.toLocaleString('ar-EG')}`]
+      },
+      bodyHtml,
+      extraCss: `
+        table.group-payroll-table { font-size: 8.6px; }
+        table.group-payroll-table th, table.group-payroll-table td { padding: 3.5px 4px; }
+        .sub { font-size: 7.4px; color: #64748b; }
+      `,
+      onPopupBlocked: () => addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger')
+    });
+    if (opened) {
+      logClientPrintAction(
+        'الموارد البشرية',
+        `طباعة كشف المرتبات الجماعي (${rows.length} موظف) لشهر ${month}`,
+        `كشف مرتبات ${month}`
+      );
+    }
   };
 
   return (
@@ -626,6 +724,15 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
                 اعتماد وإغلاق الشهر
               </button>
             )}
+            <button
+              type="button"
+              onClick={printGroupPayrollTable}
+              disabled={rows.length === 0}
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-950/35 border border-white/30 text-white text-[11px] font-black hover:bg-emerald-950/50 transition cursor-pointer shrink-0 disabled:opacity-50"
+            >
+              <Printer className="w-4 h-4" />
+              طباعة كشف المرتبات الجماعي A4
+            </button>
             <button
               type="button"
               onClick={printAllEnvelopes}

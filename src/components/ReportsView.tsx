@@ -44,7 +44,12 @@ import { api } from '../api/client';
 import { useApp } from '../context/AppContext';
 import { MaterialsReportSection, ModelConsumptionReportSection } from './MaterialsAndModelConsumptionReports';
 import { datedFileName, exportCsv } from '../utils/exportExcel';
-import { PRINT_LOGO_CSS, escapeHtml, logClientPrintAction, renderLogoHtml } from '../utils/printShared';
+import {
+  escapeHtml,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar
+} from '../utils/printShared';
 import type {
   DepartmentReportCard,
   DepartmentTargetsMap,
@@ -720,41 +725,24 @@ export const ReportsView: React.FC = () => {
   };
 
   /* ----------------------------- printing ---------------------------- */
-  const openPrintWindow = (title: string, bodyHtml: string) => {
+  const openPrintWindow = (title: string, bodyHtml: string, subtitle?: string) => {
     const siteName = globalSettings?.site_name || 'نظام إدارة المصنع';
-    const logoHtml = renderLogoHtml(globalSettings?.logo, siteName, 48);
-    const win = window.open('', '_blank', 'width=1200,height=800');
-    if (!win) {
-      addFlashMessage('يرجى السماح بالنوافذ المنبثقة لإتمام الطباعة.', 'warning');
-      return;
+    const opened = openUnifiedPrintWindow({
+      documentTitle: title,
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName,
+        logo: globalSettings?.logo,
+        title,
+        subtitle: subtitle || 'مركز التقارير والإحصائيات التنفيذية'
+      },
+      bodyHtml: `${bodyHtml}${renderSignatureBar(['إعداد التقارير', 'مدير الإنتاج', 'اعتماد الإدارة'], true)}`,
+      onPopupBlocked: () => addFlashMessage('يرجى السماح بالنوافذ المنبثقة لإتمام الطباعة.', 'warning')
+    });
+    if (opened) {
+      logClientPrintAction('التقارير', `طباعة تقرير: ${title}`, title);
     }
-    win.document.open();
-    win.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8" /><title>${escapeHtml(title)}</title>
-      <style>
-        @page { size: A4 landscape; margin: 12mm; }
-        body { font-family: 'Cairo', Tahoma, Arial, sans-serif; color: #0f172a; margin: 0; }
-        .header { text-align: center; margin-bottom: 14px; }
-        h1 { font-size: 20px; margin: 4px 0; }
-        .meta { color: #64748b; font-size: 11px; }
-        table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
-        th, td { border: 1px solid #cbd5e1; padding: 6px 7px; text-align: right; }
-        th { background: #f1f5f9; }
-        tr:nth-child(even) td { background: #f8fafc; }
-        .num { font-variant-numeric: tabular-nums; }
-        .total td { font-weight: 700; background: #e2e8f0 !important; }
-        ${PRINT_LOGO_CSS}
-      </style></head><body>
-      <div class="header">
-        <div class="brand">${logoHtml}</div>
-        <h1>${escapeHtml(title)}</h1>
-        <div class="meta">${escapeHtml(siteName)} • ${escapeHtml(new Date().toLocaleString('ar-EG'))}</div>
-      </div>
-      ${bodyHtml}
-      </body></html>`);
-    win.document.close();
-    win.focus();
-    logClientPrintAction('التقارير', `طباعة تقرير: ${title}`, title);
-    window.setTimeout(() => win.print(), 400);
   };
 
   const printModelsReport = () => {

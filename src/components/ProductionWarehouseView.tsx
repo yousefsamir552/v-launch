@@ -1,7 +1,14 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { Boxes, Printer, X, CheckCircle2, Factory, Package, AlertTriangle } from 'lucide-react';
-import { isImageLogo, logClientPrintAction } from '../utils/printShared';
+import {
+  escapeHtml,
+  isImageLogo,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar,
+  safeImageSrc
+} from '../utils/printShared';
 import { finishedSetsOf, photographyHoldLabel, photographyOutstandingOf } from '../utils/completedModels';
 import { ZoomableImage } from './ZoomableImage';
 import type { DesignModel } from '../types';
@@ -36,6 +43,86 @@ export const ProductionWarehouseView: React.FC = () => {
 
   // الأطقم التامة الفعلية (completed_sets من الباك إند بعد خصم عينات التصوير).
   const totalFinishedSets = finishedModels.reduce((sum, m) => sum + finishedSetsOf(m), 0);
+
+  const handlePrintProductionWarehouse = () => {
+    logClientPrintAction('مخزن الإنتاج', 'طباعة تقرير جرد مخزن الإنتاج التام', 'جرد الإنتاج التام');
+    const totalTarget = finishedModels.reduce((sum, m) => sum + Number(m.target_cut_quantity || 0), 0);
+    const rowsHtml = finishedModels
+      .map((m, idx) => {
+        const actual = finishedSetsOf(m);
+        const holdQty = photographyOutstandingOf(m);
+        const imgSrc = safeImageSrc(m.image);
+        return `<tr>
+          <td class="num muted">${idx + 1}</td>
+          <td>${
+            imgSrc
+              ? `<img src="${escapeHtml(imgSrc)}" alt="${escapeHtml(m.model_code)}" class="prod-thumb" onerror="this.style.display='none'" />`
+              : '—'
+          }</td>
+          <td class="text-right"><strong>${escapeHtml(m.model_code)}</strong></td>
+          <td>${escapeHtml(m.model_type || '—')}</td>
+          <td class="num">${Number(m.target_cut_quantity || 0).toLocaleString('ar-EG')}</td>
+          <td class="num ok"><strong>${actual.toLocaleString('ar-EG')} طقم</strong>${
+            holdQty > 0 ? ` <span class="warn">(تصوير: ${holdQty})</span>` : ''
+          }</td>
+          <td class="num">${new Date(m.created_at).toLocaleDateString('ar-EG')}</td>
+          <td><strong>${escapeHtml(m.status)}</strong></td>
+        </tr>`;
+      })
+      .join('');
+
+    const bodyHtml = `
+      <div class="p-kpis">
+        <div class="p-kpi"><span class="p-kpi-label">عدد الموديلات الجاهزة</span><span class="p-kpi-val">${finishedModels.length.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الكمية المستهدفة</span><span class="p-kpi-val">${totalTarget.toLocaleString('ar-EG')} طقم</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الأطقم التامة الجاهزة</span><span class="p-kpi-val ok">${totalFinishedSets.toLocaleString('ar-EG')} طقم</span></div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th style="width:4%">#</th>
+            <th style="width:8%">الصورة</th>
+            <th class="text-right" style="width:16%">كود الموديل</th>
+            <th style="width:14%">النوع / التصنيف</th>
+            <th style="width:14%">الكمية المستهدفة</th>
+            <th style="width:18%">الكمية التامة الفعلية</th>
+            <th style="width:12%">تاريخ الإنشاء</th>
+            <th style="width:14%">الحالة</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml || '<tr><td colspan="8" class="muted">لا توجد تشغيلات مكتملة في مخزن الإنتاج حالياً.</td></tr>'}</tbody>
+        <tfoot>
+          <tr class="total">
+            <td colspan="4" class="text-right">الإجمالي</td>
+            <td class="num">${totalTarget.toLocaleString('ar-EG')}</td>
+            <td class="num ok">${totalFinishedSets.toLocaleString('ar-EG')} طقم</td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
+      </table>
+
+      ${renderSignatureBar(['أمين مخزن الإنتاج التام', 'مراقبة الجودة والتعبئة', 'اعتماد مدير المصنع'], true)}
+    `;
+
+    openUnifiedPrintWindow({
+      documentTitle: 'كشف جرد مخزن الإنتاج التام الجاهز للشحن',
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings?.site_name,
+        logo: globalSettings?.logo,
+        title: 'كشف جرد مخزن الإنتاج التام الجاهز للشحن',
+        subtitle: 'حصر المنتجات النهائية المكتملة بعد التشطيب والمكواة والتعبئة والدَست',
+        metaItems: [`إجمالي الأطقم الجاهزة: ${totalFinishedSets.toLocaleString('ar-EG')} طقم`]
+      },
+      bodyHtml,
+      extraCss: `
+        .prod-thumb { width: 28px; height: 28px; object-fit: contain; border: 1px solid #cbd5e1; border-radius: 3px; background: #fff; display: block; margin: 0 auto; }
+      `,
+      popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة كشف مخزن الإنتاج التام.'
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -169,14 +256,12 @@ export const ProductionWarehouseView: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => {
-                    logClientPrintAction('مخزن الإنتاج', 'طباعة تقرير جرد مخزن الإنتاج التام', 'جرد الإنتاج التام');
-                    window.print();
-                  }}
+                  type="button"
+                  onClick={handlePrintProductionWarehouse}
                   className="px-5 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition flex items-center gap-1.5 cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />
-                  <span>طباعة الكشف</span>
+                  <span>طباعة الكشف (A4 أفقي)</span>
                 </button>
                 <button onClick={() => setShowPrintModal(false)} className="text-slate-400 hover:text-slate-700">
                   <X className="w-5 h-5" />

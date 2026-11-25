@@ -1,16 +1,20 @@
 /**
- * ورقة "أمر تشغيل ورشة المكن" الرسمية الجاهزة للطباعة (A4) — بنفس تنسيق ونظافة ورقة القص الحديثة:
- *  - نظيفة تماماً بدون ألوان أو حدود متعرجة، بخطوط Tahoma واضحة.
- *  - هيدر مركزي + صندوق بيانات الموديل (صورة، كود، نوع، فئة المقاسات، المقاسات المعتمدة، العدد، الورشة، التواريخ).
- *  - ملاحظات التصميم + ملاحظات الخياطة الخاصة بالقطعة (تيشرت / بنطلون).
- *  - جدول إكسسوارات القطعة (الاستهلاك للقطعة + الإجمالي المطلوب).
- *  - التعليمات والملاحظات الثابتة في القاع (التاريخ مذكور أعلى الورقة، بدون خانات توقيع سفلية).
- *
- * تتبع نفس نمط `printCuttingOrder` في المشروع (نافذة مستقلة + document.write + window.print).
+ * ورقة "أمر تشغيل ورشة المكن" الرسمية الجاهزة للطباعة (صفحة A4 واحدة لكل قطعة):
+ *  - هيدر المصنع الموحد (شعار + اسم المصنع + عنوان الأمر + التاريخ/الوقت + طُبع بواسطة).
+ *  - صندوق بيانات الموديل (صورة مع دعم القص المؤقت + كود، نوع، فئة المقاسات، المقاسات، العدد، الورشة، التواريخ).
+ *  - ملاحظات التصميم + ملاحظات خياطة القطعة + جدول الإكسسوارات + التعليمات الثابتة + شريط التوقيعات.
+ *  - مضمونة الاحتواء على صفحة A4 واحدة لكل قطعة بدون أي امتداد لصفحة ثانية.
  */
 
 import type { ImageCropRegion, ModelAccessory } from '../types';
-import { escapeHtml, logClientPrintAction, PRINT_LOGO_CSS, renderLogoHtml, safeImageSrc } from './printShared';
+import {
+  escapeHtml,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar,
+  renderUnifiedPrintHeader,
+  safeImageSrc
+} from './printShared';
 
 export interface SewingSheetOptions {
   siteName?: string;
@@ -68,7 +72,7 @@ const renderImage = (options: SewingSheetOptions): string => {
     )}" onerror="this.style.display='none'" />`;
   }
 
-  const MAX_THUMB = 200;
+  const MAX_THUMB = 165;
   const scale = Math.min(MAX_THUMB / crop.w, MAX_THUMB / crop.h);
   const boxW = Math.max(1, Math.round(crop.w * scale));
   const boxH = Math.max(1, Math.round(crop.h * scale));
@@ -83,9 +87,9 @@ const renderImage = (options: SewingSheetOptions): string => {
 
 const renderNotes = (title: string, body?: string): string => {
   if (!body || !String(body).trim()) return '';
-  return `<div class="notes">
-      <div class="t">${title}</div>
-      <div class="body">${escapeHtml(body)}</div>
+  return `<div class="p-note-box">
+      <div class="p-note-title">${title}</div>
+      <div class="p-note-body">${escapeHtml(body)}</div>
     </div>`;
 };
 
@@ -100,12 +104,12 @@ const renderAccessories = (accessories: ModelAccessory[], piecesCount: number): 
       const per = Number(a.piece_consumption) || 1;
       const total = per * piecesCount;
       return `<tr>
-        <td class="c-idx">${index + 1}</td>
+        <td class="c-idx num">${index + 1}</td>
         <td class="c-name">${escapeHtml(a.accessory_name || a.accessory_code || '—')}</td>
-        <td class="c-code">${escapeHtml(a.accessory_code || '—')}</td>
-        <td class="c-per">${fmtDecimal(per)}</td>
+        <td class="c-code mono">${escapeHtml(a.accessory_code || '—')}</td>
+        <td class="c-per num">${fmtDecimal(per)}</td>
         <td class="c-unit">${escapeHtml(a.unit || 'قطعة')}</td>
-        <td class="c-total">${fmtTotalCeil(total)}</td>
+        <td class="c-total num">${fmtTotalCeil(total)}</td>
       </tr>`;
     })
     .join('');
@@ -122,7 +126,7 @@ const renderAccessories = (accessories: ModelAccessory[], piecesCount: number): 
       <thead>
         <tr>
           <th>#</th>
-          <th>اسم الإكسسوار</th>
+          <th class="text-right">اسم الإكسسوار</th>
           <th>الكود</th>
           <th>الاستهلاك / قطعة</th>
           <th>الوحدة</th>
@@ -145,62 +149,54 @@ const renderSheet = (options: SewingSheetOptions): string => {
 
   const instructionsBlock =
     options.fixedInstructions && String(options.fixedInstructions).trim()
-      ? `<div class="instr">
-          <div class="t">📌 التعليمات والملاحظات الثابتة المعتمدة</div>
-          <div class="body">${escapeHtml(options.fixedInstructions)}</div>
+      ? `<div class="p-note-box instr-box">
+          <div class="p-note-title">التعليمات والملاحظات الثابتة المعتمدة</div>
+          <div class="p-note-body">${escapeHtml(options.fixedInstructions)}</div>
         </div>`
       : '';
 
-  return `<div class="sheet">
-    <header>
-      <div class="brand">${renderLogoHtml(options.logo, options.siteName, 54)}</div>
-      <h1>${escapeHtml(options.siteName || 'مصنع الملابس الجاهزة')} — أمر تشغيل ورشة المكن</h1>
-      <h2>قسم الخياطة والمكن — ورقة ${escapeHtml(pieceLabel)}</h2>
-    </header>
+  const headerHtml = renderUnifiedPrintHeader({
+    siteName: options.siteName,
+    logo: options.logo,
+    title: 'أمر تشغيل ورشة المكن',
+    subtitle: `قسم الخياطة والمكن — ورقة ${pieceLabel}`,
+    metaItems: [`الموديل: ${options.modelCode}`],
+    compact: true
+  });
 
-    <div class="info">
+  return `
+    ${headerHtml}
+
+    <div class="p-info-card">
       <div class="thumb">${renderImage(options)}</div>
-      <div class="fields">
-        <div class="row"><span class="k">كود الموديل</span><span class="v">${escapeHtml(
-          options.modelCode
-        )}</span></div>
-        <div class="row"><span class="k">نوع الموديل</span><span class="v">${escapeHtml(
-          options.modelType || 'غير محدد'
-        )}</span></div>
-        <div class="row"><span class="k">فئة المقاسات</span><span class="v">${escapeHtml(
-          options.sizeCategoryName || '—'
-        )}</span></div>
-        <div class="row"><span class="k">القطعة</span><span class="v">${escapeHtml(
-          pieceLabel
-        )}</span></div>
-        <div class="row full"><span class="k">المقاسات المعتمدة</span><span class="v chips">${sizeChips}</span></div>
-        <div class="row"><span class="k">العدد المسلم للورشة</span><span class="v">${fmtInt(
-          piecesCount
-        )} قطعة</span></div>
-        <div class="row"><span class="k">اسم الورشة</span><span class="v">${escapeHtml(
-          options.workshopName || '—'
-        )}</span></div>
-        <div class="row"><span class="k">تاريخ التسليم للورشة</span><span class="v">${escapeHtml(
-          options.dispatchDate || '—'
-        )}</span></div>
-        <div class="row full"><span class="k">تاريخ الاستلام المتوقع</span><span class="v">${escapeHtml(
-          options.expectedDate || 'حسب الاتفاق'
-        )}</span></div>
+      <div class="p-fields">
+        <div class="p-field"><span class="p-k">كود الموديل</span><span class="p-v">${escapeHtml(options.modelCode)}</span></div>
+        <div class="p-field"><span class="p-k">نوع الموديل</span><span class="p-v">${escapeHtml(options.modelType || 'غير محدد')}</span></div>
+        <div class="p-field"><span class="p-k">فئة المقاسات</span><span class="p-v">${escapeHtml(options.sizeCategoryName || '—')}</span></div>
+        <div class="p-field"><span class="p-k">القطعة</span><span class="p-v">${escapeHtml(pieceLabel)}</span></div>
+        <div class="p-field full"><span class="p-k">المقاسات المعتمدة</span><span class="p-v chips">${sizeChips}</span></div>
+        <div class="p-field"><span class="p-k">العدد المسلم للورشة</span><span class="p-v num">${fmtInt(piecesCount)} قطعة</span></div>
+        <div class="p-field"><span class="p-k">اسم الورشة</span><span class="p-v">${escapeHtml(options.workshopName || '—')}</span></div>
+        <div class="p-field"><span class="p-k">تاريخ التسليم للورشة</span><span class="p-v num">${escapeHtml(options.dispatchDate || '—')}</span></div>
+        <div class="p-field"><span class="p-k">تاريخ الاستلام المتوقع</span><span class="p-v num">${escapeHtml(options.expectedDate || 'حسب الاتفاق')}</span></div>
       </div>
     </div>
 
-    ${renderNotes('📝 ملاحظات التصميم', options.designNotes)}
-    ${renderNotes(`✂️ ملاحظات خياطة ${pieceLabel}`, options.pieceNotes)}
+    ${renderNotes('ملاحظات التصميم', options.designNotes)}
+    ${renderNotes(`ملاحظات خياطة ${pieceLabel}`, options.pieceNotes)}
 
-    <h3 class="sec">إكسسوارات ${escapeHtml(pieceLabel)} الخاصة</h3>
+    <div class="p-sec">إكسسوارات ${escapeHtml(pieceLabel)} الخاصة</div>
     ${renderAccessories(options.accessories || [], piecesCount)}
 
     ${instructionsBlock}
-  </div>`;
+
+    ${renderSignatureBar(['مسؤول التسليم والتشغيل', 'توقيع مستلم ورشة المكن', 'اعتماد مشرف الإنتاج'], true)}
+  `;
 };
 
 /**
- * يفتح نافذة طباعة مستقلة تحتوي ورقة واحدة أو ورقتين (تيشرت + بنطلون) مع فاصل صفحات صارم.
+ * يفتح نافذة طباعة مستقلة تحتوي ورقة واحدة أو أكثر (تيشرت / بنطلون / جاكيت)
+ * حيث تُضبط كل ورقة على صفحة A4 واحدة كاملة مع فاصل صفحات صارم بين القطع.
  */
 export const printSewingSheets = (sheets: SewingSheetOptions[]): void => {
   const list = Array.isArray(sheets) ? sheets.filter(Boolean) : [];
@@ -217,85 +213,40 @@ export const printSewingSheets = (sheets: SewingSheetOptions[]): void => {
       ? `أمر تشغيل المكن - ${list[0].modelCode}`
       : `أمر تشغيل المكن - ${list[0].pieceLabel || list[0].modelCode}`;
 
-  const html = `<!DOCTYPE html>
-  <html lang="ar" dir="rtl">
-  <head>
-    <meta charset="utf-8" />
-    <title>${escapeHtml(title)}</title>
-    <style>
-      @page { size: A4 portrait; margin: 10mm; }
-      * { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; }
-      body { font-family: "Tahoma", "Arial", sans-serif; color: #111; }
-      .sheet { padding: 2mm; }
-      .sheet + .sheet { page-break-before: always; break-before: page; }
-
-      header { text-align: center; border-bottom: 3px double #111; padding-bottom: 8px; margin-bottom: 12px; }
-      header h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: .5px; }
-      header h2 { font-size: 14px; margin: 0; color: #333; font-weight: bold; }
-      ${PRINT_LOGO_CSS}
-
-      .info { display: flex; gap: 14px; align-items: stretch; border: 1.5px solid #222; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
-      .info .thumb { width: 200px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; border: 1px solid #bbb; border-radius: 8px; overflow: hidden; background: #f7f7f7; }
-      .info .thumb > img { width: 100%; height: 200px; object-fit: contain; }
-      .info .thumb .cropbox { position: relative; overflow: hidden; }
-      .info .thumb .cropbox img { position: absolute; }
-      .info .thumb .noimg { font-size: 11px; }
-      .info .fields { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; font-size: 13px; align-content: start; }
-      .info .fields .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; border-bottom: 1px dotted #bbb; padding: 5px 2px; }
-      .info .fields .row.full { grid-column: 1 / -1; }
-      .info .fields .k { color: #555; font-weight: bold; white-space: nowrap; }
-      .info .fields .v { font-weight: 900; text-align: left; }
-      .chips { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
-      .chip { border: 1px solid #222; border-radius: 5px; padding: 1px 8px; font-size: 12px; font-weight: bold; background: #f3f3f3; }
-      .muted { color: #888; font-weight: bold; }
-
-      .notes { border: 1.5px solid #222; border-radius: 8px; padding: 8px 10px; min-height: 40px; margin-bottom: 10px; font-size: 13px; page-break-inside: avoid; }
-      .notes .t { font-weight: 900; margin-bottom: 4px; }
-      .notes .body { white-space: pre-wrap; }
-
-      h3.sec { font-size: 14px; margin: 0 0 6px; padding: 6px 8px; background: #ececec; border: 1.5px solid #222; border-radius: 6px; }
-
-      table.acc { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: fixed; margin-bottom: 12px; }
-      table.acc th, table.acc td { border: 1.2px solid #222; text-align: center; padding: 6px 4px; }
-      table.acc th { background: #f0f0f0; font-size: 12px; }
-      table.acc td { height: 28px; }
-      table.acc col.c-idx { width: 6%; }
-      table.acc col.c-name { width: 34%; }
-      table.acc col.c-code { width: 14%; }
-      table.acc col.c-per { width: 16%; }
-      table.acc col.c-unit { width: 12%; }
-      table.acc col.c-total { width: 18%; }
-      table.acc td.c-name { text-align: right; padding-right: 8px; font-weight: bold; }
-      table.acc td.c-total { font-weight: 900; }
-      table.acc td.empty { height: 40px; color: #888; font-weight: bold; }
-
-      .instr { border: 1.5px solid #222; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px; page-break-inside: avoid; }
-      .instr .t { font-weight: 900; margin-bottom: 4px; }
-      .instr .body { white-space: pre-wrap; }
-
-      @media print {
-        .sheet { padding: 0; }
-        header { page-break-after: avoid; }
-        .info, .notes, .instr { page-break-inside: avoid; }
-        table.acc tr { page-break-inside: avoid; }
+  openUnifiedPrintWindow({
+    documentTitle: title,
+    mode: 'fit-single-page',
+    orientation: 'portrait',
+    sheetsHtml: list.map(renderSheet),
+    extraCss: `
+      .thumb {
+        width: 165px;
+        min-height: 155px;
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        overflow: hidden;
+        background: #f8fafc;
       }
-    </style>
-  </head>
-  <body>
-    ${list.map(renderSheet).join('')}
-    <script>
-      window.onload = function () { window.focus(); window.print(); };
-    </script>
-  </body>
-  </html>`;
-
-  const win = window.open('', '_blank', 'width=900,height=1000');
-  if (!win) {
-    alert('يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة ورقة المكن.');
-    return;
-  }
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
+      .thumb > img { width: 100%; height: 165px; object-fit: contain; }
+      .thumb .cropbox { position: relative; overflow: hidden; }
+      .thumb .cropbox img { position: absolute; }
+      .thumb .noimg { font-size: 10px; }
+      table.acc { table-layout: fixed; font-size: 10px; margin-bottom: 6px; }
+      table.acc col.c-idx { width: 6%; }
+      table.acc col.c-name { width: 35%; }
+      table.acc col.c-code { width: 15%; }
+      table.acc col.c-per { width: 15%; }
+      table.acc col.c-unit { width: 11%; }
+      table.acc col.c-total { width: 18%; }
+      table.acc td.c-name { text-align: right; padding-right: 7px; font-weight: 700; }
+      table.acc td.c-total { font-weight: 800; color: #0f172a; }
+      table.acc td.empty { padding: 10px; color: #64748b; font-weight: 700; }
+      .instr-box { background: #ffffff; border-color: #334155; }
+    `,
+    popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة ورقة المكن.'
+  });
 };

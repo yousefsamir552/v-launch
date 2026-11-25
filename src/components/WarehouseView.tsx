@@ -34,7 +34,13 @@ import {
 } from 'lucide-react';
 import { DesignModel, Fabric, FabricColor, FabricTransaction, ModelRequirement, Supplier } from '../types';
 import { api } from '../api/client';
-import { isImageLogo, logClientPrintAction } from '../utils/printShared';
+import {
+  escapeHtml,
+  isImageLogo,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar
+} from '../utils/printShared';
 import { AccessoriesWarehouseView } from './AccessoriesWarehouseView';
 import { ProductionWarehouseView } from './ProductionWarehouseView';
 
@@ -826,6 +832,207 @@ export const WarehouseView: React.FC = () => {
     totalAvailable: roundQty(fabricAuditRows.reduce((sum, row) => sum + row.available, 0))
   };
 
+  const handlePrintFabricInventory = () => {
+    logClientPrintAction('مخزن القماش', 'طباعة تقرير جرد مخزن الأقمشة والخامات', 'جرد مخزن القماش');
+    const showPrices = canViewFabricPrices();
+    const totalActualQty = fabricColors.reduce((sum, c) => sum + Number(c.quantity || 0), 0);
+    const totalReservedQty = fabricColors.reduce((sum, c) => sum + Number(c.reserved_quantity || 0), 0);
+    const totalEstValue = fabricColors.reduce(
+      (sum, c) => sum + (Number(c.price_per_unit || 0) * Number(c.quantity || 0)),
+      0
+    );
+
+    const rowsHtml = fabricColors
+      .map((color, idx) => {
+        const fab = fabrics.find((f) => f.id === color.fabric_id);
+        const avail = Number((color.quantity - color.reserved_quantity).toFixed(2));
+        const totalVal = (color.price_per_unit || 0) * color.quantity;
+        const auditRow = auditRowsByColorId.get(color.id);
+        const swatchHex = /^#[0-9a-fA-F]{3,8}$/.test(String(color.hex_code || ''))
+          ? color.hex_code
+          : '#94a3b8';
+
+        return `<tr>
+          <td class="num muted">${idx + 1}</td>
+          <td><span class="swatch" style="background:${escapeHtml(swatchHex)};"></span></td>
+          <td class="text-right"><strong>${escapeHtml(fab?.name || 'خامة')}</strong></td>
+          <td class="mono"><strong>${escapeHtml(color.color_code)}</strong></td>
+          <td class="text-right">${escapeHtml(color.color_name || '—')}</td>
+          <td class="text-right">${escapeHtml(auditRow?.supplierName || '—')}</td>
+          <td class="num"><strong>${color.quantity}</strong></td>
+          <td class="num ok">${auditRow ? auditRow.totalReceived : color.quantity}</td>
+          <td class="num bad">${auditRow ? auditRow.totalConsumed : 0}</td>
+          <td class="num warn">${auditRow ? auditRow.totalDefect : 0}</td>
+          <td class="num">${color.reserved_quantity}</td>
+          <td class="num"><strong>${avail}</strong></td>
+          <td>${escapeHtml(fab?.unit || 'كيلو')}</td>
+          ${
+            showPrices
+              ? `<td class="num">${Number(color.price_per_unit || 0).toLocaleString('ar-EG')} ج.م</td>
+                 <td class="num"><strong>${Math.round(totalVal).toLocaleString('ar-EG')} ج.م</strong></td>`
+              : ''
+          }
+        </tr>`;
+      })
+      .join('');
+
+    const bodyHtml = `
+      <div class="p-kpis">
+        <div class="p-kpi"><span class="p-kpi-label">عدد أصناف الأقمشة</span><span class="p-kpi-val">${fabrics.length.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الألوان</span><span class="p-kpi-val">${fabricColors.length.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الوارد</span><span class="p-kpi-val ok">${auditTotals.totalReceived}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي المستهلك</span><span class="p-kpi-val bad">${auditTotals.totalConsumed}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">عيوب القماش</span><span class="p-kpi-val warn">${auditTotals.totalDefect}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">الرصيد الفعلي</span><span class="p-kpi-val">${totalActualQty.toFixed(1)}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">الرصيد المحجوز</span><span class="p-kpi-val">${totalReservedQty.toFixed(1)}</span></div>
+      </div>
+
+      <table class="inv-table">
+        <thead>
+          <tr>
+            <th style="width:3%">#</th>
+            <th style="width:4%">اللون</th>
+            <th class="text-right">الخامة الأساسية</th>
+            <th>كود اللون</th>
+            <th class="text-right">اسم اللون</th>
+            <th class="text-right">المورد</th>
+            <th>الرصيد الفعلي</th>
+            <th>الوارد</th>
+            <th>المستهلك</th>
+            <th>العيوب</th>
+            <th>المحجوز</th>
+            <th>المتاح</th>
+            <th>الوحدة</th>
+            ${showPrices ? '<th>سعر الوحدة</th><th>القيمة التقديرية</th>' : ''}
+          </tr>
+        </thead>
+        <tbody>${rowsHtml || `<tr><td colspan="${showPrices ? 15 : 13}" class="muted">لا توجد أقمشة مسجلة.</td></tr>`}</tbody>
+        <tfoot>
+          <tr class="total">
+            <td colspan="6" class="text-right">الإجمالي العام</td>
+            <td class="num">${totalActualQty.toFixed(1)}</td>
+            <td class="num">${auditTotals.totalReceived}</td>
+            <td class="num">${auditTotals.totalConsumed}</td>
+            <td class="num">${auditTotals.totalDefect}</td>
+            <td class="num">${totalReservedQty.toFixed(1)}</td>
+            <td class="num">${auditTotals.totalAvailable}</td>
+            <td>—</td>
+            ${showPrices ? `<td>—</td><td class="num">${Math.round(totalEstValue).toLocaleString('ar-EG')} ج.م</td>` : ''}
+          </tr>
+        </tfoot>
+      </table>
+
+      ${renderSignatureBar(['مسؤول الجرد / أمين المخزن', 'المراجعة والحسابات', 'اعتماد مدير المصنع'], true)}
+    `;
+
+    openUnifiedPrintWindow({
+      documentTitle: 'تقرير جرد مخزن الأقمشة والخامات',
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings?.site_name,
+        logo: globalSettings?.logo,
+        title: 'تقرير جرد مخزن الأقمشة والخامات',
+        subtitle: 'كشف جرد تفصيلي لجميع الخامات والألوان (الوارد، المستهلك، العيوب، المحجوز، والمتاح)',
+        metaItems: [`إجمالي الألوان: ${fabricColors.length.toLocaleString('ar-EG')}`]
+      },
+      bodyHtml,
+      extraCss: `
+        .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; border: 1px solid #475569; vertical-align: middle; }
+        table.inv-table { font-size: ${showPrices ? '8.6px' : '9.2px'}; }
+        table.inv-table th, table.inv-table td { padding: 3.5px 4px; }
+      `,
+      popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة تقرير جرد المخزن.'
+    });
+  };
+
+  const handlePrintFabricAudit = () => {
+    logClientPrintAction('مخزن القماش', 'طباعة تقرير جرد القماش والاستهلاك التفصيلي', 'جرد واستهلاك القماش');
+
+    const groupBlocks = fabricAuditGroups
+      .map((group) => {
+        const rowsHtml = group.rows
+          .map((row) => {
+            const swatchHex = /^#[0-9a-fA-F]{3,8}$/.test(String(row.hexCode || ''))
+              ? row.hexCode
+              : '#94a3b8';
+            const sizesText =
+              row.sizeBreakdown.map((b) => `${b.label}: ${b.quantity} (${b.percent}%)`).join(' • ') || '—';
+            const typesText =
+              row.typeBreakdown.map((b) => `${b.label}: ${b.quantity} (${b.percent}%)`).join(' • ') || '—';
+            const modelsText = row.modelCodes.join('، ') || '—';
+            return `<tr>
+              <td><span class="swatch" style="background:${escapeHtml(swatchHex)};"></span></td>
+              <td class="mono"><strong>${escapeHtml(row.colorCode)}</strong></td>
+              <td class="text-right">${escapeHtml(row.colorName || '—')}</td>
+              <td class="text-right">${escapeHtml(row.supplierName || '—')}</td>
+              <td class="num ok">${row.totalReceived}</td>
+              <td class="num bad">${row.totalConsumed}</td>
+              <td class="num warn">${row.totalDefect}</td>
+              <td class="num"><strong>${row.remaining}</strong></td>
+              <td class="num">${row.available}</td>
+              <td class="text-right">${escapeHtml(sizesText)}</td>
+              <td class="text-right">${escapeHtml(typesText)}</td>
+              <td class="text-right">${escapeHtml(modelsText)}</td>
+            </tr>`;
+          })
+          .join('');
+        return `<div class="p-sec">${escapeHtml(group.fabric.name)} — الوحدة: ${escapeHtml(group.fabric.unit)} (${group.rows.length} لون)</div>
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th style="width:3%">عينة</th>
+                <th style="width:7%">الكود</th>
+                <th class="text-right" style="width:9%">اسم اللون</th>
+                <th class="text-right" style="width:9%">المورد</th>
+                <th style="width:6%">الوارد</th>
+                <th style="width:6%">المستهلك</th>
+                <th style="width:5%">العيوب</th>
+                <th style="width:6%">المتبقي</th>
+                <th style="width:6%">المتاح</th>
+                <th class="text-right" style="width:15%">توزيع المقاسات</th>
+                <th class="text-right" style="width:13%">نوع الموديل</th>
+                <th class="text-right" style="width:15%">الموديلات المستخدمة</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml || '<tr><td colspan="12" class="muted">لا توجد ألوان</td></tr>'}</tbody>
+          </table>`;
+      })
+      .join('');
+
+    const bodyHtml = `
+      <div class="p-kpis">
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الوارد</span><span class="p-kpi-val ok">${auditTotals.totalReceived}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي المستهلك</span><span class="p-kpi-val bad">${auditTotals.totalConsumed}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">عيوب القماش</span><span class="p-kpi-val warn">${auditTotals.totalDefect}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">المتبقي بالمخزن</span><span class="p-kpi-val">${auditTotals.totalRemaining}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">المتاح للتصميم</span><span class="p-kpi-val">${auditTotals.totalAvailable}</span></div>
+      </div>
+      ${groupBlocks || '<p class="muted text-center">لا توجد بيانات جرد واستهلاك لعرضها.</p>'}
+      ${renderSignatureBar(['مسؤول الجرد والمخزن', 'مراقبة الإنتاج', 'اعتماد مدير المصنع'], true)}
+    `;
+
+    openUnifiedPrintWindow({
+      documentTitle: 'تقرير جرد القماش والاستهلاك التفصيلي',
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings?.site_name,
+        logo: globalSettings?.logo,
+        title: 'تقرير جرد القماش والاستهلاك التفصيلي',
+        subtitle: 'الوارد مقابل المستهلك والمتبقي وتوزيع الاستهلاك على المقاسات والموديلات',
+        metaItems: [`عدد الخامات: ${fabricAuditGroups.length.toLocaleString('ar-EG')}`]
+      },
+      bodyHtml,
+      extraCss: `
+        .swatch { display: inline-block; width: 13px; height: 13px; border-radius: 3px; border: 1px solid #475569; vertical-align: middle; }
+        table.audit-table { font-size: 8.8px; }
+        table.audit-table th, table.audit-table td { padding: 3px 4px; }
+      `,
+      popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة تقرير الجرد والاستهلاك.'
+    });
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* Top Warehouse Section Header & Segmented Sub-tabs */}
@@ -1315,11 +1522,11 @@ export const WarehouseView: React.FC = () => {
                   </div>
                   <button
                     type="button"
-                    onClick={() => setShowPrintInventoryModal(true)}
+                    onClick={handlePrintFabricAudit}
                     className="flex items-center gap-2 px-4 py-2 rounded-full bg-white text-slate-900 hover:bg-slate-100 text-xs font-black transition shadow-sm cursor-pointer shrink-0"
                   >
                     <Printer className="w-4 h-4" />
-                    <span>🖨️ طباعة تقرير الجرد</span>
+                    <span>🖨️ طباعة تقرير الجرد والاستهلاك</span>
                   </button>
                 </div>
 
@@ -2673,14 +2880,12 @@ export const WarehouseView: React.FC = () => {
 
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => {
-                        logClientPrintAction('مخزن القماش', 'طباعة تقرير جرد مخزن الأقمشة والخامات', 'جرد مخزن القماش');
-                        window.print();
-                      }}
+                      type="button"
+                      onClick={handlePrintFabricInventory}
                       className="px-5 py-2.5 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md shadow-blue-500/20 transition flex items-center gap-1.5 cursor-pointer"
                     >
                       <Printer className="w-4 h-4" />
-                      <span>طباعة التقرير (Print)</span>
+                      <span>طباعة التقرير (A4 أفقي)</span>
                     </button>
                     <button
                       onClick={() => setShowPrintInventoryModal(false)}

@@ -39,7 +39,13 @@ import {
   PACKAGING_STEP_ORDER,
   PACKAGING_STEP_LABELS
 } from '../types';
-import { isImageLogo, logClientPrintAction } from '../utils/printShared';
+import {
+  escapeHtml,
+  isImageLogo,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar
+} from '../utils/printShared';
 
 /* ------------------------------------------------------------------ */
 /* Canonical production stages (derived from real records, no dupes)  */
@@ -1120,6 +1126,68 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
   };
 
 
+  const handlePrintMasterTracking = () => {
+    logClientPrintAction('حركة الموديلات', 'طباعة كشف جرد الموديلات الشامل', 'كشف جرد الموديلات');
+    const rowsHtml = filteredModels
+      .map((m, idx) => {
+        const cutCount = m.total_cut_pieces || m.actual_cut_count || 0;
+        const printHouse = m.print_house || m.print_house_name || '';
+        const ownerParts = [
+          m.cutter_name ? `مقصدار: ${m.cutter_name}` : '',
+          printHouse ? `مطبعة: ${printHouse}` : ''
+        ]
+          .filter(Boolean)
+          .join(' • ');
+        return `<tr>
+          <td class="num muted">${idx + 1}</td>
+          <td class="text-right"><strong>${escapeHtml(m.model_code)}</strong></td>
+          <td>${escapeHtml(GARMENT_COMPOSITION_LABELS[m.garment_composition || 'two_pieces'] || 'غير محدد')}</td>
+          <td><strong>${escapeHtml(STAGE_META[resolveCurrentStageKey(m)].title)}</strong></td>
+          <td class="num">${(m.target_cut_quantity || 0).toLocaleString('ar-EG')}</td>
+          <td class="num"><strong>${cutCount.toLocaleString('ar-EG')}</strong></td>
+          <td class="num">${m.count_after_print ? m.count_after_print.toLocaleString('ar-EG') : '—'}</td>
+          <td class="num">${m.count_after_sewing ? m.count_after_sewing.toLocaleString('ar-EG') : '—'}</td>
+          <td class="text-right">${escapeHtml(ownerParts || '—')}</td>
+        </tr>`;
+      })
+      .join('');
+
+    const bodyHtml = `
+      <table>
+        <thead>
+          <tr>
+            <th style="width:4%">#</th>
+            <th class="text-right" style="width:12%">كود الموديل</th>
+            <th style="width:12%">التكوين / القطع</th>
+            <th style="width:18%">المرحلة والموقع الحالي</th>
+            <th style="width:9%">المستهدف للقص</th>
+            <th style="width:9%">المقصوص فعلياً</th>
+            <th style="width:9%">بعد الطباعة</th>
+            <th style="width:9%">بعد المكن</th>
+            <th class="text-right" style="width:18%">المسؤول / الجهة</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml || '<tr><td colspan="9" class="muted">لا توجد موديلات مطابقة للبحث.</td></tr>'}</tbody>
+      </table>
+      ${renderSignatureBar(['مسؤول المتابعة والمراقبة', 'مدير العمليات والتشغيل', 'اعتماد المدير العام'], true)}
+    `;
+
+    openUnifiedPrintWindow({
+      documentTitle: 'كشف جرد وتتبع حركة الموديلات الشامل',
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings.site_name,
+        logo: globalSettings.logo,
+        title: 'كشف جرد وتتبع حركة الموديلات الشامل',
+        subtitle: 'متابعة جميع الموديلات عبر 12 مرحلة إنتاج',
+        metaItems: [`إجمالي الموديلات: ${filteredModels.length.toLocaleString('ar-EG')}`]
+      },
+      bodyHtml,
+      popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة كشف جرد الموديلات.'
+    });
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* Header */}
@@ -2090,14 +2158,12 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => {
-                    logClientPrintAction('حركة الموديلات', 'طباعة كشف جرد الموديلات الشامل', 'كشف جرد الموديلات');
-                    window.print();
-                  }}
+                  type="button"
+                  onClick={handlePrintMasterTracking}
                   className="px-5 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-xs transition flex items-center gap-2 cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />
-                  <span>طباعة فورية</span>
+                  <span>طباعة فورية (A4 أفقي)</span>
                 </button>
                 <button
                   onClick={() => setShowMasterPrintModal(false)}

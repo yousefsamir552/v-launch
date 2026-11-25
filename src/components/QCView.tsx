@@ -16,7 +16,13 @@ import {
 } from 'lucide-react';
 import { QCStageType, Model, QCMatrixCellInput, GarmentPart, PartStage, PART_EMOJI, getPartLabel } from '../types';
 import { printManualCountSheet } from '../utils/printManualCountSheet';
-import { isImageLogo, logClientPrintAction } from '../utils/printShared';
+import {
+  escapeHtml,
+  isImageLogo,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar
+} from '../utils/printShared';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel, stageRank, stageBeyond } from '../utils/completedModels';
 import { resolveDefaultGoodQtyForCell, findSavedQcCell } from '../utils/qcCutDefaults';
@@ -397,6 +403,113 @@ export const QCView: React.FC = () => {
         normalizePartKey
       })
     : null;
+
+  const handlePrintStageReport = () => {
+    const stageTitle = getStageTitle(activeTab);
+    logClientPrintAction(
+      'العد والجودة',
+      `طباعة تقرير جرد مرحلة ${stageTitle}`,
+      stageTitle
+    );
+
+    const rowsHtml = currentTabCards
+      .map(({ model, part }, idx) => {
+        const counts = qcPartStageCounts({
+          model,
+          part,
+          qcRecords,
+          printDispatches,
+          sewingDispatches,
+          normalizePartKey
+        });
+        const cut = counts.cutPieces;
+        const actual =
+          activeTab === 'before_print'
+            ? counts.beforePrintGood
+            : activeTab === 'after_print'
+            ? counts.afterPrintGood
+            : counts.afterSewingGood;
+        const stageDefects =
+          activeTab === 'before_print'
+            ? counts.beforePrintDefect
+            : activeTab === 'after_print'
+            ? counts.afterPrintDefect
+            : counts.afterSewingDefect;
+        const stageEntry =
+          activeTab === 'before_print'
+            ? cut
+            : activeTab === 'after_print'
+            ? counts.printReceived + counts.embroideryReceived ||
+              counts.beforePrintGood ||
+              cut
+            : counts.sewingReceived ||
+              counts.sewingSent ||
+              counts.afterPrintGood ||
+              cut;
+        const deficit = stageEntry - actual;
+        const deficitHtml =
+          actual > 0
+            ? deficit > 0
+              ? `<span class="bad">${deficit.toLocaleString('ar-EG')} (عجز)</span>`
+              : deficit < 0
+              ? `<span class="warn">${Math.abs(deficit).toLocaleString('ar-EG')} (زيادة)</span>`
+              : '<span class="ok">مطابق (0)</span>'
+            : '—';
+        const note = model.design_notes || model.notes_shirt || model.notes_pants || '—';
+
+        return `<tr>
+          <td class="num muted">${idx + 1}</td>
+          <td class="text-right"><strong>${escapeHtml(model.model_code)}</strong></td>
+          <td><strong>${escapeHtml(getPartLabel(part))}</strong></td>
+          <td>${escapeHtml(model.model_type || '—')}</td>
+          <td>${escapeHtml(model.cutter_name || '—')}</td>
+          <td class="num">${stageEntry.toLocaleString('ar-EG')}</td>
+          <td class="num"><strong>${cut.toLocaleString('ar-EG')}</strong></td>
+          <td class="num ok">${actual > 0 ? actual.toLocaleString('ar-EG') : 'قيد العد'}</td>
+          <td class="num ${stageDefects > 0 ? 'bad' : 'muted'}">${stageDefects.toLocaleString('ar-EG')}</td>
+          <td class="num">${deficitHtml}</td>
+          <td class="text-right">${escapeHtml(note)}</td>
+        </tr>`;
+      })
+      .join('');
+
+    const bodyHtml = `
+      <table>
+        <thead>
+          <tr>
+            <th style="width:4%">#</th>
+            <th class="text-right" style="width:11%">كود الموديل</th>
+            <th style="width:8%">القطعة</th>
+            <th style="width:9%">نوع الموديل</th>
+            <th style="width:10%">المقصدار</th>
+            <th style="width:8%">الداخل للمرحلة</th>
+            <th style="width:8%">المقصوص</th>
+            <th style="width:8%">العدد السليم</th>
+            <th style="width:6%">التالف</th>
+            <th style="width:10%">العجز / الفاقد</th>
+            <th class="text-right" style="width:18%">ملاحظات</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml || '<tr><td colspan="11" class="muted">لا توجد قطع مسجلة في هذه المرحلة.</td></tr>'}</tbody>
+      </table>
+      ${renderSignatureBar(['مسؤول الفرز والكنترول', 'مشرف الجودة', 'مدير الإنتاج'], true)}
+    `;
+
+    openUnifiedPrintWindow({
+      documentTitle: `تقرير جرد مرحلة الفرز - ${stageTitle}`,
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings?.site_name,
+        logo: globalSettings?.logo,
+        title: `تقرير تدقيق ومطابقة مرحلة الفرز: ${stageTitle}`,
+        subtitle: 'كشف تفصيلي (الداخل للمرحلة، المقصوص، السليم، التالف، والعجز)',
+        metaItems: [`عدد قطع الفرز: ${currentTabCards.length.toLocaleString('ar-EG')}`]
+      },
+      bodyHtml,
+      popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة تقرير الفرز.'
+    });
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -1321,14 +1434,8 @@ export const QCView: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => {
-                    logClientPrintAction(
-                      'العد والجودة',
-                      `طباعة تقرير جرد مرحلة ${getStageTitle(activeTab)}`,
-                      getStageTitle(activeTab)
-                    );
-                    window.print();
-                  }}
+                  type="button"
+                  onClick={handlePrintStageReport}
                   className="px-4 py-2 rounded-full bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs shadow-xs transition flex items-center gap-1.5 cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />

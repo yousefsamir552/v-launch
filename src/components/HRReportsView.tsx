@@ -21,7 +21,12 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { api } from '../api/client';
-import { escapeHtml, logClientPrintAction, renderLogoHtml } from '../utils/printShared';
+import {
+  escapeHtml,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar
+} from '../utils/printShared';
 import type {
   HRAttendanceSettings,
   HRReportDepartmentRow,
@@ -224,22 +229,17 @@ export const HRReportsView: React.FC = () => {
 
   const handlePrint = () => {
     if (!payload) return;
-    const win = window.open('', '_blank', 'width=1100,height=820');
-    if (!win) {
-      addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة لطباعة التقرير', 'danger');
-      return;
-    }
 
     const monthlyRowsHtml = annualMonths
       .map(
         (row) => `<tr>
-          <td>${escapeHtml(row.label)}</td>
-          <td>${formatInt(row.active_workers)}</td>
-          <td>${formatNumber(row.earned_salary)}</td>
-          <td>${formatNumber(row.overtime_bonus)}</td>
-          <td>${formatNumber(row.loans)}</td>
-          <td>${formatNumber(row.deductions)}</td>
-          <td><strong>${formatNumber(row.net_paid)}</strong></td>
+          <td><strong>${escapeHtml(row.label)}</strong></td>
+          <td class="num">${formatInt(row.active_workers)}</td>
+          <td class="num">${formatNumber(row.earned_salary)}</td>
+          <td class="num ok">${formatNumber(row.overtime_bonus)}</td>
+          <td class="num warn">${formatNumber(row.loans)}</td>
+          <td class="num bad">${formatNumber(row.deductions)}</td>
+          <td class="num"><strong>${formatNumber(row.net_paid)}</strong></td>
         </tr>`
       )
       .join('');
@@ -247,11 +247,11 @@ export const HRReportsView: React.FC = () => {
     const comparisonRowsHtml = comparisonRows
       .map(
         (row) => `<tr>
-          <td>${escapeHtml(row.label)}</td>
-          <td>${formatNumber(row.net)}</td>
-          <td>${formatNumber(row.loans)}</td>
-          <td>${formatNumber(row.deductions)}</td>
-          <td>${row.net_change_pct === null ? '—' : `${row.net_change_pct}%`}</td>
+          <td><strong>${escapeHtml(row.label)}</strong></td>
+          <td class="num"><strong>${formatNumber(row.net)}</strong></td>
+          <td class="num">${formatNumber(row.loans)}</td>
+          <td class="num">${formatNumber(row.deductions)}</td>
+          <td class="num">${row.net_change_pct === null ? '—' : `${row.net_change_pct}%`}</td>
         </tr>`
       )
       .join('');
@@ -259,12 +259,12 @@ export const HRReportsView: React.FC = () => {
     const departmentRowsHtml = departmentRows
       .map(
         (row) => `<tr>
-          <td>${escapeHtml(row.label)}</td>
-          <td>${formatInt(row.workers)}</td>
-          <td>${formatNumber(row.net)}</td>
-          <td>${formatNumber(row.loans)}</td>
-          <td>${formatNumber(row.deductions)}</td>
-          <td>${row.percent}%</td>
+          <td><strong>${escapeHtml(row.label)}</strong></td>
+          <td class="num">${formatInt(row.workers)}</td>
+          <td class="num"><strong>${formatNumber(row.net)}</strong></td>
+          <td class="num">${formatNumber(row.loans)}</td>
+          <td class="num">${formatNumber(row.deductions)}</td>
+          <td class="num">${row.percent}%</td>
         </tr>`
       )
       .join('');
@@ -275,11 +275,11 @@ export const HRReportsView: React.FC = () => {
       rows
         .map(
           (row) => `<tr>
-            <td>${escapeHtml(row.name)}</td>
-            <td>${escapeHtml(row.department_label || row.department || '-')}</td>
-            <td>${formatInt(row.present_days)}</td>
-            <td>${formatInt(row.absent_days)}</td>
-            <td>${Math.round(Number(row.late_minutes) || 0)}</td>
+            <td class="text-right"><strong>${escapeHtml(row.name)}</strong></td>
+            <td>${escapeHtml(row.department_label || row.department || '—')}</td>
+            <td class="num ok">${formatInt(row.present_days)}</td>
+            <td class="num ${row.absent_days > 0 ? 'bad' : ''}">${formatInt(row.absent_days)}</td>
+            <td class="num">${Math.round(Number(row.late_minutes) || 0)}</td>
           </tr>`
         )
         .join('');
@@ -287,60 +287,70 @@ export const HRReportsView: React.FC = () => {
     const kpis = payload.annual.kpis;
     const worst = discipline?.worst_department;
 
-    win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
-      <title>تقرير الموارد البشرية ${year}</title>
-      <style>
-        @page{size:A4 portrait;margin:8mm}
-        *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-        body{font-family:Tahoma,Arial,sans-serif;padding:18px;color:#0f172a;font-size:11px}
-        .brand{text-align:center;margin-bottom:4px}
-        h1{font-size:17px;margin:0 0 4px;text-align:center}
-        p.meta{font-size:11px;color:#64748b;margin:0 0 12px;text-align:center}
-        h2{font-size:13px;margin:14px 0 6px;border-right:4px solid #7e22ce;padding-right:8px}
-        table{width:100%;border-collapse:collapse;font-size:10.5px;margin-bottom:6px}
-        th,td{border:1px solid #cbd5e1;padding:4px 6px;text-align:center}
-        th{background:#f1f5f9}
-        .kpis{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
-        .kpi{border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;flex:1 1 150px}
-        .kpi span{display:block;font-size:9.5px;color:#64748b}
-        .kpi strong{font-size:12px}
-        .note{font-size:10px;color:#64748b;margin:4px 0 0}
-      </style></head><body>
-      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 44)}</div>
-      <h1>${escapeHtml(globalSettings.site_name || 'مصنع الملابس الجاهزة')} — تقرير الموارد البشرية ${year}</h1>
-      <p class="meta">فترة المقارنة: ${escapeHtml(payload.range.from)} → ${escapeHtml(payload.range.to)} — عدد العمال النشطين: ${formatInt(kpis.active_workers)}</p>
-
-      <h2>مؤشرات الأداء السنوية</h2>
-      <div class="kpis">
-        <div class="kpi"><span>إجمالي الرواتب المصروفة</span><strong>${formatMoney(kpis.net_salary_total)}</strong></div>
-        <div class="kpi"><span>إجمالي السُلف</span><strong>${formatMoney(kpis.loans_total)}</strong></div>
-        <div class="kpi"><span>إجمالي الإضافي</span><strong>${formatMoney(kpis.overtime_bonus_total)}</strong></div>
-        <div class="kpi"><span>إجمالي الخصومات</span><strong>${formatMoney(kpis.deductions_total)}</strong></div>
-        <div class="kpi"><span>متوسط التكلفة الشهرية</span><strong>${formatMoney(kpis.avg_monthly_labor_cost)}</strong></div>
-        <div class="kpi"><span>سُلف الأسبوع</span><strong>${formatMoney(loansSummary?.week_total || 0)}</strong></div>
+    const bodyHtml = `
+      <div class="p-kpis">
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الرواتب المصروفة</span><span class="p-kpi-val">${formatMoney(kpis.net_salary_total)}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي السُلف</span><span class="p-kpi-val warn">${formatMoney(kpis.loans_total)}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الإضافي</span><span class="p-kpi-val ok">${formatMoney(kpis.overtime_bonus_total)}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الخصومات</span><span class="p-kpi-val bad">${formatMoney(kpis.deductions_total)}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">متوسط التكلفة الشهرية</span><span class="p-kpi-val">${formatMoney(kpis.avg_monthly_labor_cost)}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">سُلف الأسبوع</span><span class="p-kpi-val">${formatMoney(loansSummary?.week_total || 0)}</span></div>
       </div>
 
-      <h2>التقرير السنوي (${year})</h2>
-      <table><thead><tr><th>الشهر</th><th>عدد العمال</th><th>الأجر المكتسب</th><th>الإضافي</th><th>السُلف</th><th>الخصومات</th><th>الصافي</th></tr></thead>
-      <tbody>${monthlyRowsHtml || '<tr><td colspan="7">لا توجد بيانات</td></tr>'}</tbody></table>
+      <div class="p-sec">التقرير السنوي (${year})</div>
+      <table>
+        <thead><tr><th>الشهر</th><th>عدد العمال</th><th>الأجر المكتسب</th><th>الإضافي</th><th>السُلف</th><th>الخصومات</th><th>الصافي</th></tr></thead>
+        <tbody>${monthlyRowsHtml || '<tr><td colspan="7" class="muted">لا توجد بيانات</td></tr>'}</tbody>
+      </table>
 
-      <h2>مقارنة الشهور</h2>
-      <table><thead><tr><th>الشهر</th><th>الصافي</th><th>السُلف</th><th>الخصومات</th><th>نسبة التغير</th></tr></thead>
-      <tbody>${comparisonRowsHtml || '<tr><td colspan="5">لا توجد بيانات</td></tr>'}</tbody></table>
+      <div class="hr-two-col">
+        <div>
+          <div class="p-sec">مقارنة الشهور</div>
+          <table>
+            <thead><tr><th>الشهر</th><th>الصافي</th><th>السُلف</th><th>الخصومات</th><th>نسبة التغير</th></tr></thead>
+            <tbody>${comparisonRowsHtml || '<tr><td colspan="5" class="muted">لا توجد بيانات</td></tr>'}</tbody>
+          </table>
+        </div>
+        <div>
+          <div class="p-sec">توزيع تكلفة العمالة حسب القسم</div>
+          <table>
+            <thead><tr><th>القسم</th><th>العمال</th><th>الصافي</th><th>السُلف</th><th>الخصومات</th><th>النسبة</th></tr></thead>
+            <tbody>${departmentRowsHtml || '<tr><td colspan="6" class="muted">لا توجد بيانات</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
 
-      <h2>توزيع تكلفة العمالة حسب القسم</h2>
-      <table><thead><tr><th>القسم</th><th>عدد العمال</th><th>الصافي</th><th>السُلف</th><th>الخصومات</th><th>النسبة</th></tr></thead>
-      <tbody>${departmentRowsHtml || '<tr><td colspan="6">لا توجد بيانات</td></tr>'}</tbody></table>
+      <div class="p-sec">الالتزام والانضباط</div>
+      <table>
+        <thead><tr><th class="text-right">الموظف</th><th>القسم</th><th>أيام الحضور</th><th>أيام الغياب</th><th>دقائق التأخير</th></tr></thead>
+        <tbody>${disciplineRows(discipline?.most_committed || []) || '<tr><td colspan="5" class="muted">لا توجد بيانات</td></tr>'}</tbody>
+      </table>
+      <div class="p-note-box">
+        <div class="p-note-body">أكثر قسم غياباً: <strong>${worst ? `${escapeHtml(worst.label)} (${worst.absent_count} يوم غياب)` : 'لا يوجد'}</strong> • إجمالي سُلف الفترة: <strong>${formatMoney(rangeTotalLoans)}</strong> • إجمالي الخصومات: <strong>${formatMoney(rangeTotalDeductions)}</strong></div>
+      </div>
+      ${renderSignatureBar(['إدارة الموارد البشرية', 'الحسابات والمراجعة', 'اعتماد المدير العام'], true)}
+    `;
 
-      <h2>الالتزام والانضباط</h2>
-      <table><thead><tr><th>الموظف</th><th>القسم</th><th>أيام الحضور</th><th>أيام الغياب</th><th>دقائق التأخير</th></tr></thead>
-      <tbody>${disciplineRows(discipline?.most_committed || []) || '<tr><td colspan="5">لا توجد بيانات</td></tr>'}</tbody></table>
-      <p class="note">أكثر قسم غياباً: ${worst ? `${escapeHtml(worst.label)} (${worst.absent_count} يوم غياب)` : 'لا يوجد'} — إجمالي سُلف الفترة: ${formatMoney(rangeTotalLoans)} — إجمالي الخصومات: ${formatMoney(rangeTotalDeductions)}</p>
-      </body></html>`);
-    win.document.close();
-    win.focus();
-    logClientPrintAction('الموارد البشرية', 'طباعة تقرير وتحليلات الموارد البشرية', 'تقارير الموارد البشرية');
-    win.print();
+    const opened = openUnifiedPrintWindow({
+      documentTitle: `تقرير الموارد البشرية ${year}`,
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings.site_name,
+        logo: globalSettings.logo,
+        title: `تقرير وتحليلات الموارد البشرية — ${year}`,
+        subtitle: `فترة المقارنة: ${payload.range.from} ← ${payload.range.to}`,
+        metaItems: [`العمال النشطون: ${formatInt(kpis.active_workers)}`]
+      },
+      bodyHtml,
+      extraCss: `
+        .hr-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+      `,
+      onPopupBlocked: () => addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة لطباعة التقرير', 'danger')
+    });
+    if (opened) {
+      logClientPrintAction('الموارد البشرية', 'طباعة تقرير وتحليلات الموارد البشرية', 'تقارير الموارد البشرية');
+    }
   };
 
 

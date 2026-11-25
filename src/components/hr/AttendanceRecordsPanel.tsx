@@ -6,7 +6,12 @@ import {
   CheckCircle2, XCircle, UsersRound, LayoutList, History, Printer, BarChart3
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { escapeHtml, logClientPrintAction, renderLogoHtml } from '../../utils/printShared';
+import {
+  escapeHtml,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar
+} from '../../utils/printShared';
 import { api } from '../../api/client';
 import {
   HRJobTitle, HREmployee, HRAttendanceSettings, HRAttendanceRule,
@@ -514,32 +519,40 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
     const title = selectedDay
       ? `تقرير حضور يوم ${formatDayLabel(selectedDay)}`
       : `تقرير حضور شهر ${month}`;
-    const win = window.open('', '_blank', 'width=1000,height=700');
-    if (!win) {
-      addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة لطباعة التقرير', 'danger');
-      return;
+    const bodyHtml = `
+      <div class="p-kpis">
+        <div class="p-kpi"><span class="p-kpi-label">عدد السجلات</span><span class="p-kpi-val">${list.length.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">حضور</span><span class="p-kpi-val ok">${summary.present.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">غياب</span><span class="p-kpi-val bad">${summary.absents.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">بانتظار المراجعة</span><span class="p-kpi-val warn">${summary.pending.toLocaleString('ar-EG')}</span></div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>التاريخ</th><th class="text-right">الموظف</th><th>الكود</th><th>الحضور</th>
+            <th>الانصراف</th><th>الحالة</th><th>الخصم</th><th>الإضافي</th><th>خصم ${escapeHtml(weeklyOffLabel)}</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      ${renderSignatureBar(['مسؤول شؤون العاملين', 'اعتماد الإدارة'], true)}
+    `;
+    const opened = openUnifiedPrintWindow({
+      documentTitle: title,
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings.site_name,
+        logo: globalSettings.logo,
+        title,
+        subtitle: 'كشف سجلات الحضور والانصراف والخصومات والإضافي'
+      },
+      bodyHtml,
+      onPopupBlocked: () => addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة لطباعة التقرير', 'danger')
+    });
+    if (opened) {
+      logClientPrintAction('الموارد البشرية', `طباعة ${title} (${list.length} سجل)`, title);
     }
-    win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
-      <title>${escapeHtml(title)}</title>
-      <style>
-        body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#0f172a}
-        .brand{text-align:center;margin-bottom:6px}
-        h1{font-size:18px;margin:0 0 4px;text-align:center}
-        p.meta{font-size:12px;color:#64748b;margin:0 0 16px;text-align:center}
-        table{width:100%;border-collapse:collapse;font-size:12px}
-        th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:center}
-        th{background:#f1f5f9}
-      </style></head><body>
-      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 46)}</div>
-      <h1>${escapeHtml(globalSettings.site_name || 'مصنع الملابس الجاهزة')} — ${escapeHtml(title)}</h1>
-      <p class="meta">عدد السجلات: ${list.length} — حضور: ${summary.present} — غياب: ${summary.absents} — بانتظار المراجعة: ${summary.pending}</p>
-      <table><thead><tr><th>التاريخ</th><th>الموظف</th><th>الكود</th><th>الحضور</th><th>الانصراف</th><th>الحالة</th><th>الخصم</th><th>الإضافي</th><th>خصم ${escapeHtml(weeklyOffLabel)}</th></tr></thead>
-      <tbody>${rowsHtml}</tbody></table>
-      </body></html>`);
-    win.document.close();
-    win.focus();
-    logClientPrintAction('الموارد البشرية', `طباعة ${title} (${list.length} سجل)`, title);
-    win.print();
   };
 
   // إدخال بصمة يدوية لم تُسجل على الماكينة

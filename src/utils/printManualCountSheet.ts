@@ -1,5 +1,11 @@
 import { GarmentPart, getPartLabel } from '../types';
-import { escapeHtml, logClientPrintAction, PRINT_LOGO_CSS, renderLogoHtml, safeImageSrc } from './printShared';
+import {
+  escapeHtml,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar,
+  safeImageSrc
+} from './printShared';
 
 export interface ManualCountSheetPart {
   key: GarmentPart;
@@ -10,7 +16,7 @@ export interface ManualCountSheetOptions {
   siteName?: string;
   /** شعار المصنع من الإعدادات (رابط / Base64 / رمز) — يُعرض في رأس الورقة. */
   logo?: string;
-  /** صورة الموديل — تُعرض بحجم كبير وواضح في رأس الورقة. */
+  /** صورة الموديل — تُعرض بوضوح في بطاقة بيانات الموديل. */
   imageUrl?: string;
   modelCode: string;
   modelType?: string;
@@ -18,23 +24,30 @@ export interface ManualCountSheetOptions {
   sizes: string[];
   parts: ManualCountSheetPart[];
   inspectorName?: string;
+  notes?: string;
 }
 
 /**
- * يحدد ارتفاع خلية الكتابة بالقلم ديناميكياً حسب عدد صفوف الألوان في جدول القطعة،
- * بحيث تملأ الخانات مساحة صفحة A4 بشكل مريح دون الخروج لصفحة ثانية:
- *  - 1–4 صفوف  → خانات كبيرة وواسعة (135–155px).
- *  - 5–6 صفوف  → خانات متوسطة (95–115px).
- *  - 7 صفوف فأكثر → لا تقل عن ارتفاع مريح للكتابة (70–85px).
+ * يحسب ارتفاع خانة الكتابة بالقلم ديناميكياً وفق إجمالي عدد الألوان والقطع واتجاه الصفحة
+ * بحيث تظل الخانات مريحة للكتابة اليدوية وتتسع الورقة بالكامل مع التوقيعات على صفحة A4 واحدة فقط.
  */
-const computeCellHeightPx = (rows: number): number => {
-  if (rows <= 4) return 145;
-  if (rows <= 6) return 105;
-  return 78;
+const computeCellHeightPx = (
+  totalRows: number,
+  partsCount: number,
+  landscape: boolean
+): number => {
+  const safeRows = Math.max(1, totalRows);
+  const availablePx = landscape ? 470 : 730;
+  const overheadPerPart = 54;
+  const usable = Math.max(180, availablePx - partsCount * overheadPerPart);
+  const ideal = Math.floor(usable / safeRows);
+  const minH = landscape ? 28 : 34;
+  const maxH = landscape ? 62 : 84;
+  return Math.max(minH, Math.min(maxH, ideal));
 };
 
 /**
- * Opens a print-ready A4 manual counting sheet (one blank color × size table per
+ * Opens a print-ready single-page A4 manual counting sheet (one blank color × size table per
  * garment part) so floor workers can count with a pen, independently per part.
  */
 export const printManualCountSheet = (options: ManualCountSheetOptions): void => {
@@ -48,38 +61,50 @@ export const printManualCountSheet = (options: ManualCountSheetOptions): void =>
     options.parts.length > 0
       ? options.parts
       : [{ key: 'shirt' as GarmentPart, colors: [] }];
+
+  const normalizedParts = parts.map((p) => ({
+    key: p.key,
+    colors: p.colors.length > 0 ? p.colors : ['', '', '']
+  }));
+
+  const totalColorRows = normalizedParts.reduce((sum, p) => sum + p.colors.length, 0);
+  const useLandscape =
+    sizes.length > 6 || (normalizedParts.length >= 2 && sizes.length > 5);
+  const cellHeightPx = computeCellHeightPx(
+    totalColorRows,
+    normalizedParts.length,
+    useLandscape
+  );
   const today = new Date().toLocaleDateString('ar-EG');
 
-  const partSections = parts
+  const partSections = normalizedParts
     .map((part) => {
-      const colors = part.colors.length > 0 ? part.colors : ['', '', ''];
-      const cellHeightPx = computeCellHeightPx(colors.length);
-      const bodyRows = colors
+      const bodyRows = part.colors
         .map((color) => {
           const cells = sizes.map(() => '<td class="cell"></td>').join('');
           return `<tr>
-            <td class="color">${escapeHtml(color)}</td>
+            <td class="c-color">${escapeHtml(color)}</td>
             ${cells}
-            <td class="cell total"></td>
-            <td class="cell total"></td>
+            <td class="cell c-total"></td>
+            <td class="cell c-total"></td>
           </tr>`;
         })
         .join('');
       const headCells = sizes.map((s) => `<th>${escapeHtml(s)}</th>`).join('');
       const cols = [
-        '<col class="c-color" />',
+        '<col class="col-color" />',
         ...sizes.map(() => '<col />'),
-        '<col class="c-total" />',
-        '<col class="c-total" />'
+        '<col class="col-total" />',
+        '<col class="col-total" />'
       ].join('');
       return `
-        <section class="part">
-          <h3>القطعة: ${escapeHtml(getPartLabel(part.key))}</h3>
-          <table style="--cell-h: ${cellHeightPx}px">
+        <section class="part-sec">
+          <div class="p-sec">القطعة: ${escapeHtml(getPartLabel(part.key))} (${part.colors.length} لون)</div>
+          <table class="qc-grid" style="--cell-h: ${cellHeightPx}px">
             <colgroup>${cols}</colgroup>
             <thead>
               <tr>
-                <th class="color">اللون / المقاس</th>
+                <th class="c-color">اللون / المقاس</th>
                 ${headCells}
                 <th>إجمالي السليم</th>
                 <th>الهالك</th>
@@ -94,88 +119,81 @@ export const printManualCountSheet = (options: ManualCountSheetOptions): void =>
   const imageSrc = safeImageSrc(options.imageUrl);
   const imageBlock = imageSrc
     ? `<div class="thumb">
-        <span class="muted">لا توجد صورة</span>
-        <img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(
-        options.modelCode
-      )}" onerror="this.style.display='none'" />
+        <img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(options.modelCode)}" onerror="this.style.display='none'" />
       </div>`
     : '<div class="thumb"><span class="muted">لا توجد صورة</span></div>';
 
-  const html = `<!DOCTYPE html>
-  <html lang="ar" dir="rtl">
-  <head>
-    <meta charset="utf-8" />
-    <title>ورقة جرد يدوي - ${escapeHtml(options.modelCode)}</title>
-    <style>
-      @page { size: A4 portrait; margin: 12mm; }
-      * { box-sizing: border-box; }
-      body { font-family: "Tahoma", "Arial", sans-serif; color: #111; margin: 0; }
-      header { text-align: center; border-bottom: 3px double #111; padding-bottom: 8px; margin-bottom: 14px; }
-      header h1 { font-size: 18px; margin: 0 0 4px; }
-      header h2 { font-size: 15px; margin: 0 0 4px; }
-      ${PRINT_LOGO_CSS}
-      .info { display: flex; gap: 14px; align-items: stretch; border: 1.5px solid #222; border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; }
-      .info .thumb { position: relative; width: 200px; height: 200px; flex: 0 0 auto; border: 1px solid #bbb; border-radius: 8px; overflow: hidden; background: #f7f7f7; display: flex; align-items: center; justify-content: center; }
-      .info .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #f7f7f7; }
-      .info .thumb .muted { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
-      .info .fields { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; font-size: 13px; align-content: start; }
-      .info .fields .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; border-bottom: 1px dotted #bbb; padding: 5px 2px; }
-      .info .fields .k { color: #555; font-weight: bold; white-space: nowrap; }
-      .info .fields .v { font-weight: 900; }
-      .muted { color: #888; font-weight: bold; font-size: 12px; }
-      .part { margin-bottom: 16px; page-break-inside: avoid; }
-      .part h3 { font-size: 14px; margin: 0 0 6px; padding: 4px 8px; background: #eee; border: 1px solid #999; }
-      table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
-      th, td { border: 1.5px solid #222; text-align: center; padding: 4px; }
-      th { background: #f2f2f2; }
-      td.color, th.color { text-align: right; width: 120px; font-weight: bold; font-size: 14px; padding-right: 8px; }
-      td.cell { height: var(--cell-h, 34px); }
-      td.total { background: #fafafa; }
-      col.c-color { width: 120px; }
-      col.c-total { width: 80px; }
-      .signatures { display: flex; justify-content: space-between; margin-top: 18px; font-size: 13px; gap: 20px; page-break-inside: avoid; }
-      .signatures div { width: 48%; border-top: 1px dashed #333; padding-top: 6px; }
-    </style>
-  </head>
-  <body>
-    <header>
-      <div class="brand">${renderLogoHtml(options.logo, options.siteName, 54)}</div>
-      <h1>${escapeHtml(options.siteName || 'مصنع الملابس الجاهزة')} - قسم الفرز والجودة</h1>
-      <h2>ورقة جرد وعد يدوي — ${escapeHtml(options.stageLabel)}</h2>
-    </header>
+  const notesBlock =
+    options.notes && String(options.notes).trim()
+      ? `<div class="p-note-box">
+           <div class="p-note-title">ملاحظات الفرز</div>
+           <div class="p-note-body">${escapeHtml(options.notes)}</div>
+         </div>`
+      : '';
 
-    <div class="info">
+  const bodyHtml = `
+    <div class="p-info-card">
       ${imageBlock}
-      <div class="fields">
-        <div class="row"><span class="k">كود الموديل</span><span class="v">${escapeHtml(
-          options.modelCode
-        )}</span></div>
-        <div class="row"><span class="k">نوع الموديل</span><span class="v">${escapeHtml(
-          options.modelType || '-'
-        )}</span></div>
-        <div class="row"><span class="k">مرحلة العد</span><span class="v">${escapeHtml(
-          options.stageLabel
-        )}</span></div>
-        <div class="row"><span class="k">التاريخ</span><span class="v">${escapeHtml(today)}</span></div>
+      <div class="p-fields">
+        <div class="p-field"><span class="p-k">كود الموديل</span><span class="p-v">${escapeHtml(options.modelCode)}</span></div>
+        <div class="p-field"><span class="p-k">نوع الموديل</span><span class="p-v">${escapeHtml(options.modelType || '—')}</span></div>
+        <div class="p-field"><span class="p-k">مرحلة العد</span><span class="p-v">${escapeHtml(options.stageLabel)}</span></div>
+        <div class="p-field"><span class="p-k">التاريخ</span><span class="p-v num">${escapeHtml(today)}</span></div>
+        <div class="p-field full"><span class="p-k">القطع</span><span class="p-v">${escapeHtml(normalizedParts.map((p) => getPartLabel(p.key)).join(' + '))}</span></div>
+        <div class="p-field full"><span class="p-k">المقاسات</span><span class="p-v chips">${sizes.map((s) => `<span class="chip">${escapeHtml(s)}</span>`).join('')}</span></div>
       </div>
     </div>
-    ${partSections}
-    <div class="signatures">
-      <div>اسم العامل / المفتش: ${escapeHtml(options.inspectorName || '.......................................')}</div>
-      <div>اعتماد مشرف الجودة: .......................................</div>
-    </div>
-    <script>
-      window.onload = function () { window.focus(); window.print(); };
-    </script>
-  </body>
-  </html>`;
 
-  const win = window.open('', '_blank', 'width=900,height=1000');
-  if (!win) {
-    alert('يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة ورقة الجرد اليدوي.');
-    return;
-  }
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
+    ${partSections}
+    ${notesBlock}
+
+    ${renderSignatureBar(
+      [
+        `العامل / المفتش${options.inspectorName ? ` (${options.inspectorName})` : ''}`,
+        'اعتماد مشرف الجودة',
+        'مسؤول الكنترول'
+      ],
+      true
+    )}
+  `;
+
+  openUnifiedPrintWindow({
+    documentTitle: `ورقة جرد يدوي - ${options.modelCode}`,
+    mode: 'fit-single-page',
+    orientation: useLandscape ? 'landscape' : 'portrait',
+    header: {
+      siteName: options.siteName,
+      logo: options.logo,
+      title: 'ورقة جرد وعد يدوي (فارغة)',
+      subtitle: `قسم الفرز والجودة — ${options.stageLabel}`,
+      metaItems: [`الموديل: ${options.modelCode}`],
+      compact: true
+    },
+    bodyHtml,
+    extraCss: `
+      .thumb {
+        width: ${useLandscape ? '92px' : '116px'};
+        height: ${useLandscape ? '92px' : '116px'};
+        flex: 0 0 auto;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        overflow: hidden;
+        background: #f8fafc;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .thumb img { width: 100%; height: 100%; object-fit: contain; }
+      .part-sec { margin-bottom: 5px; break-inside: avoid; page-break-inside: avoid; }
+      table.qc-grid { table-layout: fixed; font-size: 10.5px; margin-bottom: 4px; }
+      table.qc-grid th, table.qc-grid td { border: 1.2px solid #334155; padding: 3px 4px; }
+      table.qc-grid th { background: #f1f5f9; font-size: 10px; }
+      table.qc-grid td.c-color, table.qc-grid th.c-color { text-align: right; font-weight: 800; padding-right: 7px; font-size: 11px; }
+      table.qc-grid td.cell { height: var(--cell-h, 46px); background: #ffffff !important; }
+      table.qc-grid td.c-total { background: #f8fafc !important; }
+      table.qc-grid col.col-color { width: ${useLandscape ? '15%' : '18%'}; }
+      table.qc-grid col.col-total { width: ${useLandscape ? '10%' : '12%'}; }
+    `,
+    popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة ورقة الجرد اليدوي.'
+  });
 };

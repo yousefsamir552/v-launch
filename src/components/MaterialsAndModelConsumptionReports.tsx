@@ -22,7 +22,13 @@ import {
   X
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { PRINT_LOGO_CSS, escapeHtml, logClientPrintAction, renderLogoHtml, safeImageSrc } from '../utils/printShared';
+import {
+  escapeHtml,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar,
+  safeImageSrc
+} from '../utils/printShared';
 import {
   DEFAULT_GARMENT_COMPOSITION,
   GARMENT_COMPOSITION_LABELS,
@@ -148,56 +154,62 @@ const tableClass = 'w-full min-w-[560px] text-right text-xs';
 const thClass = 'border-b border-slate-200 bg-slate-50 px-2 py-2 font-semibold text-slate-500';
 const tdClass = 'border-b border-slate-100 px-2 py-2 text-slate-700';
 
-/** فتح نافذة طباعة موحّدة بهيدر المصنع (A4). */
+/** فتح نافذة طباعة موحّدة بهيدر المصنع المتكرر في كل صفحة (A4 Landscape). */
 const usePrintWindow = () => {
   const { globalSettings } = useApp();
-  return (title: string, bodyHtml: string, orientation: 'portrait' | 'landscape' = 'portrait') => {
+  return (title: string, bodyHtml: string, orientation: 'portrait' | 'landscape' = 'landscape') => {
     const siteName = globalSettings?.site_name || 'نظام إدارة المصنع';
-    const logoHtml = renderLogoHtml(globalSettings?.logo, siteName, 46);
-    const win = window.open('', '_blank', 'width=1200,height=850');
-    if (!win) return false;
-    win.document.open();
-    win.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8" />
-      <title>${escapeHtml(title)}</title>
-      <style>
-        @page { size: A4 ${orientation}; margin: 10mm; }
-        * { box-sizing: border-box; }
-        body { font-family: 'Cairo', Tahoma, Arial, sans-serif; color: #0f172a; margin: 0; font-size: 11px; }
-        .header { text-align: center; margin-bottom: 10px; border-bottom: 2px solid #0f172a; padding-bottom: 8px; }
-        h1 { font-size: 18px; margin: 3px 0; }
-        h2 { font-size: 13px; margin: 14px 0 6px; padding: 4px 7px; background: #f1f5f9; border-right: 3px solid #0f172a; }
-        h3 { font-size: 11.5px; margin: 9px 0 4px; color: #334155; }
-        .meta { color: #64748b; font-size: 10px; }
-        table { width: 100%; border-collapse: collapse; font-size: 9.5px; margin-bottom: 8px; }
-        th, td { border: 1px solid #cbd5e1; padding: 4px 5px; text-align: right; vertical-align: top; }
-        th { background: #f1f5f9; }
-        tr:nth-child(even) td { background: #f8fafc; }
-        .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
-        .total td { font-weight: 700; background: #e2e8f0 !important; }
-        .muted { color: #64748b; }
-        .ok { color: #047857; }
-        .warn { color: #b45309; }
-        .bad { color: #be123c; }
-        .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-bottom: 8px; }
-        .card { border: 1px solid #cbd5e1; border-radius: 6px; padding: 5px 6px; }
-        .card b { display: block; font-size: 13px; margin-top: 2px; }
-        .kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 10px; font-size: 10px; }
+    const opened = openUnifiedPrintWindow({
+      documentTitle: title,
+      mode: 'multi-page-table',
+      orientation,
+      header: {
+        siteName,
+        logo: globalSettings?.logo,
+        title,
+        subtitle: 'تقارير الخامات واستهلاك الموديلات — A4'
+      },
+      bodyHtml: `${bodyHtml}${renderSignatureBar(['إعداد التقرير', 'مراقبة المخازن والإنتاج', 'اعتماد الإدارة'], true)}`,
+      extraCss: `
+        h2 {
+          font-size: 11px;
+          font-weight: 800;
+          margin: 9px 0 4px;
+          padding: 3.5px 8px;
+          background: #f1f5f9;
+          border-right: 3.5px solid #0f172a;
+          border-top: 1px solid #cbd5e1;
+          border-bottom: 1px solid #cbd5e1;
+          border-left: 1px solid #cbd5e1;
+          border-radius: 4px;
+          break-after: avoid;
+          page-break-after: avoid;
+        }
+        h3 {
+          font-size: 10.5px;
+          font-weight: 800;
+          margin: 8px 0 3px;
+          color: #0f172a;
+          background: #f8fafc;
+          border-right: 3px solid #334155;
+          padding: 3px 7px;
+          break-after: avoid;
+          page-break-after: avoid;
+        }
+        table:not(.print-shell) { font-size: 8.8px; margin-bottom: 7px; }
+        table:not(.print-shell) th, table:not(.print-shell) td { padding: 3.5px 4px; text-align: right; vertical-align: top; }
+        table:not(.print-shell) td.num, table:not(.print-shell) th.num { text-align: center; }
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 5px; margin-bottom: 7px; break-inside: avoid; page-break-inside: avoid; }
+        .card { border: 1px solid #cbd5e1; border-radius: 5px; padding: 4px 7px; background: #f8fafc; font-size: 9px; color: #475569; font-weight: 700; }
+        .card b { display: block; font-size: 12px; color: #0f172a; margin-top: 2px; font-weight: 800; }
+        .kv { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px 10px; font-size: 9.5px; margin-bottom: 6px; break-inside: avoid; page-break-inside: avoid; }
         .kv span { border-bottom: 1px dotted #cbd5e1; padding: 2px 0; }
-        .page-break { page-break-before: always; }
-        ${PRINT_LOGO_CSS}
-      </style></head><body>
-      <div class="header">
-        <div class="brand">${logoHtml}</div>
-        <h1>${escapeHtml(title)}</h1>
-        <div class="meta">${escapeHtml(siteName)} • ${escapeHtml(new Date().toLocaleString('ar-EG'))}</div>
-      </div>
-      ${bodyHtml}
-      </body></html>`);
-    win.document.close();
-    win.focus();
-    logClientPrintAction('التقارير', `طباعة تقرير: ${title}`, title);
-    window.setTimeout(() => win.print(), 350);
-    return true;
+      `
+    });
+    if (opened) {
+      logClientPrintAction('التقارير', `طباعة تقرير: ${title}`, title);
+    }
+    return opened;
   };
 };
 
@@ -1786,7 +1798,7 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
           .map((row) => `<span>${escapeHtml(row.label)}: <b>${fmt(row.done)} / ${fmt(row.total)}</b></span>`)
           .join('')}
       </div>`,
-      'portrait'
+      'landscape'
     );
   };
   printModelReportRef.current = printModelReport;

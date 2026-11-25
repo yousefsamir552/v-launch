@@ -1,6 +1,7 @@
 /**
- * ورقة إنتاج التشطيب والتغليف والكارت (A4) — بنفس نظافة وتنسيق ورقة المكن (`printSewingSheet.ts`).
- * تسجّل عملية الطباعة تلقائياً في سجل المراقبة (AuditLog) عبر `logClientPrintAction`.
+ * ورقة إنتاج التشطيب والتغليف والكارت (صفحة A4 واحدة صارمة — Single-Page A4) —
+ * تستخدم محرك الطباعة الموحد `printShared.ts` لضمان احتواء كامل الورقة + جدول خامات التعبئة + التوقيعات
+ * في صفحة A4 واحدة دون أي امتداد لصفحة ثانية، مع تسجيل دائم في سجل المراقبة (AuditLog).
  */
 import type {
   AssemblyStageRecord,
@@ -15,8 +16,8 @@ import { modelPackagingPieces } from './packagingMaterials';
 import {
   escapeHtml,
   logClientPrintAction,
-  PRINT_LOGO_CSS,
-  renderLogoHtml,
+  openUnifiedPrintWindow,
+  renderSignatureBar,
   safeImageSrc
 } from './printShared';
 
@@ -135,7 +136,6 @@ export const printAssemblyProductionSheet = (options: AssemblyProductionSheetOpt
   const packagingRecord = assemblyStageRecords.find((r) => r.stage === 'packaging');
   const destRecord = assemblyStageRecords.find((r) => r.stage === 'dest');
 
-  // جمع أسماء ورش المكن التي عملت على الموديل
   const sewingWorkshopsList = Array.from(
     new Set(
       [
@@ -170,21 +170,21 @@ export const printAssemblyProductionSheet = (options: AssemblyProductionSheetOpt
     ? colors.map((c) => `<span class="chip">${escapeHtml(c)}</span>`).join('')
     : '<span class="muted">غير محددة</span>';
 
-  // جدول مراحل الأسمبلي (التشطيب / المكواة / التعبئة / الدَست)
+  // جدول مراحل الأسمبلي
   const stageRows: string[] = [];
   if (finishingRecords.length) {
     finishingRecords.forEach((rec) => {
       stageRows.push(`<tr>
         <td><strong>التشطيب</strong> (${escapeHtml(rec.piece_label || getPartLabel(rec.part_type))})</td>
         <td>${escapeHtml(rec.vendor_name || '—')}</td>
-        <td>${fmtDate(rec.entry_date)}</td>
-        <td>${fmtDate(rec.expected_exit_date)}</td>
-        <td>${fmtDate(rec.actual_exit_date)}</td>
-        <td>${rec.is_received ? '✅ تم الاستلام' : '⏳ قيد التنفيذ'}</td>
+        <td class="num">${fmtDate(rec.entry_date)}</td>
+        <td class="num">${fmtDate(rec.expected_exit_date)}</td>
+        <td class="num">${fmtDate(rec.actual_exit_date)}</td>
+        <td class="${rec.is_received ? 'ok' : 'warn'}">${rec.is_received ? 'تم الاستلام' : 'قيد التنفيذ'}</td>
       </tr>`);
     });
   } else {
-    stageRows.push(`<tr><td><strong>التشطيب</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>لم يبدأ</td></tr>`);
+    stageRows.push(`<tr><td><strong>التشطيب</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td class="muted">لم يبدأ</td></tr>`);
   }
 
   if (ironingRecords.length) {
@@ -192,33 +192,35 @@ export const printAssemblyProductionSheet = (options: AssemblyProductionSheetOpt
       stageRows.push(`<tr>
         <td><strong>المكواة</strong> (${escapeHtml(rec.part_label || getPartLabel(rec.part_type || 'shirt'))})</td>
         <td>${escapeHtml(rec.vendor_name || '—')}</td>
-        <td>${fmtDate(rec.entry_date)}</td>
-        <td>${fmtDate(rec.expected_exit_date)}</td>
-        <td>${fmtDate(rec.actual_exit_date)}</td>
-        <td>${rec.is_completed ? '✅ مكتملة' : '⏳ قيد التنفيذ'}</td>
+        <td class="num">${fmtDate(rec.entry_date)}</td>
+        <td class="num">${fmtDate(rec.expected_exit_date)}</td>
+        <td class="num">${fmtDate(rec.actual_exit_date)}</td>
+        <td class="${rec.is_completed ? 'ok' : 'warn'}">${rec.is_completed ? 'مكتملة' : 'قيد التنفيذ'}</td>
       </tr>`);
     });
   } else {
-    stageRows.push(`<tr><td><strong>المكواة</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>لم يبدأ</td></tr>`);
+    stageRows.push(`<tr><td><strong>المكواة</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td class="muted">لم يبدأ</td></tr>`);
   }
 
   stageRows.push(`<tr>
-    <td><strong>التعبئة والتغليف</strong>${packagingRecord?.materials_deducted ? ' <span class="badge-ok">(خامات مخصومة)</span>' : ''}</td>
+    <td><strong>التعبئة والتغليف</strong>${packagingRecord?.materials_deducted ? ' <span class="ok">(مخصومة)</span>' : ''}</td>
     <td>${escapeHtml(packagingRecord?.vendor_name || '—')}</td>
-    <td>${fmtDate(packagingRecord?.entry_date)}</td>
-    <td>${fmtDate(packagingRecord?.expected_exit_date)}</td>
-    <td>${fmtDate(packagingRecord?.actual_exit_date)}</td>
-    <td>${packagingRecord ? (packagingRecord.is_completed ? '✅ مكتملة' : '⏳ قيد التنفيذ') : 'لم يبدأ'}</td>
+    <td class="num">${fmtDate(packagingRecord?.entry_date)}</td>
+    <td class="num">${fmtDate(packagingRecord?.expected_exit_date)}</td>
+    <td class="num">${fmtDate(packagingRecord?.actual_exit_date)}</td>
+    <td class="${packagingRecord?.is_completed ? 'ok' : packagingRecord ? 'warn' : 'muted'}">${
+      packagingRecord ? (packagingRecord.is_completed ? 'مكتملة' : 'قيد التنفيذ') : 'لم يبدأ'
+    }</td>
   </tr>`);
 
   const destExpected = destRecord?.expected_pieces || expectedSets;
   const destCompleted = destRecord?.completed_pieces;
   const destShortage = destRecord?.shortage_pieces ?? 0;
   const destStatusText = destRecord
-    ? `${destRecord.is_completed ? '✅ مكتملة' : '⏳ قيد التنفيذ'}${
+    ? `${destRecord.is_completed ? 'مكتملة' : 'قيد التنفيذ'}${
         destCompleted !== null && destCompleted !== undefined
           ? ` — منفذ: ${fmtInt(destCompleted)} / متوقع: ${fmtInt(destExpected)}${
-              destShortage > 0 ? ` (عجز: ${fmtInt(destShortage)})` : ' (بدون عجز)'
+              destShortage > 0 ? ` (عجز: ${fmtInt(destShortage)})` : ' (مطابق)'
             }`
           : ''
       }`
@@ -227,22 +229,22 @@ export const printAssemblyProductionSheet = (options: AssemblyProductionSheetOpt
   stageRows.push(`<tr>
     <td><strong>الدَست</strong></td>
     <td>${escapeHtml(destRecord?.vendor_name || '—')}</td>
-    <td>${fmtDate(destRecord?.entry_date)}</td>
-    <td>${fmtDate(destRecord?.expected_exit_date)}</td>
-    <td>${fmtDate(destRecord?.actual_exit_date)}</td>
-    <td>${escapeHtml(destStatusText)}</td>
+    <td class="num">${fmtDate(destRecord?.entry_date)}</td>
+    <td class="num">${fmtDate(destRecord?.expected_exit_date)}</td>
+    <td class="num">${fmtDate(destRecord?.actual_exit_date)}</td>
+    <td class="${destRecord?.is_completed ? 'ok' : destRecord ? 'warn' : 'muted'}">${escapeHtml(destStatusText)}</td>
   </tr>`);
 
-  // متطلبات الأمبالاج (التصوير والكارت/الباركود)
+  // متطلبات الأمبالاج
   const reqStepCells = PACKAGING_STEP_ORDER.map((step) => {
     const val =
       packagingRequirement?.steps?.[step] ||
       (packagingRequirement as any)?.[`${step}_date`] ||
       null;
     return `<tr>
-      <td><strong>${escapeHtml(PACKAGING_STEP_LABELS[step])}</strong></td>
-      <td>${val ? '✅ تم' : '⏳ لم يتم'}</td>
-      <td>${fmtDate(val)}</td>
+      <td class="text-right"><strong>${escapeHtml(PACKAGING_STEP_LABELS[step])}</strong></td>
+      <td class="${val ? 'ok' : 'muted'}">${val ? 'تم' : 'لم يتم'}</td>
+      <td class="num">${fmtDate(val)}</td>
     </tr>`;
   }).join('');
 
@@ -255,149 +257,90 @@ export const printAssemblyProductionSheet = (options: AssemblyProductionSheetOpt
     ? requiredMaterials
         .map(
           (item, idx) => `<tr>
-          <td>${idx + 1}</td>
-          <td class="r"><strong>${escapeHtml(item.name)}</strong></td>
+          <td class="num">${idx + 1}</td>
+          <td class="text-right"><strong>${escapeHtml(item.name)}</strong></td>
           <td>${escapeHtml(item.spec)}</td>
-          <td>${fmtQty(item.consumption)}</td>
-          <td><strong>${fmtQty(item.required)}</strong></td>
+          <td class="num">${fmtQty(item.consumption)}</td>
+          <td class="num"><strong>${fmtQty(item.required)}</strong></td>
           <td>${escapeHtml(item.unit)}</td>
-          <td>${item.deducted ? '✅ تم الخصم' : 'بانتظار الخصم'}</td>
+          <td class="${item.deducted ? 'ok' : 'warn'}">${item.deducted ? 'تم الخصم' : 'بانتظار الخصم'}</td>
         </tr>`
         )
         .join('')
     : `<tr><td colspan="7" class="muted">لا توجد قواعد خامات تغليف مفعّلة تنطبق على فئة مقاس هذا الموديل.</td></tr>`;
 
-  const html = `<!DOCTYPE html>
-  <html lang="ar" dir="rtl">
-  <head>
-    <meta charset="utf-8" />
-    <title>ورقة إنتاج التشطيب والتغليف والكارت - ${escapeHtml(model.model_code)}</title>
-    <style>
-      @page { size: A4 portrait; margin: 10mm; }
-      * { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; }
-      body { font-family: "Tahoma", "Arial", sans-serif; color: #111; font-size: 12px; }
-      .sheet { padding: 2mm; }
-      header { text-align: center; border-bottom: 3px double #111; padding-bottom: 8px; margin-bottom: 10px; }
-      header h1 { font-size: 18px; margin: 2px 0; }
-      header h2 { font-size: 13px; margin: 0; color: #333; font-weight: bold; }
-      .meta { font-size: 10.5px; color: #555; margin-top: 3px; }
-      ${PRINT_LOGO_CSS}
-
-      .info { display: flex; gap: 12px; align-items: stretch; border: 1.5px solid #222; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
-      .info .thumb { width: 145px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; border: 1px solid #bbb; border-radius: 8px; overflow: hidden; background: #f7f7f7; }
-      .info .thumb img { width: 100%; height: 155px; object-fit: contain; }
-      .info .fields { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; align-content: start; }
-      .info .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; border-bottom: 1px dotted #bbb; padding: 4px 2px; }
-      .info .row.full { grid-column: 1 / -1; }
-      .info .k { color: #555; font-weight: bold; white-space: nowrap; }
-      .info .v { font-weight: 900; text-align: left; }
-      .chips { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
-      .chip { border: 1px solid #222; border-radius: 4px; padding: 1px 7px; font-size: 11px; font-weight: bold; background: #f3f3f3; }
-      .muted { color: #777; font-weight: bold; text-align: center; }
-      .badge-ok { font-size: 10px; font-weight: bold; color: #047857; }
-
-      h3.sec { font-size: 13px; margin: 10px 0 5px; padding: 5px 8px; background: #ececec; border: 1.2px solid #222; border-radius: 6px; }
-      table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin-bottom: 8px; }
-      th, td { border: 1px solid #333; padding: 5px 6px; text-align: center; }
-      th { background: #f1f5f9; font-weight: bold; }
-      td.r { text-align: right; }
-
-      .photo-bar { display: flex; justify-content: space-between; gap: 10px; border: 1px solid #444; border-radius: 6px; padding: 6px 10px; background: #f8fafc; font-size: 11px; margin-bottom: 8px; }
-
-      .sigs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 14px; page-break-inside: avoid; }
-      .sig { border: 1.2px solid #222; border-radius: 6px; padding: 8px 6px 26px; text-align: center; font-size: 11px; font-weight: bold; }
-
-      @media print {
-        .sheet { padding: 0; }
-        .info, table, .sigs { page-break-inside: avoid; }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="sheet">
-      <header>
-        <div class="brand">${renderLogoHtml(logo, siteName, 48)}</div>
-        <h1>${escapeHtml(siteName)}</h1>
-        <h2>ورقة إنتاج التشطيب والتغليف والكارت</h2>
-        <div class="meta">تاريخ الطباعة: ${escapeHtml(new Date().toLocaleString('ar-EG'))}</div>
-      </header>
-
-      <div class="info">
-        <div class="thumb">${thumbHtml}</div>
-        <div class="fields">
-          <div class="row"><span class="k">كود الموديل</span><span class="v">${escapeHtml(model.model_code)}</span></div>
-          <div class="row"><span class="k">نوع / اسم الموديل</span><span class="v">${escapeHtml(model.model_type || '—')}</span></div>
-          <div class="row"><span class="k">فئة المقاسات</span><span class="v">${escapeHtml(sizeCategoryName)}</span></div>
-          <div class="row"><span class="k">الأطقم المتوقعة</span><span class="v">${fmtInt(expectedSets)} طقم</span></div>
-          <div class="row full"><span class="k">ورشة المكن (الخياطة)</span><span class="v">${escapeHtml(sewingWorkshopDisplay)}</span></div>
-          <div class="row full"><span class="k">المقاسات المعتمدة</span><span class="v chips">${sizeChipsHtml}</span></div>
-          <div class="row full"><span class="k">الألوان</span><span class="v chips">${colorChipsHtml}</span></div>
-        </div>
+  const bodyHtml = `
+    <div class="p-info-card">
+      <div class="thumb">${thumbHtml}</div>
+      <div class="p-fields">
+        <div class="p-field"><span class="p-k">كود الموديل</span><span class="p-v">${escapeHtml(model.model_code)}</span></div>
+        <div class="p-field"><span class="p-k">نوع / اسم الموديل</span><span class="p-v">${escapeHtml(model.model_type || '—')}</span></div>
+        <div class="p-field"><span class="p-k">فئة المقاسات</span><span class="p-v">${escapeHtml(sizeCategoryName)}</span></div>
+        <div class="p-field"><span class="p-k">الأطقم المتوقعة</span><span class="p-v num">${fmtInt(expectedSets)} طقم</span></div>
+        <div class="p-field full"><span class="p-k">ورشة المكن (الخياطة)</span><span class="p-v">${escapeHtml(sewingWorkshopDisplay)}</span></div>
+        <div class="p-field full"><span class="p-k">المقاسات المعتمدة</span><span class="p-v chips">${sizeChipsHtml}</span></div>
+        <div class="p-field full"><span class="p-k">الألوان</span><span class="p-v chips">${colorChipsHtml}</span></div>
       </div>
+    </div>
 
-      <h3 class="sec">1. مراحل التشطيب والمكواة والتعبئة والدَست</h3>
-      <table>
+    <div class="p-sec">1. مراحل التشطيب والمكواة والتعبئة والدَست</div>
+    <table class="asm-table">
+      <thead>
+        <tr>
+          <th>المرحلة</th>
+          <th>الجهة / الورشة</th>
+          <th>تاريخ الدخول</th>
+          <th>الخروج المتوقع</th>
+          <th>الخروج الفعلي</th>
+          <th>الحالة / العدد</th>
+        </tr>
+      </thead>
+      <tbody>${stageRows.join('')}</tbody>
+    </table>
+
+    <div class="p-sec">2. حالة متطلبات الأمبالاج (التصوير والكارت / الباركود)</div>
+    <div class="pkg-grid">
+      <table class="asm-table">
         <thead>
           <tr>
-            <th>المرحلة</th>
-            <th>الجهة / الورشة</th>
-            <th>تاريخ الدخول</th>
-            <th>الخروج المتوقع</th>
-            <th>الخروج الفعلي</th>
-            <th>الحالة / العدد</th>
-          </tr>
-        </thead>
-        <tbody>${stageRows.join('')}</tbody>
-      </table>
-
-      <h3 class="sec">2. حالة متطلبات الأمبالاج (التصوير والكارت / الباركود)</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>الخطوة</th>
+            <th class="text-right">الخطوة</th>
             <th>الحالة</th>
             <th>التاريخ</th>
           </tr>
         </thead>
         <tbody>${reqStepCells}</tbody>
       </table>
-      <div class="photo-bar">
-        <span><strong>عينات التصوير المرسلة:</strong> ${fmtInt(photoSent)} قطعة</span>
-        <span><strong>المستلمة من التصوير:</strong> ${fmtInt(photoRecv)} قطعة</span>
-        <span><strong>عجز التصوير:</strong> ${fmtInt(photoShort)} قطعة</span>
-        <span><strong>جاهزية الكارت والتغليف:</strong> ${packagingRequirement?.is_complete ? '✅ مكتملة' : '⏳ ناقصة'}</span>
-      </div>
-
-      <h3 class="sec">3. خامات التعبئة والتغليف المطلوبة للموديل (${fmtInt(expectedSets)} طقم)</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>الخامة</th>
-            <th>المواصفات / المقاس</th>
-            <th>الاستهلاك / طقم</th>
-            <th>الإجمالي المطلوب</th>
-            <th>الوحدة</th>
-            <th>حالة الصرف</th>
-          </tr>
-        </thead>
-        <tbody>${materialsRows}</tbody>
-      </table>
-
-      <div class="sigs">
-        <div class="sig">مسؤول التشطيب</div>
-        <div class="sig">مسؤول المكواة</div>
-        <div class="sig">مسؤول التعبئة والتغليف</div>
-        <div class="sig">مسؤول الدَست</div>
-        <div class="sig">مدير الإنتاج</div>
+      <div class="photo-summary">
+        <div class="ps-row"><span>عينات التصوير المرسلة</span><strong class="num">${fmtInt(photoSent)} قطعة</strong></div>
+        <div class="ps-row"><span>المستلمة من التصوير</span><strong class="num">${fmtInt(photoRecv)} قطعة</strong></div>
+        <div class="ps-row"><span>عجز التصوير</span><strong class="num ${photoShort > 0 ? 'bad' : 'ok'}">${fmtInt(photoShort)} قطعة</strong></div>
+        <div class="ps-row"><span>جاهزية الكارت والتغليف</span><strong class="${packagingRequirement?.is_complete ? 'ok' : 'warn'}">${
+          packagingRequirement?.is_complete ? 'مكتملة' : 'ناقصة'
+        }</strong></div>
       </div>
     </div>
-    <script>
-      window.onload = function () { window.focus(); window.print(); };
-    </script>
-  </body>
-  </html>`;
+
+    <div class="p-sec">3. خامات التعبئة والتغليف المطلوبة للموديل (${fmtInt(expectedSets)} طقم)</div>
+    <table class="asm-table">
+      <thead>
+        <tr>
+          <th style="width:5%">#</th>
+          <th class="text-right" style="width:27%">الخامة</th>
+          <th style="width:20%">المواصفات / المقاس</th>
+          <th style="width:12%">الاستهلاك / طقم</th>
+          <th style="width:13%">الإجمالي المطلوب</th>
+          <th style="width:10%">الوحدة</th>
+          <th style="width:13%">حالة الصرف</th>
+        </tr>
+      </thead>
+      <tbody>${materialsRows}</tbody>
+    </table>
+
+    ${renderSignatureBar(
+      ['مسؤول التشطيب', 'مسؤول المكواة', 'مسؤول التعبئة والتغليف', 'مسؤول الدَست', 'مدير الإنتاج'],
+      true
+    )}
+  `;
 
   logClientPrintAction(
     'الأسمبلي والأمبالاج',
@@ -405,12 +348,65 @@ export const printAssemblyProductionSheet = (options: AssemblyProductionSheetOpt
     model.model_code
   );
 
-  const win = window.open('', '_blank', 'width=950,height=1050');
-  if (!win) {
-    alert('يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة ورقة الإنتاج.');
-    return;
-  }
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
+  openUnifiedPrintWindow({
+    documentTitle: `ورقة إنتاج التشطيب والتغليف والكارت - ${model.model_code}`,
+    mode: 'fit-single-page',
+    orientation: 'portrait',
+    header: {
+      siteName,
+      logo,
+      title: 'ورقة إنتاج التشطيب والتغليف والكارت',
+      subtitle: `قسم الأسمبلي والأمبالاج — موديل ${model.model_code}`,
+      metaItems: [`الأطقم المتوقعة: ${fmtInt(expectedSets)} طقم`],
+      compact: true
+    },
+    bodyHtml,
+    extraCss: `
+      .thumb {
+        width: 112px;
+        height: 116px;
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        overflow: hidden;
+        background: #f8fafc;
+      }
+      .thumb img { width: 100%; height: 100%; object-fit: contain; }
+      table.asm-table { font-size: 9.5px; margin-bottom: 5px; }
+      table.asm-table th, table.asm-table td { padding: 3px 5px; }
+      .pkg-grid {
+        display: grid;
+        grid-template-columns: 1.35fr 0.65fr;
+        gap: 7px;
+        align-items: stretch;
+        margin-bottom: 5px;
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .pkg-grid table.asm-table { margin-bottom: 0; }
+      .photo-summary {
+        border: 1px solid #94a3b8;
+        border-radius: 5px;
+        padding: 6px 8px;
+        background: #f8fafc;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        font-size: 9.5px;
+      }
+      .ps-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 6px;
+        border-bottom: 1px dotted #cbd5e1;
+        padding: 3px 0;
+      }
+      .ps-row:last-child { border-bottom: none; }
+    `,
+    popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة ورقة الإنتاج.'
+  });
 };

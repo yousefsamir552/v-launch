@@ -1,6 +1,7 @@
 /**
- * طباعة «بطاقة الموديل الشاملة» (A4) — تجمع كل بيانات الموديل في ورقة واحدة مرتبة
- * ومقسّمة بوضوح حسب القطعة (تيشرت / بنطلون / جاكيت) مع شعار واسم المصنع وسجل المراقبة.
+ * طباعة «بطاقة الموديل الشاملة» (صفحة A4 واحدة مضغوطة — Single-Page A4) —
+ * تجمع كل بيانات الموديل (القص، المطابع، المكن، الجودة، التشطيب والتغليف، التصوير والباركود، والتوقيعات)
+ * في ورقة A4 واحدة نظيفة ومنسقة مع هيدر المصنع الموحد وسجل المراقبة.
  */
 import type {
   AssemblyStageRecord,
@@ -22,8 +23,8 @@ import { modelPackagingPieces } from './packagingMaterials';
 import {
   escapeHtml,
   logClientPrintAction,
-  PRINT_LOGO_CSS,
-  renderLogoHtml,
+  openUnifiedPrintWindow,
+  renderSignatureBar,
   safeImageSrc
 } from './printShared';
 
@@ -61,9 +62,9 @@ const fmtNum = (val: unknown): string => {
 const fmtDate = (val?: string | null): string => (val ? String(val).slice(0, 10) : '—');
 
 const QC_STAGE_LABELS: Record<QCStageType, string> = {
-  before_print: 'العد قبل الطباعة',
-  after_print: 'العد بعد الطباعة',
-  after_sewing: 'العد بعد المكن'
+  before_print: 'قبل الطباعة',
+  after_print: 'بعد الطباعة',
+  after_sewing: 'بعد المكن'
 };
 
 const getModelPartsList = (model: DesignModel): GarmentPart[] => {
@@ -116,12 +117,12 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
         partRecords.find((r) => r.spreader_name)?.spreader_name || model.spreader_name || '—';
       return `<tr>
         <td><strong>${escapeHtml(getPartLabel(part))}</strong></td>
-        <td><strong>${fmtInt(cutQty)}</strong></td>
-        <td>${fmtInt(layersSum)}</td>
-        <td>${weightSum > 0 ? `${fmtNum(weightSum)} كجم` : '—'}</td>
+        <td class="num"><strong>${fmtInt(cutQty)}</strong></td>
+        <td class="num">${fmtInt(layersSum)}</td>
+        <td class="num">${weightSum > 0 ? `${fmtNum(weightSum)} كجم` : '—'}</td>
         <td>${escapeHtml(cutter)}</td>
         <td>${escapeHtml(spreader)}</td>
-        <td>${fmtDate(lastDate)}</td>
+        <td class="num">${fmtDate(lastDate)}</td>
       </tr>`;
     })
     .join('');
@@ -146,11 +147,11 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
           return `<tr>
             <td><strong>${escapeHtml(d.piece_label || getPartLabel(d.piece_type || 'shirt'))}</strong></td>
             <td>${escapeHtml(d.shop_name || '—')}</td>
-            <td>${fmtInt(sent)}</td>
-            <td>${fmtInt(rec)}</td>
-            <td class="${shortage > 0 ? 'bad' : 'ok'}">${fmtInt(shortage)}</td>
-            <td>${fmtDate(d.dispatched_at)}</td>
-            <td>${fmtDate(d.received_at || d.expected_delivery_date)}</td>
+            <td class="num">${fmtInt(sent)}</td>
+            <td class="num">${fmtInt(rec)}</td>
+            <td class="num ${shortage > 0 ? 'bad' : 'ok'}">${fmtInt(shortage)}</td>
+            <td class="num">${fmtDate(d.dispatched_at)}</td>
+            <td class="num">${fmtDate(d.received_at || d.expected_delivery_date)}</td>
             <td>${escapeHtml(d.status)}</td>
           </tr>`;
         })
@@ -170,18 +171,18 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
           return `<tr>
             <td><strong>${escapeHtml(d.piece_label || getPartLabel(d.piece_type || 'shirt'))}</strong></td>
             <td>${escapeHtml(d.workshop_name || '—')}</td>
-            <td>${fmtInt(sent)}</td>
-            <td>${fmtInt(rec)}</td>
-            <td class="${shortage > 0 ? 'bad' : 'ok'}">${fmtInt(shortage)}</td>
-            <td>${fmtDate(d.dispatched_at)}</td>
-            <td>${fmtDate(d.received_at || d.expected_delivery_date)}</td>
+            <td class="num">${fmtInt(sent)}</td>
+            <td class="num">${fmtInt(rec)}</td>
+            <td class="num ${shortage > 0 ? 'bad' : 'ok'}">${fmtInt(shortage)}</td>
+            <td class="num">${fmtDate(d.dispatched_at)}</td>
+            <td class="num">${fmtDate(d.received_at || d.expected_delivery_date)}</td>
             <td>${escapeHtml(d.status)}</td>
           </tr>`;
         })
         .join('')
     : `<tr><td colspan="8" class="muted">لا توجد تشغيلات مكن أو خياطة مسجّلة لهذا الموديل.</td></tr>`;
 
-  // 4) الفرز والجودة (العد والهوالك) حسب المرحلة والقطعة
+  // 4) الفرز والجودة (العد والهوالك)
   const qcStagesOrder: QCStageType[] = ['before_print', 'after_print', 'after_sewing'];
   const qcRowsList: string[] = [];
   qcStagesOrder.forEach((stage) => {
@@ -199,9 +200,9 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
       qcRowsList.push(`<tr>
         <td><strong>${escapeHtml(QC_STAGE_LABELS[stage])}</strong></td>
         <td>${escapeHtml(getPartLabel(part))}</td>
-        <td class="ok"><strong>${fmtInt(good)}</strong></td>
-        <td class="${defect > 0 ? 'bad' : ''}">${fmtInt(defect)}</td>
-        <td class="${shortage > 0 ? 'bad' : ''}">${fmtInt(shortage)}</td>
+        <td class="num ok">${fmtInt(good)}</td>
+        <td class="num ${defect > 0 ? 'bad' : ''}">${fmtInt(defect)}</td>
+        <td class="num ${shortage > 0 ? 'bad' : ''}">${fmtInt(shortage)}</td>
       </tr>`);
     });
   });
@@ -209,18 +210,18 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
     ? qcRowsList.join('')
     : `<tr><td colspan="5" class="muted">لا توجد سجلات فرز أو جودة مسجّلة بعد.</td></tr>`;
 
-  // 5) الأسمبلي والتغليف (التشطيب / المكواة / التعبئة / الدَست)
+  // 5) الأسمبلي والتغليف
   const assemblyRows: string[] = [];
   finishingRecords.forEach((rec) => {
     assemblyRows.push(`<tr>
       <td><strong>التشطيب</strong> (${escapeHtml(rec.piece_label || getPartLabel(rec.part_type))})</td>
       <td>${escapeHtml(rec.vendor_name || '—')}</td>
-      <td>${fmtInt(expectedSets)}</td>
-      <td>${rec.is_received ? fmtInt(expectedSets) : '—'}</td>
-      <td>0</td>
-      <td>${fmtDate(rec.entry_date)}</td>
-      <td>${fmtDate(rec.actual_exit_date || rec.expected_exit_date)}</td>
-      <td>${rec.is_received ? '✅ مكتمل' : '⏳ قيد التنفيذ'}</td>
+      <td class="num">${fmtInt(expectedSets)}</td>
+      <td class="num">${rec.is_received ? fmtInt(expectedSets) : '—'}</td>
+      <td class="num">0</td>
+      <td class="num">${fmtDate(rec.entry_date)}</td>
+      <td class="num">${fmtDate(rec.actual_exit_date || rec.expected_exit_date)}</td>
+      <td>${rec.is_received ? 'مكتمل' : 'قيد التنفيذ'}</td>
     </tr>`);
   });
   assemblyStageRecords
@@ -229,25 +230,25 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
       assemblyRows.push(`<tr>
         <td><strong>المكواة</strong> (${escapeHtml(rec.part_label || getPartLabel(rec.part_type || 'shirt'))})</td>
         <td>${escapeHtml(rec.vendor_name || '—')}</td>
-        <td>${fmtInt(expectedSets)}</td>
-        <td>${rec.is_completed ? fmtInt(expectedSets) : '—'}</td>
-        <td>0</td>
-        <td>${fmtDate(rec.entry_date)}</td>
-        <td>${fmtDate(rec.actual_exit_date || rec.expected_exit_date)}</td>
-        <td>${rec.is_completed ? '✅ مكتمل' : '⏳ قيد التنفيذ'}</td>
+        <td class="num">${fmtInt(expectedSets)}</td>
+        <td class="num">${rec.is_completed ? fmtInt(expectedSets) : '—'}</td>
+        <td class="num">0</td>
+        <td class="num">${fmtDate(rec.entry_date)}</td>
+        <td class="num">${fmtDate(rec.actual_exit_date || rec.expected_exit_date)}</td>
+        <td>${rec.is_completed ? 'مكتمل' : 'قيد التنفيذ'}</td>
       </tr>`);
     });
   const packRec = assemblyStageRecords.find((r) => r.stage === 'packaging');
   if (packRec) {
     assemblyRows.push(`<tr>
-      <td><strong>التعبئة والتغليف</strong>${packRec.materials_deducted ? ' (خامات مخصومة)' : ''}</td>
+      <td><strong>التعبئة والتغليف</strong>${packRec.materials_deducted ? ' (مخصوم)' : ''}</td>
       <td>${escapeHtml(packRec.vendor_name || '—')}</td>
-      <td>${fmtInt(expectedSets)}</td>
-      <td>${packRec.is_completed ? fmtInt(expectedSets) : '—'}</td>
-      <td>0</td>
-      <td>${fmtDate(packRec.entry_date)}</td>
-      <td>${fmtDate(packRec.actual_exit_date || packRec.expected_exit_date)}</td>
-      <td>${packRec.is_completed ? '✅ مكتمل' : '⏳ قيد التنفيذ'}</td>
+      <td class="num">${fmtInt(expectedSets)}</td>
+      <td class="num">${packRec.is_completed ? fmtInt(expectedSets) : '—'}</td>
+      <td class="num">0</td>
+      <td class="num">${fmtDate(packRec.entry_date)}</td>
+      <td class="num">${fmtDate(packRec.actual_exit_date || packRec.expected_exit_date)}</td>
+      <td>${packRec.is_completed ? 'مكتمل' : 'قيد التنفيذ'}</td>
     </tr>`);
   }
   const destRec = assemblyStageRecords.find((r) => r.stage === 'dest');
@@ -258,19 +259,19 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
     assemblyRows.push(`<tr>
       <td><strong>الدَست</strong></td>
       <td>${escapeHtml(destRec.vendor_name || '—')}</td>
-      <td>${fmtInt(destExp)}</td>
-      <td>${destComp !== null && destComp !== undefined ? fmtInt(destComp) : '—'}</td>
-      <td class="${destShort > 0 ? 'bad' : 'ok'}">${fmtInt(destShort)}</td>
-      <td>${fmtDate(destRec.entry_date)}</td>
-      <td>${fmtDate(destRec.actual_exit_date || destRec.expected_exit_date)}</td>
-      <td>${destRec.is_completed ? '✅ مكتمل' : '⏳ قيد التنفيذ'}</td>
+      <td class="num">${fmtInt(destExp)}</td>
+      <td class="num">${destComp !== null && destComp !== undefined ? fmtInt(destComp) : '—'}</td>
+      <td class="num ${destShort > 0 ? 'bad' : 'ok'}">${fmtInt(destShort)}</td>
+      <td class="num">${fmtDate(destRec.entry_date)}</td>
+      <td class="num">${fmtDate(destRec.actual_exit_date || destRec.expected_exit_date)}</td>
+      <td>${destRec.is_completed ? 'مكتمل' : 'قيد التنفيذ'}</td>
     </tr>`);
   }
   const assemblyRowsHtml = assemblyRows.length
     ? assemblyRows.join('')
     : `<tr><td colspan="8" class="muted">لم يدخل الموديل مراحل التشطيب والتغليف بعد.</td></tr>`;
 
-  // 6) متطلبات الأمبالاج (التصوير والباركود / الكارت)
+  // 6) متطلبات الأمبالاج (التصوير والباركود)
   const sentPhoto = packagingRequirement?.steps?.sent_to_photo || packagingRequirement?.sent_to_photo_date;
   const recvPhoto =
     packagingRequirement?.steps?.received_from_photo || packagingRequirement?.received_from_photo_date;
@@ -283,53 +284,8 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
   const photoRecvQty = Number(packagingRequirement?.photography_received_qty || 0);
   const photoShortQty = Number(packagingRequirement?.photography_shortage || 0);
 
-  const html = `<!DOCTYPE html>
-  <html lang="ar" dir="rtl">
-  <head>
-    <meta charset="utf-8" />
-    <title>بطاقة الموديل الشاملة - ${escapeHtml(model.model_code)}</title>
-    <style>
-      @page { size: A4 portrait; margin: 9mm; }
-      * { box-sizing: border-box; }
-      body { font-family: 'Cairo', 'Tahoma', Arial, sans-serif; color: #0f172a; font-size: 11px; margin: 0; }
-      header { text-align: center; border-bottom: 3px double #0f172a; padding-bottom: 7px; margin-bottom: 8px; }
-      header h1 { font-size: 17px; margin: 2px 0; }
-      header h2 { font-size: 12.5px; margin: 0; color: #334155; }
-      .meta { font-size: 10px; color: #64748b; margin-top: 2px; }
-      ${PRINT_LOGO_CSS}
-
-      .hero { display: flex; gap: 10px; border: 1.5px solid #1e293b; border-radius: 8px; padding: 8px; margin-bottom: 8px; }
-      .hero .thumb { width: 120px; height: 125px; flex: 0 0 auto; border: 1px solid #cbd5e1; border-radius: 6px; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #f8fafc; }
-      .hero .thumb img { width: 100%; height: 100%; object-fit: contain; }
-      .hero .grid { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
-      .hero .row { display: flex; justify-content: space-between; gap: 6px; border-bottom: 1px dotted #cbd5e1; padding: 3px 2px; }
-      .hero .row.full { grid-column: 1 / -1; }
-      .hero .k { color: #475569; font-weight: 700; }
-      .hero .v { font-weight: 900; text-align: left; }
-
-      h3.sec { font-size: 12px; margin: 8px 0 4px; padding: 4px 8px; background: #f1f5f9; border-right: 4px solid #0f172a; border-radius: 4px; }
-      table { width: 100%; border-collapse: collapse; font-size: 10.5px; margin-bottom: 6px; }
-      th, td { border: 1px solid #94a3b8; padding: 4px 5px; text-align: center; }
-      th { background: #f8fafc; font-weight: 700; }
-      .muted { color: #64748b; font-style: italic; }
-      .ok { color: #047857; font-weight: 700; }
-      .bad { color: #be123c; font-weight: 900; }
-      .box { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 8px; background: #f8fafc; margin-bottom: 6px; font-size: 10.5px; }
-      .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-      @media print {
-        .hero, table, .two-col { page-break-inside: avoid; }
-      }
-    </style>
-  </head>
-  <body>
-    <header>
-      <div class="brand">${renderLogoHtml(logo, siteName, 44)}</div>
-      <h1>${escapeHtml(siteName)}</h1>
-      <h2>بطاقة الموديل الشاملة (Master Model Sheet) — ${escapeHtml(model.model_code)}</h2>
-      <div class="meta">تاريخ الطباعة: ${escapeHtml(new Date().toLocaleString('ar-EG'))}</div>
-    </header>
-
-    <div class="hero">
+  const bodyHtml = `
+    <div class="p-info-card card-hero">
       <div class="thumb">
         ${
           imageSrc
@@ -337,20 +293,20 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
             : '<span class="muted">لا توجد صورة</span>'
         }
       </div>
-      <div class="grid">
-        <div class="row"><span class="k">كود الموديل</span><span class="v">${escapeHtml(model.model_code)}</span></div>
-        <div class="row"><span class="k">النوع / الاسم</span><span class="v">${escapeHtml(model.model_type || '—')}</span></div>
-        <div class="row"><span class="k">فئة المقاسات</span><span class="v">${escapeHtml(sizeCategoryName)}</span></div>
-        <div class="row"><span class="k">الحالة الحالية</span><span class="v">${escapeHtml(model.status || '—')}</span></div>
-        <div class="row"><span class="k">الكمية المستهدفة</span><span class="v">${fmtInt(model.target_cut_quantity)} طقم</span></div>
-        <div class="row"><span class="k">إجمالي القص الفعلي</span><span class="v">${fmtInt(totalCut)} قطعة</span></div>
-        <div class="row full"><span class="k">القطع</span><span class="v">${escapeHtml(parts.map((p) => getPartLabel(p)).join(' • '))}</span></div>
-        <div class="row full"><span class="k">المقاسات والألوان</span><span class="v">${escapeHtml(sizes.join(' - ') || '—')} | ${escapeHtml(colors.join('، ') || '—')}</span></div>
+      <div class="p-fields hero-fields">
+        <div class="p-field"><span class="p-k">كود الموديل</span><span class="p-v">${escapeHtml(model.model_code)}</span></div>
+        <div class="p-field"><span class="p-k">النوع / الاسم</span><span class="p-v">${escapeHtml(model.model_type || '—')}</span></div>
+        <div class="p-field"><span class="p-k">فئة المقاسات</span><span class="p-v">${escapeHtml(sizeCategoryName)}</span></div>
+        <div class="p-field"><span class="p-k">الحالة الحالية</span><span class="p-v">${escapeHtml(model.status || '—')}</span></div>
+        <div class="p-field"><span class="p-k">الكمية المستهدفة</span><span class="p-v num">${fmtInt(model.target_cut_quantity)} طقم</span></div>
+        <div class="p-field"><span class="p-k">إجمالي القص الفعلي</span><span class="p-v num">${fmtInt(totalCut)} قطعة</span></div>
+        <div class="p-field full"><span class="p-k">القطع</span><span class="p-v">${escapeHtml(parts.map((p) => getPartLabel(p)).join(' • '))}</span></div>
+        <div class="p-field full"><span class="p-k">المقاسات والألوان</span><span class="p-v">${escapeHtml(sizes.join(' - ') || '—')} | ${escapeHtml(colors.join('، ') || '—')}</span></div>
       </div>
     </div>
 
-    <h3 class="sec">1. القص والقماش (Cutting & Fabric)</h3>
-    <table>
+    <div class="p-sec">1. القص والقماش (Cutting & Fabric)</div>
+    <table class="mc-table">
       <thead>
         <tr>
           <th>القطعة</th><th>المقصوص</th><th>عدد الراقات</th><th>وزن الراقات</th>
@@ -359,7 +315,7 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
       </thead>
       <tbody>${cutRows}</tbody>
     </table>
-    <div class="box">
+    <div class="fabric-strip">
       <strong>ملخص القماش:</strong>
       ${
         fabricSummaryList.length
@@ -370,69 +326,78 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
       }
     </div>
 
-    <h3 class="sec">2. المطابع والتطريز (Print / Embroidery)</h3>
-    <table>
+    <div class="p-sec">2. المطابع والتطريز (Print / Embroidery)</div>
+    <table class="mc-table">
       <thead>
         <tr>
-          <th>القطعة</th><th>اسم المطبعة / الورشة</th><th>المرسل</th><th>المستلم</th>
-          <th>العجز</th><th>تاريخ الإرسال</th><th>تاريخ الاستلام</th><th>الحالة</th>
+          <th>القطعة</th><th>المطبعة / الورشة</th><th>المرسل</th><th>المستلم</th>
+          <th>العجز</th><th>الإرسال</th><th>الاستلام</th><th>الحالة</th>
         </tr>
       </thead>
       <tbody>${printRows}</tbody>
     </table>
 
-    <h3 class="sec">3. المكن والخياطة (Sewing)</h3>
-    <table>
+    <div class="p-sec">3. المكن والخياطة (Sewing)</div>
+    <table class="mc-table">
       <thead>
         <tr>
           <th>القطعة</th><th>ورشة المكن</th><th>المرسل</th><th>المستلم</th>
-          <th>العجز</th><th>تاريخ الإرسال</th><th>تاريخ الاستلام</th><th>الحالة</th>
+          <th>العجز</th><th>الإرسال</th><th>الاستلام</th><th>الحالة</th>
         </tr>
       </thead>
       <tbody>${sewingRows}</tbody>
     </table>
 
-    <h3 class="sec">4. الفرز والجودة والهوالك (QC & Defects)</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>مرحلة الفرز</th><th>القطعة</th><th>السليم</th><th>الهالك / العيوب</th><th>العجز</th>
-        </tr>
-      </thead>
-      <tbody>${qcRows}</tbody>
-    </table>
-
-    <h3 class="sec">5. التشطيب والمكواة والتعبئة والدَست (Assembly & Packaging)</h3>
-    <table>
+    <div class="p-sec">4. التشطيب والمكواة والتعبئة والدَست (Assembly & Packaging)</div>
+    <table class="mc-table">
       <thead>
         <tr>
           <th>المرحلة</th><th>الجهة / الورشة</th><th>المتوقع</th><th>المنفذ</th>
-          <th>العجز</th><th>تاريخ الدخول</th><th>تاريخ الخروج</th><th>الحالة</th>
+          <th>العجز</th><th>الدخول</th><th>الخروج</th><th>الحالة</th>
         </tr>
       </thead>
       <tbody>${assemblyRowsHtml}</tbody>
     </table>
 
-    <h3 class="sec">6. متطلبات الأمبالاج (التصوير والكارت / الباركود)</h3>
-    <div class="two-col">
-      <div class="box">
-        <strong>📸 حالة التصوير:</strong> ${recvPhoto ? '✅ تم التصوير واستلام الصور' : sentPhoto ? '⏳ تم الإرسال للتصوير' : '❌ لم يُرسل للتصوير بعد'}<br />
-        تاريخ الإرسال: ${fmtDate(sentPhoto)} • تاريخ الاستلام: ${fmtDate(recvPhoto)}<br />
-        عينات التصوير: مرسل ${fmtInt(photoSentQty)} • مستلم ${fmtInt(photoRecvQty)} •
-        <span class="${photoShortQty > 0 ? 'bad' : 'ok'}">العجز: ${fmtInt(photoShortQty)}</span>
+    <div class="mc-bottom-grid">
+      <div>
+        <div class="p-sec">5. الفرز والجودة والهوالك (QC & Defects)</div>
+        <table class="mc-table">
+          <thead>
+            <tr>
+              <th>المرحلة</th><th>القطعة</th><th>السليم</th><th>الهالك</th><th>العجز</th>
+            </tr>
+          </thead>
+          <tbody>${qcRows}</tbody>
+        </table>
       </div>
-      <div class="box">
-        <strong>🏷️ حالة الباركود والكارت:</strong> ${recvCards ? '✅ تم طباعة واستلام الكروت والباركود' : sentCards ? '⏳ جاري طباعة الكروت والباركود' : '❌ لم يُرسل للطباعة بعد'}<br />
-        تاريخ الإرسال للطباعة: ${fmtDate(sentCards)}<br />
-        تاريخ استلام الكروت: ${fmtDate(recvCards)}
+      <div>
+        <div class="p-sec">6. الأمبالاج (التصوير والكارت والباركود)</div>
+        <div class="pkg-box">
+          <div class="pkg-line">
+            <strong>التصوير:</strong>
+            ${recvPhoto ? '<span class="ok">تم الاستلام</span>' : sentPhoto ? '<span class="warn">قيد التصوير</span>' : '<span class="muted">لم يُرسل</span>'}
+            | إرسال: <span class="num">${fmtDate(sentPhoto)}</span> • استلام: <span class="num">${fmtDate(recvPhoto)}</span>
+          </div>
+          <div class="pkg-line">
+            <strong>عينات التصوير:</strong>
+            مرسل <span class="num">${fmtInt(photoSentQty)}</span> • مستلم <span class="num">${fmtInt(photoRecvQty)}</span> •
+            <span class="num ${photoShortQty > 0 ? 'bad' : 'ok'}">العجز: ${fmtInt(photoShortQty)}</span>
+          </div>
+          <div class="pkg-line">
+            <strong>الكارت والباركود:</strong>
+            ${recvCards ? '<span class="ok">تم الاستلام</span>' : sentCards ? '<span class="warn">جاري الطباعة</span>' : '<span class="muted">لم يُرسل</span>'}
+            | إرسال: <span class="num">${fmtDate(sentCards)}</span> • استلام: <span class="num">${fmtDate(recvCards)}</span>
+          </div>
+        </div>
       </div>
     </div>
 
-    <script>
-      window.onload = function () { window.focus(); window.print(); };
-    </script>
-  </body>
-  </html>`;
+    ${renderSignatureBar(
+      ['مسؤول القص والمتابعة', 'مسؤول الفرز والجودة', 'مسؤول التشطيب والتغليف', 'اعتماد مدير الإنتاج'],
+      true
+    )}
+  `;
 
   logClientPrintAction(
     'بطاقة الموديل الشاملة',
@@ -440,12 +405,66 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
     model.model_code
   );
 
-  const win = window.open('', '_blank', 'width=980,height=1080');
-  if (!win) {
-    alert('يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة بطاقة الموديل.');
-    return;
-  }
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
+  openUnifiedPrintWindow({
+    documentTitle: `بطاقة الموديل الشاملة - ${model.model_code}`,
+    mode: 'fit-single-page',
+    orientation: 'portrait',
+    header: {
+      siteName,
+      logo,
+      title: `بطاقة الموديل الشاملة — ${model.model_code}`,
+      subtitle: 'Master Model Card (تتبع كامل لمراحل التشغيل والجودة والتغليف)',
+      metaItems: [`الحالة: ${model.status || '—'}`],
+      compact: true
+    },
+    bodyHtml,
+    extraCss: `
+      .card-hero { padding: 5px 7px; margin-bottom: 5px; }
+      .card-hero .thumb {
+        width: 84px;
+        height: 88px;
+        flex: 0 0 auto;
+        border: 1px solid #cbd5e1;
+        border-radius: 5px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        background: #f8fafc;
+      }
+      .card-hero .thumb img { width: 100%; height: 100%; object-fit: contain; }
+      .hero-fields { font-size: 9.5px; gap: 1.5px 10px; }
+      .hero-fields .p-field { padding: 1.5px 1px; }
+      .p-sec { font-size: 9.8px; padding: 2.5px 6px; margin: 5px 0 3px; }
+      table.mc-table { font-size: 9px; margin-bottom: 4px; }
+      table.mc-table th, table.mc-table td { padding: 2.5px 4px; line-height: 1.25; }
+      .fabric-strip {
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+        padding: 3px 6px;
+        background: #f8fafc;
+        font-size: 9px;
+        margin-bottom: 4px;
+      }
+      .mc-bottom-grid {
+        display: grid;
+        grid-template-columns: 1.15fr 0.85fr;
+        gap: 7px;
+        align-items: start;
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .pkg-box {
+        border: 1px solid #94a3b8;
+        border-radius: 4px;
+        padding: 5px 7px;
+        background: #f8fafc;
+        font-size: 9px;
+        line-height: 1.55;
+      }
+      .pkg-line { border-bottom: 1px dotted #cbd5e1; padding: 2px 0; }
+      .pkg-line:last-child { border-bottom: none; }
+    `,
+    popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة بطاقة الموديل.'
+  });
 };

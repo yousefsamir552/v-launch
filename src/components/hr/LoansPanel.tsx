@@ -6,7 +6,12 @@ import {
   CheckCircle2, XCircle, UsersRound, LayoutList, History, Printer, BarChart3
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { escapeHtml, logClientPrintAction, renderLogoHtml } from '../../utils/printShared';
+import {
+  escapeHtml,
+  logClientPrintAction,
+  openUnifiedPrintWindow,
+  renderSignatureBar
+} from '../../utils/printShared';
 import { api } from '../../api/client';
 import {
   HRJobTitle, HREmployee, HRAttendanceSettings, HRAttendanceRule,
@@ -272,11 +277,6 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
   }, [loanDueRows, form.employee_id, editing]);
 
   const printEmptyLoanForm = () => {
-    const win = window.open('', '_blank', 'width=1100,height=820');
-    if (!win) {
-      addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
-      return;
-    }
     const formBlock = `
       <div class="form-block">
         <h2>نموذج طلب سلفة</h2>
@@ -293,29 +293,34 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
         </table>
         <div class="sign"><span>توقيع الموظف: ................</span><span>اعتماد الإدارة: ................</span></div>
       </div>`;
-    win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
-      <title>ورقة سلفة</title>
-      <style>
-        @page{size:A4 landscape;margin:8mm}
-        *{box-sizing:border-box}
-        body{font-family:Tahoma,Arial,sans-serif;padding:6mm;color:#0f172a;margin:0}
-        .brand{text-align:center;margin-bottom:4mm}
-        .forms{display:grid;grid-template-columns:repeat(3,1fr);gap:5mm}
-        .form-block{border:1px dashed #94a3b8;border-radius:6px;padding:4mm}
-        h2{font-size:14px;text-align:center;margin:0 0 2mm}
-        p.sub{text-align:center;color:#64748b;font-size:9px;margin:0 0 4mm}
-        table{width:100%;border-collapse:collapse;font-size:10px}
-        td{border:1px solid #94a3b8;padding:5px 6px;height:26px}
-        td.label{background:#f1f5f9;font-weight:bold;width:38%}
-        .sign{margin-top:8mm;display:flex;justify-content:space-between;font-size:9px;gap:6px}
-      </style></head><body>
-      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 40)}</div>
-      <div class="forms">${formBlock}${formBlock}${formBlock}</div>
-      </body></html>`);
-    win.document.close();
-    win.focus();
-    logClientPrintAction('الموارد البشرية', 'طباعة نموذج طلب سلفة فارغ', 'نموذج طلب سلفة');
-    win.print();
+
+    const opened = openUnifiedPrintWindow({
+      documentTitle: 'نموذج طلب سلفة فارغ',
+      mode: 'fit-single-page',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings.site_name,
+        logo: globalSettings.logo,
+        title: 'نماذج طلب سلفة (3 نسخ جاهزة للقص)',
+        subtitle: 'إدارة الموارد البشرية',
+        compact: true
+      },
+      bodyHtml: `<div class="forms">${formBlock}${formBlock}${formBlock}</div>`,
+      extraCss: `
+        .forms { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5mm; }
+        .form-block { border: 1px dashed #64748b; border-radius: 6px; padding: 4mm; background: #fff; break-inside: avoid; }
+        .form-block h2 { font-size: 13px; text-align: center; margin: 0 0 2px; color: #0f172a; }
+        .form-block p.sub { text-align: center; color: #64748b; font-size: 8.5px; margin: 0 0 6px; }
+        .form-block table { font-size: 9.5px; margin-bottom: 0; }
+        .form-block td { padding: 5px 6px; height: 26px; background: #fff !important; }
+        .form-block td.label { background: #f1f5f9 !important; font-weight: 800; width: 38%; text-align: right; }
+        .form-block .sign { margin-top: 8mm; display: flex; justify-content: space-between; font-size: 8.8px; gap: 6px; font-weight: 700; }
+      `,
+      onPopupBlocked: () => addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger')
+    });
+    if (opened) {
+      logClientPrintAction('الموارد البشرية', 'طباعة نموذج طلب سلفة فارغ', 'نموذج طلب سلفة');
+    }
   };
 
   const printLoansReport = () => {
@@ -325,10 +330,10 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
     }
     const body = dueGroups
       .map(
-        (group) => `<h2>${escapeHtml(group.label)} <span>(${group.rows.length} موظف)</span></h2>
+        (group) => `<div class="p-sec">${escapeHtml(group.label)} (${group.rows.length} موظف)</div>
         <table>
           <thead><tr>
-            <th>الكود</th><th>الموظف</th><th>المرتب</th><th>الأيام المستحقة</th>
+            <th>الكود</th><th class="text-right">الموظف</th><th>المرتب</th><th>الأيام المستحقة</th>
             <th>خصم التأخير</th><th>خصم ${escapeHtml(weeklyOffLabel)}</th><th>الجزاءات</th>
             <th>السُلف السابقة</th><th>المستحق الحالي</th>
           </tr></thead>
@@ -338,15 +343,15 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
                 const attendanceDays = row.attendanceDeductionDays + row.attendanceDeductionHours / shiftHours;
                 const penaltyDays = row.penaltyDays + row.penaltyHours / shiftHours;
                 return `<tr>
-                  <td>${escapeHtml(row.employee.employee_code || '-')}</td>
-                  <td>${escapeHtml(row.employee.name)}</td>
-                  <td>${formatMoney(row.salary)}</td>
-                  <td>${row.earnedDays.toFixed(2)}</td>
-                  <td>${attendanceDays.toFixed(2)} يوم</td>
-                  <td>${row.sundayDeductionDays.toFixed(2)} يوم</td>
-                  <td>${penaltyDays.toFixed(2)} يوم</td>
-                  <td>${formatMoney(row.previousLoans)}</td>
-                  <td>${formatMoney(row.currentDue)}</td>
+                  <td class="mono">${escapeHtml(row.employee.employee_code || '-')}</td>
+                  <td class="text-right"><strong>${escapeHtml(row.employee.name)}</strong></td>
+                  <td class="num">${formatMoney(row.salary)}</td>
+                  <td class="num">${row.earnedDays.toFixed(2)}</td>
+                  <td class="num">${attendanceDays.toFixed(2)} يوم</td>
+                  <td class="num">${row.sundayDeductionDays.toFixed(2)} يوم</td>
+                  <td class="num">${penaltyDays.toFixed(2)} يوم</td>
+                  <td class="num bad">${formatMoney(row.previousLoans)}</td>
+                  <td class="num ok"><strong>${formatMoney(row.currentDue)}</strong></td>
                 </tr>`;
               })
               .join('')}
@@ -354,40 +359,38 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
         </table>`
       )
       .join('');
-    const win = window.open('', '_blank', 'width=1100,height=820');
-    if (!win) {
-      addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger');
-      return;
-    }
-    win.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8" />
-      <title>تقرير السُلف والمستحقات</title>
-      <style>
-        body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#0f172a}
-        .brand{text-align:center;margin-bottom:6px}
-        h1{font-size:19px;margin:0 0 4px;text-align:center}
-        p.sub{font-size:12px;color:#64748b;margin:0 0 18px;text-align:center}
-        h2{font-size:14px;margin:18px 0 6px}
-        h2 span{font-size:11px;color:#64748b;font-weight:normal}
-        table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
-        th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:center}
-        th{background:#f1f5f9}
-      </style></head><body>
-      <div class="brand">${renderLogoHtml(globalSettings.logo, globalSettings.site_name, 48)}</div>
-      <h1>${escapeHtml(globalSettings.site_name || 'مصنع الملابس الجاهزة')} — تقرير السُلف والمستحقات</h1>
-      <p class="sub">شهر ${escapeHtml(duePeriod.monthKey)} — من أول الشهر حتى ${escapeHtml(duePeriod.yesterdayLabel)} (أيام العمل: ${duePeriod.workdays})</p>
+
+    const bodyHtml = `
+      <div class="p-kpis">
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي المرتبات</span><span class="p-kpi-val">${formatMoney(dueTotals.salary)}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي السُلف السابقة</span><span class="p-kpi-val bad">${formatMoney(dueTotals.previousLoans)}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي المستحق الحالي</span><span class="p-kpi-val ok">${formatMoney(dueTotals.currentDue)}</span></div>
+      </div>
       ${body}
-      <p class="sub">إجمالي المرتبات: ${formatMoney(dueTotals.salary)} — إجمالي السُلف السابقة: ${formatMoney(
-        dueTotals.previousLoans
-      )} — إجمالي المستحق الحالي: ${formatMoney(dueTotals.currentDue)}</p>
-      </body></html>`);
-    win.document.close();
-    win.focus();
-    logClientPrintAction(
-      'الموارد البشرية',
-      `طباعة تقرير السُلف والمستحقات لشهر ${duePeriod.monthKey}`,
-      `سُلف شهر ${duePeriod.monthKey}`
-    );
-    win.print();
+      ${renderSignatureBar(['إدارة الموارد البشرية', 'الحسابات والمراجعة', 'اعتماد الإدارة'], true)}
+    `;
+
+    const opened = openUnifiedPrintWindow({
+      documentTitle: `تقرير السُلف والمستحقات — ${duePeriod.monthKey}`,
+      mode: 'multi-page-table',
+      orientation: 'landscape',
+      header: {
+        siteName: globalSettings.site_name,
+        logo: globalSettings.logo,
+        title: 'تقرير السُلف والمستحقات',
+        subtitle: `شهر ${duePeriod.monthKey} — من أول الشهر حتى ${duePeriod.yesterdayLabel}`,
+        metaItems: [`أيام العمل: ${duePeriod.workdays}`]
+      },
+      bodyHtml,
+      onPopupBlocked: () => addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger')
+    });
+    if (opened) {
+      logClientPrintAction(
+        'الموارد البشرية',
+        `طباعة تقرير السُلف والمستحقات لشهر ${duePeriod.monthKey}`,
+        `سُلف شهر ${duePeriod.monthKey}`
+      );
+    }
   };
 
   const updateForm = (patch: Partial<typeof form>) =>
