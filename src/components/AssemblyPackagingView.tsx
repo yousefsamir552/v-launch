@@ -11,7 +11,9 @@ import {
   Search,
   CheckCircle2,
   AlertTriangle,
-  Lock
+  Lock,
+  Printer,
+  Star
 } from 'lucide-react';
 import { ZoomableImage } from './ZoomableImage';
 import {
@@ -19,21 +21,61 @@ import {
   GarmentPart,
   getPartLabel,
   partsForComposition,
+  PackagingMaterialShortageItem,
   PackagingStepKey,
   PACKAGING_STEP_ORDER,
   PACKAGING_STEP_LABELS,
   PartStage,
   PART_STAGE_ORDER,
   PART_STAGE_LABELS,
+  SewingDispatch,
   WorkshopType
 } from '../types';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel } from '../utils/completedModels';
+import { modelPackagingPieces } from '../utils/packagingMaterials';
+import { printAssemblyProductionSheet } from '../utils/printAssemblySheet';
+import {
+  InlineEvaluationDraft,
+  InlineWorkshopEvaluationBox,
+  WorkshopEvaluationModal,
+  WorkshopEvaluationTarget,
+  createInitialEvaluationDraft
+} from './WorkshopEvaluationModal';
 
 const CUSTOM_WORKSHOP_OPTION = '__custom__';
 
 /**
- * قائمة منسدلة مفلترة حسب تخصص الورشة + خيار "أخرى/كتابة يدوية".
+ * يستخرج اسم ورشة المكن (الخياطة) التي عملت على الموديل (أو القطعة المحددة)
+ * لاختيارها تلقائياً كجهة افتراضية في التشطيب والمكواة والتعبئة والدَست.
+ */
+const getDefaultSewingWorkshop = (
+  model: DesignModel,
+  part: GarmentPart | null,
+  sewingDispatches: SewingDispatch[]
+): string => {
+  const modelDispatches = sewingDispatches.filter(
+    (d) => d.model_id === model.id && Boolean(d.workshop_name && d.workshop_name.trim())
+  );
+  if (part) {
+    const partMatch = [...modelDispatches].reverse().find((d) => d.piece_type === part);
+    if (partMatch?.workshop_name) return partMatch.workshop_name.trim();
+  }
+  const latestAny = modelDispatches[modelDispatches.length - 1];
+  if (latestAny?.workshop_name) return latestAny.workshop_name.trim();
+
+  if (part === 'shirt' && model.sewing_shirt_workshop) return model.sewing_shirt_workshop.trim();
+  if (part === 'pants' && model.sewing_pants_workshop) return model.sewing_pants_workshop.trim();
+  return (
+    model.sewing_workshop ||
+    model.sewing_shirt_workshop ||
+    model.sewing_pants_workshop ||
+    ''
+  ).trim();
+};
+
+/**
+ * قائمة منسدلة مفلترة حسب تخصص الورشة + ورشة المكن المقترحة تلقائياً + خيار "أخرى/كتابة يدوية".
  * عند اختيار ورشة مسجّلة بها رقم أو رابط جروب يظهر زر واتساب لإرسال الطلب.
  */
 const WorkshopPicker: React.FC<{
@@ -42,12 +84,28 @@ const WorkshopPicker: React.FC<{
   workshopType: WorkshopType;
   placeholder: string;
   whatsappMessage: string;
-}> = ({ value, onChange, workshopType, placeholder, whatsappMessage }) => {
+  suggestedWorkshop?: string;
+}> = ({ value, onChange, workshopType, placeholder, whatsappMessage, suggestedWorkshop }) => {
   const { workshops, openWhatsAppOrder } = useApp();
   const options = workshops.filter((w) => (w.workshop_type || []).includes(workshopType));
-  const matched = options.find((w) => w.name === value) || null;
-  const [customMode, setCustomMode] = useState(Boolean(value) && !matched);
-  const selectValue = customMode ? CUSTOM_WORKSHOP_OPTION : matched ? matched.name : '';
+  const cleanSuggested = (suggestedWorkshop || '').trim();
+  const suggestedInOptions = Boolean(cleanSuggested && options.some((w) => w.name === cleanSuggested));
+  const knownNames = new Set([
+    ...options.map((w) => w.name),
+    ...(cleanSuggested ? [cleanSuggested] : [])
+  ]);
+  const isKnownValue = Boolean(value && knownNames.has(value));
+  const matched = workshops.find((w) => w.name === value) || null;
+  const [customMode, setCustomMode] = useState(Boolean(value) && !isKnownValue);
+
+  useEffect(() => {
+    if (value && knownNames.has(value)) {
+      setCustomMode(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, cleanSuggested]);
+
+  const selectValue = customMode ? CUSTOM_WORKSHOP_OPTION : isKnownValue ? value : '';
 
   return (
     <div className="space-y-1">
@@ -67,9 +125,13 @@ const WorkshopPicker: React.FC<{
           className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-semibold bg-white"
         >
           <option value="">{placeholder}</option>
+          {cleanSuggested && !suggestedInOptions && (
+            <option value={cleanSuggested}>{cleanSuggested} (ورشة المكن — تلقائي)</option>
+          )}
           {options.map((w) => (
             <option key={w.id} value={w.name}>
               {w.name}
+              {cleanSuggested && w.name === cleanSuggested ? ' (ورشة المكن — تلقائي)' : ''}
             </option>
           ))}
           <option value={CUSTOM_WORKSHOP_OPTION}>أخرى / كتابة يدوية</option>
@@ -91,6 +153,11 @@ const WorkshopPicker: React.FC<{
           </button>
         )}
       </div>
+      {cleanSuggested && value === cleanSuggested && (
+        <p className="text-[10px] font-bold text-indigo-700 bg-indigo-50/70 border border-indigo-200/80 rounded-lg px-2 py-0.5">
+          ✨ تم اختيار جهة المكن ({cleanSuggested}) تلقائياً — يمكنك تغييرها يدوياً
+        </p>
+      )}
       {customMode && (
         <input
           type="text"
@@ -209,25 +276,67 @@ const CurrentStageBadge: React.FC<{ status?: string }> = ({ status }) => {
   );
 };
 
-const ModelHeader: React.FC<{ model: DesignModel }> = ({ model }) => (
-  <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100">
-    <div className="flex items-center gap-3">
-      <ZoomableImage
-        src={model.image}
-        alt={model.model_code}
-        downloadName={`${model.model_code}.jpg`}
-        className="w-11 h-11 rounded-xl object-contain bg-white border border-slate-200 p-0.5"
-      />
-      <div>
-        <h4 className="font-black text-sm text-slate-900">{model.model_code}</h4>
-        <p className="text-[11px] text-slate-500 font-semibold">
-          {model.model_type || 'غير محدد'} • {modelParts(model).map((part) => getPartLabel(part)).join(' / ')}
-        </p>
+const ModelHeader: React.FC<{ model: DesignModel }> = ({ model }) => {
+  const {
+    globalSettings,
+    sizeDefs,
+    getModelColorList,
+    getModelSizeList,
+    sewingDispatches,
+    finishingRecords,
+    assemblyStageRecords,
+    getPackagingRequirement,
+    packagingMaterialRules
+  } = useApp();
+
+  const handlePrintProductionSheet = () => {
+    const sizeDef = sizeDefs.find((s) => s.id === model.size_category_id);
+    printAssemblyProductionSheet({
+      siteName: globalSettings.site_name,
+      logo: globalSettings.logo,
+      model,
+      sizeCategoryName: sizeDef?.name || '—',
+      sizes: getModelSizeList(model.id),
+      colors: getModelColorList(model.id),
+      sewingDispatches: sewingDispatches.filter((d) => d.model_id === model.id),
+      finishingRecords: finishingRecords.filter((r) => r.model_id === model.id),
+      assemblyStageRecords: assemblyStageRecords.filter((r) => r.model_id === model.id),
+      packagingRequirement: getPackagingRequirement(model.id),
+      packagingMaterialRules
+    });
+  };
+
+  return (
+    <div className="flex items-start justify-between gap-2 pb-3 border-b border-slate-100">
+      <div className="flex items-center gap-3 min-w-0">
+        <ZoomableImage
+          src={model.image}
+          alt={model.model_code}
+          downloadName={`${model.model_code}.jpg`}
+          className="w-11 h-11 rounded-xl object-contain bg-white border border-slate-200 p-0.5 shrink-0"
+        />
+        <div className="min-w-0">
+          <h4 className="font-black text-sm text-slate-900 truncate">{model.model_code}</h4>
+          <p className="text-[11px] text-slate-500 font-semibold truncate">
+            {model.model_type || 'غير محدد'} • {modelParts(model).map((part) => getPartLabel(part)).join(' / ')}
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-col items-end gap-1.5 shrink-0">
+        <StatusBadge status={model.status} />
+        <button
+          type="button"
+          onClick={handlePrintProductionSheet}
+          title="طباعة ورقة إنتاج التشطيب والتغليف والكارت"
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-[10px] font-black transition cursor-pointer"
+        >
+          <Printer className="w-3 h-3" />
+          <span>ورقة الإنتاج</span>
+        </button>
       </div>
     </div>
-    <StatusBadge status={model.status} />
-  </div>
-);
+  );
+};
 
 
 const stepDate = (
@@ -458,8 +567,12 @@ const PartFinishingRow: React.FC<{
 }> = ({ model, part, canEdit }) => {
   const {
     finishingRecords,
+    sewingDispatches,
+    workshops,
+    workshopEvaluations,
     startFinishing,
     receiveFinishing,
+    submitWorkshopEvaluation,
     getPartStages,
     canEditAssemblyPrices,
     canViewAssemblyPrices
@@ -467,6 +580,12 @@ const PartFinishingRow: React.FC<{
   const record = finishingRecords.find(
     (item) => item.model_id === model.id && item.part_type === part
   );
+  const defaultSewingWorkshop = getDefaultSewingWorkshop(model, part, sewingDispatches);
+  const existingEval = record
+    ? workshopEvaluations.find(
+        (ev) => ev.finishing_record_id === record.id && ev.stage === 'finishing'
+      ) || null
+    : null;
   const stage = getPartStages(model.id)[part] || 'cutting';
   const stageIndex = PART_STAGE_ORDER.indexOf(stage);
   const finishingIndex = PART_STAGE_ORDER.indexOf('finishing');
@@ -475,11 +594,27 @@ const PartFinishingRow: React.FC<{
   const [expectedExit, setExpectedExit] = useState(
     record?.expected_exit_date?.slice(0, 10) || todayStr()
   );
-  const [vendor, setVendor] = useState(record?.vendor_name || '');
+  const [vendor, setVendor] = useState(record?.vendor_name || defaultSewingWorkshop);
   const [notes, setNotes] = useState('');
   const [cost, setCost] = useState(
     record?.cost_per_piece != null ? String(record.cost_per_piece) : ''
   );
+  const [evalDraft, setEvalDraft] = useState<InlineEvaluationDraft>(() =>
+    createInitialEvaluationDraft(record?.expected_exit_date)
+  );
+  const [evalModalTarget, setEvalModalTarget] = useState<WorkshopEvaluationTarget | null>(null);
+
+  useEffect(() => {
+    if (!record && !vendor && defaultSewingWorkshop) {
+      setVendor(defaultSewingWorkshop);
+    }
+  }, [record, vendor, defaultSewingWorkshop]);
+
+  useEffect(() => {
+    if (record?.expected_exit_date) {
+      setEvalDraft(createInitialEvaluationDraft(record.expected_exit_date));
+    }
+  }, [record?.id, record?.expected_exit_date]);
 
   const inFinishing = stageIndex === finishingIndex;
   const completed = Boolean(record?.is_received) || stageIndex >= ironingIndex;
@@ -491,21 +626,54 @@ const PartFinishingRow: React.FC<{
     ? 'bg-purple-50/50 border-purple-200'
     : 'bg-slate-50 border-slate-200';
 
+  const openEvalModal = () => {
+    if (!record || !record.vendor_name) return;
+    const matchedWorkshop = workshops.find((w) => w.name === record.vendor_name);
+    setEvalModalTarget({
+      workshopId: matchedWorkshop?.id,
+      workshopName: record.vendor_name,
+      stage: 'finishing',
+      modelId: model.id,
+      modelCode: model.model_code,
+      finishingRecordId: record.id,
+      expectedDate: record.expected_exit_date,
+      actualDate: record.actual_exit_date || todayStr(),
+      existing: existingEval
+    });
+  };
+
   return (
     <div className={`p-2.5 rounded-2xl border ${tone}`}>
       <div className="flex items-center justify-between gap-2">
         <span className="text-[11px] font-black text-slate-800">{getPartLabel(part)}</span>
-        <span
-          className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-            completed
-              ? 'bg-emerald-600 text-white border-emerald-600'
-              : inFinishing
-              ? 'bg-white text-purple-800 border-purple-300'
-              : 'bg-white text-slate-600 border-slate-300'
-          }`}
-        >
-          {completed ? 'تم الاستلام' : PART_STAGE_LABELS[stage]}
-        </span>
+        <div className="flex items-center gap-1.5">
+          {record?.vendor_name && (
+            <button
+              type="button"
+              onClick={openEvalModal}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black border transition cursor-pointer ${
+                existingEval
+                  ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200'
+                  : 'bg-white text-amber-700 border-amber-200 hover:bg-amber-50'
+              }`}
+              title={existingEval ? 'تعديل تقييم ورشة التشطيب' : 'تقييم ورشة التشطيب'}
+            >
+              <Star className="w-3 h-3 fill-amber-400 text-amber-500" />
+              <span>{existingEval ? `${existingEval.overall_score}/5` : 'تقييم'}</span>
+            </button>
+          )}
+          <span
+            className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+              completed
+                ? 'bg-emerald-600 text-white border-emerald-600'
+                : inFinishing
+                ? 'bg-white text-purple-800 border-purple-300'
+                : 'bg-white text-slate-600 border-slate-300'
+            }`}
+          >
+            {completed ? 'تم الاستلام' : PART_STAGE_LABELS[stage]}
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-1 mt-1.5 text-[10px] font-mono text-slate-600">
@@ -540,6 +708,7 @@ const PartFinishingRow: React.FC<{
                 value={vendor}
                 onChange={setVendor}
                 workshopType="finishing"
+                suggestedWorkshop={defaultSewingWorkshop}
                 placeholder="الجهة / ورشة التشطيب (اختياري)"
                 whatsappMessage={`طلب تشطيب - موديل ${model.model_code} - قطعة ${getPartLabel(part)}`}
               />
@@ -566,6 +735,14 @@ const PartFinishingRow: React.FC<{
             placeholder={record ? 'ملاحظات استلام التشطيب (اختياري)' : 'ملاحظات التشطيب (اختياري)'}
             className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-[11px] font-semibold"
           />
+          {record && record.vendor_name && (
+            <InlineWorkshopEvaluationBox
+              workshopName={record.vendor_name}
+              expectedDate={record.expected_exit_date}
+              draft={evalDraft}
+              onChange={setEvalDraft}
+            />
+          )}
           {!record ? (
             <button
               type="button"
@@ -590,8 +767,22 @@ const PartFinishingRow: React.FC<{
           ) : (
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
                 receiveFinishing(record.id, todayStr(), notes);
+                if (evalDraft.enabled && record.vendor_name) {
+                  const matchedWorkshop = workshops.find((w) => w.name === record.vendor_name);
+                  await submitWorkshopEvaluation({
+                    workshopId: matchedWorkshop?.id,
+                    workshopName: record.vendor_name,
+                    stage: 'finishing',
+                    modelId: model.id,
+                    finishingRecordId: record.id,
+                    deliveryTimeliness: evalDraft.deliveryTimeliness,
+                    workQuality: evalDraft.workQuality,
+                    finishingQuality: evalDraft.finishingQuality,
+                    notes: evalDraft.notes
+                  });
+                }
                 setNotes('');
               }}
               className="w-full py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
@@ -601,6 +792,8 @@ const PartFinishingRow: React.FC<{
           )}
         </div>
       )}
+
+      <WorkshopEvaluationModal target={evalModalTarget} onClose={() => setEvalModalTarget(null)} />
     </div>
   );
 };
@@ -654,6 +847,7 @@ const PartIroningRow: React.FC<{
 }> = ({ model, part, canEdit }) => {
   const {
     assemblyStageRecords,
+    sewingDispatches,
     startIroning,
     receiveIroning,
     getPartStages,
@@ -663,6 +857,7 @@ const PartIroningRow: React.FC<{
   const record = assemblyStageRecords.find(
     (item) => item.model_id === model.id && item.stage === 'ironing' && item.part_type === part
   );
+  const defaultSewingWorkshop = getDefaultSewingWorkshop(model, part, sewingDispatches);
   const stage = getPartStages(model.id)[part] || 'cutting';
   const stageIndex = PART_STAGE_ORDER.indexOf(stage);
   const ironingIndex = PART_STAGE_ORDER.indexOf('ironing');
@@ -670,11 +865,17 @@ const PartIroningRow: React.FC<{
   const [expectedExit, setExpectedExit] = useState(
     record?.expected_exit_date?.slice(0, 10) || todayStr()
   );
-  const [vendor, setVendor] = useState(record?.vendor_name || '');
+  const [vendor, setVendor] = useState(record?.vendor_name || defaultSewingWorkshop);
   const [notes, setNotes] = useState('');
   const [cost, setCost] = useState(
     record?.cost_per_piece != null ? String(record.cost_per_piece) : ''
   );
+
+  useEffect(() => {
+    if (!record && !vendor && defaultSewingWorkshop) {
+      setVendor(defaultSewingWorkshop);
+    }
+  }, [record, vendor, defaultSewingWorkshop]);
 
   const readyForIroning = stageIndex === ironingIndex;
   const completed = Boolean(record?.is_completed) || stageIndex > ironingIndex;
@@ -742,6 +943,7 @@ const PartIroningRow: React.FC<{
                 value={vendor}
                 onChange={setVendor}
                 workshopType="ironing"
+                suggestedWorkshop={defaultSewingWorkshop}
                 placeholder="الجهة / ورشة المكواة (اختياري)"
                 whatsappMessage={`طلب مكواة - موديل ${model.model_code} - قطعة ${getPartLabel(part)}`}
               />
@@ -863,6 +1065,7 @@ const IroningCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model
 const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, canEdit }) => {
   const {
     assemblyStageRecords,
+    sewingDispatches,
     startAssemblyStage,
     receiveAssemblyStage,
     getPartStages,
@@ -883,15 +1086,27 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
     (item) => item.model_id === model.id && item.stage === 'packaging'
   );
   const completed = Boolean(record?.is_completed);
+  const defaultSewingWorkshop = getDefaultSewingWorkshop(model, null, sewingDispatches);
 
   const [expectedExit, setExpectedExit] = useState(
     record?.expected_exit_date?.slice(0, 10) || todayStr()
   );
-  const [vendor, setVendor] = useState(record?.vendor_name || '');
+  const [vendor, setVendor] = useState(record?.vendor_name || defaultSewingWorkshop);
   const [notes, setNotes] = useState('');
   const [cost, setCost] = useState(
     record?.cost_per_piece != null ? String(record.cost_per_piece) : ''
   );
+  const [submitting, setSubmitting] = useState(false);
+  const [shortageError, setShortageError] = useState<{
+    message: string;
+    shortages?: PackagingMaterialShortageItem[];
+  } | null>(null);
+
+  useEffect(() => {
+    if (!record && !vendor && defaultSewingWorkshop) {
+      setVendor(defaultSewingWorkshop);
+    }
+  }, [record, vendor, defaultSewingWorkshop]);
 
   useEffect(() => {
     if (record?.expected_exit_date) {
@@ -932,6 +1147,55 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
             {`🔒 التعبئة والتغليف مقفولة حتى تصل كل القطع (${arrivedParts.length} من ${parts.length}). `}
             {`في الانتظار: ${waitingParts.map((part) => getPartLabel(part)).join(' / ')}`}
           </span>
+        </div>
+      )}
+
+      {record?.materials_deducted && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 px-2.5 py-2 space-y-1">
+          <div className="flex items-center gap-1.5 text-[11px] font-black text-emerald-800">
+            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+            <span>✅ تم خصم خامات التغليف تلقائياً من المخزن</span>
+          </div>
+          {Array.isArray(record.materials_deducted_details) &&
+            record.materials_deducted_details.length > 0 && (
+              <div className="flex flex-wrap gap-1 pt-0.5">
+                {record.materials_deducted_details.map((d, idx) => (
+                  <span
+                    key={`${d.size_rule_id}-${idx}`}
+                    className="inline-block px-2 py-0.5 rounded-md bg-white border border-emerald-200 text-[10px] font-bold text-emerald-900"
+                  >
+                    {d.material_name}: {d.amount} {d.unit}
+                  </span>
+                ))}
+              </div>
+            )}
+        </div>
+      )}
+
+      {shortageError && (
+        <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-2.5 space-y-1.5">
+          <div className="flex items-start gap-1.5 text-[11px] font-black text-rose-800">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
+            <span className="leading-relaxed whitespace-pre-line">{shortageError.message}</span>
+          </div>
+          {shortageError.shortages && shortageError.shortages.length > 0 && (
+            <div className="space-y-1 pt-1 border-t border-rose-200">
+              {shortageError.shortages.map((item, idx) => (
+                <div
+                  key={`${item.size_rule_id}-${idx}`}
+                  className="flex flex-wrap items-center justify-between gap-1 bg-white rounded-lg px-2 py-1 border border-rose-200 text-[10px] font-bold"
+                >
+                  <span className="text-slate-800">
+                    {item.material_name}
+                    {item.size_group_name ? ` (${item.size_group_name})` : ''}
+                  </span>
+                  <span className="text-rose-700 font-mono">
+                    مطلوب {item.required} • متاح {item.available} • عجز {item.shortage} {item.unit}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -977,6 +1241,7 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
                 value={vendor}
                 onChange={setVendor}
                 workshopType="packaging"
+                suggestedWorkshop={defaultSewingWorkshop}
                 placeholder="الجهة / ورشة التغليف (اختياري)"
                 whatsappMessage={`طلب تعبئة وتغليف - موديل ${model.model_code}`}
               />
@@ -1003,9 +1268,11 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
               />
               <button
                 type="button"
-                disabled={!allReady}
-                onClick={() => {
-                  startAssemblyStage({
+                disabled={!allReady || submitting}
+                onClick={async () => {
+                  setShortageError(null);
+                  setSubmitting(true);
+                  const res = await startAssemblyStage({
                     modelId: model.id,
                     stage: 'packaging',
                     expectedExitDate: expectedExit,
@@ -1015,11 +1282,21 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
                       ? Math.max(0, parseFloat(cost) || 0)
                       : undefined
                   });
+                  setSubmitting(false);
+                  if (!res.success) {
+                    setShortageError({
+                      message:
+                        res.message ||
+                        'لا يمكن بدء التعبئة والتغليف لعدم كفاية رصيد خامات التغليف.',
+                      shortages: res.shortages
+                    });
+                    return;
+                  }
                   setNotes('');
                 }}
                 className="w-full py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                بدء التعبئة والتغليف
+                {submitting ? 'جارٍ فحص المخزون وبدء التعبئة...' : 'بدء التعبئة والتغليف'}
               </button>
             </>
           )}
@@ -1062,6 +1339,7 @@ const PackagingCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ mod
 const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, canEdit }) => {
   const {
     assemblyStageRecords,
+    sewingDispatches,
     startAssemblyStage,
     receiveAssemblyStage,
     getPackagingRequirement,
@@ -1079,21 +1357,59 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
   const waitingDest = parts.filter(
     (part) => PART_STAGE_ORDER.indexOf(stages[part] || 'cutting') < destIndex
   );
+  const defaultSewingWorkshop = getDefaultSewingWorkshop(model, null, sewingDispatches);
+  const expectedCount =
+    record?.expected_pieces && record.expected_pieces > 0
+      ? record.expected_pieces
+      : modelPackagingPieces(model);
 
   const [expectedExit, setExpectedExit] = useState(
     record?.expected_exit_date?.slice(0, 10) || todayStr()
   );
-  const [vendor, setVendor] = useState(record?.vendor_name || '');
+  const [vendor, setVendor] = useState(record?.vendor_name || defaultSewingWorkshop);
   const [notes, setNotes] = useState('');
   const [cost, setCost] = useState(
     record?.cost_per_piece != null ? String(record.cost_per_piece) : ''
   );
+  const [completedInput, setCompletedInput] = useState<string>(
+    record?.completed_pieces !== null && record?.completed_pieces !== undefined
+      ? String(record.completed_pieces)
+      : String(expectedCount)
+  );
+
+  useEffect(() => {
+    if (!record && !vendor && defaultSewingWorkshop) {
+      setVendor(defaultSewingWorkshop);
+    }
+  }, [record, vendor, defaultSewingWorkshop]);
 
   useEffect(() => {
     if (record?.expected_exit_date) {
       setExpectedExit(record.expected_exit_date.slice(0, 10));
     }
   }, [record?.expected_exit_date]);
+
+  useEffect(() => {
+    if (record?.completed_pieces !== null && record?.completed_pieces !== undefined) {
+      setCompletedInput(String(record.completed_pieces));
+    } else if (!record) {
+      setCompletedInput(String(expectedCount));
+    }
+  }, [record?.completed_pieces, record, expectedCount]);
+
+  const parsedCompleted =
+    completedInput.trim() === ''
+      ? null
+      : Math.max(0, Math.floor(Number(completedInput) || 0));
+  const displayCompleted = record?.is_completed
+    ? record.completed_pieces ?? expectedCount
+    : parsedCompleted;
+  const liveShortage =
+    record?.is_completed
+      ? record.shortage_pieces ?? Math.max(0, expectedCount - (displayCompleted ?? expectedCount))
+      : displayCompleted !== null
+      ? Math.max(0, expectedCount - displayCompleted)
+      : 0;
 
   const requirementComplete = Boolean(requirement?.is_complete);
   const allArrived = waitingDest.length === 0;
@@ -1121,6 +1437,32 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
         <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
           <span className="block text-[9px] font-bold text-slate-500">خروج فعلي</span>
           <strong className="text-slate-800">{formatDate(record?.actual_exit_date)}</strong>
+        </div>
+      </div>
+
+      {/* ملخص أعداد الدَست: العدد الفعلي للموديل مقابل المنفذ والعجز التلقائي */}
+      <div className="grid grid-cols-3 gap-1.5 text-center">
+        <div className="p-2 rounded-xl bg-indigo-50/70 border border-indigo-200">
+          <span className="block text-[9px] font-bold text-indigo-600">العدد الفعلي (المتوقع)</span>
+          <strong className="text-xs font-black text-indigo-900 font-mono">{expectedCount}</strong>
+        </div>
+        <div className="p-2 rounded-xl bg-emerald-50/70 border border-emerald-200">
+          <span className="block text-[9px] font-bold text-emerald-700">العدد المنفذ فعلياً</span>
+          <strong className="text-xs font-black text-emerald-900 font-mono">
+            {displayCompleted !== null ? displayCompleted : '—'}
+          </strong>
+        </div>
+        <div
+          className={`p-2 rounded-xl border ${
+            liveShortage > 0
+              ? 'bg-rose-50 border-rose-300 text-rose-800'
+              : 'bg-slate-50 border-slate-200 text-slate-700'
+          }`}
+        >
+          <span className="block text-[9px] font-bold">العجز التلقائي</span>
+          <strong className="text-xs font-black font-mono">
+            {liveShortage > 0 ? `-${liveShortage}` : '0'}
+          </strong>
         </div>
       </div>
 
@@ -1160,6 +1502,28 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
           {!record || !record.is_completed ? (
             <>
               <div className="flex items-center gap-1.5">
+                <label className="text-[10px] font-bold text-slate-500 shrink-0">
+                  العدد اللي اتعمل فعلياً
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  value={completedInput}
+                  onChange={(event) => setCompletedInput(event.target.value)}
+                  placeholder={String(expectedCount)}
+                  className="flex-1 px-2 py-1 rounded-lg border border-indigo-300 text-[11px] font-mono font-bold bg-white text-center focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                />
+                <span className="text-[10px] font-bold text-slate-400 shrink-0">
+                  من {expectedCount}
+                </span>
+              </div>
+              {liveShortage > 0 && (
+                <p className="text-[10px] font-black text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-2.5 py-1">
+                  ⚠️ يوجد عجز قدره {liveShortage} قطعة (المتوقع {expectedCount} — المنفذ{' '}
+                  {displayCompleted ?? 0}) وسيُحفظ تلقائياً في التقارير وأوراق الإنتاج.
+                </p>
+              )}
+              <div className="flex items-center gap-1.5">
                 <label className="text-[10px] font-bold text-slate-500">الخروج المتوقع</label>
                 <input
                   type="date"
@@ -1174,6 +1538,7 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
                     value={vendor}
                     onChange={setVendor}
                     workshopType="packaging"
+                    suggestedWorkshop={defaultSewingWorkshop}
                     placeholder="الجهة / ورشة الدَست (اختياري)"
                     whatsappMessage={`طلب دَست - موديل ${model.model_code}`}
                   />
@@ -1213,19 +1578,26 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
                       notes,
                       costPerPiece: canEditAssemblyPrices()
                         ? Math.max(0, parseFloat(cost) || 0)
-                        : undefined
+                        : undefined,
+                      expectedPieces: expectedCount,
+                      completedPieces: parsedCompleted ?? undefined
                     });
                     setNotes('');
                   }}
                   className="flex-1 py-2 rounded-xl bg-slate-900 text-white text-[10px] font-black hover:bg-slate-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  {record ? 'تحديث موعد الخروج' : 'بدء قسم الدَست'}
+                  {record ? 'تحديث بيانات الدَست' : 'بدء قسم الدَست'}
                 </button>
                 {record && (
                   <button
                     type="button"
                     onClick={() => {
-                      receiveAssemblyStage(record.id, todayStr(), notes);
+                      receiveAssemblyStage(
+                        record.id,
+                        todayStr(),
+                        notes,
+                        parsedCompleted ?? undefined
+                      );
                       setNotes('');
                     }}
                     className="flex-1 py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"

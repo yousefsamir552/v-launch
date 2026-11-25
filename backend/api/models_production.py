@@ -677,6 +677,23 @@ class AssemblyStageRecord(models.Model):
     total_cost = models.DecimalField(
         max_digits=14, decimal_places=2, default=0.0, verbose_name="إجمالي تكلفة المرحلة"
     )
+    # تتبع الخصم التلقائي لخامات التعبئة والتغليف (لمنع الخصم المزدوج عند التعديل).
+    materials_deducted = models.BooleanField(
+        default=False, verbose_name="تم خصم خامات التغليف تلقائياً"
+    )
+    materials_deducted_details = models.JSONField(
+        default=list, blank=True, verbose_name="تفاصيل خامات التغليف المخصومة"
+    )
+    # مرحلة الدَست: العدد المتوقع للموديل مقابل المنفذ فعلياً وحساب العجز تلقائياً.
+    expected_pieces = models.IntegerField(
+        default=0, verbose_name="العدد الفعلي المتوقع للموديل"
+    )
+    completed_pieces = models.IntegerField(
+        blank=True, null=True, verbose_name="العدد المنفذ فعلياً"
+    )
+    shortage_pieces = models.IntegerField(
+        default=0, verbose_name="العجز"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -704,10 +721,85 @@ class AssemblyStageRecord(models.Model):
     def save(self, *args, **kwargs):
         if not self.client_id:
             self.client_id = generate_client_id('asm-stage')
+        if self.stage == 'dest' and self.completed_pieces is not None:
+            self.shortage_pieces = max(0, int(self.expected_pieces or 0) - int(self.completed_pieces))
+        elif self.stage != 'dest':
+            self.shortage_pieces = 0
         super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.stage_label} - {self.model.model_code}"
+
+
+WORKSHOP_EVALUATION_STAGE_CHOICES = [
+    ('printing', 'مطابع وتطريز'),
+    ('sewing', 'مكن وخياطة'),
+    ('finishing', 'تشطيب'),
+]
+WORKSHOP_EVALUATION_STAGE_KEYS = [key for key, _label in WORKSHOP_EVALUATION_STAGE_CHOICES]
+WORKSHOP_EVALUATION_STAGE_LABELS = dict(WORKSHOP_EVALUATION_STAGE_CHOICES)
+
+
+class WorkshopEvaluation(models.Model):
+    """
+    تقييم أداء الورش والمطابع (1–5 نجوم) على ثلاثة معايير:
+    ميعاد التسليم، جودة الشغل، وجودة التشطيب، مع ربطه بالموديل والورشة والإرسالية.
+    """
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    workshop = models.ForeignKey(
+        Workshop, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='evaluations', verbose_name="الورشة المسجلة"
+    )
+    workshop_name = models.CharField(max_length=200, db_index=True, verbose_name="اسم الورشة / المطبعة")
+    stage = models.CharField(
+        max_length=20, choices=WORKSHOP_EVALUATION_STAGE_CHOICES, default='sewing',
+        db_index=True, verbose_name="فئة الورشة"
+    )
+    model = models.ForeignKey(
+        ModelItem, on_delete=models.CASCADE, related_name='workshop_evaluations', verbose_name="الموديل"
+    )
+    print_dispatch = models.ForeignKey(
+        PrintDispatch, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='evaluations', verbose_name="إرسالية المطبعة"
+    )
+    sewing_dispatch = models.ForeignKey(
+        SewingDispatch, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='evaluations', verbose_name="إرسالية المكن"
+    )
+    finishing_record = models.ForeignKey(
+        FinishingRecord, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='evaluations', verbose_name="سجل التشطيب"
+    )
+    delivery_timeliness = models.PositiveSmallIntegerField(default=5, verbose_name="ميعاد التسليم")
+    work_quality = models.PositiveSmallIntegerField(default=5, verbose_name="جودة الشغل")
+    finishing_quality = models.PositiveSmallIntegerField(default=5, verbose_name="جودة التشطيب")
+    notes = models.TextField(blank=True, default='', verbose_name="ملاحظات التقييم")
+    evaluated_by = models.CharField(max_length=150, blank=True, default='', verbose_name="المُقيِّم")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        verbose_name = "تقييم ورشة"
+        verbose_name_plural = "تقييمات الورش"
+
+    @property
+    def overall_score(self) -> float:
+        return round(
+            (int(self.delivery_timeliness or 0) + int(self.work_quality or 0) + int(self.finishing_quality or 0)) / 3.0,
+            2,
+        )
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('weval')
+        self.delivery_timeliness = max(1, min(5, int(self.delivery_timeliness or 5)))
+        self.work_quality = max(1, min(5, int(self.work_quality or 5)))
+        self.finishing_quality = max(1, min(5, int(self.finishing_quality or 5)))
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"تقييم {self.workshop_name} ({self.model.model_code}) - {self.overall_score}/5"
 
 
 # ---------------------------------------------------------------------------
@@ -865,6 +957,9 @@ class PackagingMaterialTransaction(models.Model):
     # سعر الوحدة وقت الحركة (بيانات مالية محمية بصلاحية مستقلة).
     price_per_unit = models.DecimalField(
         max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر الوحدة"
+    )
+    model_code_ref = models.CharField(
+        max_length=150, blank=True, default='', db_index=True, verbose_name="كود الموديل"
     )
     notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
     timestamp = models.CharField(max_length=100, blank=True, default='', verbose_name="وقت الحركة")

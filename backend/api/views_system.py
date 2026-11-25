@@ -558,6 +558,19 @@ class ReportsViewSet(viewsets.ViewSet):
             return Response({'error': 'الموديل غير موجود.'}, status=status.HTTP_404_NOT_FOUND)
         return Response(data)
 
+    @action(detail=False, methods=['get'], url_path='workshop-evaluations')
+    def workshop_evaluations(self, request):
+        _profile, denied = self._reports_guard(request)
+        if denied:
+            return denied
+        data = get_workshop_evaluations_report(
+            category=request.query_params.get('category', 'all'),
+            search=request.query_params.get('search'),
+            date_from=request.query_params.get('date_from'),
+            date_to=request.query_params.get('date_to'),
+        )
+        return Response(data)
+
     @action(detail=False, methods=['get', 'post'], url_path='targets')
     def targets(self, request):
         if request.method.lower() == 'post':
@@ -724,6 +737,7 @@ class FactoryResetViewSet(viewsets.ViewSet):
                 _count_and_delete(SewingDispatch.objects.all(), 'أوامر المكن', summary)
                 _count_and_delete(FinishingRecord.objects.all(), 'سجلات التشطيب', summary)
                 _count_and_delete(AssemblyStageRecord.objects.all(), 'سجلات الأسمبلي', summary)
+                _count_and_delete(WorkshopEvaluation.objects.all(), 'تقييمات الورش', summary)
                 _count_and_delete(PackagingRequirement.objects.all(), 'متطلبات التعبئة', summary)
                 _count_and_delete(ModelRequirement.objects.all(), 'متطلبات الموديلات', summary)
                 _count_and_delete(ModelAccessory.objects.all(), 'إكسسوارات الموديلات', summary)

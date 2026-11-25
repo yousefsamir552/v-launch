@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Award,
   BarChart3,
   Boxes,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Download,
   Factory,
   Flame,
   Gauge,
@@ -20,6 +22,7 @@ import {
   Settings2,
   Shirt,
   Sparkles,
+  Star,
   Target,
   TrendingDown,
   TrendingUp,
@@ -40,6 +43,7 @@ import {
 import { api } from '../api/client';
 import { useApp } from '../context/AppContext';
 import { MaterialsReportSection, ModelConsumptionReportSection } from './MaterialsAndModelConsumptionReports';
+import { datedFileName, exportCsv } from '../utils/exportExcel';
 import { PRINT_LOGO_CSS, escapeHtml, logClientPrintAction, renderLogoHtml } from '../utils/printShared';
 import type {
   DepartmentReportCard,
@@ -48,17 +52,25 @@ import type {
   ModelStageWaterfallResponse,
   ProductionDepartmentsResponse,
   QualityShortageResponse,
-  StageLossKey
+  StageLossKey,
+  WorkshopEvaluationsReportResponse
 } from '../types';
 
 /* ------------------------------------------------------------------ */
 /* Types & constants                                                   */
 /* ------------------------------------------------------------------ */
 
-type ReportTab = 'models' | 'production' | 'quality' | 'materials' | 'model_consumption';
+type ReportTab =
+  | 'models'
+  | 'production'
+  | 'quality'
+  | 'materials'
+  | 'model_consumption'
+  | 'workshop_evaluations';
 type MetricMode = 'models' | 'pieces';
 type PeriodKey = 'today' | 'week' | 'month' | 'custom';
 type SortKey = 'shortage' | 'percent' | 'cut' | 'code' | 'loss';
+type EvalCategoryFilter = 'all' | 'printing' | 'sewing' | 'finishing';
 
 const BOYS_COLOR = '#3B82F6';
 const GIRLS_COLOR = '#EC4899';
@@ -72,20 +84,20 @@ const COMPOSITION_FILTER_LABELS: Record<string, string> = {
   three_pieces: 'ثلاث قطع'
 };
 
-// تسميات المراحل (احتياطي لشارة الفلتر إن اختفت المرحلة من الـbreakdown).
+// تسميات المراحل الـ 12 بالترتيب الكامل.
 const STAGE_FILTER_LABELS: Record<string, string> = {
   design: 'التصميم',
   cutting: 'القص',
   qc_before_print: 'العد قبل الطباعة',
-  printing: 'المطابع',
+  printing: 'المطابع والتطريز',
   qc_after_print: 'العد بعد الطباعة',
-  sewing: 'المكن',
+  sewing: 'المكن والخياطة',
   qc_after_sewing: 'العد بعد المكن',
   finishing: 'التشطيب',
   ironing: 'المكواة',
   packaging: 'التعبئة والتغليف',
   dest: 'الدَست',
-  completed: 'الإنتاج التام'
+  completed: 'مخزن الإنتاج التام'
 };
 
 /** بيانات عرض مراحل الفقد الأربع في تبويب "المشاكل والعجز". */
@@ -171,6 +183,12 @@ const TAB_META: Array<{
     label: 'استهلاك الموديل المفصل',
     description: 'صفحة تشغيلية شاملة لكل موديل',
     icon: Shirt
+  },
+  {
+    key: 'workshop_evaluations',
+    label: 'تقييم الورش',
+    description: 'الالتزام بالمواعيد وجودة الشغل والتشطيب',
+    icon: Star
   }
 ];
 
@@ -341,6 +359,11 @@ const WaterfallPanel: React.FC<{ data: ModelStageWaterfallResponse }> = ({ data 
         ({pct(data.summary.shortage_percent)})
       </span>
       <span>المستهدف: {fmt(data.model.target_cut_quantity)}</span>
+      {(data.summary.dest_shortage || 0) > 0 && (
+        <span className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-700">
+          عجز الدَست: {fmt(data.summary.dest_shortage)}
+        </span>
+      )}
       {data.summary.loss_by_stage && (
         <span className="flex flex-wrap items-center gap-1">
           {STAGE_LOSS_META.filter(
@@ -405,7 +428,7 @@ const WaterfallPanel: React.FC<{ data: ModelStageWaterfallResponse }> = ({ data 
       ))}
     </div>
 
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
       {data.model_stages.map((stage) => {
         const badge =
           stage.status === 'completed'
@@ -423,6 +446,16 @@ const WaterfallPanel: React.FC<{ data: ModelStageWaterfallResponse }> = ({ data 
               <p className="text-[11px] text-slate-500">
                 {stage.completed_count}/{stage.records_count} سجل مكتمل • {fmt(stage.in_qty)} قطعة
               </p>
+              {stage.key === 'dest' && data.model.dest_completed_pieces != null && (
+                <p className="text-[11px] font-semibold text-slate-600 mt-0.5">
+                  متوقع {fmt(data.model.dest_expected_pieces ?? stage.in_qty)} • منفذ {fmt(data.model.dest_completed_pieces)}
+                  {(data.model.dest_shortage_pieces || stage.loss || 0) > 0 && (
+                    <span className="text-rose-600 font-bold">
+                      {' '}• عجز {fmt(data.model.dest_shortage_pieces ?? stage.loss)}
+                    </span>
+                  )}
+                </p>
+              )}
             </div>
             <span className={`rounded-lg border px-2 py-1 text-[11px] font-semibold ${badge}`}>
               {stage.status_label}
@@ -439,7 +472,7 @@ const WaterfallPanel: React.FC<{ data: ModelStageWaterfallResponse }> = ({ data 
 /* ------------------------------------------------------------------ */
 
 export const ReportsView: React.FC = () => {
-  const { hasPermission, addFlashMessage, globalSettings, refreshState } = useApp();
+  const { hasPermission, addFlashMessage, globalSettings, refreshState, logAction } = useApp();
 
   const canViewReports = hasPermission('reports');
   const canEditTargets = hasPermission('reports', true);
@@ -483,10 +516,26 @@ export const ReportsView: React.FC = () => {
   const [waterfalls, setWaterfalls] = useState<Record<number, ModelStageWaterfallResponse>>({});
   const [waterfallLoading, setWaterfallLoading] = useState<number | null>(null);
 
+  /* ---------- tab 6: تقييم الورش ---------- */
+  const [evalCategory, setEvalCategory] = useState<EvalCategoryFilter>('all');
+  const [evalSearch, setEvalSearch] = useState('');
+  const [debouncedEvalSearch, setDebouncedEvalSearch] = useState('');
+  const [evalFrom, setEvalFrom] = useState('');
+  const [evalTo, setEvalTo] = useState('');
+  const [evalReport, setEvalReport] = useState<WorkshopEvaluationsReportResponse | null>(null);
+  const [evalLoading, setEvalLoading] = useState(false);
+  const [evalError, setEvalError] = useState('');
+  const [expandedWorkshopKey, setExpandedWorkshopKey] = useState<string | null>(null);
+
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(qualitySearch.trim()), 350);
     return () => window.clearTimeout(timer);
   }, [qualitySearch]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedEvalSearch(evalSearch.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [evalSearch]);
 
   const loadModels = useCallback(async () => {
     setModelsLoading(true);
@@ -554,6 +603,24 @@ export const ReportsView: React.FC = () => {
     }
   }, [debouncedSearch, qualityFrom, qualitySort, qualityTo]);
 
+  const loadWorkshopEvaluations = useCallback(async () => {
+    setEvalLoading(true);
+    setEvalError('');
+    try {
+      const data = await api.getWorkshopEvaluationsReport({
+        category: evalCategory === 'all' ? undefined : evalCategory,
+        search: debouncedEvalSearch || undefined,
+        date_from: evalFrom || undefined,
+        date_to: evalTo || undefined
+      });
+      setEvalReport(data);
+    } catch (error) {
+      setEvalError(error instanceof Error ? error.message : 'تعذّر تحميل تقرير تقييم الورش.');
+    } finally {
+      setEvalLoading(false);
+    }
+  }, [debouncedEvalSearch, evalCategory, evalFrom, evalTo]);
+
   useEffect(() => {
     if (!canViewReports || activeTab !== 'models') return;
     void loadModels();
@@ -568,6 +635,11 @@ export const ReportsView: React.FC = () => {
     if (!canViewReports || activeTab !== 'quality') return;
     void loadQuality();
   }, [activeTab, canViewReports, loadQuality]);
+
+  useEffect(() => {
+    if (!canViewReports || activeTab !== 'workshop_evaluations') return;
+    void loadWorkshopEvaluations();
+  }, [activeTab, canViewReports, loadWorkshopEvaluations]);
 
   const selectPeriod = (key: PeriodKey) => {
     if (key === 'custom' && (!periodFrom || !periodTo)) {
@@ -585,6 +657,7 @@ export const ReportsView: React.FC = () => {
     if (activeTab === 'models') void loadModels();
     else if (activeTab === 'production') void loadProduction();
     else if (activeTab === 'quality') void loadQuality();
+    else if (activeTab === 'workshop_evaluations') void loadWorkshopEvaluations();
     else {
       void refreshState();
       setMaterialsRefreshTick((n) => n + 1);
@@ -795,10 +868,78 @@ export const ReportsView: React.FC = () => {
     );
   };
 
+  const printWorkshopEvaluationsReport = () => {
+    if (!evalReport) return;
+    const rows = evalReport.workshops
+      .map(
+        (row) => `<tr>
+          <td>${escapeHtml(row.workshop_name)}</td>
+          <td>${escapeHtml(row.category_label || '—')}</td>
+          <td class="num">${row.evaluations_count > 0 ? row.avg_delivery.toFixed(2) : '—'}</td>
+          <td class="num">${row.evaluations_count > 0 ? row.avg_work_quality.toFixed(2) : '—'}</td>
+          <td class="num">${row.evaluations_count > 0 ? row.avg_finishing_quality.toFixed(2) : '—'}</td>
+          <td class="num"><strong>${row.evaluations_count > 0 ? `${row.overall_avg.toFixed(2)} / 5` : 'غير مُقيّم'}</strong></td>
+          <td class="num">${fmt(row.evaluations_count)}</td>
+          <td class="num">${fmt(row.total_dispatches)}</td>
+          <td class="num">${row.on_time_percent != null ? `${row.on_time_percent.toFixed(1)}%` : '—'}</td>
+          <td class="num">${row.defect_percent != null ? `${row.defect_percent.toFixed(1)}%` : '—'}</td>
+        </tr>`
+      )
+      .join('');
+    openPrintWindow(
+      'تقرير تقييم أداء الورش',
+      `<table>
+        <thead><tr>
+          <th>الورشة</th><th>التخصص</th><th>ميعاد التسليم</th><th>جودة الشغل</th>
+          <th>جودة التشطيب</th><th>المتوسط العام</th><th>عدد التقييمات</th>
+          <th>إجمالي التشغيلات</th><th>الالتزام بالمواعيد %</th><th>نسبة العيوب %</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="10">لا توجد بيانات</td></tr>'}</tbody>
+      </table>`
+    );
+  };
+
+  const exportWorkshopEvaluationsExcel = () => {
+    const list = evalReport?.workshops || [];
+    if (!list.length) {
+      addFlashMessage('لا توجد بيانات تقييم ورش لتصديرها.', 'warning');
+      return;
+    }
+    const headers = [
+      'اسم الورشة',
+      'التخصص',
+      'عدد التقييمات',
+      'متوسط ميعاد التسليم (من 5)',
+      'متوسط جودة الشغل (من 5)',
+      'متوسط جودة التشطيب (من 5)',
+      'المتوسط العام (من 5)',
+      'إجمالي التشغيلات',
+      'نسبة الالتزام بالمواعيد %',
+      'نسبة العيوب %'
+    ];
+    const rows = list.map((w) => [
+      w.workshop_name,
+      w.category_label || '—',
+      w.evaluations_count,
+      w.evaluations_count > 0 ? w.avg_delivery.toFixed(2) : '—',
+      w.evaluations_count > 0 ? w.avg_work_quality.toFixed(2) : '—',
+      w.evaluations_count > 0 ? w.avg_finishing_quality.toFixed(2) : '—',
+      w.evaluations_count > 0 ? w.overall_avg.toFixed(2) : '—',
+      w.total_dispatches,
+      w.on_time_percent != null ? `${w.on_time_percent.toFixed(1)}%` : '—',
+      w.defect_percent != null ? `${w.defect_percent.toFixed(1)}%` : '—'
+    ]);
+    exportCsv(datedFileName('تقييم_الورش'), headers, rows);
+    logAction('التقارير', `تصدير تقرير تقييم الورش (${list.length} ورشة) إلى Excel`, {
+      actionType: 'export'
+    });
+  };
+
   const printActiveTab = () => {
     if (activeTab === 'models') printModelsReport();
     else if (activeTab === 'production') printProductionReport();
     else if (activeTab === 'quality') printQualityReport();
+    else if (activeTab === 'workshop_evaluations') printWorkshopEvaluationsReport();
     else if (activeTab === 'materials') window.dispatchEvent(new CustomEvent('erp:print-materials-report'));
     else if (activeTab === 'model_consumption') window.dispatchEvent(new CustomEvent('erp:print-model-consumption-report'));
   };
@@ -901,7 +1042,7 @@ export const ReportsView: React.FC = () => {
         <>
           {/* Tabs */}
           <div className="rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm">
-            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-5">
+            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
               {TAB_META.map((tab) => {
                 const Icon = tab.icon;
                 const active = activeTab === tab.key;
@@ -1172,13 +1313,17 @@ export const ReportsView: React.FC = () => {
                     )}
                   </SectionCard>
 
-                  <SectionCard title="المراحل" subtitle="توزيع الموديلات على مراحل الإنتاج">
+                  <SectionCard
+                    title="المراحل"
+                    subtitle="توزيع الموديلات النشطة على كل مراحل الإنتاج بالترتيب (12 مرحلة)"
+                  >
                     {(modelsReport?.stage_breakdown || []).length === 0 ? (
                       <EmptyState title="لا توجد بيانات" icon={<Gauge className="h-5 w-5" />} />
                     ) : (
-                      <div className="space-y-2">
-                        {(modelsReport?.stage_breakdown || []).map((item) => {
+                      <div className="space-y-1.5">
+                        {(modelsReport?.stage_breakdown || []).map((item, idx) => {
                           const active = stageFilter === item.key;
+                          const isZero = item.models_count === 0;
                           return (
                             <button
                               key={item.key}
@@ -1187,15 +1332,36 @@ export const ReportsView: React.FC = () => {
                               className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-xs transition ${
                                 active
                                   ? 'bg-blue-600 text-white shadow-sm ring-2 ring-blue-200'
+                                  : isZero
+                                  ? 'bg-slate-50/70 text-slate-400 hover:bg-slate-100'
                                   : 'bg-slate-50 text-slate-700 hover:bg-slate-100'
                               }`}
                               title={active ? 'إلغاء فلتر المرحلة' : 'تصفية بهذه المرحلة'}
                             >
-                              <span className="flex items-center gap-1.5">
-                                {active && <CheckCircle2 className="h-3.5 w-3.5" />}
-                                {item.label}
+                              <span className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[10px] font-bold ${
+                                    active
+                                      ? 'bg-white/20 text-white'
+                                      : isZero
+                                      ? 'bg-slate-200/70 text-slate-400'
+                                      : 'bg-white text-slate-600 border border-slate-200'
+                                  }`}
+                                >
+                                  {idx + 1}
+                                </span>
+                                {active && <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />}
+                                <span className="truncate font-semibold">{item.label}</span>
                               </span>
-                              <span className={`font-semibold ${active ? 'text-white' : 'text-slate-800'}`}>
+                              <span
+                                className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold tabular-nums ${
+                                  active
+                                    ? 'bg-white/20 text-white'
+                                    : isZero
+                                    ? 'text-slate-400'
+                                    : 'bg-white text-slate-800 border border-slate-200'
+                                }`}
+                              >
                                 {fmt(item.models_count)}
                               </span>
                             </button>
@@ -1791,6 +1957,332 @@ export const ReportsView: React.FC = () => {
           {activeTab === 'materials' && <MaterialsReportSection refreshTick={materialsRefreshTick} />}
           {activeTab === 'model_consumption' && (
             <ModelConsumptionReportSection refreshTick={materialsRefreshTick} />
+          )}
+
+          {activeTab === 'workshop_evaluations' && (
+            <div className="space-y-5">
+              {/* Filters + Excel Export */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        { key: 'all', label: 'كل الورش' },
+                        { key: 'printing', label: 'مطابع وتطريز' },
+                        { key: 'sewing', label: 'مكن وخياطة' },
+                        { key: 'finishing', label: 'تشطيب' }
+                      ] as { key: EvalCategoryFilter; label: string }[]
+                    ).map((cat) => (
+                      <button
+                        key={cat.key}
+                        type="button"
+                        onClick={() => setEvalCategory(cat.key)}
+                        className={`rounded-xl px-3.5 py-2 text-xs font-bold transition cursor-pointer ${
+                          evalCategory === cat.key
+                            ? 'bg-amber-600 text-white shadow-sm'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {cat.label}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={exportWorkshopEvaluationsExcel}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition cursor-pointer"
+                  >
+                    <Download className="h-4 w-4" />
+                    <span>تصدير Excel</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="relative">
+                    <Search className="h-4 w-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3" />
+                    <input
+                      type="text"
+                      value={evalSearch}
+                      onChange={(e) => setEvalSearch(e.target.value)}
+                      placeholder="بحث باسم الورشة..."
+                      className={`${inputClass} ps-9`}
+                    />
+                  </div>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">من تاريخ</span>
+                    <input
+                      type="date"
+                      value={evalFrom}
+                      onChange={(e) => setEvalFrom(e.target.value)}
+                      className={inputClass}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">إلى تاريخ</span>
+                    <input
+                      type="date"
+                      value={evalTo}
+                      onChange={(e) => setEvalTo(e.target.value)}
+                      className={inputClass}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* Summary KPIs */}
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <StatCard
+                  label="إجمالي الورش"
+                  value={fmt(evalReport?.summary.total_workshops)}
+                  hint={`${fmt(evalReport?.summary.rated_workshops)} ورشة مُقيّمة`}
+                  icon={<Factory className="h-4 w-4" />}
+                  tone="slate"
+                />
+                <StatCard
+                  label="إجمالي التقييمات"
+                  value={fmt(evalReport?.summary.total_evaluations)}
+                  hint={
+                    evalReport?.summary.top_workshop
+                      ? `الأفضل: ${evalReport.summary.top_workshop} (${evalReport.summary.top_workshop_score.toFixed(1)}/5)`
+                      : 'تقييمات مسجّلة في الفترة'
+                  }
+                  icon={<Award className="h-4 w-4" />}
+                  tone="indigo"
+                />
+                <StatCard
+                  label="متوسط التقييم العام"
+                  value={
+                    evalReport?.summary.avg_overall
+                      ? `${evalReport.summary.avg_overall.toFixed(2)} / 5`
+                      : '—'
+                  }
+                  hint="متوسط الميعاد + الشغل + التشطيب"
+                  icon={<Star className="h-4 w-4" />}
+                  tone="amber"
+                />
+                <StatCard
+                  label="متوسط الالتزام بالمواعيد"
+                  value={
+                    evalReport?.summary.avg_on_time_percent != null
+                      ? `${evalReport.summary.avg_on_time_percent.toFixed(1)}%`
+                      : '—'
+                  }
+                  hint="نسبة التسليم في الموعد المحدد"
+                  icon={<CheckCircle2 className="h-4 w-4" />}
+                  tone="emerald"
+                />
+              </div>
+
+              {evalError ? (
+                <ErrorBanner message={evalError} onRetry={() => void loadWorkshopEvaluations()} />
+              ) : null}
+
+              <SectionCard
+                title="جدول تقييم وأداء الورش"
+                subtitle="تفصيل الدرجات (من 5 نجوم) ونسبة الالتزام بالمواعيد ونسبة العيوب لكل ورشة"
+              >
+                {evalLoading && !evalReport ? (
+                  <LoadingBlock />
+                ) : !(evalReport?.workshops || []).length ? (
+                  <EmptyState
+                    title="لا توجد ورش مطابقة للبحث"
+                    hint="يمكنك تقييم أي ورشة عند استلام تشغيلاتها من أقسام المطابع أو المكن أو التشطيب."
+                    icon={<Star className="h-5 w-5" />}
+                  />
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-xs text-slate-500">
+                          <th className="py-2.5 w-8" />
+                          <th className="py-2.5 text-right font-semibold">الورشة والتخصص</th>
+                          <th className="py-2.5 text-center font-semibold">ميعاد التسليم</th>
+                          <th className="py-2.5 text-center font-semibold">جودة الشغل</th>
+                          <th className="py-2.5 text-center font-semibold">جودة التشطيب</th>
+                          <th className="py-2.5 text-center font-semibold">المتوسط العام</th>
+                          <th className="py-2.5 text-center font-semibold">إجمالي التشغيلات</th>
+                          <th className="py-2.5 text-center font-semibold">الالتزام %</th>
+                          <th className="py-2.5 text-center font-semibold">نسبة العيوب %</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {(evalReport?.workshops || []).map((row) => {
+                          const rowKey = row.workshop_id || row.workshop_name;
+                          const isExpanded = expandedWorkshopKey === rowKey;
+                          const hasEval = row.evaluations_count > 0;
+                          const renderScoreCell = (score: number) =>
+                            hasEval ? (
+                              <div className="inline-flex flex-col items-center gap-0.5">
+                                <span className="font-bold tabular-nums text-slate-800">
+                                  {score.toFixed(1)}
+                                </span>
+                                <span className="flex items-center gap-0.5">
+                                  {[1, 2, 3, 4, 5].map((s) => (
+                                    <Star
+                                      key={s}
+                                      className={`h-3 w-3 ${
+                                        s <= Math.round(score)
+                                          ? 'fill-amber-400 text-amber-500'
+                                          : 'fill-slate-100 text-slate-300'
+                                      }`}
+                                    />
+                                  ))}
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-400">—</span>
+                            );
+
+                          return (
+                            <React.Fragment key={rowKey}>
+                              <tr
+                                onClick={() =>
+                                  setExpandedWorkshopKey(isExpanded ? null : rowKey)
+                                }
+                                className={`cursor-pointer transition hover:bg-slate-50/80 ${
+                                  isExpanded ? 'bg-amber-50/40' : ''
+                                }`}
+                              >
+                                <td className="py-3 text-center text-slate-400">
+                                  {row.recent_evaluations.length > 0 ? (
+                                    isExpanded ? (
+                                      <ChevronUp className="mx-auto h-4 w-4" />
+                                    ) : (
+                                      <ChevronDown className="mx-auto h-4 w-4" />
+                                    )
+                                  ) : null}
+                                </td>
+                                <td className="py-3 pr-1 text-right">
+                                  <p className="font-bold text-slate-900">{row.workshop_name}</p>
+                                  <div className="mt-0.5 flex flex-wrap gap-1">
+                                    {row.category_label && (
+                                      <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                                        {row.category_label}
+                                      </span>
+                                    )}
+                                    <span className="text-[10px] text-slate-400">
+                                      ({fmt(row.evaluations_count)} تقييم)
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="py-3 text-center">
+                                  {renderScoreCell(row.avg_delivery)}
+                                </td>
+                                <td className="py-3 text-center">
+                                  {renderScoreCell(row.avg_work_quality)}
+                                </td>
+                                <td className="py-3 text-center">
+                                  {renderScoreCell(row.avg_finishing_quality)}
+                                </td>
+                                <td className="py-3 text-center">
+                                  {hasEval ? (
+                                    <span
+                                      className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-black tabular-nums ${
+                                        row.overall_avg >= 4
+                                          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                          : row.overall_avg >= 3
+                                          ? 'border-amber-200 bg-amber-50 text-amber-700'
+                                          : 'border-rose-200 bg-rose-50 text-rose-700'
+                                      }`}
+                                    >
+                                      <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-500" />
+                                      {row.overall_avg.toFixed(2)} / 5
+                                    </span>
+                                  ) : (
+                                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-400">
+                                      لم تُقيّم بعد
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-3 text-center font-semibold tabular-nums text-slate-700">
+                                  {fmt(row.total_dispatches)}
+                                </td>
+                                <td className="py-3 text-center tabular-nums">
+                                  {row.on_time_percent != null ? (
+                                    <span
+                                      className={`font-bold ${
+                                        row.on_time_percent >= 80
+                                          ? 'text-emerald-600'
+                                          : row.on_time_percent >= 60
+                                          ? 'text-amber-600'
+                                          : 'text-rose-600'
+                                      }`}
+                                    >
+                                      {row.on_time_percent.toFixed(1)}%
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">—</span>
+                                  )}
+                                </td>
+                                <td className="py-3 text-center tabular-nums">
+                                  {row.defect_percent != null ? (
+                                    <span
+                                      className={`font-bold ${
+                                        row.defect_percent <= 3
+                                          ? 'text-emerald-600'
+                                          : row.defect_percent <= 8
+                                          ? 'text-amber-600'
+                                          : 'text-rose-600'
+                                      }`}
+                                    >
+                                      {row.defect_percent.toFixed(1)}%
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">—</span>
+                                  )}
+                                </td>
+                              </tr>
+                              {isExpanded && row.recent_evaluations.length > 0 && (
+                                <tr>
+                                  <td colSpan={9} className="bg-slate-50/70 px-4 py-3">
+                                    <p className="text-xs font-bold text-slate-700 mb-2">
+                                      أحدث التقييمات المسجّلة لورشة {row.workshop_name}:
+                                    </p>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                      {row.recent_evaluations.map((ev) => (
+                                        <div
+                                          key={ev.id}
+                                          className="rounded-xl border border-slate-200 bg-white p-2.5 text-xs space-y-1"
+                                        >
+                                          <div className="flex items-center justify-between gap-2">
+                                            <span className="font-bold text-slate-800">
+                                              موديل {ev.model_code || '—'} • {row.category_label}
+                                            </span>
+                                            <span className="font-black text-amber-700 tabular-nums">
+                                              ⭐ {ev.overall_score.toFixed(2)} / 5
+                                            </span>
+                                          </div>
+                                          <div className="flex flex-wrap gap-2 text-[11px] text-slate-500">
+                                            <span>ميعاد: {ev.delivery_timeliness}/5</span>
+                                            <span>شغل: {ev.work_quality}/5</span>
+                                            <span>تشطيب: {ev.finishing_quality}/5</span>
+                                          </div>
+                                          {ev.notes && (
+                                            <p className="text-[11px] text-slate-600 bg-slate-50 rounded-lg px-2 py-1">
+                                              {ev.notes}
+                                            </p>
+                                          )}
+                                          <div className="flex items-center justify-between text-[10px] text-slate-400">
+                                            <span>بواسطة: {ev.evaluated_by || '—'}</span>
+                                            <span className="font-mono">
+                                              {ev.created_at ? ev.created_at.slice(0, 10) : ''}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </SectionCard>
+            </div>
           )}
 
           {targetsOpen && (

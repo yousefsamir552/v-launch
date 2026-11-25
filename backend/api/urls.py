@@ -14,6 +14,7 @@ from .views import (
     HRAttendanceRecordViewSet, HRPenaltyViewSet, HRLoanViewSet,
     HRPayrollSnapshotViewSet,
     PackagingMaterialRuleViewSet, PackagingMaterialTransactionViewSet,
+    WorkshopEvaluationViewSet,
     FactoryResetViewSet,
     pwa_manifest_view,
 )
@@ -56,6 +57,7 @@ router.register(r'hr-payroll-snapshots', HRPayrollSnapshotViewSet, basename='hr-
 router.register(r'hr-reports', HRReportsViewSet, basename='hr-reports')
 router.register(r'packaging-material-rules', PackagingMaterialRuleViewSet, basename='packaging-material-rules')
 router.register(r'packaging-material-transactions', PackagingMaterialTransactionViewSet, basename='packaging-material-transactions')
+router.register(r'workshop-evaluations', WorkshopEvaluationViewSet, basename='workshop-evaluations')
 # تصفير بيانات المصنع الانتقائي (sudo فقط)
 router.register(r'factory-reset', FactoryResetViewSet, basename='factory-reset')
 

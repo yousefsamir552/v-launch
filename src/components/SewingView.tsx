@@ -16,7 +16,8 @@ import {
   Package,
   PackagePlus,
   ClipboardList,
-  Plus
+  Plus,
+  Star
 } from 'lucide-react';
 import { ZoomableImage } from './ZoomableImage';
 import {
@@ -33,6 +34,13 @@ import { SewingPrintModal } from './SewingPrintModal';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { stageBeyond } from '../utils/completedModels';
 import { printAccessoryIssueOrder } from '../utils/printAccessoryIssueOrder';
+import {
+  InlineEvaluationDraft,
+  InlineWorkshopEvaluationBox,
+  WorkshopEvaluationModal,
+  WorkshopEvaluationTarget,
+  createInitialEvaluationDraft
+} from './WorkshopEvaluationModal';
 
 // Per-part card styling (kept independent so every part has its own colour identity).
 const PART_CARD_STYLES: Record<string, { accentColor: string; badgeColor: string; button: string }> = {
@@ -67,6 +75,8 @@ export const SewingView: React.FC = () => {
     dispatchModelToSewing, 
     receiveModelFromSewing,
     workshops,
+    workshopEvaluations,
+    submitWorkshopEvaluation,
     accessories,
     accessoryItems,
     recordAccessoryTransaction,
@@ -104,6 +114,10 @@ export const SewingView: React.FC = () => {
   const [receivingDispatch, setReceivingDispatch] = useState<SewingDispatch | null>(null);
   const [receiveNotes, setReceiveNotes] = useState('');
   const [receiveQty, setReceiveQty] = useState<number>(0);
+  const [evalDraft, setEvalDraft] = useState<InlineEvaluationDraft>(() =>
+    createInitialEvaluationDraft()
+  );
+  const [evalTarget, setEvalTarget] = useState<WorkshopEvaluationTarget | null>(null);
 
   // صرف إكسسوار إضافي (بدل فاقد/تالف أو زيادة احتياج) لورشة الخياطة.
   const [extraAccessoryDispatch, setExtraAccessoryDispatch] = useState<SewingDispatch | null>(null);
@@ -351,9 +365,10 @@ export const SewingView: React.FC = () => {
     setReceiveNotes('');
     // الكمية الافتراضية = كل المتبقي بالورشة (استلام كامل)، ويمكن تعديلها لدفعة جزئية.
     setReceiveQty(getRemainingPieces(dispatch));
+    setEvalDraft(createInitialEvaluationDraft(dispatch.expected_delivery_date));
   };
 
-  const confirmReceiveFromSewing = (e: React.FormEvent) => {
+  const confirmReceiveFromSewing = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!receivingDispatch) return;
     const remaining = getRemainingPieces(receivingDispatch);
@@ -385,6 +400,20 @@ export const SewingView: React.FC = () => {
       'قسم المكن',
       `استلام دفعة (${qty} قطعة) من تشغيلة خياطة [${label}] موديل ${code} بورشة ${receivingDispatch.workshop_name}${finalNotes ? ` — ملاحظات: ${finalNotes}` : ''}`
     );
+    if (evalDraft.enabled && receivingDispatch.workshop_name) {
+      const matchedW = workshops.find((w) => w.name === receivingDispatch.workshop_name);
+      await submitWorkshopEvaluation({
+        workshopId: matchedW?.id,
+        workshopName: receivingDispatch.workshop_name,
+        stage: 'sewing',
+        modelId: receivingDispatch.model_id,
+        sewingDispatchId: receivingDispatch.id,
+        deliveryTimeliness: evalDraft.deliveryTimeliness,
+        workQuality: evalDraft.workQuality,
+        finishingQuality: evalDraft.finishingQuality,
+        notes: evalDraft.notes
+      });
+    }
     setReceivingDispatch(null);
     setReceiveNotes('');
     setReceiveQty(0);
@@ -1086,6 +1115,40 @@ export const SewingView: React.FC = () => {
                               <Printer className="w-4 h-4" />
                             </button>
                           )}
+
+                          {disp.workshop_name && (() => {
+                            const existingEv = workshopEvaluations.find(
+                              (ev) => ev.sewing_dispatch_id === disp.id && ev.stage === 'sewing'
+                            ) || null;
+                            const matchedW = workshops.find((w) => w.name === disp.workshop_name);
+                            return (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEvalTarget({
+                                    workshopId: matchedW?.id,
+                                    workshopName: disp.workshop_name,
+                                    stage: 'sewing',
+                                    modelId: disp.model_id,
+                                    modelCode: m?.model_code || '—',
+                                    sewingDispatchId: disp.id,
+                                    expectedDate: disp.expected_delivery_date,
+                                    actualDate: disp.received_at,
+                                    existing: existingEv
+                                  })
+                                }
+                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl font-bold text-xs border transition cursor-pointer whitespace-nowrap ${
+                                  existingEv
+                                    ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200'
+                                    : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                                }`}
+                                title={existingEv ? 'تعديل تقييم ورشة المكن' : 'تقييم ورشة المكن'}
+                              >
+                                <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+                                <span>{existingEv ? `${existingEv.overall_score}/5` : 'تقييم'}</span>
+                              </button>
+                            );
+                          })()}
                         </div>
                       </td>
                     </tr>
@@ -1515,6 +1578,15 @@ export const SewingView: React.FC = () => {
                 )}
               </div>
 
+              {receivingDispatch.workshop_name && (
+                <InlineWorkshopEvaluationBox
+                  workshopName={receivingDispatch.workshop_name}
+                  expectedDate={receivingDispatch.expected_delivery_date}
+                  draft={evalDraft}
+                  onChange={setEvalDraft}
+                />
+              )}
+
               <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
                 <button
                   type="button"
@@ -1657,6 +1729,9 @@ export const SewingView: React.FC = () => {
           onClose={() => setPrintTarget(null)}
         />
       )}
+
+      {/* نافذة تقييم ورشة المكن */}
+      <WorkshopEvaluationModal target={evalTarget} onClose={() => setEvalTarget(null)} />
     </div>
   );
 };

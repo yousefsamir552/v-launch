@@ -143,6 +143,7 @@ STATE_SECTION_KEYS = {
     'packagingRequirements': ('assembly_packaging', 'tracking', 'reports', 'production_wh'),
     'finishingRecords': ('assembly_packaging', 'tracking', 'reports', 'production_wh'),
     'assemblyStageRecords': ('assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'workshopEvaluations': ('printing', 'sewing', 'assembly_packaging', 'tracking', 'reports'),
     'packagingMaterialRules': ('assembly_packaging', 'production_wh', 'reports'),
     'packagingMaterialTransactions': ('assembly_packaging', 'production_wh', 'reports'),
     'fabrics': ('fabric', 'design', 'cutting', 'qc', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
@@ -327,6 +328,12 @@ class StateViewSet(viewsets.ViewSet):
             'packagingRequirements': PackagingRequirementSerializer(PackagingRequirement.objects.select_related('model').filter(model__is_deleted=False), many=True).data,
             'finishingRecords': FinishingRecordSerializer(FinishingRecord.objects.select_related('model').filter(model__is_deleted=False), many=True, context=req_ctx).data,
             'assemblyStageRecords': AssemblyStageRecordSerializer(AssemblyStageRecord.objects.select_related('model').filter(model__is_deleted=False), many=True, context=req_ctx).data,
+            'workshopEvaluations': WorkshopEvaluationSerializer(
+                WorkshopEvaluation.objects.select_related(
+                    'workshop', 'model', 'print_dispatch', 'sewing_dispatch', 'finishing_record'
+                ).filter(model__is_deleted=False),
+                many=True, context=req_ctx
+            ).data,
             'packagingMaterialRules': PackagingMaterialRuleSerializer(
                 PackagingMaterialRule.objects.prefetch_related(
                     'size_rules', 'size_rules__rule', 'size_rules__supplier',

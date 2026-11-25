@@ -6,6 +6,7 @@ from .models import (
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
+    WorkshopEvaluation,
     PackagingMaterialRule, PackagingMaterialSizeRule, PackagingMaterialTransaction,
     HRJobTitle, HREmployee, HRAttendanceSettings,
     HRAttendanceRecord, HRPenalty, HRLoan, HRPayrollSnapshot
@@ -130,6 +131,13 @@ class PrintDispatchAdmin(admin.ModelAdmin):
 @admin.register(SewingDispatch)
 class SewingDispatchAdmin(admin.ModelAdmin):
     list_display = ('model', 'workshop_name', 'piece_type', 'pieces_count', 'status')
+
+
+@admin.register(WorkshopEvaluation)
+class WorkshopEvaluationAdmin(admin.ModelAdmin):
+    list_display = ('workshop_name', 'stage', 'model', 'delivery_timeliness', 'work_quality', 'finishing_quality', 'evaluated_by', 'created_at')
+    list_filter = ('stage',)
+    search_fields = ('workshop_name', 'model__model_code', 'evaluated_by')
 
 
 @admin.register(InternalMessage)

@@ -24,7 +24,8 @@ import {
   Users,
   Boxes,
   Scale,
-  Wallet
+  Wallet,
+  FileText
 } from 'lucide-react';
 import { InternalMessagingModal } from './InternalMessagingModal';
 import { SNOOZE_OPTIONS } from '../types';
@@ -125,6 +126,13 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
       icon: GitCommit,
       color: 'text-cyan-600',
       isVisible: hasPermission('models_tracking') || isSudo
+    },
+    {
+      id: 'unified_model_cards',
+      label: 'بطاقة الموديل الشاملة',
+      icon: FileText,
+      color: 'text-violet-600',
+      isVisible: hasPermission('models_tracking') || hasPermission('reports') || isSudo
     },
     {
       id: 'reports',

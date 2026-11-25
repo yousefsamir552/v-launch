@@ -834,16 +834,215 @@ def receive_ironing_service(record_id, actual_exit_date=None, notes=None,
     return record
 
 
+class PackagingStockShortageError(ValueError):
+    """خطأ يُرفع عند عدم كفاية رصيد خامات التغليف لدخول مرحلة التعبئة والتغليف."""
+    def __init__(self, message, shortages=None):
+        super().__init__(message)
+        self.shortages = shortages or []
+
+
+def _model_sets_count(model) -> int:
+    """عدد الأطقم الفعلي للموديل (للتعبئة والتغليف والدَست)."""
+    summary_info = model_part_summary(model)
+    return (
+        int(summary_info.get('finished_good_sets') or 0)
+        or int(summary_info.get('completed_sets') or 0)
+        or int(getattr(model, 'total_cut_pieces', 0) or 0)
+        or int(getattr(model, 'target_cut_quantity', 0) or 0)
+        or 0
+    )
+
+
+def _model_size_group_keys(model) -> set:
+    """كل المفاتيح الممكنة لفئة مقاس الموديل (client_id و pk) لضمان التطابق الدقيق."""
+    raw = str(getattr(model, 'size_category_id', '') or '').strip()
+    keys = set()
+    if not raw:
+        return keys
+    keys.add(raw)
+    size_obj = resolve_by_id(SizeDef, raw)
+    if size_obj is not None:
+        keys.add(str(size_obj.pk))
+        if size_obj.client_id:
+            keys.add(str(size_obj.client_id))
+    return keys
+
+
+def calculate_model_packaging_materials(model, sets_count=None):
+    """
+    يحسب خامات التعبئة والتغليف المطلوبة لموديل محدد بناءً على فئة مقاساته
+    والقواعد المفعّلة (PackagingMaterialRule / PackagingMaterialSizeRule) وعدد الأطقم الفعلي.
+    """
+    qty_sets = _model_sets_count(model) if sets_count is None else max(0, int(sets_count or 0))
+    if qty_sets <= 0:
+        return []
+
+    size_keys = _model_size_group_keys(model)
+    requirements = []
+
+    rules = (
+        PackagingMaterialRule.objects.filter(is_active=True)
+        .prefetch_related('size_rules')
+        .order_by('id')
+    )
+    for rule in rules:
+        size_rules = list(rule.size_rules.all())
+        if not size_rules:
+            continue
+
+        applicable_groups = [
+            str(g).strip()
+            for g in (rule.applicable_size_groups if isinstance(rule.applicable_size_groups, list) else [])
+            if str(g).strip()
+        ]
+        # نطابق أولاً صف المقاس المخصص لفئة مقاس الموديل، وإلا الصف العام (size_group_id='').
+        matched_rows = [
+            row for row in size_rules
+            if (row.size_group_id or '').strip() and (row.size_group_id or '').strip() in size_keys
+        ]
+        if not matched_rows:
+            general_rows = [row for row in size_rules if not (row.size_group_id or '').strip()]
+            if general_rows:
+                if not applicable_groups or (size_keys and any(k in applicable_groups for k in size_keys)):
+                    matched_rows = general_rows
+
+        for row in matched_rows:
+            consumption = float(row.consumption_per_piece or 0)
+            if consumption <= 0:
+                continue
+            required_qty = round(qty_sets * consumption, 3)
+            if required_qty <= 0:
+                continue
+            requirements.append({
+                'size_rule': row,
+                'size_rule_pk': row.pk,
+                'rule': rule,
+                'material_name': rule.label,
+                'unit': rule.unit or 'قطعة',
+                'size_group_name': row.size_group_name or 'كل المقاسات',
+                'dimensions_spec': row.dimensions_spec or '',
+                'consumption_per_piece': consumption,
+                'sets_count': qty_sets,
+                'required': required_qty,
+            })
+
+    return requirements
+
+
+def _validate_and_deduct_packaging_materials(model, sets_count, now_str):
+    """
+    داخل transaction.atomic(): يقفل صفوف أرصدة خامات التغليف المطلوبة بـ select_for_update()،
+    يرفض العملية بخطأ عربي تفصيلي عند وجود أي عجز، وإلا يخصم تلقائياً ويسجّل الحركات.
+    """
+    required_items = calculate_model_packaging_materials(model, sets_count=sets_count)
+    if not required_items:
+        return []
+
+    pks = sorted({item['size_rule_pk'] for item in required_items})
+    locked_map = {
+        sr.pk: sr
+        for sr in PackagingMaterialSizeRule.objects.select_for_update()
+        .select_related('rule')
+        .filter(pk__in=pks)
+        .order_by('pk')
+    }
+
+    # تجميع المطلوب لكل صف (تحسباً لتكرار صف واحد)
+    total_needed_by_pk = {}
+    meta_by_pk = {}
+    for item in required_items:
+        pk = item['size_rule_pk']
+        total_needed_by_pk[pk] = round(total_needed_by_pk.get(pk, 0.0) + item['required'], 3)
+        meta_by_pk[pk] = item
+
+    shortages = []
+    for pk in pks:
+        sr = locked_map.get(pk)
+        if sr is None:
+            continue
+        meta = meta_by_pk[pk]
+        required = total_needed_by_pk[pk]
+        available = round(float(sr.current_stock or 0), 3)
+        if available + 1e-6 < required:
+            shortage_val = round(max(0.0, required - available), 3)
+            shortages.append({
+                'size_rule_id': sr.client_id or str(sr.pk),
+                'material_name': meta['material_name'],
+                'size_group_name': meta['size_group_name'],
+                'dimensions_spec': meta['dimensions_spec'],
+                'unit': meta['unit'],
+                'required': required,
+                'available': available,
+                'shortage': shortage_val,
+            })
+
+    if shortages:
+        lines = [
+            (
+                f"• {s['material_name']}"
+                + (f" ({s['size_group_name']})" if s['size_group_name'] else '')
+                + f": المطلوب {s['required']:g} {s['unit']} — المتاح {s['available']:g} {s['unit']}"
+                + f" — العجز {s['shortage']:g} {s['unit']}"
+            )
+            for s in shortages
+        ]
+        message = (
+            f"لا يمكن إدخال الموديل ({model.model_code}) لمرحلة التعبئة والتغليف بسبب نقص رصيد خامات التغليف:\n"
+            + "\n".join(lines)
+        )
+        raise PackagingStockShortageError(message, shortages=shortages)
+
+    deducted_details = []
+    for pk in pks:
+        sr = locked_map.get(pk)
+        if sr is None:
+            continue
+        meta = meta_by_pk[pk]
+        required = total_needed_by_pk[pk]
+        old_stock = round(float(sr.current_stock or 0), 3)
+        new_stock = round(max(0.0, old_stock - required), 3)
+        sr.current_stock = new_stock
+        sr.save(update_fields=['current_stock', 'updated_at'])
+
+        PackagingMaterialTransaction.objects.create(
+            size_rule=sr,
+            operation='deduct',
+            amount=required,
+            price_per_unit=sr.price_per_unit or 0,
+            model_code_ref=model.model_code,
+            notes=(
+                f"خصم تلقائي عند دخول التعبئة والتغليف — موديل {model.model_code} "
+                f"({sets_count} طقم × {meta['consumption_per_piece']:g})"
+            ),
+            timestamp=now_str,
+        )
+        deducted_details.append({
+            'size_rule_id': sr.client_id or str(sr.pk),
+            'material_name': meta['material_name'],
+            'size_group_name': meta['size_group_name'],
+            'dimensions_spec': meta['dimensions_spec'],
+            'unit': meta['unit'],
+            'amount': required,
+            'old_stock': old_stock,
+            'new_stock': new_stock,
+        })
+
+    return deducted_details
+
+
 def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_date=None,
                                  notes=None, vendor_name=None, part_type=None,
                                  user_name='مسؤول الأسمبلي', cost_per_piece=0.0, total_cost=None,
-                                 workshop=None):
+                                 workshop=None, completed_pieces=None, expected_pieces=None):
     """
     Starts (or updates) one assembly stage (ironing / packaging / dest).
 
     * ironing   → delegates to start_ironing_service (tracked per garment part).
     * packaging → model-level, allowed only once every part reached packaging.
+                  Enforces strict packaging-material stock gate and auto-deducts
+                  required materials once (guarded by ``materials_deducted``).
     * dest      → model-level, gated by the packaging requirements.
+                  Tracks expected_pieces vs completed_pieces and auto-computes shortage.
     """
     if not model:
         raise ValueError('الموديل غير موجود')
@@ -896,140 +1095,228 @@ def start_assembly_stage_service(model, stage, entry_date=None, expected_exit_da
     entry = _parse_date_value(entry_date) or date.today()
     expected = _parse_date_value(expected_exit_date)
     now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-    summary_info = model_part_summary(model)
-    stage_pieces = (
-        int(summary_info.get('finished_good_sets') or 0)
-        or int(summary_info.get('completed_sets') or 0)
-        or int(getattr(model, 'total_cut_pieces', 0) or 0)
-        or int(getattr(model, 'target_cut_quantity', 0) or 0)
-    )
-    unit_cost, total_stage_cost = resolve_cost_values(
-        cost_per_piece, total_cost, pieces_count=stage_pieces
-    )
+
+    parsed_completed = None
+    if completed_pieces not in (None, ''):
+        try:
+            parsed_completed = max(0, int(float(completed_pieces)))
+        except (TypeError, ValueError):
+            raise ValueError('العدد المنفذ فعلياً يجب أن يكون رقماً صحيحاً غير سالب')
+
+    parsed_expected_override = None
+    if expected_pieces not in (None, ''):
+        try:
+            parsed_expected_override = max(0, int(float(expected_pieces)))
+        except (TypeError, ValueError):
+            parsed_expected_override = None
 
     # اربط الورشة المسجلة بالاسم إن لم تُمرَّر صريحاً، مع الإبقاء على الاسم النصي كما هو.
     if workshop is None and clean_vendor:
         workshop = Workshop.objects.filter(name__iexact=clean_vendor).first()
 
-    record, created = AssemblyStageRecord.objects.get_or_create(
-        model=model,
-        stage=stage,
-        part_type='',
-        defaults={
-            'entry_date': entry,
-            'expected_exit_date': expected,
-            'vendor_name': clean_vendor,
-            'workshop': workshop,
-            'notes': clean_notes or None,
-            'cost_per_piece': unit_cost,
-            'total_cost': total_stage_cost,
-        },
-    )
-    if not created:
-        record.entry_date = record.entry_date or entry
-        if expected:
-            record.expected_exit_date = expected
+    deducted_now = []
+    with transaction.atomic():
+        model = ModelItem.objects.select_for_update().get(pk=model.pk)
+        stage_pieces = _model_sets_count(model)
+        unit_cost, total_stage_cost = resolve_cost_values(
+            cost_per_piece, total_cost, pieces_count=stage_pieces
+        )
+
+        record = (
+            AssemblyStageRecord.objects.select_for_update()
+            .filter(model=model, stage=stage, part_type='')
+            .first()
+        )
+        created = record is None
+
+        # بوابة فحص وخصم خامات التعبئة والتغليف تلقائياً (مرة واحدة فقط لمنع الخصم المزدوج).
+        if stage == 'packaging' and (created or not record.materials_deducted):
+            deducted_now = _validate_and_deduct_packaging_materials(
+                model, sets_count=stage_pieces, now_str=now_str
+            )
+
+        if created:
+            dest_expected = (
+                parsed_expected_override
+                if parsed_expected_override is not None
+                else (stage_pieces if stage == 'dest' else 0)
+            )
+            record = AssemblyStageRecord.objects.create(
+                model=model,
+                stage=stage,
+                part_type='',
+                entry_date=entry,
+                expected_exit_date=expected,
+                vendor_name=clean_vendor,
+                workshop=workshop,
+                notes=clean_notes or None,
+                cost_per_piece=unit_cost,
+                total_cost=total_stage_cost,
+                materials_deducted=(stage == 'packaging'),
+                materials_deducted_details=deducted_now if stage == 'packaging' else [],
+                expected_pieces=dest_expected if stage == 'dest' else 0,
+                completed_pieces=parsed_completed if stage == 'dest' else None,
+            )
+        else:
+            record.entry_date = record.entry_date or entry
+            if expected:
+                record.expected_exit_date = expected
+            if clean_vendor:
+                record.vendor_name = clean_vendor
+            if workshop is not None:
+                record.workshop = workshop
+            if clean_notes:
+                record.notes = clean_notes
+            if unit_cost or total_stage_cost:
+                record.cost_per_piece = unit_cost
+                record.total_cost = total_stage_cost
+            if stage == 'packaging' and not record.materials_deducted:
+                record.materials_deducted = True
+                record.materials_deducted_details = deducted_now
+            if stage == 'dest':
+                if parsed_expected_override is not None:
+                    record.expected_pieces = parsed_expected_override
+                elif not record.expected_pieces:
+                    record.expected_pieces = stage_pieces
+                if parsed_completed is not None:
+                    record.completed_pieces = parsed_completed
+            record.save()
+
+        ensure_part_stages(model)
+        sync_model_status_from_part_stages(model)
+
+        label = ASSEMBLY_STAGE_LABELS.get(stage, stage)
+        tl_notes = f"تم تسجيل دخول الموديل إلى {label} بتاريخ {entry.isoformat()}"
         if clean_vendor:
-            record.vendor_name = clean_vendor
-        if workshop is not None:
-            record.workshop = workshop
+            tl_notes += f" | الجهة: {clean_vendor}"
+        if expected:
+            tl_notes += f" - الخروج المتوقع: {expected.isoformat()}"
+        if stage == 'packaging' and deducted_now:
+            deducted_summary = '، '.join(
+                f"{item['material_name']} ({item['amount']:g} {item['unit']})"
+                for item in deducted_now
+            )
+            tl_notes += f" | خصم خامات التغليف تلقائياً: {deducted_summary}"
+        if stage == 'dest' and record.completed_pieces is not None:
+            tl_notes += (
+                f" | المتوقع: {record.expected_pieces} — المنفذ: {record.completed_pieces}"
+                f" — العجز: {record.shortage_pieces}"
+            )
         if clean_notes:
-            record.notes = clean_notes
-        if unit_cost or total_stage_cost:
-            record.cost_per_piece = unit_cost
-            record.total_cost = total_stage_cost
-        record.save()
+            tl_notes += f" | ملاحظات: {clean_notes}"
 
-    ensure_part_stages(model)
-    sync_model_status_from_part_stages(model)
-
-    label = ASSEMBLY_STAGE_LABELS.get(stage, stage)
-    tl_notes = f"تم تسجيل دخول الموديل إلى {label} بتاريخ {entry.isoformat()}"
-    if clean_vendor:
-        tl_notes += f" | الجهة: {clean_vendor}"
-    if expected:
-        tl_notes += f" - الخروج المتوقع: {expected.isoformat()}"
-    if clean_notes:
-        tl_notes += f" | ملاحظات: {clean_notes}"
-
-    ModelTimeline.objects.create(
-        model=model,
-        stage=label,
-        title=f'دخول {label}',
-        notes=tl_notes,
-        user=user_name,
-        timestamp_str=now_str,
-        details={
-            'phase_type': 'assembly_stage_start',
-            'record_id': record.client_id or str(record.id),
-            'stage': stage,
-            'stage_label': label,
-            'entry_date': entry.isoformat(),
-            'expected_exit_date': expected.isoformat() if expected else '',
-            'vendor_name': clean_vendor,
-            'worker_notes': clean_notes,
-            'operator_name': user_name,
-            'cost_per_piece': unit_cost,
-            'total_cost': total_stage_cost,
-        },
-    )
+        ModelTimeline.objects.create(
+            model=model,
+            stage=label,
+            title=f'دخول {label}',
+            notes=tl_notes,
+            user=user_name,
+            timestamp_str=now_str,
+            details={
+                'phase_type': 'assembly_stage_start',
+                'record_id': record.client_id or str(record.id),
+                'stage': stage,
+                'stage_label': label,
+                'entry_date': entry.isoformat(),
+                'expected_exit_date': expected.isoformat() if expected else '',
+                'vendor_name': clean_vendor,
+                'worker_notes': clean_notes,
+                'operator_name': user_name,
+                'cost_per_piece': unit_cost,
+                'total_cost': total_stage_cost,
+                'materials_deducted': bool(record.materials_deducted),
+                'materials_deducted_details': deducted_now,
+                'expected_pieces': int(record.expected_pieces or 0),
+                'completed_pieces': record.completed_pieces,
+                'shortage_pieces': int(record.shortage_pieces or 0),
+            },
+        )
+    # نُرفق الخامات التي خُصمت في هذه العملية فقط لتسجيلها في AuditLog من الـ View.
+    record._deducted_now = deducted_now
     return record
 
 
 def receive_assembly_stage_service(record_id, actual_exit_date=None, notes=None,
-                                   user_name='مسؤول الأسمبلي'):
+                                   user_name='مسؤول الأسمبلي', completed_pieces=None):
     """
     Completes an assembly stage record and promotes the model to the next stage
     (dest → مخزن الإنتاج التام).
     """
-    record = resolve_by_id(AssemblyStageRecord, record_id)
-    if not record:
+    target = resolve_by_id(AssemblyStageRecord, record_id)
+    if not target:
         raise ValueError('سجل مرحلة الأسمبلي غير موجود')
 
     actual = _parse_date_value(actual_exit_date) or date.today()
     clean_notes = (notes or '').strip()
-    record.actual_exit_date = actual
-    if clean_notes:
-        record.notes = _append_receive_note(record.notes, clean_notes)
-    record.save()
 
-    model = record.model
-    # Advance the per-part stages: ironing → that part to packaging,
-    # packaging → all parts to dest, dest → all parts completed.
-    if record.stage == 'packaging':
-        set_all_part_stages(model, 'dest')
-    elif record.stage == 'dest':
-        set_all_part_stages(model, 'completed')
-    else:
-        ensure_part_stages(model)
-    next_status = sync_model_status_from_part_stages(model)
+    parsed_completed = None
+    if completed_pieces not in (None, ''):
+        try:
+            parsed_completed = max(0, int(float(completed_pieces)))
+        except (TypeError, ValueError):
+            raise ValueError('العدد المنفذ فعلياً يجب أن يكون رقماً صحيحاً غير سالب')
 
-    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-    label = record.stage_label
-    tl_notes = f"تم استلام الموديل من {label} بتاريخ {actual.isoformat()}"
-    if next_status:
-        tl_notes += f" - الحالة الجديدة: {next_status}"
-    if clean_notes:
-        tl_notes += f" | ملاحظات: {clean_notes}"
+    with transaction.atomic():
+        record = AssemblyStageRecord.objects.select_for_update().select_related('model').get(pk=target.pk)
+        model = ModelItem.objects.select_for_update().get(pk=record.model_id)
 
-    ModelTimeline.objects.create(
-        model=model,
-        stage=label,
-        title=f'استلام من {label}',
-        notes=tl_notes,
-        user=user_name,
-        timestamp_str=now_str,
-        details={
-            'phase_type': 'assembly_stage_receive',
-            'record_id': record.client_id or str(record.id),
-            'stage': record.stage,
-            'stage_label': label,
-            'entry_date': record.entry_date.isoformat() if record.entry_date else '',
-            'expected_exit_date': record.expected_exit_date.isoformat() if record.expected_exit_date else '',
-            'actual_exit_date': actual.isoformat(),
-            'next_status': next_status or '',
-            'worker_notes': clean_notes,
-            'operator_name': user_name,
-        },
-    )
+        record.actual_exit_date = actual
+        if clean_notes:
+            record.notes = _append_receive_note(record.notes, clean_notes)
+
+        if record.stage == 'dest':
+            if not record.expected_pieces:
+                record.expected_pieces = _model_sets_count(model)
+            if parsed_completed is not None:
+                record.completed_pieces = parsed_completed
+            elif record.completed_pieces is None:
+                record.completed_pieces = int(record.expected_pieces or 0)
+        record.save()
+
+        # Advance the per-part stages: ironing → that part to packaging,
+        # packaging → all parts to dest, dest → all parts completed.
+        if record.stage == 'packaging':
+            set_all_part_stages(model, 'dest')
+        elif record.stage == 'dest':
+            set_all_part_stages(model, 'completed')
+        else:
+            ensure_part_stages(model)
+        next_status = sync_model_status_from_part_stages(model)
+
+        now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+        label = record.stage_label
+        tl_notes = f"تم استلام الموديل من {label} بتاريخ {actual.isoformat()}"
+        if record.stage == 'dest':
+            tl_notes += (
+                f" | المتوقع: {record.expected_pieces} — المنفذ فعلياً: {record.completed_pieces}"
+                f" — العجز: {record.shortage_pieces}"
+            )
+        if next_status:
+            tl_notes += f" - الحالة الجديدة: {next_status}"
+        if clean_notes:
+            tl_notes += f" | ملاحظات: {clean_notes}"
+
+        ModelTimeline.objects.create(
+            model=model,
+            stage=label,
+            title=f'استلام من {label}',
+            notes=tl_notes,
+            user=user_name,
+            timestamp_str=now_str,
+            details={
+                'phase_type': 'assembly_stage_receive',
+                'record_id': record.client_id or str(record.id),
+                'stage': record.stage,
+                'stage_label': label,
+                'entry_date': record.entry_date.isoformat() if record.entry_date else '',
+                'expected_exit_date': record.expected_exit_date.isoformat() if record.expected_exit_date else '',
+                'actual_exit_date': actual.isoformat(),
+                'expected_pieces': int(record.expected_pieces or 0),
+                'completed_pieces': record.completed_pieces,
+                'shortage_pieces': int(record.shortage_pieces or 0),
+                'next_status': next_status or '',
+                'worker_notes': clean_notes,
+                'operator_name': user_name,
+            },
+        )
     return record

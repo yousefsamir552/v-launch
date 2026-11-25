@@ -1083,3 +1083,211 @@ class PackagingMaterialTransactionViewSet(BasePermViewSet):
         }, status=status.HTTP_201_CREATED)
 
 
+class WorkshopEvaluationViewSet(BasePermViewSet):
+    """
+    إدارة تقييمات الورش والمطابع (1–5 نجوم: ميعاد التسليم، جودة الشغل، جودة التشطيب).
+    يدعم التقييم عند استلام إرسالية المطبعة أو المكن أو التشطيب أو من زر التقييم المباشر،
+    ويحدث التقييم تلقائياً إن كان مسجلاً لنفس الإرسالية.
+    """
+    queryset = WorkshopEvaluation.objects.select_related(
+        'workshop', 'model', 'print_dispatch', 'sewing_dispatch', 'finishing_record'
+    ).filter(model__is_deleted=False)
+    serializer_class = WorkshopEvaluationSerializer
+
+    READ_PERMS = (
+        'printing_view', 'printing_edit',
+        'sewing_view', 'sewing_edit',
+        'assembly_packaging_view', 'assembly_packaging_edit',
+        'reports_view', 'reports_edit', 'can_reports',
+        'models_tracking_view', 'models_tracking_edit',
+    )
+    WRITE_PERMS = (
+        'printing_edit', 'sewing_edit', 'assembly_packaging_edit',
+        'reports_edit', 'manage_permissions',
+    )
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        profile = getattr(request, 'user_profile', None)
+        if is_sudo_account(profile):
+            return
+        if profile is None:
+            raise PermissionDenied('مطلوب تسجيل الدخول')
+        if request.method in permissions.SAFE_METHODS:
+            if not any(profile.has_perm(p) for p in self.READ_PERMS):
+                raise PermissionDenied('ليس لديك صلاحية عرض تقييمات الورش')
+        else:
+            if not any(profile.has_perm(p) for p in self.WRITE_PERMS):
+                raise PermissionDenied('ليس لديك صلاحية تسجيل أو تعديل تقييمات الورش')
+
+    def _parse_rating(self, data, *keys, default=5):
+        raw = None
+        for k in keys:
+            if k in data and data.get(k) not in (None, ''):
+                raw = data.get(k)
+                break
+        if raw is None:
+            return default
+        try:
+            val = int(round(float(raw)))
+        except (TypeError, ValueError):
+            raise ValueError('التقييم يجب أن يكون رقماً صحيحاً بين 1 و 5')
+        if val < 1 or val > 5:
+            raise ValueError('التقييم يجب أن يكون بين 1 و 5 نجوم')
+        return val
+
+    def create(self, request, *args, **kwargs):
+        data = request.data or {}
+        profile = getattr(request, 'user_profile', None)
+
+        print_dispatch = resolve_by_id(
+            PrintDispatch, data.get('print_dispatch_id') or data.get('printDispatchId')
+        )
+        sewing_dispatch = resolve_by_id(
+            SewingDispatch, data.get('sewing_dispatch_id') or data.get('sewingDispatchId')
+        )
+        finishing_record = resolve_by_id(
+            FinishingRecord, data.get('finishing_record_id') or data.get('finishingRecordId')
+        )
+
+        model = resolve_by_id(ModelItem, data.get('model_id') or data.get('modelId'))
+        if not model:
+            if print_dispatch:
+                model = print_dispatch.model
+            elif sewing_dispatch:
+                model = sewing_dispatch.model
+            elif finishing_record:
+                model = finishing_record.model
+        if not model:
+            return Response({'detail': 'الموديل مطلوب لتسجيل التقييم'}, status=status.HTTP_400_BAD_REQUEST)
+
+        stage = str(data.get('stage') or '').strip().lower()
+        if not stage:
+            if print_dispatch:
+                stage = 'printing'
+            elif finishing_record:
+                stage = 'finishing'
+            else:
+                stage = 'sewing'
+        if stage not in WORKSHOP_EVALUATION_STAGE_KEYS:
+            return Response(
+                {'detail': 'فئة التقييم غير صحيحة (المتاح: printing / sewing / finishing)'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        workshop_name = str(
+            data.get('workshop_name')
+            or data.get('workshopName')
+            or (print_dispatch.print_house if print_dispatch else '')
+            or (sewing_dispatch.workshop_name if sewing_dispatch else '')
+            or (finishing_record.vendor_name if finishing_record else '')
+            or ''
+        ).strip()
+        workshop = resolve_workshop_link(data, workshop_name)
+        if not workshop:
+            if print_dispatch and print_dispatch.workshop_id:
+                workshop = print_dispatch.workshop
+            elif sewing_dispatch and sewing_dispatch.workshop_id:
+                workshop = sewing_dispatch.workshop
+            elif finishing_record and finishing_record.workshop_id:
+                workshop = finishing_record.workshop
+        if not workshop_name and workshop:
+            workshop_name = workshop.name
+        if not workshop_name:
+            return Response({'detail': 'اسم الورشة أو المطبعة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            delivery_timeliness = self._parse_rating(data, 'delivery_timeliness', 'deliveryTimeliness')
+            work_quality = self._parse_rating(data, 'work_quality', 'workQuality')
+            finishing_quality = self._parse_rating(data, 'finishing_quality', 'finishingQuality')
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        notes = str(data.get('notes') or '').strip()
+        evaluated_by = (
+            str(data.get('evaluated_by') or data.get('evaluatedBy') or '').strip()
+            or (profile.real_name if profile and not is_sudo_account(profile) else '')
+            or 'مسؤول التشغيل'
+        )
+
+        # Upsert عند التقييم لنفس الإرسالية حتى لا تتكرر التقييمات.
+        existing = None
+        if print_dispatch:
+            existing = WorkshopEvaluation.objects.filter(print_dispatch=print_dispatch).first()
+        elif sewing_dispatch:
+            existing = WorkshopEvaluation.objects.filter(sewing_dispatch=sewing_dispatch).first()
+        elif finishing_record:
+            existing = WorkshopEvaluation.objects.filter(finishing_record=finishing_record).first()
+
+        if existing:
+            existing.workshop = workshop
+            existing.workshop_name = workshop_name
+            existing.stage = stage
+            existing.delivery_timeliness = delivery_timeliness
+            existing.work_quality = work_quality
+            existing.finishing_quality = finishing_quality
+            existing.notes = notes
+            existing.evaluated_by = evaluated_by
+            existing.save()
+            obj = existing
+            http_status = status.HTTP_200_OK
+        else:
+            obj = WorkshopEvaluation.objects.create(
+                client_id=data.get('id') or data.get('client_id'),
+                workshop=workshop,
+                workshop_name=workshop_name,
+                stage=stage,
+                model=model,
+                print_dispatch=print_dispatch,
+                sewing_dispatch=sewing_dispatch,
+                finishing_record=finishing_record,
+                delivery_timeliness=delivery_timeliness,
+                work_quality=work_quality,
+                finishing_quality=finishing_quality,
+                notes=notes,
+                evaluated_by=evaluated_by,
+            )
+            http_status = status.HTTP_201_CREATED
+
+        set_audit_meta(
+            request,
+            section='تقييم الورش',
+            action_type='update' if existing else 'create',
+            target_name=f"{workshop_name} ({model.model_code})",
+            details=(
+                f"تقييم ورشة {workshop_name} لموديل {model.model_code}: "
+                f"التسليم {delivery_timeliness}/5، الجودة {work_quality}/5، التشطيب {finishing_quality}/5 "
+                f"(المتوسط {obj.overall_score}/5)"
+            ),
+            changes=[
+                {'field': 'delivery_timeliness', 'label': 'ميعاد التسليم', 'old': '—', 'new': f'{delivery_timeliness}/5'},
+                {'field': 'work_quality', 'label': 'جودة الشغل', 'old': '—', 'new': f'{work_quality}/5'},
+                {'field': 'finishing_quality', 'label': 'جودة التشطيب', 'old': '—', 'new': f'{finishing_quality}/5'},
+            ],
+        )
+        return Response(WorkshopEvaluationSerializer(obj, context={'request': request}).data, status=http_status)
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        data = request.data or {}
+        try:
+            if 'delivery_timeliness' in data or 'deliveryTimeliness' in data:
+                obj.delivery_timeliness = self._parse_rating(
+                    data, 'delivery_timeliness', 'deliveryTimeliness', default=obj.delivery_timeliness
+                )
+            if 'work_quality' in data or 'workQuality' in data:
+                obj.work_quality = self._parse_rating(
+                    data, 'work_quality', 'workQuality', default=obj.work_quality
+                )
+            if 'finishing_quality' in data or 'finishingQuality' in data:
+                obj.finishing_quality = self._parse_rating(
+                    data, 'finishing_quality', 'finishingQuality', default=obj.finishing_quality
+                )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if 'notes' in data:
+            obj.notes = str(data.get('notes') or '').strip()
+        obj.save()
+        return Response(WorkshopEvaluationSerializer(obj, context={'request': request}).data)
+
+

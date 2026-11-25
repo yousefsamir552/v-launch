@@ -14,6 +14,9 @@ from .models import (
     SizeDef,
     FinishingRecord,
     AssemblyStageRecord,
+    Workshop,
+    WorkshopEvaluation,
+    WORKSHOP_EVALUATION_STAGE_LABELS,
     GlobalSettings,
     PART_TYPE_CHOICES,
     COMPOSITION_TO_PARTS,
@@ -505,15 +508,15 @@ COARSE_STAGE_LABELS = [
     ('design', 'التصميم'),
     ('cutting', 'القص'),
     ('qc_before_print', 'العد قبل الطباعة'),
-    ('printing', 'المطابع'),
+    ('printing', 'المطابع والتطريز'),
     ('qc_after_print', 'العد بعد الطباعة'),
-    ('sewing', 'المكن'),
+    ('sewing', 'المكن والخياطة'),
     ('qc_after_sewing', 'العد بعد المكن'),
     ('finishing', 'التشطيب'),
     ('ironing', 'المكواة'),
     ('packaging', 'التعبئة والتغليف'),
     ('dest', 'الدَست'),
-    ('completed', 'الإنتاج التام'),
+    ('completed', 'مخزن الإنتاج التام'),
 ]
 COARSE_STAGE_LABEL_MAP = dict(COARSE_STAGE_LABELS)
 
@@ -743,12 +746,11 @@ def get_models_report(metric='models', date_from=None, date_to=None, composition
     for row in stage_rows:
         stage_bucket = _coarse_stage(row.get('status'))
         stage_counts[stage_bucket] = stage_counts.get(stage_bucket, 0) + 1
+    # عرض جميع مراحل الإنتاج الـ 12 بالترتيب التسلسلي الكامل (حتى المراحل ذات العدد 0).
     stage_breakdown = [
         {'key': key, 'label': label, 'models_count': stage_counts.get(key, 0)}
         for key, label in COARSE_STAGE_LABELS
-        if stage_counts.get(key, 0)
     ]
-    stage_breakdown.sort(key=lambda item: item['models_count'], reverse=True)
 
     filtered_models = []
     for row in filtered_rows:
@@ -1553,11 +1555,10 @@ def _model_stage_waterfall(model):
 
     finishing_records = list(FinishingRecord.objects.filter(model=model))
     ironing_records = list(AssemblyStageRecord.objects.filter(model=model, stage='ironing'))
-    packaging_records = list(
-        AssemblyStageRecord.objects.filter(model=model, stage__in=('packaging', 'dest'))
-    )
+    packaging_only_records = list(AssemblyStageRecord.objects.filter(model=model, stage='packaging'))
+    dest_records = list(AssemblyStageRecord.objects.filter(model=model, stage='dest'))
 
-    def _model_stage(key, label, records):
+    def _model_stage(key, label, records, in_qty=None, out_qty=None, loss=0):
         completed = [r for r in records if getattr(r, 'actual_exit_date', None)]
         if completed:
             status_key, status_label = 'completed', 'تم'
@@ -1565,22 +1566,34 @@ def _model_stage_waterfall(model):
             status_key, status_label = 'in_progress', 'قيد التنفيذ'
         else:
             status_key, status_label = 'not_started', 'لم يبدأ'
+        resolved_in = assembly_in if in_qty is None else int(in_qty or 0)
+        resolved_out = (resolved_in if completed else 0) if out_qty is None else int(out_qty or 0)
         return {
             'key': key,
             'label': label,
-            'in_qty': assembly_in,
-            'out_qty': assembly_in if completed else 0,
-            'loss': 0,
+            'in_qty': resolved_in,
+            'out_qty': resolved_out,
+            'loss': int(loss or 0),
             'status': status_key,
             'status_label': status_label,
             'records_count': len(records),
             'completed_count': len(completed),
         }
 
+    dest_rec = dest_records[0] if dest_records else None
+    dest_in = int(dest_rec.expected_pieces or 0) if (dest_rec and dest_rec.expected_pieces) else assembly_in
+    dest_out = (
+        int(dest_rec.completed_pieces)
+        if (dest_rec and dest_rec.completed_pieces is not None)
+        else (dest_in if (dest_rec and dest_rec.actual_exit_date) else 0)
+    )
+    dest_loss = int(dest_rec.shortage_pieces or 0) if dest_rec else 0
+
     model_stages = [
         _model_stage('finishing', 'التشطيب', finishing_records),
         _model_stage('ironing', 'المكواة', ironing_records),
-        _model_stage('packaging', 'التعبئة والدَست', packaging_records),
+        _model_stage('packaging', 'التعبئة والتغليف', packaging_only_records),
+        _model_stage('dest', 'الدَست', dest_records, in_qty=dest_in, out_qty=dest_out, loss=dest_loss),
     ]
 
     return {
@@ -1597,6 +1610,9 @@ def _model_stage_waterfall(model):
             'target_cut_quantity': target,
             'total_cut_pieces': int(model.total_cut_pieces or 0),
             'count_after_sewing': int(model.count_after_sewing or 0),
+            'dest_expected_pieces': dest_in if dest_rec else 0,
+            'dest_completed_pieces': dest_rec.completed_pieces if dest_rec else None,
+            'dest_shortage_pieces': dest_loss,
         },
         'parts': part_rows,
         'model_stages': model_stages,
@@ -1608,6 +1624,7 @@ def _model_stage_waterfall(model):
                 round((max(0, cut_total - good_total) / cut_total) * 100, 1) if cut_total else 0.0
             ),
             'loss_by_stage': loss_totals,
+            'dest_shortage': dest_loss,
         },
         'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
     }
@@ -1618,3 +1635,243 @@ def get_model_stage_waterfall(model_id):
     if not model:
         return None
     return _model_stage_waterfall(model)
+
+
+# ===========================================================================
+# تقرير تقييم الورش (Workshop Evaluations Aggregated Report)
+# ===========================================================================
+
+def get_workshop_evaluations_report(category='all', search=None, date_from=None, date_to=None):
+    """
+    تقرير مجمّع لتقييمات الورش والمطابع عبر الأقسام الثلاثة (مطابع / مكن / تشطيب):
+    يعيد لكل ورشة متوسط كل معيار، المتوسط العام، إجمالي التشغيلات، نسبة الالتزام بالمواعيد %،
+    ونسبة العيوب/الهوالك % من سجلات الفرز المرتبطة بموديلاتها.
+    """
+    start = _parse_iso_date(date_from)
+    end = _parse_iso_date(date_to)
+    clean_category = (category or 'all').strip().lower()
+    if clean_category not in ('all', 'printing', 'sewing', 'finishing'):
+        clean_category = 'all'
+    clean_search = (search or '').strip().lower()
+
+    # فهرسة الورش المسجلة بالمعرف وبالاسم للربط السريع.
+    workshops_by_id = {}
+    workshops_by_name = {}
+    for w in Workshop.objects.all():
+        workshops_by_id[w.pk] = w
+        if w.name:
+            workshops_by_name[w.name.strip().lower()] = w
+
+    def _entry_key(stage_key, workshop_obj, raw_name):
+        name = (workshop_obj.name if workshop_obj else (raw_name or '')).strip()
+        if not name:
+            return None, ''
+        return (stage_key, name.lower()), name
+
+    rows_map = {}
+
+    def _get_row(stage_key, workshop_obj, raw_name):
+        if workshop_obj is None and raw_name:
+            workshop_obj = workshops_by_name.get(raw_name.strip().lower())
+        key, display_name = _entry_key(stage_key, workshop_obj, raw_name)
+        if key is None:
+            return None
+        if key not in rows_map:
+            rows_map[key] = {
+                'workshop_id': (workshop_obj.client_id or str(workshop_obj.pk)) if workshop_obj else '',
+                'workshop_name': display_name,
+                'phone': (workshop_obj.phone or '') if workshop_obj else '',
+                'category': stage_key,
+                'category_label': WORKSHOP_EVALUATION_STAGE_LABELS.get(stage_key, stage_key),
+                'delivery_scores': [],
+                'work_scores': [],
+                'finishing_scores': [],
+                'total_dispatches': 0,
+                'completed_dispatches': 0,
+                'timed_dispatches': 0,
+                'on_time_count': 0,
+                'model_part_pairs': set(),
+                'recent_evaluations': [],
+            }
+        return rows_map[key]
+
+    # 1) تجميع الإرساليات (المطابع / المكن / التشطيب) لحساب إجمالي التشغيلات ونسبة الالتزام بالمواعيد.
+    if clean_category in ('all', 'printing'):
+        p_qs = PrintDispatch.objects.filter(model__is_deleted=False).select_related('workshop', 'model')
+        if start:
+            p_qs = p_qs.filter(dispatch_date__gte=start)
+        if end:
+            p_qs = p_qs.filter(dispatch_date__lte=end)
+        for disp in p_qs:
+            row = _get_row('printing', disp.workshop, disp.print_house)
+            if not row:
+                continue
+            row['total_dispatches'] += 1
+            row['model_part_pairs'].add((disp.model_id, _part_key(disp.piece_type)))
+            is_done = disp.status in RECEIVED_DISPATCH_STATUSES or bool(disp.received_date)
+            if is_done:
+                row['completed_dispatches'] += 1
+                if disp.expected_delivery_date and disp.received_date:
+                    row['timed_dispatches'] += 1
+                    if disp.received_date <= disp.expected_delivery_date:
+                        row['on_time_count'] += 1
+
+    if clean_category in ('all', 'sewing'):
+        s_qs = SewingDispatch.objects.filter(model__is_deleted=False).select_related('workshop', 'model')
+        if start:
+            s_qs = s_qs.filter(dispatched_date__gte=start)
+        if end:
+            s_qs = s_qs.filter(dispatched_date__lte=end)
+        for disp in s_qs:
+            row = _get_row('sewing', disp.workshop, disp.workshop_name)
+            if not row:
+                continue
+            row['total_dispatches'] += 1
+            row['model_part_pairs'].add((disp.model_id, _part_key(disp.piece_type)))
+            is_done = disp.status in RECEIVED_DISPATCH_STATUSES or bool(disp.received_date)
+            if is_done:
+                row['completed_dispatches'] += 1
+                if disp.expected_delivery_date and disp.received_date:
+                    row['timed_dispatches'] += 1
+                    if disp.received_date <= disp.expected_delivery_date:
+                        row['on_time_count'] += 1
+
+    if clean_category in ('all', 'finishing'):
+        f_qs = FinishingRecord.objects.filter(model__is_deleted=False).select_related('workshop', 'model')
+        if start:
+            f_qs = f_qs.filter(entry_date__gte=start)
+        if end:
+            f_qs = f_qs.filter(entry_date__lte=end)
+        for rec in f_qs:
+            if not (rec.vendor_name or '').strip() and not rec.workshop_id:
+                continue
+            row = _get_row('finishing', rec.workshop, rec.vendor_name)
+            if not row:
+                continue
+            row['total_dispatches'] += 1
+            row['model_part_pairs'].add((rec.model_id, _part_key(rec.part_type)))
+            if rec.actual_exit_date:
+                row['completed_dispatches'] += 1
+                if rec.expected_exit_date:
+                    row['timed_dispatches'] += 1
+                    if rec.actual_exit_date <= rec.expected_exit_date:
+                        row['on_time_count'] += 1
+
+    # 2) تجميع التقييمات المسجلة (WorkshopEvaluation).
+    eval_qs = WorkshopEvaluation.objects.filter(model__is_deleted=False).select_related('workshop', 'model')
+    if clean_category != 'all':
+        eval_qs = eval_qs.filter(stage=clean_category)
+    if start:
+        eval_qs = eval_qs.filter(created_at__date__gte=start)
+    if end:
+        eval_qs = eval_qs.filter(created_at__date__lte=end)
+
+    total_evaluations = 0
+    for ev in eval_qs.order_by('-created_at', '-id'):
+        row = _get_row(ev.stage, ev.workshop, ev.workshop_name)
+        if not row:
+            continue
+        total_evaluations += 1
+        row['delivery_scores'].append(int(ev.delivery_timeliness or 0))
+        row['work_scores'].append(int(ev.work_quality or 0))
+        row['finishing_scores'].append(int(ev.finishing_quality or 0))
+        if len(row['recent_evaluations']) < 8:
+            row['recent_evaluations'].append({
+                'id': ev.client_id or str(ev.id),
+                'model_code': ev.model.model_code if ev.model_id else '',
+                'delivery_timeliness': int(ev.delivery_timeliness or 0),
+                'work_quality': int(ev.work_quality or 0),
+                'finishing_quality': int(ev.finishing_quality or 0),
+                'overall_score': ev.overall_score,
+                'notes': ev.notes or '',
+                'evaluated_by': ev.evaluated_by or '',
+                'created_at': ev.created_at.strftime('%Y-%m-%d %H:%M') if ev.created_at else '',
+            })
+
+    # 3) حساب نسب العيوب والهوالك من سجلات الجودة (QCRecord) للموديلات/القطع المرتبطة بكل ورشة.
+    all_model_ids = sorted({mid for row in rows_map.values() for (mid, _part) in row['model_part_pairs']})
+    qc_totals = {}  # (model_id, part_key, qc_stage) -> (good, defect)
+    for chunk in _chunked(all_model_ids):
+        for qrow in (
+            QCRecord.objects.filter(model_id__in=chunk, stage__in=('after_print', 'after_sewing'))
+            .values('model_id', 'part_type', 'stage')
+            .annotate(good=Sum('counted_pieces'), defect=Sum('defect_pieces'))
+        ):
+            k = (qrow['model_id'], _part_key(qrow['part_type']), qrow['stage'])
+            qc_totals[k] = (int(qrow['good'] or 0), int(qrow['defect'] or 0))
+
+    items = []
+    for row in rows_map.values():
+        if clean_search and clean_search not in row['workshop_name'].lower():
+            continue
+        eval_count = len(row['delivery_scores'])
+        avg_delivery = round(sum(row['delivery_scores']) / eval_count, 2) if eval_count else 0.0
+        avg_work = round(sum(row['work_scores']) / eval_count, 2) if eval_count else 0.0
+        avg_finishing = round(sum(row['finishing_scores']) / eval_count, 2) if eval_count else 0.0
+        overall_avg = round((avg_delivery + avg_work + avg_finishing) / 3.0, 2) if eval_count else 0.0
+
+        timed = row['timed_dispatches']
+        on_time_pct = round((row['on_time_count'] / timed) * 100.0, 1) if timed > 0 else None
+
+        qc_stage = 'after_print' if row['category'] == 'printing' else 'after_sewing'
+        good_sum = 0
+        defect_sum = 0
+        for (mid, part) in row['model_part_pairs']:
+            g, d = qc_totals.get((mid, part, qc_stage), (0, 0))
+            good_sum += g
+            defect_sum += d
+        checked_total = good_sum + defect_sum
+        defect_pct = round((defect_sum / checked_total) * 100.0, 1) if checked_total > 0 else 0.0
+
+        items.append({
+            'workshop_id': row['workshop_id'],
+            'workshop_name': row['workshop_name'],
+            'phone': row['phone'],
+            'category': row['category'],
+            'category_label': row['category_label'],
+            'evaluations_count': eval_count,
+            'avg_delivery': avg_delivery,
+            'avg_work_quality': avg_work,
+            'avg_finishing_quality': avg_finishing,
+            'overall_avg': overall_avg,
+            'total_dispatches': row['total_dispatches'],
+            'completed_dispatches': row['completed_dispatches'],
+            'on_time_count': row['on_time_count'],
+            'timed_dispatches': timed,
+            'on_time_percent': on_time_pct,
+            'defect_pieces': defect_sum,
+            'total_checked_pieces': checked_total,
+            'defect_percent': defect_pct,
+            'recent_evaluations': row['recent_evaluations'],
+        })
+
+    items.sort(key=lambda x: (-x['overall_avg'], -x['evaluations_count'], -x['total_dispatches'], x['workshop_name']))
+
+    rated_items = [item for item in items if item['evaluations_count'] > 0]
+    avg_overall = (
+        round(sum(item['overall_avg'] for item in rated_items) / len(rated_items), 2)
+        if rated_items else 0.0
+    )
+    timed_items = [item for item in items if item['on_time_percent'] is not None]
+    avg_on_time = (
+        round(sum(item['on_time_percent'] for item in timed_items) / len(timed_items), 1)
+        if timed_items else 0.0
+    )
+
+    return {
+        'category': clean_category,
+        'search': search or '',
+        'date_from': start.isoformat() if start else '',
+        'date_to': end.isoformat() if end else '',
+        'summary': {
+            'total_workshops': len(items),
+            'rated_workshops': len(rated_items),
+            'total_evaluations': total_evaluations,
+            'avg_overall': avg_overall,
+            'avg_on_time_percent': avg_on_time,
+            'top_workshop': rated_items[0]['workshop_name'] if rated_items else '—',
+            'top_workshop_score': rated_items[0]['overall_avg'] if rated_items else 0.0,
+        },
+        'workshops': items,
+        'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
+    }

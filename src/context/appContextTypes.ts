@@ -53,6 +53,9 @@ import {
   PackagingMaterialRule,
   PackagingMaterialSizeRule,
   PackagingMaterialOperation,
+  PackagingMaterialShortageItem,
+  WorkshopEvaluation,
+  WorkshopEvaluationStage,
   PartStage,
   PART_STAGE_LABELS,
   PART_STAGE_ORDER,
@@ -256,6 +259,20 @@ export interface AppContextType {
   packagingRequirements: PackagingRequirement[];
   finishingRecords: FinishingRecord[];
   assemblyStageRecords: AssemblyStageRecord[];
+  workshopEvaluations: WorkshopEvaluation[];
+  submitWorkshopEvaluation: (data: {
+    workshopId?: string;
+    workshopName: string;
+    stage: WorkshopEvaluationStage;
+    modelId: string;
+    printDispatchId?: string;
+    sewingDispatchId?: string;
+    finishingRecordId?: string;
+    deliveryTimeliness: number;
+    workQuality: number;
+    finishingQuality: number;
+    notes?: string;
+  }) => Promise<{ success: boolean; message: string; evaluation?: WorkshopEvaluation }>;
   packagingMaterialRules: PackagingMaterialRule[];
   savePackagingMaterialRule: (data: {
     materialKey: PackagingMaterialRule['material_key'];
@@ -692,8 +709,15 @@ export interface AppContextType {
     /** سعر المرحلة (يُرسل فقط لمن يملك edit_assembly_prices). */
     costPerPiece?: number;
     totalCost?: number;
-  }) => void;
-  receiveAssemblyStage: (recordId: string, actualExitDate?: string, notes?: string) => void;
+    completedPieces?: number;
+    expectedPieces?: number;
+  }) => Promise<{ success: boolean; message?: string; shortages?: PackagingMaterialShortageItem[] }>;
+  receiveAssemblyStage: (
+    recordId: string,
+    actualExitDate?: string,
+    notes?: string,
+    completedPieces?: number
+  ) => void;
   startIroning: (data: {
     modelId: string;
     partType?: GarmentPart;
@@ -818,6 +842,7 @@ export interface AppInternalContext extends AppContextType {
   setPackagingRequirements: React.Dispatch<React.SetStateAction<PackagingRequirement[]>>;
   setFinishingRecords: React.Dispatch<React.SetStateAction<FinishingRecord[]>>;
   setAssemblyStageRecords: React.Dispatch<React.SetStateAction<AssemblyStageRecord[]>>;
+  setWorkshopEvaluations: React.Dispatch<React.SetStateAction<WorkshopEvaluation[]>>;
   setPackagingMaterialRules: React.Dispatch<React.SetStateAction<PackagingMaterialRule[]>>;
   setInternalMessages: React.Dispatch<React.SetStateAction<InternalMessage[]>>;
   setAuditLogs: React.Dispatch<React.SetStateAction<AuditLog[]>>;

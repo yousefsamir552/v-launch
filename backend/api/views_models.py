@@ -1785,6 +1785,12 @@ class ModelItemViewSet(BasePermViewSet):
                 {'detail': 'مرحلة الأسمبلي غير معروفة (المتاح: ironing / packaging / dest)'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        completed_pieces = data.get('completed_pieces')
+        if completed_pieces is None:
+            completed_pieces = data.get('completedPieces')
+        expected_pieces = data.get('expected_pieces')
+        if expected_pieces is None:
+            expected_pieces = data.get('expectedPieces')
         try:
             record = start_assembly_stage_service(
                 model,
@@ -1800,6 +1806,18 @@ class ModelItemViewSet(BasePermViewSet):
                 workshop=resolve_workshop_link(
                     data, data.get('vendor_name') or data.get('vendorName') or ''
                 ),
+                completed_pieces=completed_pieces,
+                expected_pieces=expected_pieces,
+            )
+        except PackagingStockShortageError as exc:
+            return Response(
+                {
+                    'detail': str(exc),
+                    'error': str(exc),
+                    'code': 'packaging_material_shortage',
+                    'shortages': exc.shortages,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -1808,6 +1826,44 @@ class ModelItemViewSet(BasePermViewSet):
             request, 'الأسمبلي والأمبالاج', model.model_code,
             f'سعر مرحلة {stage}', assembly_cost,
         )
+        deducted_now = getattr(record, '_deducted_now', None) or []
+        if stage == 'packaging' and deducted_now:
+            deduct_changes = [
+                {
+                    'field': f"pack_mat_{item['size_rule_id']}",
+                    'label': f"{item['material_name']} ({item['size_group_name']})",
+                    'old': f"{item['old_stock']:g} {item['unit']}",
+                    'new': f"{item['new_stock']:g} {item['unit']} (خصم {item['amount']:g})",
+                }
+                for item in deducted_now
+            ]
+            set_audit_meta(
+                request,
+                section='الأسمبلي والأمبالاج',
+                action_type='transaction',
+                target_name=model.model_code,
+                details=(
+                    f"دخول الموديل {model.model_code} لمرحلة التعبئة والتغليف مع خصم تلقائي لـ "
+                    f"{len(deducted_now)} خامة تغليف"
+                ),
+                changes=deduct_changes,
+            )
+        elif stage == 'dest' and record.completed_pieces is not None:
+            set_audit_meta(
+                request,
+                section='الأسمبلي والأمبالاج',
+                action_type='status_change',
+                target_name=model.model_code,
+                details=(
+                    f"تحديث مرحلة الدَست للموديل {model.model_code} — "
+                    f"المتوقع: {record.expected_pieces}، المنفذ: {record.completed_pieces}، العجز: {record.shortage_pieces}"
+                ),
+                changes=[
+                    {'field': 'expected_pieces', 'label': 'العدد المتوقع', 'old': '—', 'new': str(record.expected_pieces)},
+                    {'field': 'completed_pieces', 'label': 'العدد المنفذ فعلياً', 'old': '—', 'new': str(record.completed_pieces)},
+                    {'field': 'shortage_pieces', 'label': 'العجز', 'old': '—', 'new': str(record.shortage_pieces)},
+                ],
+            )
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
             'assemblyStageRecord': AssemblyStageRecordSerializer(
@@ -1816,6 +1872,7 @@ class ModelItemViewSet(BasePermViewSet):
             'partStages': part_stages_payload(model),
             'readiness': packaging_requirement_summary(model),
             'packagingReadiness': packaging_readiness(model),
+            'deductedMaterials': deducted_now,
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
@@ -1826,16 +1883,36 @@ class ModelItemViewSet(BasePermViewSet):
         record_id = data.get('record_id') or data.get('recordId')
         if not record_id:
             return Response({'detail': 'معرف سجل المرحلة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        completed_pieces = data.get('completed_pieces')
+        if completed_pieces is None:
+            completed_pieces = data.get('completedPieces')
         try:
             record = receive_assembly_stage_service(
                 record_id,
                 actual_exit_date=data.get('actual_exit_date') or data.get('actualExitDate'),
                 notes=data.get('notes') or '',
                 user_name=data.get('user_name') or data.get('user') or 'مسؤول الأسمبلي',
+                completed_pieces=completed_pieces,
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         model.refresh_from_db()
+        if record.stage == 'dest':
+            set_audit_meta(
+                request,
+                section='الأسمبلي والأمبالاج',
+                action_type='status_change',
+                target_name=model.model_code,
+                details=(
+                    f"استلام الموديل {model.model_code} من الدَست — "
+                    f"المتوقع: {record.expected_pieces}، المنفذ فعلياً: {record.completed_pieces}، العجز: {record.shortage_pieces}"
+                ),
+                changes=[
+                    {'field': 'expected_pieces', 'label': 'العدد المتوقع', 'old': '—', 'new': str(record.expected_pieces)},
+                    {'field': 'completed_pieces', 'label': 'العدد المنفذ فعلياً', 'old': '—', 'new': str(record.completed_pieces)},
+                    {'field': 'shortage_pieces', 'label': 'العجز', 'old': '—', 'new': str(record.shortage_pieces)},
+                ],
+            )
         return Response({
             'model': ModelItemSerializer(model, context={'request': request}).data,
             'assemblyStageRecord': AssemblyStageRecordSerializer(

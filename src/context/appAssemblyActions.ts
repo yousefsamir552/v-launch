@@ -53,6 +53,7 @@ import {
   PackagingMaterialRule,
   PackagingMaterialSizeRule,
   PackagingMaterialOperation,
+  PackagingMaterialShortageItem,
   PartStage,
   PART_STAGE_LABELS,
   PART_STAGE_ORDER,
@@ -512,7 +513,7 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
     dest: 'مخزن الإنتاج التام'
   };
 
-  const startAssemblyStage = (data: {
+  const startAssemblyStage = async (data: {
     modelId: string;
     stage: AssemblyStageKey;
     entryDate?: string;
@@ -522,11 +523,13 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
     notes?: string;
     costPerPiece?: number;
     totalCost?: number;
-  }) => {
+    completedPieces?: number;
+    expectedPieces?: number;
+  }): Promise<{ success: boolean; message?: string; shortages?: PackagingMaterialShortageItem[] }> => {
     // Ironing is per part, so it has its own dedicated flow.
     if (data.stage === 'ironing') {
       startIroning(data);
-      return;
+      return { success: true };
     }
 
     const targetModel = models.find((m) => m.id === data.modelId);
@@ -541,76 +544,104 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
         ? Number(data.totalCost)
         : undefined;
 
-    setModels((prev) =>
-      prev.map((m) =>
-        m.id === data.modelId ? { ...m, status: ASSEMBLY_STAGE_STATUS_MAP[data.stage] } : m
-      )
-    );
-    setAssemblyStageRecords((prev) => {
-      const others = prev.filter(
-        (rec) => !(rec.model_id === data.modelId && rec.stage === data.stage)
+    // في مرحلة التعبئة والتغليف توجد بوابة رصيد صارمة على الباك إند، لذا ننتظر رد الباك إند
+    // قبل تحديث الحالة حتى لا يظهر الموديل كأنه دخل المرحلة بينما تم رفضه لنقص خامات التغليف.
+    if (data.stage !== 'packaging') {
+      setModels((prev) =>
+        prev.map((m) =>
+          m.id === data.modelId ? { ...m, status: ASSEMBLY_STAGE_STATUS_MAP[data.stage] } : m
+        )
       );
-      return [
-        {
-          id: `asm-${data.stage}-${Date.now()}`,
-          model_id: data.modelId,
-          model_code: targetModel?.model_code,
-          stage: data.stage,
-          part_type: '',
-          vendor_name: cleanVendor,
-          entry_date: resolvedEntry,
-          expected_exit_date: data.expectedExitDate || null,
-          actual_exit_date: null,
-          status: 'جارية الآن' as const,
-          is_completed: false,
-          notes: cleanNotes,
-          ...(canSetPrice
-            ? { cost_per_piece: piecePrice, ...(explicitTotal !== undefined ? { total_cost: explicitTotal } : {}) }
-            : {})
-        },
-        ...others
-      ];
-    });
+      setAssemblyStageRecords((prev) => {
+        const existingRec = prev.find(
+          (rec) => rec.model_id === data.modelId && rec.stage === data.stage
+        );
+        const others = prev.filter(
+          (rec) => !(rec.model_id === data.modelId && rec.stage === data.stage)
+        );
+        const expPcs = data.expectedPieces ?? existingRec?.expected_pieces ?? 0;
+        const compPcs =
+          data.completedPieces !== undefined
+            ? data.completedPieces
+            : existingRec?.completed_pieces ?? null;
+        return [
+          {
+            id: existingRec?.id || `asm-${data.stage}-${Date.now()}`,
+            model_id: data.modelId,
+            model_code: targetModel?.model_code,
+            stage: data.stage,
+            part_type: '',
+            vendor_name: cleanVendor || existingRec?.vendor_name || '',
+            entry_date: existingRec?.entry_date || resolvedEntry,
+            expected_exit_date: data.expectedExitDate || existingRec?.expected_exit_date || null,
+            actual_exit_date: null,
+            status: 'جارية الآن' as const,
+            is_completed: false,
+            notes: cleanNotes || existingRec?.notes || '',
+            expected_pieces: expPcs,
+            completed_pieces: compPcs,
+            shortage_pieces:
+              data.stage === 'dest' && compPcs !== null ? Math.max(0, expPcs - compPcs) : 0,
+            ...(canSetPrice
+              ? { cost_per_piece: piecePrice, ...(explicitTotal !== undefined ? { total_cost: explicitTotal } : {}) }
+              : {})
+          },
+          ...others
+        ];
+      });
+    }
 
-    api
-      .startAssemblyStage(data.modelId, {
+    try {
+      const res = await api.startAssemblyStage(data.modelId, {
         stage: data.stage,
         entry_date: resolvedEntry,
         expected_exit_date: data.expectedExitDate,
         vendor_name: cleanVendor,
         notes: cleanNotes,
         user_name: currentUser?.real_name || 'مسؤول الأسمبلي',
+        ...(data.completedPieces !== undefined ? { completed_pieces: data.completedPieces } : {}),
+        ...(data.expectedPieces !== undefined ? { expected_pieces: data.expectedPieces } : {}),
         ...(canSetPrice
           ? { cost_per_piece: piecePrice, ...(explicitTotal !== undefined ? { total_cost: explicitTotal } : {}) }
           : {})
-      })
-      .then((res) => {
-        const saved: AssemblyStageRecord | undefined = res?.assemblyStageRecord;
-        if (saved) {
-          setAssemblyStageRecords((prev) => [
-            saved,
-            ...prev.filter(
-              (rec) => !(rec.model_id === data.modelId && rec.stage === data.stage)
-            )
-          ]);
-        }
-        refreshState();
-        logAction(
-          'الأسمبلي والأمبالاج',
-          `بدء مرحلة (${data.stage}) للموديل ${targetModel?.model_code}`
-        );
-        addFlashMessage('تم تسجيل بدء المرحلة بنجاح');
-      })
-      .catch((err) => {
-        refreshState();
-        addFlashMessage(err.message || 'فشل بدء المرحلة في الباك إند', 'danger');
       });
+      const saved: AssemblyStageRecord | undefined = res?.assemblyStageRecord;
+      if (saved) {
+        setAssemblyStageRecords((prev) => [
+          saved,
+          ...prev.filter(
+            (rec) => !(rec.model_id === data.modelId && rec.stage === data.stage)
+          )
+        ]);
+      }
+      refreshState();
+      logAction(
+        'الأسمبلي والأمبالاج',
+        `بدء مرحلة (${data.stage}) للموديل ${targetModel?.model_code}`
+      );
+      const deductedCount = Array.isArray(res?.deductedMaterials) ? res.deductedMaterials.length : 0;
+      addFlashMessage(
+        data.stage === 'packaging' && deductedCount > 0
+          ? `تم بدء التعبئة والتغليف وخصم ${deductedCount} خامة تغليف تلقائياً ✅`
+          : 'تم تسجيل بدء المرحلة بنجاح'
+      );
+      return { success: true };
+    } catch (err: any) {
+      refreshState();
+      const message = err?.message || 'فشل بدء المرحلة في الباك إند';
+      const shortages: PackagingMaterialShortageItem[] | undefined = Array.isArray(err?.data?.shortages)
+        ? err.data.shortages
+        : undefined;
+      addFlashMessage(message, 'danger');
+      return { success: false, message, shortages };
+    }
   };
 
   const receiveAssemblyStage = (
     recordId: string,
     actualExitDate?: string,
-    notes?: string
+    notes?: string,
+    completedPieces?: number
   ) => {
     const record = assemblyStageRecords.find((rec) => rec.id === recordId);
     if (!record) return;
@@ -626,6 +657,15 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
               actual_exit_date: resolvedDate,
               status: 'مكتملة' as const,
               is_completed: true,
+              ...(completedPieces !== undefined
+                ? {
+                    completed_pieces: completedPieces,
+                    shortage_pieces:
+                      rec.stage === 'dest'
+                        ? Math.max(0, Number(rec.expected_pieces || 0) - completedPieces)
+                        : 0
+                  }
+                : {}),
               notes: cleanNotes
                 ? `${rec.notes || ''} | استلام: ${cleanNotes}`.replace(/^\s*\|\s*/, '')
                 : rec.notes
@@ -662,7 +702,8 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
         record_id: recordId,
         actual_exit_date: resolvedDate,
         notes: cleanNotes,
-        user_name: currentUser?.real_name || 'مسؤول الأسمبلي'
+        user_name: currentUser?.real_name || 'مسؤول الأسمبلي',
+        ...(completedPieces !== undefined ? { completed_pieces: completedPieces } : {})
       })
       .then((res) => {
         const saved: AssemblyStageRecord | undefined = res?.assemblyStageRecord;

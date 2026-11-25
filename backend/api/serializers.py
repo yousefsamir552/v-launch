@@ -9,6 +9,7 @@ from .models import (
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
     PackagingRequirement, FinishingRecord, AssemblyStageRecord,
+    WorkshopEvaluation, WORKSHOP_EVALUATION_STAGE_LABELS,
     PackagingMaterialRule, PackagingMaterialSizeRule, PackagingMaterialTransaction,
     PART_STAGE_LABELS, PART_STAGE_ORDER, PART_TYPE_CHOICES,
     HRJobTitle, HREmployee, HRAttendanceSettings,
@@ -890,6 +891,47 @@ class AssemblyStageRecordSerializer(serializers.ModelSerializer):
             # أسعار مراحل الأسمبلي تُخفى (None) لمن لا يملك صلاحية عرضها.
             'cost_per_piece': float(instance.cost_per_piece or 0) if can_view_prices else None,
             'total_cost': float(instance.total_cost or 0) if can_view_prices else None,
+            'materials_deducted': bool(instance.materials_deducted),
+            'materials_deducted_details': (
+                instance.materials_deducted_details
+                if isinstance(instance.materials_deducted_details, list)
+                else []
+            ),
+            'expected_pieces': int(instance.expected_pieces or 0),
+            'completed_pieces': (
+                int(instance.completed_pieces)
+                if instance.completed_pieces is not None
+                else None
+            ),
+            'shortage_pieces': int(instance.shortage_pieces or 0),
+            'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
+        }
+
+
+class WorkshopEvaluationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WorkshopEvaluation
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        return {
+            'id': get_ext_id(instance),
+            'workshop_id': workshop_ext_id(instance),
+            'workshop_name': instance.workshop_name or '',
+            'stage': instance.stage,
+            'stage_label': WORKSHOP_EVALUATION_STAGE_LABELS.get(instance.stage, instance.stage),
+            'model_id': get_ext_id(instance.model),
+            'model_code': instance.model.model_code if instance.model_id else '',
+            'print_dispatch_id': get_ext_id(instance.print_dispatch) if instance.print_dispatch_id else '',
+            'sewing_dispatch_id': get_ext_id(instance.sewing_dispatch) if instance.sewing_dispatch_id else '',
+            'finishing_record_id': get_ext_id(instance.finishing_record) if instance.finishing_record_id else '',
+            'delivery_timeliness': int(instance.delivery_timeliness or 5),
+            'work_quality': int(instance.work_quality or 5),
+            'finishing_quality': int(instance.finishing_quality or 5),
+            'overall_score': instance.overall_score,
+            'notes': instance.notes or '',
+            'evaluated_by': instance.evaluated_by or '',
+            'created_at': instance.created_at.isoformat() if instance.created_at else '',
             'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
         }
 
@@ -907,6 +949,7 @@ class PackagingMaterialTransactionSerializer(serializers.ModelSerializer):
             'operation': instance.operation,
             'operation_label': instance.get_operation_display(),
             'amount': instance.amount,
+            'model_code_ref': instance.model_code_ref or '',
             'notes': instance.notes or '',
             'timestamp': instance.timestamp or '',
             'created_at': instance.created_at.isoformat() if instance.created_at else '',

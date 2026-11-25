@@ -12,6 +12,7 @@ import { CuttingDetailsView } from './components/CuttingDetailsView';
 import { QCDetailsView } from './components/QCDetailsView';
 import { ProductionControlView } from './components/ProductionControlView';
 import { MasterModelTrackingView } from './components/MasterModelTrackingView';
+import { UnifiedModelCardsView } from './components/UnifiedModelCardsView';
 import { AssemblyPackagingView } from './components/AssemblyPackagingView';
 import { SettingsView } from './components/SettingsView';
 import { AuditLogsView } from './components/AuditLogsView';
@@ -135,6 +136,9 @@ export const App: React.FC = () => {
       );
     }
     if (tab === 'models_tracking') return hasPermission('models_tracking');
+    if (tab === 'unified_model_cards') {
+      return hasPermission('models_tracking') || hasPermission('reports');
+    }
     if (tab === 'assembly_packaging') return hasAssemblyPackagingAccess();
     if (tab === 'reports') return hasPermission('reports');
     if (tab === 'settings') return canAccessSettings();
@@ -263,6 +267,9 @@ export const App: React.FC = () => {
             onNavigateToStage={(tab, modelId) => handleNavigate(tab, modelId)}
           />
         )}
+
+        {/* Unified Detailed Model Cards & Master Sheet */}
+        {currentTab === 'unified_model_cards' && <UnifiedModelCardsView />}
 
         {/* Reports & Analytics Section */}
         {currentTab === 'reports' && <ReportsView />}

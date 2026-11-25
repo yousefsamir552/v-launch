@@ -7,13 +7,21 @@ import {
   CheckCircle2,
   Layers,
   X,
-  Lock
+  Lock,
+  Star
 } from 'lucide-react';
 import { DispatchStatus, GarmentPart, PART_EMOJI, getPartLabel, PrintDispatch, PART_STAGE_LABELS, PartStage } from '../types';
 import { PrintShopOrderModal } from './PrintShopOrderModal';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { stageBeyond } from '../utils/completedModels';
 import { ZoomableImage } from './ZoomableImage';
+import {
+  InlineEvaluationDraft,
+  InlineWorkshopEvaluationBox,
+  WorkshopEvaluationModal,
+  WorkshopEvaluationTarget,
+  createInitialEvaluationDraft
+} from './WorkshopEvaluationModal';
 
 /** نوع تشغيل افتراضي يُرسل للباك إند بعد إخفاء حقل "نوع التشغيل" من الواجهة. */
 const DEFAULT_PRINT_TYPE = 'سلك سكرين مائي';
@@ -29,6 +37,8 @@ export const DispatchAssemblyView: React.FC = () => {
     updateDispatchStatus,
     skipPrintToSewing,
     workshops,
+    workshopEvaluations,
+    submitWorkshopEvaluation,
     openWhatsAppOrder,
     hasPermission,
     canViewPrintingPrices,
@@ -108,6 +118,10 @@ export const DispatchAssemblyView: React.FC = () => {
   const [receivingDispatch, setReceivingDispatch] = useState<PrintDispatch | null>(null);
   const [receiveQty, setReceiveQty] = useState<number>(0);
   const [receiveNotes, setReceiveNotes] = useState('');
+  const [evalDraft, setEvalDraft] = useState<InlineEvaluationDraft>(() =>
+    createInitialEvaluationDraft()
+  );
+  const [evalTarget, setEvalTarget] = useState<WorkshopEvaluationTarget | null>(null);
 
   const getReceivedPieces = (disp: PrintDispatch) => Math.max(0, Number(disp.received_pieces || 0));
   const getRemainingPieces = (disp: PrintDispatch) =>
@@ -117,9 +131,10 @@ export const DispatchAssemblyView: React.FC = () => {
     setReceivingDispatch(disp);
     setReceiveQty(getRemainingPieces(disp));
     setReceiveNotes(disp.notes || '');
+    setEvalDraft(createInitialEvaluationDraft(disp.expected_delivery_date));
   };
 
-  const confirmPartialReceive = (e: React.FormEvent) => {
+  const confirmPartialReceive = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!receivingDispatch) return;
     const remaining = getRemainingPieces(receivingDispatch);
@@ -142,6 +157,20 @@ export const DispatchAssemblyView: React.FC = () => {
       qty,
       allowPrintNotes ? receiveNotes.trim() : undefined
     );
+    if (evalDraft.enabled && receivingDispatch.shop_name) {
+      const matchedW = workshops.find((w) => w.name === receivingDispatch.shop_name);
+      await submitWorkshopEvaluation({
+        workshopId: matchedW?.id,
+        workshopName: receivingDispatch.shop_name,
+        stage: 'printing',
+        modelId: receivingDispatch.model_id,
+        printDispatchId: receivingDispatch.id,
+        deliveryTimeliness: evalDraft.deliveryTimeliness,
+        workQuality: evalDraft.workQuality,
+        finishingQuality: evalDraft.finishingQuality,
+        notes: evalDraft.notes
+      });
+    }
     setReceivingDispatch(null);
     setReceiveQty(0);
     setReceiveNotes('');
@@ -588,6 +617,40 @@ export const DispatchAssemblyView: React.FC = () => {
                           >
                             🖨️ طباعة / PDF للمطبعة
                           </button>
+                          {disp.shop_name && (() => {
+                            const existingEv = workshopEvaluations.find(
+                              (ev) => ev.print_dispatch_id === disp.id && ev.stage === 'printing'
+                            ) || null;
+                            const dispModel = models.find((mm) => mm.id === disp.model_id);
+                            const matchedW = workshops.find((w) => w.name === disp.shop_name);
+                            return (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEvalTarget({
+                                    workshopId: matchedW?.id,
+                                    workshopName: disp.shop_name,
+                                    stage: 'printing',
+                                    modelId: disp.model_id,
+                                    modelCode: dispModel?.model_code || '—',
+                                    printDispatchId: disp.id,
+                                    expectedDate: disp.expected_delivery_date,
+                                    actualDate: disp.received_at,
+                                    existing: existingEv
+                                  })
+                                }
+                                className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-full font-bold text-xs border transition cursor-pointer whitespace-nowrap ${
+                                  existingEv
+                                    ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200'
+                                    : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                                }`}
+                                title={existingEv ? 'تعديل تقييم المطبعة' : 'تقييم أداء المطبعة'}
+                              >
+                                <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+                                <span>{existingEv ? `${existingEv.overall_score}/5` : 'تقييم'}</span>
+                              </button>
+                            );
+                          })()}
                         </div>
                       </td>
                     </tr>
@@ -1000,6 +1063,15 @@ export const DispatchAssemblyView: React.FC = () => {
                 </div>
               )}
 
+              {receivingDispatch.shop_name && (
+                <InlineWorkshopEvaluationBox
+                  workshopName={receivingDispatch.shop_name}
+                  expectedDate={receivingDispatch.expected_delivery_date}
+                  draft={evalDraft}
+                  onChange={setEvalDraft}
+                />
+              )}
+
               <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
                 <button
                   type="button"
@@ -1026,6 +1098,9 @@ export const DispatchAssemblyView: React.FC = () => {
       {printTarget && (
         <PrintShopOrderModal dispatch={printTarget} onClose={() => setPrintTarget(null)} />
       )}
+
+      {/* Modal: Workshop Evaluation */}
+      <WorkshopEvaluationModal target={evalTarget} onClose={() => setEvalTarget(null)} />
     </div>
   );
 };

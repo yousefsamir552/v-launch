@@ -53,6 +53,8 @@ import {
   PackagingMaterialRule,
   PackagingMaterialSizeRule,
   PackagingMaterialOperation,
+  WorkshopEvaluation,
+  WorkshopEvaluationStage,
   PartStage,
   PART_STAGE_LABELS,
   PART_STAGE_ORDER,
@@ -151,6 +153,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [packagingRequirements, setPackagingRequirements] = useState<PackagingRequirement[]>([]);
   const [finishingRecords, setFinishingRecords] = useState<FinishingRecord[]>([]);
   const [assemblyStageRecords, setAssemblyStageRecords] = useState<AssemblyStageRecord[]>([]);
+  const [workshopEvaluations, setWorkshopEvaluations] = useState<WorkshopEvaluation[]>([]);
   const [packagingMaterialRules, setPackagingMaterialRules] = useState<PackagingMaterialRule[]>([]);
   const [internalMessages, setInternalMessages] = useState<InternalMessage[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -303,6 +306,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAssemblyStageRecords(
           Array.isArray(state.assemblyStageRecords) ? state.assemblyStageRecords : []
         );
+        setWorkshopEvaluations(
+          Array.isArray(state.workshopEvaluations) ? state.workshopEvaluations : []
+        );
         setPackagingMaterialRules(
           Array.isArray(state.packagingMaterialRules) ? state.packagingMaterialRules : []
         );
@@ -432,6 +438,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setPackagingRequirements([]);
     setFinishingRecords([]);
     setAssemblyStageRecords([]);
+    setWorkshopEvaluations([]);
     setPackagingMaterialRules([]);
     setInternalMessages([]);
     setAuditLogs([]);
@@ -820,7 +827,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
 
-  const baseCtx: any = { currentUser, setCurrentUser, setCurrentUserState, isLoadingState, setIsLoadingState, globalSettings, setGlobalSettings, roles, setRoles, users, setUsers, onlineUsers, setOnlineUsers, sizeDefs, setSizeDefs, suppliers, setSuppliers, workshops, setWorkshops, fabrics, setFabrics, fabricColorsRaw, setFabricColors, fabricColors, fabricTransactions, setFabricTransactions, models, setModels, requirements, setRequirements, accessories, setAccessories, accessoryTypes, setAccessoryTypes, accessoryItemsRaw, setAccessoryItems, accessoryItems, accessoryTransactions, setAccessoryTransactions, cuttingRecords, setCuttingRecords, qcRecords, setQcRecords, printDispatches, setPrintDispatches, sewingDispatches, setSewingDispatches, packagingRequirements, setPackagingRequirements, finishingRecords, setFinishingRecords, assemblyStageRecords, setAssemblyStageRecords, packagingMaterialRules, setPackagingMaterialRules, internalMessages, setInternalMessages, auditLogs, setAuditLogs, flashMessages, setFlashMessages, readNotificationIds, setReadNotificationIds, snoozedNotifications, setSnoozedNotifications, designModelIdsSet, removeFlashMessage, addFlashMessage, refreshState, login, logout, logAction, updateGlobalSettings, formatSupplierWhatsappMessage, openWhatsAppOrder, addModelTimelineEvent, sendInternalMessage, markMessageRead, normalizePartKey, getModelParts, getModelColorList, getModelSizeList, getPackagingRequirement, getPartStages, isPackagingReady };
+  const submitWorkshopEvaluation = useCallback(
+    async (data: {
+      workshopId?: string;
+      workshopName: string;
+      stage: WorkshopEvaluationStage;
+      modelId: string;
+      printDispatchId?: string;
+      sewingDispatchId?: string;
+      finishingRecordId?: string;
+      deliveryTimeliness: number;
+      workQuality: number;
+      finishingQuality: number;
+      notes?: string;
+    }): Promise<{ success: boolean; message: string; evaluation?: WorkshopEvaluation }> => {
+      try {
+        const saved = await api.submitWorkshopEvaluation({
+          workshop_id: data.workshopId,
+          workshop_name: data.workshopName,
+          stage: data.stage,
+          model_id: data.modelId,
+          print_dispatch_id: data.printDispatchId,
+          sewing_dispatch_id: data.sewingDispatchId,
+          finishing_record_id: data.finishingRecordId,
+          delivery_timeliness: data.deliveryTimeliness,
+          work_quality: data.workQuality,
+          finishing_quality: data.finishingQuality,
+          notes: data.notes || '',
+          evaluated_by: currentUser?.real_name || currentUser?.username || 'مسؤول التشغيل'
+        });
+        setWorkshopEvaluations((prev) => [saved, ...prev.filter((item) => item.id !== saved.id)]);
+        addFlashMessage(`تم حفظ تقييم ورشة (${saved.workshop_name}) بنجاح ⭐`, 'success');
+        return { success: true, message: 'تم حفظ التقييم بنجاح', evaluation: saved };
+      } catch (err: any) {
+        const msg = err?.message || 'تعذر حفظ تقييم الورشة';
+        addFlashMessage(msg, 'danger');
+        return { success: false, message: msg };
+      }
+    },
+    [currentUser, addFlashMessage]
+  );
+
+  const baseCtx: any = { currentUser, setCurrentUser, setCurrentUserState, isLoadingState, setIsLoadingState, globalSettings, setGlobalSettings, roles, setRoles, users, setUsers, onlineUsers, setOnlineUsers, sizeDefs, setSizeDefs, suppliers, setSuppliers, workshops, setWorkshops, fabrics, setFabrics, fabricColorsRaw, setFabricColors, fabricColors, fabricTransactions, setFabricTransactions, models, setModels, requirements, setRequirements, accessories, setAccessories, accessoryTypes, setAccessoryTypes, accessoryItemsRaw, setAccessoryItems, accessoryItems, accessoryTransactions, setAccessoryTransactions, cuttingRecords, setCuttingRecords, qcRecords, setQcRecords, printDispatches, setPrintDispatches, sewingDispatches, setSewingDispatches, packagingRequirements, setPackagingRequirements, finishingRecords, setFinishingRecords, assemblyStageRecords, setAssemblyStageRecords, workshopEvaluations, setWorkshopEvaluations, submitWorkshopEvaluation, packagingMaterialRules, setPackagingMaterialRules, internalMessages, setInternalMessages, auditLogs, setAuditLogs, flashMessages, setFlashMessages, readNotificationIds, setReadNotificationIds, snoozedNotifications, setSnoozedNotifications, designModelIdsSet, removeFlashMessage, addFlashMessage, refreshState, login, logout, logAction, updateGlobalSettings, formatSupplierWhatsappMessage, openWhatsAppOrder, addModelTimelineEvent, sendInternalMessage, markMessageRead, normalizePartKey, getModelParts, getModelColorList, getModelSizeList, getPackagingRequirement, getPartStages, isPackagingReady };
   const permHelpers = buildPermissionHelpers(baseCtx);
   const { getUserPermissionsObject, hasSpecificPermission, hasPermission, ASSEMBLY_ACCESS_KEYS, hasAssemblyPackagingAccess, canManagePermissions, canManageUsers, canManageSuppliers, canManageSizes, canViewAuditLogs, canViewGlobalSettings, canEditHeaderSettings, canEditMessageTemplates, canAccessSettings, isCurrentUserSudo, canAccessHRSection, canManageHR, currentUserRank, visibleRankLevels, visibleRankOptions, rankLabelFor, isRankVisibleToActor, clampRankToVisible, getEffectiveDelegatablePermissions, canDelegatePermission, getRoleEnabledPermissionKeys, isRoleAssignable, getCreatedDescendants, canAddDesignNotes, canAddCuttingNotes, canAddQCBeforePrintNotes, canAddQCAfterPrintNotes, canAddSewingNotes, canAddPrintingNotes, canViewFabricPrices, canEditFabricPrices, canViewAccessoryPrices, canEditAccessoryPrices, canViewPrintingPrices, canEditPrintingPrices, canViewPrintingCosts, canEditPrintingCosts, canViewSewingPrices, canEditSewingPrices, canViewAssemblyPrices, canEditAssemblyPrices, canSendWhatsApp, canSendMessages } = permHelpers;
   // Dynamic Role Management
@@ -980,6 +1028,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         packagingRequirements,
         finishingRecords,
         assemblyStageRecords,
+        workshopEvaluations,
+        submitWorkshopEvaluation,
         packagingMaterialRules,
         savePackagingMaterialRule,
         recordPackagingMaterialTransaction,

@@ -5,7 +5,9 @@ import type {
   QualityShortageResponse,
   ModelStageWaterfallResponse,
   DepartmentTargetsResponse,
-  DepartmentTargetsMap
+  DepartmentTargetsMap,
+  WorkshopEvaluation,
+  WorkshopEvaluationsReportResponse
 } from '../types';
 
 /**
@@ -81,7 +83,12 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.detail || errData.error || errData.message || `خطأ في الاتصال بالسيرفر (${res.status})`);
+    const err = new Error(
+      errData.detail || errData.error || errData.message || `خطأ في الاتصال بالسيرفر (${res.status})`
+    ) as Error & { data?: any; status?: number };
+    err.data = errData;
+    err.status = res.status;
+    throw err;
   }
 
   if (res.status === 204) {
@@ -863,5 +870,40 @@ export const api = {
     request<DepartmentTargetsResponse>('/reports/targets/', {
       method: 'POST',
       body: JSON.stringify({ targets })
-    })
+    }),
+
+  // تقييم الورش (Workshop Evaluations)
+  getWorkshopEvaluations: () => request<WorkshopEvaluation[]>('/workshop-evaluations/'),
+  submitWorkshopEvaluation: (data: {
+    workshop_id?: string;
+    workshop_name: string;
+    stage: 'printing' | 'sewing' | 'finishing';
+    model_id: string;
+    print_dispatch_id?: string;
+    sewing_dispatch_id?: string;
+    finishing_record_id?: string;
+    delivery_timeliness: number;
+    work_quality: number;
+    finishing_quality: number;
+    notes?: string;
+    evaluated_by?: string;
+  }) =>
+    request<WorkshopEvaluation>('/workshop-evaluations/', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  getWorkshopEvaluationsReport: (params?: {
+    category?: string;
+    search?: string;
+    date_from?: string;
+    date_to?: string;
+  }) =>
+    request<WorkshopEvaluationsReportResponse>(
+      `/reports/workshop-evaluations/${buildQuery({
+        category: params?.category,
+        search: params?.search,
+        date_from: params?.date_from,
+        date_to: params?.date_to
+      })}`
+    )
 };

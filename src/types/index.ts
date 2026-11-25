@@ -916,6 +916,7 @@ export interface PackagingMaterialTransaction {
   operation: PackagingMaterialOperation;
   operation_label?: string;
   amount: number;
+  model_code_ref?: string;
   notes?: string;
   timestamp?: string;
   created_at?: string;
@@ -1104,6 +1105,28 @@ export interface PackagingReadiness {
   parts?: Record<string, PartStageInfo>;
 }
 
+export interface PackagingMaterialDeductedItem {
+  size_rule_id: string;
+  material_name: string;
+  size_group_name?: string;
+  dimensions_spec?: string;
+  unit: string;
+  amount: number;
+  old_stock?: number;
+  new_stock?: number;
+}
+
+export interface PackagingMaterialShortageItem {
+  size_rule_id: string;
+  material_name: string;
+  size_group_name?: string;
+  dimensions_spec?: string;
+  unit: string;
+  required: number;
+  available: number;
+  shortage: number;
+}
+
 export interface AssemblyStageRecord {
   id: string;
   model_id: string;
@@ -1125,7 +1148,95 @@ export interface AssemblyStageRecord {
   /** تُعاد null لمن لا يملك صلاحية عرض أسعار الأسمبلي. */
   cost_per_piece?: number | null;
   total_cost?: number | null;
+  /** تم خصم خامات التعبئة والتغليف تلقائياً (يمنع الخصم المزدوج). */
+  materials_deducted?: boolean;
+  materials_deducted_details?: PackagingMaterialDeductedItem[];
+  /** مرحلة الدَست: العدد الفعلي المتوقع مقابل المنفذ فعلياً والعجز المحسوب. */
+  expected_pieces?: number;
+  completed_pieces?: number | null;
+  shortage_pieces?: number;
   updated_at?: string;
+}
+
+export type WorkshopEvaluationStage = 'printing' | 'sewing' | 'finishing';
+
+export const WORKSHOP_EVALUATION_STAGE_LABELS: Record<WorkshopEvaluationStage, string> = {
+  printing: 'مطابع وتطريز',
+  sewing: 'مكن وخياطة',
+  finishing: 'تشطيب'
+};
+
+export interface WorkshopEvaluation {
+  id: string;
+  workshop_id?: string;
+  workshop_name: string;
+  stage: WorkshopEvaluationStage;
+  stage_label?: string;
+  model_id: string;
+  model_code?: string;
+  print_dispatch_id?: string;
+  sewing_dispatch_id?: string;
+  finishing_record_id?: string;
+  delivery_timeliness: number;
+  work_quality: number;
+  finishing_quality: number;
+  overall_score: number;
+  notes?: string;
+  evaluated_by?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface WorkshopEvaluationRecentItem {
+  id: string;
+  model_code: string;
+  delivery_timeliness: number;
+  work_quality: number;
+  finishing_quality: number;
+  overall_score: number;
+  notes: string;
+  evaluated_by: string;
+  created_at: string;
+}
+
+export interface WorkshopEvaluationReportRow {
+  workshop_id: string;
+  workshop_name: string;
+  phone: string;
+  category: WorkshopEvaluationStage;
+  category_label: string;
+  evaluations_count: number;
+  avg_delivery: number;
+  avg_work_quality: number;
+  avg_finishing_quality: number;
+  overall_avg: number;
+  total_dispatches: number;
+  completed_dispatches: number;
+  on_time_count: number;
+  timed_dispatches: number;
+  on_time_percent: number | null;
+  defect_pieces: number;
+  total_checked_pieces: number;
+  defect_percent: number;
+  recent_evaluations: WorkshopEvaluationRecentItem[];
+}
+
+export interface WorkshopEvaluationsReportResponse {
+  category: string;
+  search: string;
+  date_from: string;
+  date_to: string;
+  summary: {
+    total_workshops: number;
+    rated_workshops: number;
+    total_evaluations: number;
+    avg_overall: number;
+    avg_on_time_percent: number;
+    top_workshop: string;
+    top_workshop_score: number;
+  };
+  workshops: WorkshopEvaluationReportRow[];
+  generated_at: string;
 }
 
 export interface InternalMessage {
@@ -1853,6 +1964,9 @@ export interface ModelStageWaterfallResponse {
     target_cut_quantity: number;
     total_cut_pieces: number;
     count_after_sewing: number;
+    dest_expected_pieces?: number;
+    dest_completed_pieces?: number | null;
+    dest_shortage_pieces?: number;
   };
   parts: ModelWaterfallPart[];
   model_stages: ModelAssemblyStage[];
@@ -1863,6 +1977,7 @@ export interface ModelStageWaterfallResponse {
     shortage_percent: number;
     /** إجمالي الفقد لكل مرحلة (مجموع القطع). */
     loss_by_stage: StageLosses;
+    dest_shortage?: number;
   };
   generated_at: string;
 }
