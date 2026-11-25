@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   LayoutDashboard,
@@ -25,10 +25,18 @@ import {
   Boxes,
   Scale,
   Wallet,
-  FileText
+  FileText,
+  Layers,
+  Sparkles,
+  ShoppingCart,
+  Search,
+  Printer,
+  Shirt,
+  PackageOpen
 } from 'lucide-react';
 import { InternalMessagingModal } from './InternalMessagingModal';
 import { SNOOZE_OPTIONS } from '../types';
+import { computeAccessoryShortages } from '../utils/accessoryShortages';
 
 interface NavbarProps {
   currentTab: string;
@@ -37,24 +45,29 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLogout }) => {
-  const { 
-    currentUser, 
+  const {
+    currentUser,
     hasPermission,
     hasAssemblyPackagingAccess,
     canAccessSettings,
     canManageHR,
     canAccessHRSection,
     globalSettings,
-    appNotifications, 
-    unreadNotificationsCount, 
+    appNotifications,
+    unreadNotificationsCount,
     markNotificationRead,
     snoozeNotification,
     clearSnoozedNotifications,
     snoozedNotificationsCount,
     unreadMessagesCount,
-    addFlashMessage
+    addFlashMessage,
+    purchaseRequests,
+    accessoryItems,
+    suppliers
   } = useApp();
   const [productionOpen, setProductionOpen] = useState(true);
+  const [warehousesOpen, setWarehousesOpen] = useState(false);
+  const [productionControlOpen, setProductionControlOpen] = useState(false);
   const [hrOpen, setHrOpen] = useState(true);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [messagesModalOpen, setMessagesModalOpen] = useState(false);
@@ -70,78 +83,205 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     siteLogo.startsWith('data:image/') ||
     siteLogo.startsWith('/');
 
-  const productionSubItems = [
-    { 
-      id: 'dashboard', 
-      label: 'الرئيسية', 
-      icon: LayoutDashboard, 
-      color: 'text-slate-700', 
-      isVisible: true 
-    },
+  // Yellow/Amber Alert Dot count: pending manual purchase requests + low-stock accessory shortages
+  const purchaseAlertCount = useMemo(() => {
+    const pendingManual = (purchaseRequests || []).filter((r) => r.status === 'pending').length;
+    const lowStockAccessories = computeAccessoryShortages(accessoryItems || [], suppliers || []).length;
+    return pendingManual + lowStockAccessories;
+  }, [purchaseRequests, accessoryItems, suppliers]);
+
+  // Nested Group A: قسم المخازن (5 direct sub-items)
+  const warehouseSubItems = [
     {
       id: 'warehouse',
-      label: 'قسم المخازن',
-      icon: Package,
+      label: 'مخزن القماش',
+      icon: Layers,
       color: 'text-blue-600',
-      isVisible:
-        hasPermission('fabric_warehouse') ||
-        hasPermission('accessories_warehouse') ||
-        hasPermission('production_warehouse')
+      isVisible: hasPermission('fabric_warehouse')
     },
     {
-      id: 'design',
-      label: 'التصميم',
-      icon: Palette,
-      color: 'text-slate-800',
-      isVisible: hasPermission('design')
+      id: 'accessories_warehouse',
+      label: 'مخزن الإكسسوارات',
+      icon: Sparkles,
+      color: 'text-pink-600',
+      isVisible: hasPermission('accessories_warehouse')
     },
     {
-      id: 'cutting',
-      label: 'القص',
-      icon: Scissors,
-      color: 'text-rose-600',
-      isVisible: hasPermission('cutting')
-    },
-    {
-      id: 'production_control',
-      label: 'الـ production control (مطابع، مكن)',
-      icon: Activity,
-      color: 'text-indigo-600',
-      isVisible:
-        hasPermission('printing') ||
-        hasPermission('qc') ||
-        hasPermission('sewing') ||
-        hasPermission('reports')
-    },
-    {
-      id: 'assembly_packaging',
-      label: 'الأسمبلي والأمبالاج',
-      icon: Boxes,
+      id: 'packaging_materials',
+      label: 'مخزن خامات التشغيل والأمبالاج',
+      icon: PackageOpen,
       color: 'text-orange-600',
       isVisible: hasAssemblyPackagingAccess()
     },
     {
-      id: 'models_tracking',
-      label: 'حركة الموديلات',
-      icon: GitCommit,
-      color: 'text-cyan-600',
-      isVisible: hasPermission('models_tracking') || isSudo
+      id: 'production_warehouse',
+      label: 'مخزن الإنتاج التام',
+      icon: Boxes,
+      color: 'text-indigo-600',
+      isVisible: hasPermission('production_warehouse')
     },
     {
-      id: 'unified_model_cards',
-      label: 'بطاقة الموديل الشاملة',
-      icon: FileText,
-      color: 'text-violet-600',
-      isVisible: hasPermission('models_tracking') || hasPermission('reports') || isSudo
-    },
-    {
-      id: 'reports',
-      label: 'التقارير والإحصائيات',
-      icon: BarChart3,
+      id: 'purchase_requests',
+      label: 'طلبات الشراء',
+      icon: ShoppingCart,
       color: 'text-amber-600',
-      isVisible: hasPermission('reports') || isSudo
+      isVisible: hasPermission('purchase_requests'),
+      alertCount: purchaseAlertCount
     }
   ].filter((item) => item.isVisible);
+
+  // Nested Group B: متابعة الإنتاج (3 direct sub-items)
+  const productionControlSubItems = [
+    {
+      id: 'qc',
+      label: 'قسم الفرز',
+      icon: Search,
+      color: 'text-purple-600',
+      isVisible: hasPermission('qc')
+    },
+    {
+      id: 'printing',
+      label: 'قسم الطباعة',
+      icon: Printer,
+      color: 'text-teal-600',
+      isVisible: hasPermission('printing') || hasPermission('reports')
+    },
+    {
+      id: 'sewing',
+      label: 'قسم المكن',
+      icon: Shirt,
+      color: 'text-emerald-600',
+      isVisible: hasPermission('sewing')
+    }
+  ].filter((item) => item.isVisible);
+
+  type ProductionNavEntry =
+    | {
+        kind: 'item';
+        id: string;
+        label: string;
+        icon: any;
+        color: string;
+        isVisible: boolean;
+      }
+    | {
+        kind: 'group';
+        id: 'warehouses_group' | 'production_control_group';
+        label: string;
+        icon: any;
+        color: string;
+        isVisible: boolean;
+        alertCount?: number;
+        children: Array<{
+          id: string;
+          label: string;
+          icon: any;
+          color: string;
+          alertCount?: number;
+        }>;
+      };
+
+  const productionNavEntries: ProductionNavEntry[] = (
+    [
+      {
+        kind: 'item',
+        id: 'dashboard',
+        label: 'الرئيسية',
+        icon: LayoutDashboard,
+        color: 'text-slate-700',
+        isVisible: true
+      },
+      {
+        kind: 'group',
+        id: 'warehouses_group',
+        label: 'قسم المخازن',
+        icon: Package,
+        color: 'text-blue-600',
+        isVisible: warehouseSubItems.length > 0,
+        alertCount: purchaseAlertCount,
+        children: warehouseSubItems
+      },
+      {
+        kind: 'item',
+        id: 'design',
+        label: 'التصميم',
+        icon: Palette,
+        color: 'text-slate-800',
+        isVisible: hasPermission('design')
+      },
+      {
+        kind: 'item',
+        id: 'cutting',
+        label: 'القص',
+        icon: Scissors,
+        color: 'text-rose-600',
+        isVisible: hasPermission('cutting')
+      },
+      {
+        kind: 'group',
+        id: 'production_control_group',
+        label: 'متابعة الإنتاج',
+        icon: Activity,
+        color: 'text-indigo-600',
+        isVisible: productionControlSubItems.length > 0,
+        children: productionControlSubItems
+      },
+      {
+        kind: 'item',
+        id: 'assembly_packaging',
+        label: 'الأسمبلي والأمبالاج',
+        icon: Boxes,
+        color: 'text-orange-600',
+        isVisible: hasAssemblyPackagingAccess()
+      },
+      {
+        kind: 'item',
+        id: 'models_tracking',
+        label: 'حركة الموديلات',
+        icon: GitCommit,
+        color: 'text-cyan-600',
+        isVisible: hasPermission('models_tracking') || isSudo
+      },
+      {
+        kind: 'item',
+        id: 'unified_model_cards',
+        label: 'بطاقة الموديل الشاملة',
+        icon: FileText,
+        color: 'text-violet-600',
+        isVisible: hasPermission('models_tracking') || hasPermission('reports') || isSudo
+      },
+      {
+        kind: 'item',
+        id: 'reports',
+        label: 'التقارير والإحصائيات',
+        icon: BarChart3,
+        color: 'text-amber-600',
+        isVisible: hasPermission('reports') || isSudo
+      }
+    ] as ProductionNavEntry[]
+  ).filter((entry) => entry.isVisible);
+
+  // Auto-open the relevant nested sub-dropdown when navigating to one of its child tabs
+  useEffect(() => {
+    if (
+      currentTab === 'warehouse' ||
+      currentTab === 'accessories_warehouse' ||
+      currentTab === 'packaging_materials' ||
+      currentTab === 'production_warehouse' ||
+      currentTab === 'purchase_requests'
+    ) {
+      setWarehousesOpen(true);
+    }
+    if (
+      currentTab === 'qc' ||
+      currentTab === 'qc_details' ||
+      currentTab === 'printing' ||
+      currentTab === 'sewing' ||
+      currentTab === 'production_control'
+    ) {
+      setProductionControlOpen(true);
+    }
+  }, [currentTab]);
 
   // الموارد البشرية (HR) - 4 عناصر رئيسية فقط.
   // الصفحات المدمجة (موظفين + وظائف)، (حضور + قواعد)، (سلف + جزاءات) تُفتح كشاشة واحدة
@@ -198,14 +338,6 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
   const isTabActive = (itemId: string) => {
     if (currentTab === itemId) return true;
     if (
-      itemId === 'warehouse' &&
-      (currentTab === 'warehouse' ||
-        currentTab === 'accessories_warehouse' ||
-        currentTab === 'production_warehouse')
-    ) {
-      return true;
-    }
-    if (
       itemId === 'design' &&
       (currentTab === 'design' || currentTab === 'model_details')
     ) {
@@ -217,20 +349,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     ) {
       return true;
     }
-    if (
-      itemId === 'production_control' &&
-      (currentTab === 'production_control' ||
-        currentTab === 'printing' ||
-        currentTab === 'qc' ||
-        currentTab === 'qc_details' ||
-        currentTab === 'sewing')
-    ) {
-      return true;
-    }
-    if (itemId === 'models_tracking' && currentTab === 'models_tracking') {
-      return true;
-    }
-    if (itemId === 'assembly_packaging' && currentTab === 'assembly_packaging') {
+    if (itemId === 'qc' && (currentTab === 'qc' || currentTab === 'qc_details')) {
       return true;
     }
     if (
@@ -242,7 +361,11 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     return false;
   };
 
-  const isAnyProductionActive = productionSubItems.some((item) => isTabActive(item.id));
+  const isAnyProductionActive = productionNavEntries.some((entry) =>
+    entry.kind === 'group'
+      ? entry.children.some((child) => isTabActive(child.id))
+      : isTabActive(entry.id)
+  );
   const isAnyHrActive = hrSubItems.some((item) => isTabActive(item.id));
 
   return (
@@ -450,21 +573,131 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
 
             {productionOpen && (
               <div className="pr-3 pl-1 py-1 space-y-1 border-r-2 border-slate-200 mr-3">
-                {productionSubItems.map((item) => {
-                  const Icon = item.icon;
-                  const isActive = isTabActive(item.id);
+                {productionNavEntries.map((entry) => {
+                  if (entry.kind === 'group') {
+                    const GroupIcon = entry.icon;
+                    const isGroupOpen =
+                      entry.id === 'warehouses_group' ? warehousesOpen : productionControlOpen;
+                    const toggleGroup = () => {
+                      if (entry.id === 'warehouses_group') {
+                        setWarehousesOpen((v) => !v);
+                      } else {
+                        setProductionControlOpen((v) => !v);
+                      }
+                    };
+                    const isGroupActive = entry.children.some((c) => isTabActive(c.id));
+                    const groupAlertCount = entry.alertCount || 0;
+
+                    return (
+                      <div key={entry.id} className="space-y-1">
+                        <button
+                          type="button"
+                          onClick={toggleGroup}
+                          aria-expanded={isGroupOpen}
+                          className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-xs font-extrabold transition cursor-pointer text-start ${
+                            isGroupActive
+                              ? 'bg-slate-100 text-slate-900 ring-1 ring-slate-200'
+                              : 'text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          <span className="flex items-center gap-2.5 min-w-0">
+                            <GroupIcon className={`w-4 h-4 shrink-0 ${entry.color}`} />
+                            <span className="truncate">{entry.label}</span>
+                            {groupAlertCount > 0 && (
+                              <span
+                                className="inline-flex items-center gap-1 shrink-0"
+                                title={`يوجد ${groupAlertCount} طلب شراء أو نقص إكسسوارات`}
+                              >
+                                <span className="relative flex h-2.5 w-2.5">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500 ring-2 ring-amber-200" />
+                                </span>
+                                <span className="px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-mono font-black leading-tight">
+                                  {groupAlertCount}
+                                </span>
+                              </span>
+                            )}
+                          </span>
+                          <ChevronDown
+                            className={`w-3.5 h-3.5 text-slate-400 shrink-0 transition-transform duration-200 ${
+                              isGroupOpen ? 'rotate-180' : ''
+                            }`}
+                          />
+                        </button>
+
+                        {isGroupOpen && (
+                          <div className="pr-3 pl-0.5 py-0.5 space-y-0.5 border-r-2 border-slate-200/80 mr-3">
+                            {entry.children.map((child) => {
+                              const ChildIcon = child.icon;
+                              const isChildActive = isTabActive(child.id);
+                              const childAlerts = child.alertCount || 0;
+                              return (
+                                <button
+                                  key={child.id}
+                                  type="button"
+                                  onClick={() => handleNavClick(child.id)}
+                                  className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl text-[11.5px] font-bold transition cursor-pointer text-start ${
+                                    isChildActive
+                                      ? 'bg-blue-600 text-white shadow-xs'
+                                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                  }`}
+                                >
+                                  <span className="flex items-center gap-2 min-w-0">
+                                    <ChildIcon
+                                      className={`w-3.5 h-3.5 shrink-0 ${
+                                        isChildActive ? 'text-white' : child.color
+                                      }`}
+                                    />
+                                    <span className="truncate">{child.label}</span>
+                                  </span>
+                                  {childAlerts > 0 && (
+                                    <span
+                                      className="inline-flex items-center gap-1 shrink-0"
+                                      title={`يوجد ${childAlerts} صنف مطلوب للشراء`}
+                                    >
+                                      <span className="relative flex h-2 w-2">
+                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-300 opacity-80" />
+                                        <span
+                                          className={`relative inline-flex rounded-full h-2 w-2 ${
+                                            isChildActive ? 'bg-amber-300' : 'bg-amber-500'
+                                          }`}
+                                        />
+                                      </span>
+                                      <span
+                                        className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-black leading-tight ${
+                                          isChildActive
+                                            ? 'bg-amber-400 text-slate-950'
+                                            : 'bg-amber-100 text-amber-900 border border-amber-300'
+                                        }`}
+                                      >
+                                        {childAlerts}
+                                      </span>
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+
+                  const Icon = entry.icon;
+                  const isActive = isTabActive(entry.id);
                   return (
                     <button
-                      key={item.id}
-                      onClick={() => handleNavClick(item.id)}
+                      key={entry.id}
+                      type="button"
+                      onClick={() => handleNavClick(entry.id)}
                       className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer text-start ${
                         isActive
                           ? 'bg-blue-600 text-white shadow-xs'
                           : 'text-slate-700 hover:bg-slate-100'
                       }`}
                     >
-                      <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : item.color}`} />
-                      <span className="truncate">{item.label}</span>
+                      <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : entry.color}`} />
+                      <span className="truncate">{entry.label}</span>
                     </button>
                   );
                 })}
@@ -595,30 +828,17 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                       key={notif.id}
                       onClick={() => {
                         markNotificationRead(notif.id);
-                        const assemblyStages = [
-                          'finishing',
-                          'ironing',
-                          'packaging',
-                          'dest',
-                          'materials'
-                        ];
-                        setCurrentTab(
-                          assemblyStages.includes(notif.stage)
-                            ? 'assembly_packaging'
-                            : 'production_control'
-                        );
-                        if (notif.kind === 'material') {
-                          try {
-                            localStorage.setItem(
-                              'erp_packaging_materials_focus',
-                              String(Date.now())
-                            );
-                          } catch {}
-                          window.setTimeout(() => {
-                            window.dispatchEvent(
-                              new CustomEvent('erp:open-packaging-materials')
-                            );
-                          }, 60);
+                        const assemblyStages = ['finishing', 'ironing', 'packaging', 'dest'];
+                        if (notif.kind === 'material' || notif.stage === 'materials') {
+                          setCurrentTab('packaging_materials');
+                        } else if (assemblyStages.includes(notif.stage)) {
+                          setCurrentTab('assembly_packaging');
+                        } else if (notif.stage === 'sewing') {
+                          setCurrentTab('sewing');
+                        } else if (notif.stage === 'printing') {
+                          setCurrentTab('printing');
+                        } else {
+                          setCurrentTab('qc');
                         }
                         setNotificationsOpen(false);
                         setMobileMenuOpen(false);

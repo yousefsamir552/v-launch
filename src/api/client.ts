@@ -412,6 +412,23 @@ export const api = {
     request<any>(`/accessories/${encodeURIComponent(id)}/mark_withdrawn/`, { method: 'POST' }),
   getAccessoryAlerts: () => request<any>('/accessories/alerts/'),
 
+  // طلبات الشراء والمشتريات (Purchase Requests)
+  getPurchaseRequests: () => request<any[]>('/purchase-requests/'),
+  createPurchaseRequest: (data: any) =>
+    request<any>('/purchase-requests/', { method: 'POST', body: JSON.stringify(data) }),
+  updatePurchaseRequest: (id: string, data: any) =>
+    request<any>(`/purchase-requests/${encodeURIComponent(id)}/`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    }),
+  deletePurchaseRequest: (id: string) =>
+    request<any>(`/purchase-requests/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  markPurchaseRequestPurchased: (id: string, data: any) =>
+    request<any>(`/purchase-requests/${encodeURIComponent(id)}/mark_purchased/`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+
   // الموديلات ومتطلبات التصميم ومراحل الإنتاج (Models & Lifecycle)
   getModels: () => request<any[]>('/models/'),
   createModel: (data: any) =>

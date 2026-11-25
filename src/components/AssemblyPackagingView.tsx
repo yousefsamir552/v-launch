@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { PackagingMaterialsView } from './PackagingMaterialsView';
 import {
   Boxes,
   ClipboardList,
@@ -1636,28 +1635,10 @@ export const AssemblyPackagingView: React.FC = () => {
     exportAssemblyPackagingCsv
   } = useApp();
 
-  const activeSectionDefault = (): 'pipeline' | 'materials' => {
-    try {
-      if (localStorage.getItem('erp_packaging_materials_focus')) {
-        localStorage.removeItem('erp_packaging_materials_focus');
-        return 'materials';
-      }
-    } catch {}
-    return 'pipeline';
-  };
-
   const canEdit = hasAssemblyPackagingAccess(true);
   const [activeTab, setActiveTab] = useState<TabKey>('requirements');
-  const [activeSection, setActiveSection] = useState<'pipeline' | 'materials'>(activeSectionDefault);
   const [searchTerm, setSearchTerm] = useState('');
   const [showCompleted, setShowCompleted] = useState(false);
-
-  // تنبيهات خامات التشغيل في شريط الإشعارات تفتح هذا القسم مباشرة.
-  useEffect(() => {
-    const openMaterials = () => setActiveSection('materials');
-    window.addEventListener('erp:open-packaging-materials', openMaterials);
-    return () => window.removeEventListener('erp:open-packaging-materials', openMaterials);
-  }, []);
 
   const requirementCompleteMap = useMemo(() => {
     const map: Record<string, boolean> = {};
@@ -1801,36 +1782,6 @@ export const AssemblyPackagingView: React.FC = () => {
         </div>
       </div>
 
-      {/* Section switcher */}
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => setActiveSection('pipeline')}
-          className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-[11px] font-black border transition ${
-            activeSection === 'pipeline'
-              ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-          }`}
-        >
-          <ClipboardList className="w-4 h-4" /> متابعة المراحل التشغيلية
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveSection('materials')}
-          className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-[11px] font-black border transition ${
-            activeSection === 'materials'
-              ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-          }`}
-        >
-          <Boxes className="w-4 h-4" /> خامات التشغيل والأمبالاج
-        </button>
-      </div>
-
-      {activeSection === 'materials' ? (
-        <PackagingMaterialsView />
-      ) : (
-        <>
       {/* Search + Tabs */}
       <div className="bg-white rounded-3xl border border-slate-200/80 p-4 shadow-xs space-y-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -1939,8 +1890,6 @@ export const AssemblyPackagingView: React.FC = () => {
             );
           })}
         </div>
-      )}
-        </>
       )}
     </div>
   );

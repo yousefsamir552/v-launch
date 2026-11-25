@@ -44,7 +44,8 @@ export const DispatchAssemblyView: React.FC = () => {
     canViewPrintingPrices,
     canEditPrintingPrices,
     canAddPrintingNotes,
-    canAddQCBeforePrintNotes
+    canAddQCBeforePrintNotes,
+    exportPrintDispatchesCsv
   } = useApp();
 
   const canEdit = hasPermission('printing', true) || hasPermission('qc', true) || hasPermission('cutting', true);
@@ -260,6 +261,13 @@ export const DispatchAssemblyView: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={exportPrintDispatchesCsv}
+            className="flex items-center gap-2 px-4 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition cursor-pointer shrink-0"
+          >
+            <span>📊 تصدير Excel</span>
+          </button>
           <CompletedModelsToggle
             enabled={showCompleted}
             count={endedPartCards.length}

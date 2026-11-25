@@ -40,6 +40,7 @@ import {
   AccessoryTransaction,
   AccessoryUnit,
   AccessoryUsageType,
+  PurchaseRequest,
   ModelTimelineEvent,
   SewingDispatch,
   SewingDispatchStatus,
@@ -146,6 +147,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [accessoryTypes, setAccessoryTypes] = useState<AccessoryType[]>([]);
   const [accessoryItemsRaw, setAccessoryItems] = useState<AccessoryItem[]>([]);
   const [accessoryTransactions, setAccessoryTransactions] = useState<AccessoryTransaction[]>([]);
+  const [purchaseRequests, setPurchaseRequests] = useState<PurchaseRequest[]>([]);
   const [cuttingRecords, setCuttingRecords] = useState<CuttingRecord[]>([]);
   const [qcRecords, setQcRecords] = useState<QCRecord[]>([]);
   const [printDispatches, setPrintDispatches] = useState<PrintDispatch[]>([]);
@@ -291,6 +293,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAccessoryItems(Array.isArray(state.accessoryItems) ? state.accessoryItems : []);
         setAccessoryTransactions(
           Array.isArray(state.accessoryTransactions) ? state.accessoryTransactions : []
+        );
+        setPurchaseRequests(
+          Array.isArray(state.purchaseRequests) ? state.purchaseRequests : []
         );
         setModels(Array.isArray(state.models) ? state.models : []);
         setRequirements(Array.isArray(state.requirements) ? state.requirements : []);
@@ -868,7 +873,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [currentUser, addFlashMessage]
   );
 
-  const baseCtx: any = { currentUser, setCurrentUser, setCurrentUserState, isLoadingState, setIsLoadingState, globalSettings, setGlobalSettings, roles, setRoles, users, setUsers, onlineUsers, setOnlineUsers, sizeDefs, setSizeDefs, suppliers, setSuppliers, workshops, setWorkshops, fabrics, setFabrics, fabricColorsRaw, setFabricColors, fabricColors, fabricTransactions, setFabricTransactions, models, setModels, requirements, setRequirements, accessories, setAccessories, accessoryTypes, setAccessoryTypes, accessoryItemsRaw, setAccessoryItems, accessoryItems, accessoryTransactions, setAccessoryTransactions, cuttingRecords, setCuttingRecords, qcRecords, setQcRecords, printDispatches, setPrintDispatches, sewingDispatches, setSewingDispatches, packagingRequirements, setPackagingRequirements, finishingRecords, setFinishingRecords, assemblyStageRecords, setAssemblyStageRecords, workshopEvaluations, setWorkshopEvaluations, submitWorkshopEvaluation, packagingMaterialRules, setPackagingMaterialRules, internalMessages, setInternalMessages, auditLogs, setAuditLogs, flashMessages, setFlashMessages, readNotificationIds, setReadNotificationIds, snoozedNotifications, setSnoozedNotifications, designModelIdsSet, removeFlashMessage, addFlashMessage, refreshState, login, logout, logAction, updateGlobalSettings, formatSupplierWhatsappMessage, openWhatsAppOrder, addModelTimelineEvent, sendInternalMessage, markMessageRead, normalizePartKey, getModelParts, getModelColorList, getModelSizeList, getPackagingRequirement, getPartStages, isPackagingReady };
+  const baseCtx: any = { currentUser, setCurrentUser, setCurrentUserState, isLoadingState, setIsLoadingState, globalSettings, setGlobalSettings, roles, setRoles, users, setUsers, onlineUsers, setOnlineUsers, sizeDefs, setSizeDefs, suppliers, setSuppliers, workshops, setWorkshops, fabrics, setFabrics, fabricColorsRaw, setFabricColors, fabricColors, fabricTransactions, setFabricTransactions, models, setModels, requirements, setRequirements, accessories, setAccessories, accessoryTypes, setAccessoryTypes, accessoryItemsRaw, setAccessoryItems, accessoryItems, accessoryTransactions, setAccessoryTransactions, purchaseRequests, setPurchaseRequests, cuttingRecords, setCuttingRecords, qcRecords, setQcRecords, printDispatches, setPrintDispatches, sewingDispatches, setSewingDispatches, packagingRequirements, setPackagingRequirements, finishingRecords, setFinishingRecords, assemblyStageRecords, setAssemblyStageRecords, workshopEvaluations, setWorkshopEvaluations, submitWorkshopEvaluation, packagingMaterialRules, setPackagingMaterialRules, internalMessages, setInternalMessages, auditLogs, setAuditLogs, flashMessages, setFlashMessages, readNotificationIds, setReadNotificationIds, snoozedNotifications, setSnoozedNotifications, designModelIdsSet, removeFlashMessage, addFlashMessage, refreshState, login, logout, logAction, updateGlobalSettings, formatSupplierWhatsappMessage, openWhatsAppOrder, addModelTimelineEvent, sendInternalMessage, markMessageRead, normalizePartKey, getModelParts, getModelColorList, getModelSizeList, getPackagingRequirement, getPartStages, isPackagingReady };
   const permHelpers = buildPermissionHelpers(baseCtx);
   const { getUserPermissionsObject, hasSpecificPermission, hasPermission, ASSEMBLY_ACCESS_KEYS, hasAssemblyPackagingAccess, canManagePermissions, canManageUsers, canManageSuppliers, canManageSizes, canViewAuditLogs, canViewGlobalSettings, canEditHeaderSettings, canEditMessageTemplates, canAccessSettings, isCurrentUserSudo, canAccessHRSection, canManageHR, currentUserRank, visibleRankLevels, visibleRankOptions, rankLabelFor, isRankVisibleToActor, clampRankToVisible, getEffectiveDelegatablePermissions, canDelegatePermission, getRoleEnabledPermissionKeys, isRoleAssignable, getCreatedDescendants, canAddDesignNotes, canAddCuttingNotes, canAddQCBeforePrintNotes, canAddQCAfterPrintNotes, canAddSewingNotes, canAddPrintingNotes, canViewFabricPrices, canEditFabricPrices, canViewAccessoryPrices, canEditAccessoryPrices, canViewPrintingPrices, canEditPrintingPrices, canViewPrintingCosts, canEditPrintingCosts, canViewSewingPrices, canEditSewingPrices, canViewAssemblyPrices, canEditAssemblyPrices, canSendWhatsApp, canSendMessages } = permHelpers;
   // Dynamic Role Management
@@ -958,7 +963,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const designActions = buildDesignActions(ctxWithPerms);
   const { addDesignModel, cloneDesignModel, updateModelPlan, updateModelNotesAndTarget, updateDesignModelBasicInfo, addModelRequirement, deleteModelRequirement, addModelAccessory, deleteModelAccessory, issueFabricToCutting, returnFabricFromCutting, deleteDesignModel } = designActions;
   const fullCtx: any = { ...ctxWithPerms, ...designActions };
-  const { addFabricOrColor, recordTransaction, exportWarehouseInventoryCsv, updateColorPrice, updateFabricColorDetails, addAccessoryType, addAccessoryItem, updateAccessoryItem, deleteAccessoryItem, markAccessoryWithdrawn, recordAccessoryTransaction, exportAccessoryInventoryCsv, issueModelAccessories } = buildWarehouseActions(fullCtx);
+  const { addFabricOrColor, recordTransaction, exportWarehouseInventoryCsv, updateColorPrice, updateFabricColorDetails, addAccessoryType, addAccessoryItem, updateAccessoryItem, deleteAccessoryItem, markAccessoryWithdrawn, recordAccessoryTransaction, exportAccessoryInventoryCsv, issueModelAccessories, addPurchaseRequest, updatePurchaseRequest, deletePurchaseRequest, markPurchaseRequestPurchased, exportPurchaseRequestsCsv } = buildWarehouseActions(fullCtx);
   const { addCuttingRecord, updateCuttingRecord, deleteCuttingRecord, finishCuttingToQC, exportCuttingCsv, recordQCData, saveQCMatrix, recordQCStageCount, finishQCApproval, exportQcCsv } = buildCuttingQcActions(fullCtx);
   const { modelCodeOf, exportDesignModelsCsv, exportFabricTransactionsCsv, exportAccessoryTransactionsCsv, exportProductionWarehouseCsv, exportPrintDispatchesCsv, exportSewingDispatchesCsv, exportAssemblyPackagingCsv, exportPackagingMaterialsCsv, exportSuppliersCsv, exportWorkshopsCsv, exportAuditLogsCsv, buildHRSectionsSheets, exportHRSectionsZip, exportFullBackupZip } = buildExportActions(fullCtx);
   const { addPrintDispatch, updateDispatchStatus, skipPrintToSewing, dispatchModelToSewing, receiveModelFromSewing, finishSewingToQC, finishQCToProduction } = buildPrintSewingActions(fullCtx);
@@ -1109,6 +1114,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         exportAccessoryInventoryCsv,
         markAccessoryWithdrawn,
         issueModelAccessories,
+        purchaseRequests,
+        addPurchaseRequest,
+        updatePurchaseRequest,
+        deletePurchaseRequest,
+        markPurchaseRequestPurchased,
+        exportPurchaseRequestsCsv,
         addDesignModel,
         cloneDesignModel,
         updateModelPlan,

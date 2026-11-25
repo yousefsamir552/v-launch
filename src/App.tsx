@@ -5,6 +5,10 @@ import { Navbar } from './components/Navbar';
 import { FlashAlerts } from './components/FlashAlerts';
 import { DashboardView } from './components/DashboardView';
 import { WarehouseView } from './components/WarehouseView';
+import { AccessoriesWarehouseView } from './components/AccessoriesWarehouseView';
+import { PackagingMaterialsView } from './components/PackagingMaterialsView';
+import { ProductionWarehouseView } from './components/ProductionWarehouseView';
+import { PurchaseRequestsView } from './components/PurchaseRequestsView';
 import { DesignView } from './components/DesignView';
 import { ModelDetailsView } from './components/ModelDetailsView';
 import { CuttingView } from './components/CuttingView';
@@ -108,29 +112,20 @@ export const App: React.FC = () => {
   const canAccessTab = (tab: string): boolean => {
     if (isSudo) return true;
     if (tab === 'dashboard') return true;
-    if (
-      tab === 'warehouse' ||
-      tab === 'accessories_warehouse' ||
-      tab === 'production_warehouse'
-    ) {
-      return (
-        hasPermission('fabric_warehouse') ||
-        hasPermission('accessories_warehouse') ||
-        hasPermission('production_warehouse')
-      );
-    }
+    if (tab === 'warehouse') return hasPermission('fabric_warehouse');
+    if (tab === 'accessories_warehouse') return hasPermission('accessories_warehouse');
+    if (tab === 'packaging_materials') return hasAssemblyPackagingAccess();
+    if (tab === 'production_warehouse') return hasPermission('production_warehouse');
+    if (tab === 'purchase_requests') return hasPermission('purchase_requests');
     if (tab === 'design' || tab === 'model_details') return hasPermission('design');
     if (tab === 'cutting' || tab === 'cutting_details') return hasPermission('cutting');
-    if (
-      tab === 'production_control' ||
-      tab === 'printing' ||
-      tab === 'qc' ||
-      tab === 'qc_details' ||
-      tab === 'sewing'
-    ) {
+    if (tab === 'qc' || tab === 'qc_details') return hasPermission('qc');
+    if (tab === 'printing') return hasPermission('printing') || hasPermission('reports');
+    if (tab === 'sewing') return hasPermission('sewing');
+    if (tab === 'production_control') {
       return (
-        hasPermission('printing') ||
         hasPermission('qc') ||
+        hasPermission('printing') ||
         hasPermission('sewing') ||
         hasPermission('reports')
       );
@@ -212,10 +207,12 @@ export const App: React.FC = () => {
           <DashboardView onNavigate={(tab, id) => handleNavigate(tab, id)} />
         )}
 
-        {/* Warehouses Hub (Fabric, Accessories, Production) */}
-        {(currentTab === 'warehouse' ||
-          currentTab === 'accessories_warehouse' ||
-          currentTab === 'production_warehouse') && <WarehouseView />}
+        {/* Warehouses (Direct routes from sidebar nested sub-menu) */}
+        {currentTab === 'warehouse' && <WarehouseView />}
+        {currentTab === 'accessories_warehouse' && <AccessoriesWarehouseView />}
+        {currentTab === 'packaging_materials' && <PackagingMaterialsView />}
+        {currentTab === 'production_warehouse' && <ProductionWarehouseView />}
+        {currentTab === 'purchase_requests' && <PurchaseRequestsView />}
 
         {/* Design View */}
         {currentTab === 'design' && (
@@ -239,22 +236,21 @@ export const App: React.FC = () => {
           <CuttingDetailsView
             modelId={selectedModelId}
             onBack={() => handleNavigate('cutting')}
-            onFinishedToQC={() => handleNavigate('production_control')}
+            onFinishedToQC={() => handleNavigate('qc')}
           />
         )}
 
-        {/* Production Control Hub (Printing, QC, Sewing) */}
+        {/* Production Control (Direct routes from sidebar nested sub-menu: QC / Print / Sewing) */}
         {currentTab === 'production_control' && <ProductionControlView />}
-
-        {currentTab === 'printing' && <ProductionControlView initialSubTab="printing" />}
         {currentTab === 'qc' && <ProductionControlView initialSubTab="qc" />}
+        {currentTab === 'printing' && <ProductionControlView initialSubTab="printing" />}
         {currentTab === 'sewing' && <ProductionControlView initialSubTab="sewing" />}
 
         {currentTab === 'qc_details' && (
           <QCDetailsView
             modelId={selectedModelId}
-            onBack={() => handleNavigate('production_control')}
-            onFinishedApproval={() => handleNavigate('production_control')}
+            onBack={() => handleNavigate('qc')}
+            onFinishedApproval={() => handleNavigate('qc')}
           />
         )}
 

@@ -34,7 +34,8 @@ import {
   Globe,
   Users,
   Lock,
-  KeyRound
+  KeyRound,
+  ShoppingCart
 } from 'lucide-react';
 
 /**
@@ -224,6 +225,14 @@ export const SYSTEM_SECTIONS: {
     icon: Boxes,
     color: 'text-indigo-600',
     bgColor: 'bg-indigo-50 border-indigo-200'
+  },
+  {
+    key: 'purchase_requests',
+    label: 'طلبات الشراء',
+    description: 'تسجيل طلبات الشراء المستقلة، متابعة نواقص الإكسسوارات، وتوثيق المشتريات والأسعار والموردين',
+    icon: ShoppingCart,
+    color: 'text-amber-600',
+    bgColor: 'bg-amber-50 border-amber-200'
   },
   {
     key: 'design',
@@ -441,6 +450,8 @@ export const DEFAULT_PERMISSIONS: RolePermissions = {
   accessories_warehouse_edit: false,
   production_warehouse_view: false,
   production_warehouse_edit: false,
+  purchase_requests_view: false,
+  purchase_requests_edit: false,
   design_view: false,
   design_edit: false,
   cutting_view: false,
@@ -757,7 +768,7 @@ export const RoleManagementSection: React.FC = () => {
         next.can_add_printing_notes = false;
       } else if (preset === 'warehouse_only') {
         SYSTEM_SECTIONS.forEach((s) => {
-          const isWh = s.key.includes('warehouse');
+          const isWh = s.key.includes('warehouse') || s.key === 'purchase_requests';
           (next as any)[`${s.key}_view`] = isWh;
           (next as any)[`${s.key}_edit`] = isWh;
         });

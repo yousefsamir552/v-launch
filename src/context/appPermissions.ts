@@ -86,6 +86,8 @@ export const buildPermissionHelpers = (ctx: AppInternalContext) => {
         accessories_warehouse_edit: true,
         production_warehouse_view: true,
         production_warehouse_edit: true,
+        purchase_requests_view: true,
+        purchase_requests_edit: true,
         design_view: true,
         design_edit: true,
         cutting_view: true,

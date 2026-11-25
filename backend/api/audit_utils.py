@@ -65,6 +65,7 @@ SECTION_BY_MODEL = {
     'AccessoryType': 'مخزن الإكسسوارات',
     'Accessory': 'مخزن الإكسسوارات',
     'AccessoryTransaction': 'مخزن الإكسسوارات',
+    'PurchaseRequest': 'طلبات الشراء',
     'ModelItem': 'التصميم',
     'ModelRequirement': 'التصميم',
     'ModelAccessory': 'التصميم',
@@ -105,6 +106,7 @@ NOUN_BY_MODEL = {
     'AccessoryType': 'تصنيف إكسسوار',
     'Accessory': 'صنف إكسسوار',
     'AccessoryTransaction': 'حركة إكسسوار',
+    'PurchaseRequest': 'طلب شراء',
     'ModelItem': 'موديل',
     'ModelRequirement': 'متطلب موديل',
     'ModelAccessory': 'إكسسوار موديل',
@@ -134,6 +136,7 @@ ACTION_METHOD_LABELS = {
     'add_fabric_or_color': ('create', 'أضاف قماش/لون جديد'),
     'record_transaction': ('transaction', 'سجّل حركة مخزون'),
     'mark_withdrawn': ('status_change', 'علّم الصنف كمسحوب للموديل'),
+    'mark_purchased': ('status_change', 'أتمّ شراء طلب الشراء'),
     'update_plan': ('update', 'حدّث خطة وخامات الموديل'),
     'issue_fabric_to_cutting': ('status_change', 'صرف خامات الموديل إلى القص'),
     'issue_accessories': ('transaction', 'صرف وتسليم إكسسوارات الموديل'),
@@ -176,6 +179,8 @@ PERMISSION_LABELS = {
     'accessories_warehouse_edit': 'تعديل مخزن الإكسسوارات',
     'production_warehouse_view': 'عرض مخزن الإنتاج',
     'production_warehouse_edit': 'تعديل مخزن الإنتاج',
+    'purchase_requests_view': 'عرض طلبات الشراء',
+    'purchase_requests_edit': 'تعديل وإدارة طلبات الشراء',
     'design_view': 'عرض التصميم',
     'design_edit': 'تعديل التصميم',
     'cutting_view': 'عرض القص',
@@ -260,6 +265,13 @@ FIELD_LABELS = {
     'details': 'التفاصيل',
     'status': 'الحالة',
     'target_name': 'العنصر',
+    'item_name': 'اسم الصنف',
+    'model_code_text': 'كود الموديل',
+    'category': 'التصنيف',
+    'purchased_price': 'سعر الشراء',
+    'supplier_name': 'اسم المورد',
+    'purchase_notes': 'ملاحظات الشراء',
+    'purchased_by': 'تم الشراء بواسطة',
 }
 
 SENSITIVE_FIELDS = {'password', 'password_hash', 'auth_token', 'token'}
@@ -337,7 +349,7 @@ def get_display_name(obj) -> str:
     if obj is None:
         return ''
     for attr in (
-        'real_name', 'name', 'title', 'model_code', 'color_name',
+        'real_name', 'item_name', 'name', 'title', 'model_code', 'color_name',
         'color_code', 'code', 'label', 'employee_code', 'username',
     ):
         try:

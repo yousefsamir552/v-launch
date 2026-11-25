@@ -151,6 +151,7 @@ def ensure_schema_columns():
                     'can_view_printing_prices', 'can_edit_printing_prices',
                     'can_view_sewing_prices', 'can_edit_sewing_prices',
                     'can_view_assembly_prices', 'can_edit_assembly_prices',
+                    'can_purchase_requests',
                 ):
                     if price_col not in cols:
                         cursor.execute(f'ALTER TABLE api_role ADD COLUMN {price_col} boolean NOT NULL DEFAULT false;')

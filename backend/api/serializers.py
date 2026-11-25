@@ -5,6 +5,7 @@ from .models import (
     WORKSHOP_TYPE_KEYS, WORKSHOP_TYPE_LABELS,
     Fabric, FabricColor, FabricTransaction,
     AccessoryType, Accessory, AccessoryTransaction,
+    PurchaseRequest,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
@@ -419,6 +420,64 @@ class AccessoryTransactionSerializer(serializers.ModelSerializer):
                 else None
             ),
             'supplier_id': supplier_ext_id(instance),
+        }
+
+
+class PurchaseRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PurchaseRequest
+        fields = '__all__'
+
+    def validate_image(self, value):
+        if not value:
+            return ''
+        return normalize_image_field(value, 'purchase_requests', 'صورة طلب الشراء')
+
+    def to_representation(self, instance):
+        model_code = ''
+        if instance.model_id and instance.model:
+            model_code = instance.model.model_code or ''
+        elif instance.model_code_text:
+            model_code = instance.model_code_text
+        supplier_name = instance.supplier_name or (
+            instance.supplier.name if instance.supplier_id and instance.supplier else ''
+        )
+        return {
+            'id': get_ext_id(instance),
+            'item_name': instance.item_name or '',
+            # لا يوجد أي بديل عشوائي/Unsplash — إن لم تُرفع صورة يرجع نصاً فارغاً تماماً.
+            'image': instance.image or '',
+            'quantity': float(instance.quantity or 0),
+            'unit': instance.unit or 'قطعة',
+            'model_id': get_ext_id(instance.model) if instance.model_id else '',
+            'model_code': model_code,
+            'model_code_text': instance.model_code_text or '',
+            'category': instance.category or 'أخرى',
+            'notes': instance.notes or '',
+            'status': instance.status or 'pending',
+            'purchased_price': (
+                float(instance.purchased_price)
+                if instance.purchased_price is not None
+                else None
+            ),
+            'supplier_id': supplier_ext_id(instance),
+            'supplier_name': supplier_name,
+            'purchase_notes': instance.purchase_notes or '',
+            'purchased_at': (
+                timezone.localtime(instance.purchased_at).strftime('%Y-%m-%d %H:%M')
+                if instance.purchased_at
+                else ''
+            ),
+            'purchased_at_iso': instance.purchased_at.isoformat() if instance.purchased_at else '',
+            'purchased_by': instance.purchased_by or '',
+            'created_by': instance.created_by or '',
+            'created_at': (
+                timezone.localtime(instance.created_at).strftime('%Y-%m-%d %H:%M')
+                if instance.created_at
+                else ''
+            ),
+            'created_at_iso': instance.created_at.isoformat() if instance.created_at else '',
+            'updated_at': instance.updated_at.isoformat() if instance.updated_at else '',
         }
 
 

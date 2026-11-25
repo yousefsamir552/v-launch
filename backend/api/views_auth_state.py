@@ -133,7 +133,7 @@ class AuthViewSet(viewsets.ViewSet):
 # the frontend keeps its shape (no crash on `undefined.map`).
 # ---------------------------------------------------------------------------
 STATE_SECTION_KEYS = {
-    'models': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'accessories'),
+    'models': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'accessories', 'purchase_requests'),
     'requirements': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
     'accessories': ('design', 'cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh', 'accessories'),
     'cuttingRecords': ('cutting', 'printing', 'qc', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
@@ -149,9 +149,10 @@ STATE_SECTION_KEYS = {
     'fabrics': ('fabric', 'design', 'cutting', 'qc', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
     'fabricColors': ('fabric', 'design', 'cutting', 'qc', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
     'fabricTransactions': ('fabric', 'design', 'cutting', 'tracking', 'reports', 'production_wh'),
-    'accessoryTypes': ('accessories', 'design', 'cutting', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
-    'accessoryItems': ('accessories', 'design', 'cutting', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'accessoryTypes': ('accessories', 'purchase_requests', 'design', 'cutting', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'accessoryItems': ('accessories', 'purchase_requests', 'design', 'cutting', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
     'accessoryTransactions': ('accessories', 'design', 'sewing', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
+    'purchaseRequests': ('purchase_requests',),
 }
 
 
@@ -313,6 +314,10 @@ class StateViewSet(viewsets.ViewSet):
             'accessoryTypes': AccessoryTypeSerializer(AccessoryType.objects.all(), many=True).data,
             'accessoryItems': AccessorySerializer(accessory_items_qs, many=True, context=req_ctx).data,
             'accessoryTransactions': AccessoryTransactionSerializer(AccessoryTransaction.objects.select_related('accessory').all()[:300], many=True, context=req_ctx).data,
+            'purchaseRequests': PurchaseRequestSerializer(
+                PurchaseRequest.objects.select_related('model', 'supplier').all(),
+                many=True, context=req_ctx
+            ).data,
             'models': ModelItemSerializer(
                 ModelItem.objects.filter(is_deleted=False).prefetch_related(
                     'timeline', 'accessories', 'requirements', 'requirements__color'

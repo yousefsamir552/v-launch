@@ -2,7 +2,7 @@ from django.contrib import admin
 from .models import (
     SystemSetting, GlobalSettings, Role, UserProfile, SizeDef, Supplier, Workshop,
     Fabric, FabricColor, FabricTransaction,
-    AccessoryType, Accessory, AccessoryTransaction,
+    AccessoryType, Accessory, AccessoryTransaction, PurchaseRequest,
     ModelItem, ModelRequirement, ModelAccessory, ModelTimeline,
     CuttingRecord, CuttingSpreadLayer, QCRecord, PrintDispatch,
     SewingDispatch, AppNotification, InternalMessage, AuditLog,
@@ -81,6 +81,13 @@ class AccessoryAdmin(admin.ModelAdmin):
 @admin.register(AccessoryTransaction)
 class AccessoryTransactionAdmin(admin.ModelAdmin):
     list_display = ('accessory_code', 'accessory_name', 'operation', 'amount', 'model_code_ref', 'timestamp')
+
+
+@admin.register(PurchaseRequest)
+class PurchaseRequestAdmin(admin.ModelAdmin):
+    list_display = ('item_name', 'category', 'quantity', 'unit', 'status', 'purchased_price', 'supplier_name', 'created_at')
+    list_filter = ('status', 'category')
+    search_fields = ('item_name', 'model_code_text', 'supplier_name')
 
 
 @admin.register(ModelItem)

@@ -40,6 +40,8 @@ import {
   AccessoryTransaction,
   AccessoryUnit,
   AccessoryUsageType,
+  PurchaseRequest,
+  PurchaseRequestCategory,
   ModelTimelineEvent,
   SewingDispatch,
   SewingDispatchStatus,
@@ -466,6 +468,43 @@ export interface AppContextType {
     }
   ) => Promise<{ success: boolean; message: string }>;
 
+  // Purchase Requests (طلبات الشراء والمشتريات)
+  purchaseRequests: PurchaseRequest[];
+  addPurchaseRequest: (data: {
+    item_name: string;
+    quantity: number;
+    unit?: string;
+    image?: string;
+    model_id?: string;
+    model_code_text?: string;
+    category?: PurchaseRequestCategory | string;
+    notes?: string;
+  }) => Promise<{ success: boolean; message: string; request?: PurchaseRequest }>;
+  updatePurchaseRequest: (
+    id: string,
+    updates: {
+      item_name?: string;
+      quantity?: number;
+      unit?: string;
+      image?: string;
+      model_id?: string;
+      model_code_text?: string;
+      category?: PurchaseRequestCategory | string;
+      notes?: string;
+    }
+  ) => Promise<{ success: boolean; message: string; request?: PurchaseRequest }>;
+  deletePurchaseRequest: (id: string) => Promise<{ success: boolean; message: string }>;
+  markPurchaseRequestPurchased: (
+    id: string,
+    data: {
+      purchased_price: number;
+      supplier_id?: string;
+      supplier_name?: string;
+      purchase_notes?: string;
+    }
+  ) => Promise<{ success: boolean; message: string; request?: PurchaseRequest }>;
+  exportPurchaseRequestsCsv: (mode?: 'pending' | 'purchased' | 'all') => void;
+
   // Design Actions
   addDesignModel: (data: {
     modelCode: string;
@@ -835,6 +874,7 @@ export interface AppInternalContext extends AppContextType {
   accessoryItemsRaw: AccessoryItem[];
   setAccessoryItems: React.Dispatch<React.SetStateAction<AccessoryItem[]>>;
   setAccessoryTransactions: React.Dispatch<React.SetStateAction<AccessoryTransaction[]>>;
+  setPurchaseRequests: React.Dispatch<React.SetStateAction<PurchaseRequest[]>>;
   setCuttingRecords: React.Dispatch<React.SetStateAction<CuttingRecord[]>>;
   setQcRecords: React.Dispatch<React.SetStateAction<QCRecord[]>>;
   setPrintDispatches: React.Dispatch<React.SetStateAction<PrintDispatch[]>>;

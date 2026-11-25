@@ -65,6 +65,7 @@ class HasDynamicSectionPermission(permissions.BasePermission):
         'fabric': 'fabric_warehouse_view',
         'accessories': 'accessories_warehouse_view',
         'production_wh': 'production_warehouse_view',
+        'purchase_requests': 'purchase_requests_view',
         'design': 'design_view',
         'cutting': 'cutting_view',
         'printing': 'printing_view',

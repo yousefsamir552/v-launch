@@ -41,10 +41,7 @@ import {
   openUnifiedPrintWindow,
   renderSignatureBar
 } from '../utils/printShared';
-import { AccessoriesWarehouseView } from './AccessoriesWarehouseView';
-import { ProductionWarehouseView } from './ProductionWarehouseView';
 
-type WarehouseSectionTab = 'fabric' | 'accessories' | 'production';
 type FabricViewSubTab = 'inventory' | 'alerts' | 'audit';
 
 type FabricUsageBreakdownItem = {
@@ -146,7 +143,6 @@ export const WarehouseView: React.FC = () => {
     models,
     requirements,
     sizeDefs,
-    accessoryItems,
     addFabricOrColor,
     recordTransaction,
     exportWarehouseInventoryCsv,
@@ -166,30 +162,7 @@ export const WarehouseView: React.FC = () => {
 
   const [showPrintInventoryModal, setShowPrintInventoryModal] = useState(false);
 
-  const canViewFabric = hasPermission('fabric_warehouse');
-  const canViewAccessories = hasPermission('accessories_warehouse');
-  const canViewProduction = hasPermission('production_warehouse');
   const canEdit = hasPermission('fabric_warehouse', true);
-
-  const [activeWarehouseTab, setActiveWarehouseTab] = useState<WarehouseSectionTab>(() => {
-    if (hasPermission('fabric_warehouse')) return 'fabric';
-    if (hasPermission('accessories_warehouse')) return 'accessories';
-    if (hasPermission('production_warehouse')) return 'production';
-    return 'fabric';
-  });
-
-  React.useEffect(() => {
-    if (activeWarehouseTab === 'fabric' && !canViewFabric) {
-      if (canViewAccessories) setActiveWarehouseTab('accessories');
-      else if (canViewProduction) setActiveWarehouseTab('production');
-    } else if (activeWarehouseTab === 'accessories' && !canViewAccessories) {
-      if (canViewFabric) setActiveWarehouseTab('fabric');
-      else if (canViewProduction) setActiveWarehouseTab('production');
-    } else if (activeWarehouseTab === 'production' && !canViewProduction) {
-      if (canViewFabric) setActiveWarehouseTab('fabric');
-      else if (canViewAccessories) setActiveWarehouseTab('accessories');
-    }
-  }, [canViewFabric, canViewAccessories, canViewProduction, activeWarehouseTab]);
 
   // Sub-view inside Fabric Warehouse: 'inventory' (المخزن والبطاقات) vs 'alerts' (صفحة التنبيهات الخاصة بالقماش)
   const [fabricSubView, setFabricSubView] = useState<FabricViewSubTab>('inventory');
@@ -433,14 +406,6 @@ export const WarehouseView: React.FC = () => {
       (c) => c.fabric_id === f.id && c.quantity - c.reserved_quantity < minThreshold
     )
   ).length;
-
-  const lowAccessoryCount =
-    accessoryItems?.filter(
-      (it) =>
-        it.usage_type === 'stock' &&
-        (it.min_threshold ?? 0) > 0 &&
-        it.quantity - it.reserved_quantity <= (it.min_threshold ?? 0)
-    ).length || 0;
 
   const activeColor = fabricColors.find((c) => c.id === activeColorId);
 
@@ -1035,95 +1000,8 @@ export const WarehouseView: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
-      {/* Top Warehouse Section Header & Segmented Sub-tabs */}
-      <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-xs">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-blue-600 text-white rounded-xl shadow-xs">
-              <Package className="w-6 h-6" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-black text-slate-900">قسم المخازن</h1>
-                <span className="text-xs font-semibold px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full border border-blue-200">
-                  مخازن المصنع
-                </span>
-              </div>
-              <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-                إدارة مركزية متكاملة لـ: مخزن الأقمشة، مخزن الإكسسوارات، ومخزن الإنتاج التام
-              </p>
-            </div>
-          </div>
-
-          {/* Sub-tab Navigation */}
-          <div className="flex items-center gap-1.5 bg-slate-100 p-1.5 rounded-xl border border-slate-200/80">
-            {canViewFabric && (
-              <button
-                type="button"
-                onClick={() => setActiveWarehouseTab('fabric')}
-                className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
-                  activeWarehouseTab === 'fabric'
-                    ? 'bg-white text-blue-700 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-                }`}
-              >
-                <Layers className="w-3.5 h-3.5" />
-                <span>مخزن القماش</span>
-                {lowStockColors.length > 0 && (
-                  <span className="px-1.5 py-0.2 bg-amber-500 text-white text-[10px] rounded-full font-mono">
-                    {lowStockColors.length}
-                  </span>
-                )}
-              </button>
-            )}
-
-            {canViewAccessories && (
-              <button
-                type="button"
-                onClick={() => setActiveWarehouseTab('accessories')}
-                className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
-                  activeWarehouseTab === 'accessories'
-                    ? 'bg-white text-pink-700 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-                }`}
-              >
-                <Sparkles className="w-3.5 h-3.5 text-pink-500" />
-                <span>مخزن الإكسسوارات</span>
-                {lowAccessoryCount > 0 && (
-                  <span className="px-1.5 py-0.2 bg-amber-500 text-white text-[10px] rounded-full font-mono">
-                    {lowAccessoryCount}
-                  </span>
-                )}
-              </button>
-            )}
-
-            {canViewProduction && (
-              <button
-                type="button"
-                onClick={() => setActiveWarehouseTab('production')}
-                className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
-                  activeWarehouseTab === 'production'
-                    ? 'bg-white text-indigo-700 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-                }`}
-              >
-                <Boxes className="w-3.5 h-3.5 text-indigo-500" />
-                <span>مخزن الإنتاج التام</span>
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Accessories Warehouse Tab */}
-      {activeWarehouseTab === 'accessories' && <AccessoriesWarehouseView />}
-
-      {/* Production Warehouse Tab */}
-      {activeWarehouseTab === 'production' && <ProductionWarehouseView />}
-
-      {/* Fabric Warehouse Tab */}
-      {activeWarehouseTab === 'fabric' && (
-        <div className="space-y-6">
+      {/* Fabric Warehouse Content */}
+      <div className="space-y-6">
           {/* Top Bar with Fabric Filter Pills & Action Buttons */}
           <div className="flex flex-col gap-3">
             {/* Fabric Filter – Custom Dropdown (with yellow low-stock indicators) */}
@@ -3047,8 +2925,7 @@ export const WarehouseView: React.FC = () => {
               </div>
             </div>
           )}
-        </div>
-      )}
+      </div>
     </div>
   );
 };

@@ -306,6 +306,7 @@ class Role(models.Model):
     can_fabric_warehouse = models.BooleanField(default=False, verbose_name="مخزن القماش")
     can_accessories_warehouse = models.BooleanField(default=False, verbose_name="مخزن الإكسسوارات")
     can_production_warehouse = models.BooleanField(default=False, verbose_name="مخزن الإنتاج")
+    can_purchase_requests = models.BooleanField(default=False, verbose_name="طلبات الشراء")
     can_design = models.BooleanField(default=False, verbose_name="التصميم")
     can_cutting = models.BooleanField(default=False, verbose_name="القص")
     can_printing = models.BooleanField(default=False, verbose_name="المطابع والتطريز")
@@ -342,6 +343,8 @@ class Role(models.Model):
             'accessories_warehouse_edit': bool(self.can_accessories_warehouse),
             'production_warehouse_view': bool(self.can_production_warehouse),
             'production_warehouse_edit': bool(self.can_production_warehouse),
+            'purchase_requests_view': bool(self.can_purchase_requests),
+            'purchase_requests_edit': bool(self.can_purchase_requests),
             'design_view': bool(self.can_design),
             'design_edit': bool(self.can_design),
             'cutting_view': bool(self.can_cutting),
@@ -413,6 +416,7 @@ class Role(models.Model):
         self.can_fabric_warehouse = bool(merged.get('fabric_warehouse_view') or merged.get('fabric_warehouse_edit'))
         self.can_accessories_warehouse = bool(merged.get('accessories_warehouse_view') or merged.get('accessories_warehouse_edit'))
         self.can_production_warehouse = bool(merged.get('production_warehouse_view') or merged.get('production_warehouse_edit'))
+        self.can_purchase_requests = bool(merged.get('purchase_requests_view') or merged.get('purchase_requests_edit'))
         self.can_design = bool(merged.get('design_view') or merged.get('design_edit'))
         self.can_cutting = bool(merged.get('cutting_view') or merged.get('cutting_edit'))
         self.can_qc = bool(merged.get('qc_view') or merged.get('qc_edit'))
@@ -557,6 +561,7 @@ class UserProfile(models.Model):
                 'can_fabric_warehouse': 'fabric_warehouse_view',
                 'can_accessories_warehouse': 'accessories_warehouse_view',
                 'can_production_warehouse': 'production_warehouse_view',
+                'can_purchase_requests': 'purchase_requests_view',
                 'can_design': 'design_view',
                 'can_cutting': 'cutting_view',
                 'can_printing': 'printing_view',

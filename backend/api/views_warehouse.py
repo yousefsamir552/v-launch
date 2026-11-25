@@ -710,3 +710,271 @@ class AccessoryTransactionViewSet(BaseReadOnlyPermViewSet):
     serializer_class = AccessoryTransactionSerializer
 
 
+class PurchaseRequestViewSet(BasePermViewSet):
+    """
+    إدارة طلبات الشراء المستقلة (Procurement / Purchase Requests):
+    - CRUD كامل مع صلاحية purchase_requests_view / purchase_requests_edit.
+    - إجراء mark_purchased لتوثيق السعر والمورد وتاريخ الشراء ونقل الطلب إلى السجل السابق.
+    - تسجيل تلقائي مفصّل في AuditLog باللغة العربية.
+    """
+    permission_classes = [HasDynamicSectionPermission]
+    required_section = 'purchase_requests'
+    queryset = PurchaseRequest.objects.select_related('model', 'supplier').all()
+    serializer_class = PurchaseRequestSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        params = self.request.query_params
+        status_filter = (params.get('status') or '').strip()
+        if status_filter in ('pending', 'purchased'):
+            qs = qs.filter(status=status_filter)
+        category_filter = (params.get('category') or '').strip()
+        if category_filter:
+            qs = qs.filter(category=category_filter)
+        search = (params.get('search') or params.get('q') or '').strip()
+        if search:
+            qs = qs.filter(
+                Q(item_name__icontains=search)
+                | Q(model_code_text__icontains=search)
+                | Q(model__model_code__icontains=search)
+                | Q(supplier_name__icontains=search)
+                | Q(supplier__name__icontains=search)
+                | Q(notes__icontains=search)
+                | Q(category__icontains=search)
+            )
+        return qs
+
+    def _resolve_category(self, raw_value):
+        val = str(raw_value or '').strip()
+        if not val:
+            return 'إكسسوارات'
+        if val in PURCHASE_REQUEST_CATEGORY_KEYS:
+            return val
+        return 'أخرى'
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        item_name = str(data.get('item_name') or '').strip()
+        if not item_name:
+            return Response({'detail': 'اسم الصنف مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+
+        qty = to_decimal(data.get('quantity'), Decimal('0'), places=3)
+        if qty <= 0:
+            return Response({'detail': 'الكمية يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+
+        unit = str(data.get('unit') or 'قطعة').strip() or 'قطعة'
+        raw_image = str(data.get('image') or '').strip()
+        image_url = (
+            clean_image_value(raw_image, 'purchase_requests', 'صورة طلب الشراء')
+            if raw_image
+            else ''
+        )
+
+        model_ref = data.get('model_id') or data.get('model')
+        model_obj = resolve_by_id(ModelItem, model_ref) if model_ref else None
+        model_code_text = str(data.get('model_code_text') or '').strip()
+        if model_obj and not model_code_text:
+            model_code_text = model_obj.model_code or ''
+
+        category = self._resolve_category(data.get('category'))
+        notes = str(data.get('notes') or '').strip()
+        profile = getattr(request, 'user_profile', None)
+        created_by = ''
+        if profile is not None:
+            created_by = (profile.real_name or profile.username or '').strip()
+
+        obj = PurchaseRequest.objects.create(
+            client_id=data.get('id') or data.get('client_id'),
+            item_name=item_name,
+            image=image_url,
+            quantity=qty,
+            unit=unit,
+            model=model_obj,
+            model_code_text=model_code_text,
+            category=category,
+            notes=notes,
+            status='pending',
+            created_by=created_by,
+        )
+        self._audit_created_instance = obj
+        model_label = obj.model.model_code if obj.model_id else obj.model_code_text
+        set_audit_meta(
+            request,
+            section='طلبات الشراء',
+            action_type='create',
+            target_name=obj.item_name,
+            details=(
+                f"سجّل طلب شراء جديد: {obj.item_name} ({float(obj.quantity):g} {obj.unit})"
+                + (f" للموديل {model_label}" if model_label else '')
+            ),
+            changes=[
+                {'field': 'item_name', 'label': 'اسم الصنف', 'old': '—', 'new': obj.item_name},
+                {'field': 'quantity', 'label': 'الكمية', 'old': '—', 'new': f'{float(obj.quantity):g} {obj.unit}'},
+                {'field': 'category', 'label': 'التصنيف', 'old': '—', 'new': obj.category},
+                *(
+                    [{'field': 'model_code_text', 'label': 'الموديل', 'old': '—', 'new': model_label}]
+                    if model_label
+                    else []
+                ),
+            ],
+        )
+        return Response(
+            PurchaseRequestSerializer(obj, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        data = request.data
+
+        if 'item_name' in data:
+            item_name = str(data.get('item_name') or '').strip()
+            if not item_name:
+                return Response({'detail': 'اسم الصنف مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.item_name = item_name
+
+        if 'quantity' in data:
+            qty = to_decimal(data.get('quantity'), Decimal('0'), places=3)
+            if qty <= 0:
+                return Response({'detail': 'الكمية يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.quantity = qty
+
+        if 'unit' in data:
+            obj.unit = str(data.get('unit') or 'قطعة').strip() or 'قطعة'
+
+        if 'image' in data:
+            raw_image = str(data.get('image') or '').strip()
+            obj.image = (
+                clean_image_value(raw_image, 'purchase_requests', 'صورة طلب الشراء')
+                if raw_image
+                else ''
+            )
+
+        if 'model_id' in data or 'model' in data:
+            model_ref = data.get('model_id') if 'model_id' in data else data.get('model')
+            obj.model = resolve_by_id(ModelItem, model_ref) if model_ref else None
+
+        if 'model_code_text' in data:
+            obj.model_code_text = str(data.get('model_code_text') or '').strip()
+        elif obj.model_id and not obj.model_code_text:
+            obj.model_code_text = obj.model.model_code or ''
+
+        if 'category' in data:
+            obj.category = self._resolve_category(data.get('category'))
+
+        if 'notes' in data:
+            obj.notes = str(data.get('notes') or '').strip()
+
+        if obj.status == 'purchased':
+            if 'purchased_price' in data and data.get('purchased_price') not in (None, ''):
+                price = to_decimal(data.get('purchased_price'), Decimal('-1'), places=2)
+                if price < 0:
+                    return Response({'detail': 'سعر الشراء يجب أن يكون رقماً صحيحاً غير سالب'}, status=status.HTTP_400_BAD_REQUEST)
+                obj.purchased_price = price
+            if 'supplier_id' in data or 'supplier' in data:
+                sup_ref = data.get('supplier_id') if 'supplier_id' in data else data.get('supplier')
+                obj.supplier = resolve_by_id(Supplier, sup_ref) if sup_ref else None
+            if 'supplier_name' in data:
+                obj.supplier_name = str(data.get('supplier_name') or '').strip()
+            elif obj.supplier_id and not obj.supplier_name:
+                obj.supplier_name = obj.supplier.name
+            if 'purchase_notes' in data:
+                obj.purchase_notes = str(data.get('purchase_notes') or '').strip()
+
+        obj.save()
+        set_audit_meta(
+            request,
+            section='طلبات الشراء',
+            action_type='update',
+            target_name=obj.item_name,
+            details=f"عدّل طلب الشراء: {obj.item_name} ({float(obj.quantity):g} {obj.unit})",
+        )
+        return Response(PurchaseRequestSerializer(obj, context={'request': request}).data)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        name = obj.item_name
+        qty_label = f"{float(obj.quantity):g} {obj.unit}"
+        set_audit_meta(
+            request,
+            section='طلبات الشراء',
+            action_type='delete',
+            target_name=name,
+            details=f"حذف طلب الشراء: {name} ({qty_label})",
+        )
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'])
+    def mark_purchased(self, request, pk=None):
+        obj = self.get_object()
+        if obj.status == 'purchased':
+            return Response(
+                {'detail': 'تم تسجيل هذا الطلب كمشترا بالفعل'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = request.data
+        raw_price = data.get('purchased_price')
+        if raw_price in (None, ''):
+            raw_price = data.get('price')
+        if raw_price in (None, ''):
+            return Response(
+                {'detail': 'يرجى إدخال سعر الشراء'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        price = to_decimal(raw_price, Decimal('-1'), places=2)
+        if price < 0:
+            return Response(
+                {'detail': 'سعر الشراء يجب أن يكون رقماً صحيحاً غير سالب'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        supplier_ref = data.get('supplier_id') or data.get('supplier')
+        supplier_obj = resolve_by_id(Supplier, supplier_ref) if supplier_ref else None
+        supplier_name = str(data.get('supplier_name') or '').strip()
+        if not supplier_name and supplier_obj is not None:
+            supplier_name = supplier_obj.name
+        if not supplier_obj and supplier_name:
+            supplier_obj = Supplier.objects.filter(name__iexact=supplier_name).first()
+
+        purchase_notes = str(data.get('purchase_notes') or data.get('notes') or '').strip()
+        profile = getattr(request, 'user_profile', None)
+        purchased_by = ''
+        if profile is not None:
+            purchased_by = (profile.real_name or profile.username or '').strip()
+
+        obj.purchased_price = price
+        obj.supplier = supplier_obj
+        obj.supplier_name = supplier_name
+        obj.purchase_notes = purchase_notes
+        obj.purchased_at = timezone.now()
+        obj.purchased_by = purchased_by
+        obj.status = 'purchased'
+        obj.save()
+
+        supplier_display = obj.supplier_name or (obj.supplier.name if obj.supplier_id else '')
+        set_audit_meta(
+            request,
+            section='طلبات الشراء',
+            action_type='status_change',
+            target_name=obj.item_name,
+            details=(
+                f"تم شراء طلب الشراء: {obj.item_name} ({float(obj.quantity):g} {obj.unit}) "
+                f"بسعر {float(obj.purchased_price):g} ج.م"
+                + (f" — المورد: {supplier_display}" if supplier_display else '')
+            ),
+            changes=[
+                {'field': 'status', 'label': 'الحالة', 'old': 'قيد الانتظار', 'new': 'تم الشراء'},
+                {'field': 'purchased_price', 'label': 'سعر الشراء', 'old': '—', 'new': f'{float(obj.purchased_price):g} ج.م'},
+                {'field': 'supplier_name', 'label': 'المورد', 'old': '—', 'new': supplier_display or '—'},
+                *(
+                    [{'field': 'purchase_notes', 'label': 'ملاحظات الشراء', 'old': '—', 'new': purchase_notes}]
+                    if purchase_notes
+                    else []
+                ),
+            ],
+        )
+        return Response(PurchaseRequestSerializer(obj, context={'request': request}).data)
+
+

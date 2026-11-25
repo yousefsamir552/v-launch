@@ -40,6 +40,8 @@ import {
   AccessoryTransaction,
   AccessoryUnit,
   AccessoryUsageType,
+  PurchaseRequest,
+  PurchaseRequestCategory,
   ModelTimelineEvent,
   SewingDispatch,
   SewingDispatchStatus,
@@ -73,7 +75,7 @@ import { NOTIFICATION_STAGE_PERMISSION, FlashMessage, modelPartsOf, seedModelPar
 
 export const buildWarehouseActions = (ctx: AppInternalContext) => {
   const {
-    currentUser, setCurrentUser, setCurrentUserState, isLoadingState, setIsLoadingState, globalSettings, setGlobalSettings, roles, setRoles, users, setUsers, onlineUsers, setOnlineUsers, sizeDefs, setSizeDefs, suppliers, setSuppliers, workshops, setWorkshops, fabrics, setFabrics, fabricColorsRaw, setFabricColors, fabricColors, fabricTransactions, setFabricTransactions, models, setModels, requirements, setRequirements, accessories, setAccessories, accessoryTypes, setAccessoryTypes, accessoryItemsRaw, setAccessoryItems, accessoryItems, accessoryTransactions, setAccessoryTransactions, cuttingRecords, setCuttingRecords, qcRecords, setQcRecords, printDispatches, setPrintDispatches, sewingDispatches, setSewingDispatches, packagingRequirements, setPackagingRequirements, finishingRecords, setFinishingRecords, assemblyStageRecords, setAssemblyStageRecords, packagingMaterialRules, setPackagingMaterialRules, internalMessages, setInternalMessages, auditLogs, setAuditLogs, flashMessages, setFlashMessages, readNotificationIds, setReadNotificationIds, snoozedNotifications, setSnoozedNotifications, designModelIdsSet, removeFlashMessage, addFlashMessage, refreshState, login, logout, logAction, updateGlobalSettings, formatSupplierWhatsappMessage, openWhatsAppOrder, addModelTimelineEvent, addRole, updateRole, deleteRole, sendInternalMessage, markMessageRead, normalizePartKey, getModelParts, getModelColorList, getModelSizeList, getPackagingRequirement, getPartStages, isPackagingReady, getUserPermissionsObject, hasSpecificPermission, hasPermission, hasAssemblyPackagingAccess, canManagePermissions, canManageUsers, canManageSuppliers, canManageSizes, canViewAuditLogs, canViewGlobalSettings, canEditHeaderSettings, canEditMessageTemplates, canAccessSettings, isCurrentUserSudo, canAccessHRSection, canManageHR, currentUserRank, visibleRankLevels, visibleRankOptions, rankLabelFor, isRankVisibleToActor, clampRankToVisible, getEffectiveDelegatablePermissions, canDelegatePermission, getRoleEnabledPermissionKeys, isRoleAssignable, getCreatedDescendants, canAddDesignNotes, canAddCuttingNotes, canAddQCBeforePrintNotes, canAddQCAfterPrintNotes, canAddSewingNotes, canAddPrintingNotes, canViewFabricPrices, canEditFabricPrices, canViewAccessoryPrices, canEditAccessoryPrices, canViewPrintingPrices, canEditPrintingPrices, canViewPrintingCosts, canEditPrintingCosts, canViewSewingPrices, canEditSewingPrices, canViewAssemblyPrices, canEditAssemblyPrices, canSendWhatsApp, canSendMessages, addModelAccessory
+    currentUser, setCurrentUser, setCurrentUserState, isLoadingState, setIsLoadingState, globalSettings, setGlobalSettings, roles, setRoles, users, setUsers, onlineUsers, setOnlineUsers, sizeDefs, setSizeDefs, suppliers, setSuppliers, workshops, setWorkshops, fabrics, setFabrics, fabricColorsRaw, setFabricColors, fabricColors, fabricTransactions, setFabricTransactions, models, setModels, requirements, setRequirements, accessories, setAccessories, accessoryTypes, setAccessoryTypes, accessoryItemsRaw, setAccessoryItems, accessoryItems, accessoryTransactions, setAccessoryTransactions, purchaseRequests, setPurchaseRequests, cuttingRecords, setCuttingRecords, qcRecords, setQcRecords, printDispatches, setPrintDispatches, sewingDispatches, setSewingDispatches, packagingRequirements, setPackagingRequirements, finishingRecords, setFinishingRecords, assemblyStageRecords, setAssemblyStageRecords, packagingMaterialRules, setPackagingMaterialRules, internalMessages, setInternalMessages, auditLogs, setAuditLogs, flashMessages, setFlashMessages, readNotificationIds, setReadNotificationIds, snoozedNotifications, setSnoozedNotifications, designModelIdsSet, removeFlashMessage, addFlashMessage, refreshState, login, logout, logAction, updateGlobalSettings, formatSupplierWhatsappMessage, openWhatsAppOrder, addModelTimelineEvent, addRole, updateRole, deleteRole, sendInternalMessage, markMessageRead, normalizePartKey, getModelParts, getModelColorList, getModelSizeList, getPackagingRequirement, getPartStages, isPackagingReady, getUserPermissionsObject, hasSpecificPermission, hasPermission, hasAssemblyPackagingAccess, canManagePermissions, canManageUsers, canManageSuppliers, canManageSizes, canViewAuditLogs, canViewGlobalSettings, canEditHeaderSettings, canEditMessageTemplates, canAccessSettings, isCurrentUserSudo, canAccessHRSection, canManageHR, currentUserRank, visibleRankLevels, visibleRankOptions, rankLabelFor, isRankVisibleToActor, clampRankToVisible, getEffectiveDelegatablePermissions, canDelegatePermission, getRoleEnabledPermissionKeys, isRoleAssignable, getCreatedDescendants, canAddDesignNotes, canAddCuttingNotes, canAddQCBeforePrintNotes, canAddQCAfterPrintNotes, canAddSewingNotes, canAddPrintingNotes, canViewFabricPrices, canEditFabricPrices, canViewAccessoryPrices, canEditAccessoryPrices, canViewPrintingPrices, canEditPrintingPrices, canViewPrintingCosts, canEditPrintingCosts, canViewSewingPrices, canEditSewingPrices, canViewAssemblyPrices, canEditAssemblyPrices, canSendWhatsApp, canSendMessages, addModelAccessory
   } = ctx;
 
   const addFabricOrColor = (data: {
@@ -714,6 +716,218 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
     }
   };
 
+  const addPurchaseRequest = async (data: {
+    item_name: string;
+    quantity: number;
+    unit?: string;
+    image?: string;
+    model_id?: string;
+    model_code_text?: string;
+    category?: PurchaseRequestCategory | string;
+    notes?: string;
+  }): Promise<{ success: boolean; message: string; request?: PurchaseRequest }> => {
+    const cleanName = (data.item_name || '').trim();
+    if (!cleanName) {
+      addFlashMessage('يرجى إدخال اسم الصنف المطلوب شراؤه', 'warning');
+      return { success: false, message: 'اسم الصنف مطلوب' };
+    }
+    const qty = Number(data.quantity);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      addFlashMessage('الكمية يجب أن تكون أكبر من صفر', 'warning');
+      return { success: false, message: 'الكمية يجب أن تكون أكبر من صفر' };
+    }
+    try {
+      const saved: PurchaseRequest = await api.createPurchaseRequest({
+        item_name: cleanName,
+        quantity: qty,
+        unit: (data.unit || 'قطعة').trim() || 'قطعة',
+        image: (data.image || '').trim(),
+        model_id: data.model_id || '',
+        model_code_text: (data.model_code_text || '').trim(),
+        category: data.category || 'إكسسوارات',
+        notes: (data.notes || '').trim()
+      });
+      setPurchaseRequests((prev: PurchaseRequest[]) => [
+        saved,
+        ...prev.filter((r) => r.id !== saved.id)
+      ]);
+      addFlashMessage(`تم تسجيل طلب الشراء "${saved.item_name}" بنجاح`);
+      return { success: true, message: 'تم تسجيل طلب الشراء بنجاح', request: saved };
+    } catch (err: any) {
+      const msg = err?.message || 'فشل تسجيل طلب الشراء في السيرفر';
+      addFlashMessage(msg, 'danger');
+      return { success: false, message: msg };
+    }
+  };
+
+  const updatePurchaseRequest = async (
+    id: string,
+    updates: {
+      item_name?: string;
+      quantity?: number;
+      unit?: string;
+      image?: string;
+      model_id?: string;
+      model_code_text?: string;
+      category?: PurchaseRequestCategory | string;
+      notes?: string;
+    }
+  ): Promise<{ success: boolean; message: string; request?: PurchaseRequest }> => {
+    try {
+      const saved: PurchaseRequest = await api.updatePurchaseRequest(id, updates);
+      setPurchaseRequests((prev: PurchaseRequest[]) =>
+        prev.map((r) => (r.id === id ? saved : r))
+      );
+      addFlashMessage(`تم تحديث طلب الشراء "${saved.item_name}" بنجاح`);
+      return { success: true, message: 'تم التحديث بنجاح', request: saved };
+    } catch (err: any) {
+      const msg = err?.message || 'فشل تحديث طلب الشراء في السيرفر';
+      addFlashMessage(msg, 'danger');
+      return { success: false, message: msg };
+    }
+  };
+
+  const deletePurchaseRequest = async (
+    id: string
+  ): Promise<{ success: boolean; message: string }> => {
+    const existing = (purchaseRequests as PurchaseRequest[]).find((r) => r.id === id);
+    try {
+      await api.deletePurchaseRequest(id);
+      setPurchaseRequests((prev: PurchaseRequest[]) => prev.filter((r) => r.id !== id));
+      addFlashMessage(
+        existing ? `تم حذف طلب الشراء "${existing.item_name}"` : 'تم حذف طلب الشراء بنجاح'
+      );
+      return { success: true, message: 'تم الحذف بنجاح' };
+    } catch (err: any) {
+      refreshState();
+      const msg = err?.message || 'فشل حذف طلب الشراء';
+      addFlashMessage(msg, 'danger');
+      return { success: false, message: msg };
+    }
+  };
+
+  const markPurchaseRequestPurchased = async (
+    id: string,
+    data: {
+      purchased_price: number;
+      supplier_id?: string;
+      supplier_name?: string;
+      purchase_notes?: string;
+    }
+  ): Promise<{ success: boolean; message: string; request?: PurchaseRequest }> => {
+    const price = Number(data.purchased_price);
+    if (!Number.isFinite(price) || price < 0) {
+      addFlashMessage('يرجى إدخال سعر الشراء بشكل صحيح', 'warning');
+      return { success: false, message: 'سعر الشراء غير صحيح' };
+    }
+    try {
+      const saved: PurchaseRequest = await api.markPurchaseRequestPurchased(id, {
+        purchased_price: price,
+        supplier_id: data.supplier_id || '',
+        supplier_name: (data.supplier_name || '').trim(),
+        purchase_notes: (data.purchase_notes || '').trim()
+      });
+      setPurchaseRequests((prev: PurchaseRequest[]) =>
+        prev.map((r) => (r.id === id ? saved : r))
+      );
+      addFlashMessage(`تم تسجيل شراء "${saved.item_name}" ونقله إلى طلبات الشراء السابقة ✅`);
+      return { success: true, message: 'تم تسجيل الشراء بنجاح', request: saved };
+    } catch (err: any) {
+      const msg = err?.message || 'فشل تأكيد شراء الطلب';
+      addFlashMessage(msg, 'danger');
+      return { success: false, message: msg };
+    }
+  };
+
+  const exportPurchaseRequestsCsv = (mode: 'pending' | 'purchased' | 'all' = 'all') => {
+    const list: PurchaseRequest[] = (purchaseRequests || []).filter((r: PurchaseRequest) =>
+      mode === 'all' ? true : r.status === mode
+    );
+    const headers: CsvValue[] =
+      mode === 'purchased'
+        ? [
+            'اسم الصنف',
+            'التصنيف',
+            'الكمية',
+            'الوحدة',
+            'الموديل',
+            'سعر الشراء (ج.م)',
+            'المورد',
+            'تاريخ الشراء',
+            'تم الشراء بواسطة',
+            'ملاحظات الشراء',
+            'ملاحظات الطلب'
+          ]
+        : [
+            'اسم الصنف',
+            'التصنيف',
+            'الكمية',
+            'الوحدة',
+            'الموديل',
+            'الحالة',
+            'سعر الشراء (ج.م)',
+            'المورد',
+            'تاريخ الطلب',
+            'أنشأه',
+            'تاريخ الشراء',
+            'تم الشراء بواسطة',
+            'ملاحظات'
+          ];
+
+    const rows: CsvValue[][] = list.map((r) =>
+      mode === 'purchased'
+        ? [
+            r.item_name,
+            r.category || 'أخرى',
+            r.quantity,
+            r.unit || 'قطعة',
+            r.model_code || r.model_code_text || '—',
+            r.purchased_price ?? 0,
+            r.supplier_name || '—',
+            r.purchased_at || '—',
+            r.purchased_by || '—',
+            r.purchase_notes || '',
+            r.notes || ''
+          ]
+        : [
+            r.item_name,
+            r.category || 'أخرى',
+            r.quantity,
+            r.unit || 'قطعة',
+            r.model_code || r.model_code_text || '—',
+            r.status === 'purchased' ? 'تم الشراء' : 'قيد الانتظار',
+            r.purchased_price ?? '—',
+            r.supplier_name || '—',
+            r.created_at || '—',
+            r.created_by || '—',
+            r.purchased_at || '—',
+            r.purchased_by || '—',
+            r.notes || ''
+          ]
+    );
+
+    const filePrefix =
+      mode === 'purchased'
+        ? 'purchase_requests_history'
+        : mode === 'pending'
+        ? 'purchase_requests_pending'
+        : 'purchase_requests_all';
+    exportCsv(datedFileName(filePrefix), headers, rows);
+
+    const modeLabel =
+      mode === 'purchased'
+        ? 'سجل طلبات الشراء السابقة'
+        : mode === 'pending'
+        ? 'طلبات الشراء الجارية'
+        : 'كافة طلبات الشراء';
+    logAction('طلبات الشراء', `تصدير ${modeLabel} إلى ملف Excel (${list.length} صنف)`, {
+      persist: true,
+      actionType: 'export',
+      targetName: modeLabel
+    });
+    addFlashMessage(`تم تصدير ${modeLabel} بنجاح`);
+  };
+
   return {
     addFabricOrColor,
     recordTransaction,
@@ -727,6 +941,11 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
     markAccessoryWithdrawn,
     recordAccessoryTransaction,
     exportAccessoryInventoryCsv,
-    issueModelAccessories
+    issueModelAccessories,
+    addPurchaseRequest,
+    updatePurchaseRequest,
+    deletePurchaseRequest,
+    markPurchaseRequestPurchased,
+    exportPurchaseRequestsCsv
   };
 };

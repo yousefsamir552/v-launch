@@ -2,6 +2,7 @@ export type SystemSectionKey =
   | 'fabric_warehouse'
   | 'accessories_warehouse'
   | 'production_warehouse'
+  | 'purchase_requests'
   | 'design'
   | 'cutting'
   | 'qc'
@@ -65,6 +66,8 @@ export interface RolePermissions {
   accessories_warehouse_edit: boolean;
   production_warehouse_view: boolean;
   production_warehouse_edit: boolean;
+  purchase_requests_view: boolean;
+  purchase_requests_edit: boolean;
   design_view: boolean;
   design_edit: boolean;
   cutting_view: boolean;
@@ -203,6 +206,7 @@ export interface UserPermissions {
   fabric_warehouse?: PermissionLevel;
   accessories_warehouse?: PermissionLevel;
   production_warehouse?: PermissionLevel;
+  purchase_requests?: PermissionLevel;
   reports?: PermissionLevel;
 
   // Specific fine-grained overrides if applicable (any permission can be granted directly to a user)
@@ -1985,4 +1989,39 @@ export interface ModelStageWaterfallResponse {
 export interface DepartmentTargetsResponse {
   targets: DepartmentTargetsMap;
   can_edit: boolean;
+}
+
+export type PurchaseRequestCategory = 'إكسسوارات' | 'قماش' | 'خامات تغليف' | 'أخرى';
+export type PurchaseRequestStatus = 'pending' | 'purchased';
+
+export const PURCHASE_REQUEST_CATEGORIES: PurchaseRequestCategory[] = [
+  'إكسسوارات',
+  'قماش',
+  'خامات تغليف',
+  'أخرى'
+];
+
+export interface PurchaseRequest {
+  id: string;
+  item_name: string;
+  image?: string;
+  quantity: number;
+  unit: string;
+  model_id?: string;
+  model_code?: string;
+  model_code_text?: string;
+  category: PurchaseRequestCategory | string;
+  notes?: string;
+  status: PurchaseRequestStatus;
+  purchased_price?: number | null;
+  supplier_id?: string;
+  supplier_name?: string;
+  purchase_notes?: string;
+  purchased_at?: string;
+  purchased_at_iso?: string;
+  purchased_by?: string;
+  created_by?: string;
+  created_at?: string;
+  created_at_iso?: string;
+  updated_at?: string;
 }

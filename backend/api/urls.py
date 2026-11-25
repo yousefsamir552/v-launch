@@ -6,6 +6,7 @@ from .views import (
     WorkshopViewSet,
     FabricViewSet, FabricColorViewSet, FabricTransactionViewSet,
     AccessoryTypeViewSet, AccessoryViewSet, AccessoryTransactionViewSet,
+    PurchaseRequestViewSet,
     ModelItemViewSet, ModelRequirementViewSet, ModelAccessoryViewSet,
     CuttingRecordViewSet, QCRecordViewSet, PrintDispatchViewSet,
     SewingDispatchViewSet, NotificationViewSet, InternalMessageViewSet,
@@ -36,6 +37,7 @@ router.register(r'fabric-transactions', FabricTransactionViewSet)
 router.register(r'accessory-types', AccessoryTypeViewSet)
 router.register(r'accessories', AccessoryViewSet)
 router.register(r'accessory-transactions', AccessoryTransactionViewSet)
+router.register(r'purchase-requests', PurchaseRequestViewSet)
 router.register(r'models', ModelItemViewSet)
 router.register(r'model-requirements', ModelRequirementViewSet)
 router.register(r'model-accessories', ModelAccessoryViewSet)

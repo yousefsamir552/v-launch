@@ -227,7 +227,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </div>
             </div>
             <button
-              onClick={() => onNavigate('production_control')}
+              onClick={() => onNavigate('qc')}
               className="text-xs font-bold text-indigo-700 hover:text-indigo-800 flex items-center gap-1 cursor-pointer"
             >
               <span>فتح سجل التشغيلات &larr;</span>
@@ -244,9 +244,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   key={notif.id}
                   onClick={() => {
                     const assemblyStages = ['finishing', 'ironing', 'packaging', 'dest'];
-                    onNavigate(
-                      assemblyStages.includes(notif.stage) ? 'assembly_packaging' : 'production_control'
-                    );
+                    if (notif.kind === 'material' || notif.stage === 'materials') {
+                      onNavigate('packaging_materials');
+                    } else if (assemblyStages.includes(notif.stage)) {
+                      onNavigate('assembly_packaging');
+                    } else if (notif.stage === 'sewing') {
+                      onNavigate('sewing');
+                    } else if (notif.stage === 'printing') {
+                      onNavigate('printing');
+                    } else {
+                      onNavigate('qc');
+                    }
                   }}
                   className={`p-3.5 rounded-2xl border transition cursor-pointer flex flex-col justify-between gap-2 ${
                     isOverdue

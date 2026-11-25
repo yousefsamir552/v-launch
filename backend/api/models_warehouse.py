@@ -267,6 +267,94 @@ class AccessoryTransaction(models.Model):
         super().save(*args, **kwargs)
 
 
+PURCHASE_REQUEST_CATEGORY_CHOICES = [
+    ('إكسسوارات', 'إكسسوارات'),
+    ('قماش', 'قماش'),
+    ('خامات تغليف', 'خامات تغليف'),
+    ('أخرى', 'أخرى'),
+]
+PURCHASE_REQUEST_CATEGORY_KEYS = [key for key, _label in PURCHASE_REQUEST_CATEGORY_CHOICES]
+
+PURCHASE_REQUEST_STATUS_CHOICES = [
+    ('pending', 'قيد الانتظار'),
+    ('purchased', 'تم الشراء'),
+]
+
+
+class PurchaseRequest(models.Model):
+    """طلبات الشراء المستقلة (Procurement / Purchase Requests) — بدون الحاجة لإنشاء صنف إكسسوار مسبقاً."""
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    item_name = models.CharField(max_length=255, verbose_name="اسم الصنف")
+    # صورة اختيارية: إن لم تُرفع تبقى فارغة تماماً ولا يُستخدم أي بديل عشوائي.
+    image = models.TextField(blank=True, null=True, default='', verbose_name="صورة الصنف")
+    quantity = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal('1'), verbose_name="الكمية")
+    unit = models.CharField(max_length=50, default='قطعة', verbose_name="الوحدة")
+    model = models.ForeignKey(
+        'api.ModelItem',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='purchase_requests',
+        verbose_name="الموديل المطلوب له",
+    )
+    model_code_text = models.CharField(max_length=150, blank=True, default='', verbose_name="كود الموديل (نص اختياري)")
+    category = models.CharField(
+        max_length=50,
+        choices=PURCHASE_REQUEST_CATEGORY_CHOICES,
+        blank=True,
+        default='إكسسوارات',
+        verbose_name="التصنيف",
+    )
+    notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
+    status = models.CharField(
+        max_length=20,
+        choices=PURCHASE_REQUEST_STATUS_CHOICES,
+        default='pending',
+        db_index=True,
+        verbose_name="الحالة",
+    )
+
+    # حقول ما بعد الشراء (تُملأ فقط عند التعليم كـ «تم الشراء»)
+    purchased_price = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name="سعر الشراء",
+    )
+    supplier = models.ForeignKey(
+        Supplier,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='purchase_requests',
+        verbose_name="المورد",
+    )
+    supplier_name = models.CharField(max_length=200, blank=True, default='', verbose_name="اسم المورد")
+    purchase_notes = models.TextField(blank=True, default='', verbose_name="ملاحظات الشراء")
+    purchased_at = models.DateTimeField(null=True, blank=True, verbose_name="تاريخ الشراء")
+    purchased_by = models.CharField(max_length=200, blank=True, default='', verbose_name="تم الشراء بواسطة")
+
+    created_by = models.CharField(max_length=200, blank=True, default='', verbose_name="أنشأه")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+
+    def save(self, *args, **kwargs):
+        if self.image:
+            guard_image_field(self, 'image', 'صورة طلب الشراء')
+        else:
+            self.image = ''
+        if not self.client_id:
+            self.client_id = generate_client_id('pr')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.item_name} ({self.quantity} {self.unit})"
+
+
 # Unified garment part keys used across cutting, QC and sewing.
 # NOTE: 'shirt' is the canonical key for تيشرت (legacy code already uses it).
 PART_TYPE_CHOICES = [
