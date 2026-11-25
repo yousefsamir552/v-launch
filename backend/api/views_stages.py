@@ -348,13 +348,13 @@ class QCRecordViewSet(BasePermViewSet):
     serializer_class = QCRecordSerializer
 
     def create(self, request, *args, **kwargs):
-        data = request.data
+        data = request.data if isinstance(request.data, dict) else {}
         model = resolve_by_id(ModelItem, data.get('model_id') or data.get('modelId'))
         if not model:
             return Response({'detail': 'الموديل غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
 
-        stage = data.get('stage') or 'before_print'
-        raw_notes = (data.get('defect_notes') or data.get('defectNotes') or data.get('notes') or '').strip()
+        stage = str(data.get('stage') or 'before_print').strip() or 'before_print'
+        raw_notes = str(data.get('defect_notes') or data.get('defectNotes') or data.get('notes') or '').strip()
 
         profile = getattr(request, 'user_profile', None)
         can_write_notes = True
@@ -366,62 +366,66 @@ class QCRecordViewSet(BasePermViewSet):
         if not can_write_notes:
             raw_notes = ''
 
-        good_qty = max(0, int(data.get('good_qty') if data.get('good_qty') is not None else (data.get('goodQty') or data.get('counted_pieces') or 0)))
-        defect_qty = max(0, int(data.get('defect_qty') if data.get('defect_qty') is not None else (data.get('defectQty') or data.get('defect_pieces') or 0)))
-        inspector = data.get('inspector_name') or 'مراقب الجودة'
-        now_str = data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
-        color_name = (data.get('color_name') or data.get('colorName') or '').strip()
-        size_val = (data.get('size') or '').strip()
-        part_type = normalize_part_key(data.get('part_type') or data.get('partType') or 'shirt')
-        pieces_cut_ref = int(data.get('pieces_cut') or model.total_cut_pieces or 0)
+        raw_good = data.get('good_qty')
+        if raw_good is None or raw_good == '':
+            raw_good = data.get('goodQty')
+        if raw_good is None or raw_good == '':
+            raw_good = data.get('counted_pieces')
+        raw_defect = data.get('defect_qty')
+        if raw_defect is None or raw_defect == '':
+            raw_defect = data.get('defectQty')
+        if raw_defect is None or raw_defect == '':
+            raw_defect = data.get('defect_pieces')
 
         try:
-            validate_qc_stage_progression(model, stage, [part_type])
+            good_qty = parse_qc_nonneg_int(raw_good, 'عدد القطع السليمة', default=0)
+            defect_qty = parse_qc_nonneg_int(raw_defect, 'عدد القطع التالفة', default=0)
+            pieces_cut_ref = parse_qc_nonneg_int(
+                data.get('pieces_cut'),
+                'عدد القطع المقصوصة',
+                default=int(model.total_cut_pieces or 0),
+            )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        with transaction.atomic():
-            # Upsert if same model + part + stage + color_name + size exists
-            existing = None
-            if color_name or size_val:
-                existing = QCRecord.objects.filter(
-                    model=model,
-                    stage=stage,
-                    part_type=part_type,
-                    color_name=color_name,
-                    size=size_val
-                ).first()
+        inspector = str(data.get('inspector_name') or 'مراقب الجودة').strip() or 'مراقب الجودة'
+        now_str = str(data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')).strip()
+        color_name = str(data.get('color_name') or data.get('colorName') or '').strip()
+        size_val = str(data.get('size') or '').strip()
+        model_default_part = (get_model_parts(model) or ['shirt'])[0]
+        part_type = normalize_part_key(data.get('part_type') or data.get('partType') or model_default_part)
 
-            if existing:
-                existing.pieces_cut = pieces_cut_ref
-                existing.counted_pieces = good_qty
-                existing.defect_pieces = defect_qty
-                if can_write_notes:
-                    existing.notes = raw_notes
-                existing.checked_by = inspector
-                existing.created_at_str = now_str
-                existing.save()
-                rec = existing
-            else:
-                rec = QCRecord.objects.create(
-                    client_id=data.get('id') or data.get('client_id'),
-                    model=model,
+        try:
+            with transaction.atomic():
+                model = ModelItem.objects.select_for_update().get(pk=model.pk)
+                prev_stages = dict(model.part_stages) if isinstance(model.part_stages, dict) else {}
+                validate_qc_stage_progression(model, stage, [part_type])
+
+                rec = upsert_qc_record(
+                    model,
                     stage=stage,
                     part_type=part_type,
                     color_name=color_name,
                     size=size_val,
                     pieces_cut=pieces_cut_ref,
-                    counted_pieces=good_qty,
-                    defect_pieces=defect_qty,
-                    notes=raw_notes if can_write_notes else '',
+                    good_qty=good_qty,
+                    defect_qty=defect_qty,
+                    notes=raw_notes,
+                    can_write_notes=can_write_notes,
                     checked_by=inspector,
                     created_at_str=now_str,
+                    client_id=data.get('id') or data.get('client_id'),
                 )
 
-            # Recompute per-part + aggregate stage counts from the records
-            model._skip_timeline_signal = True
-            model.save()
-            recompute_model_part_totals(model)
+                model._skip_timeline_signal = True
+                if (model.part_stages or {}) != prev_stages:
+                    model.save(update_fields=['part_stages', 'updated_at'])
+                recompute_model_part_totals(model)
+        except (ValueError, ValidationError, IntegrityError) as exc:
+            return Response(
+                {'detail': format_validation_error(exc, 'تعذر حفظ سجل الفرز')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(QCRecordSerializer(rec).data, status=status.HTTP_201_CREATED)
 
@@ -430,14 +434,23 @@ class QCRecordViewSet(BasePermViewSet):
         """
         Bulk save/upsert QC matrix records (Color x Size) for a given model and stage.
         """
-        data = request.data
+        data = request.data if isinstance(request.data, dict) else {}
         model = resolve_by_id(ModelItem, data.get('model_id') or data.get('modelId'))
         if not model:
             return Response({'detail': 'الموديل غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
 
-        stage = data.get('stage') or 'before_print'
-        entries = data.get('matrix_entries') or data.get('matrixEntries') or []
-        raw_notes = (data.get('notes') or data.get('defectNotes') or '').strip()
+        stage = str(data.get('stage') or 'before_print').strip() or 'before_print'
+        entries = data.get('matrix_entries')
+        if entries is None:
+            entries = data.get('matrixEntries')
+        if entries is None:
+            entries = []
+        if not isinstance(entries, list):
+            return Response(
+                {'detail': 'صيغة بيانات مصفوفة الفرز غير صالحة'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        raw_notes = str(data.get('notes') or data.get('defectNotes') or '').strip()
 
         profile = getattr(request, 'user_profile', None)
         can_write_notes = True
@@ -449,77 +462,92 @@ class QCRecordViewSet(BasePermViewSet):
         if not can_write_notes:
             raw_notes = ''
 
-        inspector = data.get('inspector_name') or data.get('user_name') or 'مراقب الجودة'
-        now_str = data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
+        inspector = str(data.get('inspector_name') or data.get('user_name') or 'مراقب الجودة').strip() or 'مراقب الجودة'
+        now_str = str(data.get('created_at') or timezone.now().strftime('%Y-%m-%d %H:%M')).strip()
         pieces_cut_ref = int(model.total_cut_pieces or model.target_cut_quantity or 0)
 
-        default_part_type = normalize_part_key(data.get('part_type') or data.get('partType') or 'shirt')
-        touched_parts = sorted({
-            normalize_part_key(entry.get('part_type') or entry.get('partType') or default_part_type)
-            for entry in entries if isinstance(entry, dict)
-        }) or [default_part_type]
-        try:
-            validate_qc_stage_progression(model, stage, touched_parts)
-        except ValueError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        model_default_part = (get_model_parts(model) or ['shirt'])[0]
+        default_part_type = normalize_part_key(data.get('part_type') or data.get('partType') or model_default_part)
 
-        saved_list = []
-        with transaction.atomic():
+        parsed_entries = []
+        try:
             for entry in entries:
-                c_name = (entry.get('color_name') or entry.get('colorName') or '').strip()
-                sz = (entry.get('size') or '').strip()
+                if not isinstance(entry, dict):
+                    continue
+                c_name = str(entry.get('color_name') or entry.get('colorName') or '').strip()
+                sz = str(entry.get('size') or '').strip()
                 if not c_name and not sz:
                     continue
                 entry_part = normalize_part_key(
                     entry.get('part_type') or entry.get('partType') or default_part_type
                 )
-                g_qty = max(0, int(entry.get('good_qty') if entry.get('good_qty') is not None else (entry.get('goodQty') or entry.get('counted_pieces') or 0)))
-                d_qty = max(0, int(entry.get('defect_qty') if entry.get('defect_qty') is not None else (entry.get('defectQty') or entry.get('defect_pieces') or 0)))
+                raw_good = entry.get('good_qty')
+                if raw_good is None or raw_good == '':
+                    raw_good = entry.get('goodQty')
+                if raw_good is None or raw_good == '':
+                    raw_good = entry.get('counted_pieces')
+                raw_defect = entry.get('defect_qty')
+                if raw_defect is None or raw_defect == '':
+                    raw_defect = entry.get('defectQty')
+                if raw_defect is None or raw_defect == '':
+                    raw_defect = entry.get('defect_pieces')
+                g_qty = parse_qc_nonneg_int(raw_good, f'الكمية السليمة ({c_name or sz})', default=0)
+                d_qty = parse_qc_nonneg_int(raw_defect, f'الكمية التالفة ({c_name or sz})', default=0)
                 cell_notes = (
-                    (entry.get('notes') or entry.get('defect_notes') or raw_notes or '').strip()
+                    str(entry.get('notes') or entry.get('defect_notes') or raw_notes or '').strip()
                     if can_write_notes else ''
                 )
+                parsed_entries.append({
+                    'part_type': entry_part,
+                    'color_name': c_name,
+                    'size': sz,
+                    'good_qty': g_qty,
+                    'defect_qty': d_qty,
+                    'notes': cell_notes,
+                    'client_id': entry.get('id') or entry.get('client_id'),
+                })
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-                existing = QCRecord.objects.filter(
-                    model=model,
-                    stage=stage,
-                    part_type=entry_part,
-                    color_name=c_name,
-                    size=sz
-                ).first()
+        touched_parts = sorted({item['part_type'] for item in parsed_entries}) or [default_part_type]
 
-                if existing:
-                    existing.pieces_cut = pieces_cut_ref
-                    existing.counted_pieces = g_qty
-                    existing.defect_pieces = d_qty
-                    if can_write_notes:
-                        existing.notes = cell_notes
-                    existing.checked_by = inspector
-                    existing.created_at_str = now_str
-                    existing.save()
-                    saved_list.append(existing)
-                else:
-                    new_rec = QCRecord.objects.create(
-                        client_id=entry.get('id') or entry.get('client_id'),
-                        model=model,
+        saved_by_id = {}
+        try:
+            with transaction.atomic():
+                model = ModelItem.objects.select_for_update().get(pk=model.pk)
+                prev_stages = dict(model.part_stages) if isinstance(model.part_stages, dict) else {}
+                validate_qc_stage_progression(model, stage, touched_parts)
+
+                for item in parsed_entries:
+                    rec = upsert_qc_record(
+                        model,
                         stage=stage,
-                        part_type=entry_part,
-                        color_name=c_name,
-                        size=sz,
+                        part_type=item['part_type'],
+                        color_name=item['color_name'],
+                        size=item['size'],
                         pieces_cut=pieces_cut_ref,
-                        counted_pieces=g_qty,
-                        defect_pieces=d_qty,
-                        notes=cell_notes,
+                        good_qty=item['good_qty'],
+                        defect_qty=item['defect_qty'],
+                        notes=item['notes'],
+                        can_write_notes=can_write_notes,
                         checked_by=inspector,
                         created_at_str=now_str,
+                        client_id=item['client_id'],
                     )
-                    saved_list.append(new_rec)
+                    saved_by_id[rec.pk] = rec
 
-            # Recompute per-part + aggregate stage counts from the records
-            model._skip_timeline_signal = True
-            model.save()
-            recompute_model_part_totals(model)
+                # Recompute per-part + aggregate stage counts from the records
+                model._skip_timeline_signal = True
+                if (model.part_stages or {}) != prev_stages:
+                    model.save(update_fields=['part_stages', 'updated_at'])
+                recompute_model_part_totals(model)
+        except (ValueError, ValidationError, IntegrityError) as exc:
+            return Response(
+                {'detail': format_validation_error(exc, 'تعذر حفظ مصفوفة الجودة')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
+        saved_list = list(saved_by_id.values())
         stage_label = {
             'before_print': 'قبل الطباعة',
             'after_print': 'بعد الطباعة',

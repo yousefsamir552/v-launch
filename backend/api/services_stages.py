@@ -1,6 +1,7 @@
 import os
 from datetime import date, timedelta
-from django.db import transaction
+from decimal import Decimal, InvalidOperation
+from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -97,6 +98,119 @@ def validate_qc_stage_progression(model, stage, parts):
         raise ValueError(
             f"لا يمكن تسجيل ({stage_label}) قبل وصول القطع إلى المرحلة المطلوبة: {' / '.join(not_ready)}"
         )
+
+
+def parse_qc_nonneg_int(value, field_label='الكمية', default=0):
+    """يحول مدخل كمية الفرز إلى عدد صحيح غير سالب أو يرفع ValueError برسالة عربية واضحة."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ValueError(f'{field_label} يجب أن تكون رقماً صحيحاً غير سالب')
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError(f'{field_label} لا يمكن أن تكون سالبة')
+        return value
+    raw = str(value).strip()
+    if raw == '':
+        return default
+    try:
+        dec = Decimal(raw)
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError(f'{field_label} غير صالحة: "{raw}"')
+    if not dec.is_finite() or dec < 0 or dec != dec.to_integral_value():
+        raise ValueError(f'{field_label} يجب أن تكون رقماً صحيحاً غير سالب')
+    return int(dec)
+
+
+def upsert_qc_record(
+    model,
+    *,
+    stage,
+    part_type,
+    color_name,
+    size,
+    pieces_cut,
+    good_qty,
+    defect_qty,
+    notes='',
+    can_write_notes=True,
+    checked_by='مراقب الجودة',
+    created_at_str='',
+    client_id=None,
+):
+    """حفظ/تحديث ذرّي آمن لخلية QCRecord يحترم قيد التفرد uniq_qc_record_cell ويزيل أي تكرار قديم."""
+    clean_stage = str(stage or 'before_print').strip()
+    if clean_stage not in QC_STAGE_TO_REQUIRED_PART_STAGE:
+        raise ValueError('مرحلة الفرز غير معروفة')
+
+    clean_part = normalize_part_key(part_type or 'shirt')
+    clean_color = str(color_name or '').strip()[:150]
+    clean_size = str(size or '').strip()[:50]
+    clean_checker = (str(checked_by or '').strip() or 'مراقب الجودة')[:150]
+    clean_ts = (str(created_at_str or '').strip() or timezone.now().strftime('%Y-%m-%d %H:%M'))[:100]
+    clean_notes = str(notes or '').strip()
+    clean_cut = max(0, int(pieces_cut or 0))
+    clean_good = max(0, int(good_qty or 0))
+    clean_defect = max(0, int(defect_qty or 0))
+
+    lookup = {
+        'model': model,
+        'stage': clean_stage,
+        'part_type': clean_part,
+        'color_name': clean_color,
+        'size': clean_size,
+    }
+
+    matches = list(QCRecord.objects.select_for_update().filter(**lookup).order_by('id'))
+    if matches:
+        rec = matches[0]
+        if len(matches) > 1:
+            extra_ids = [dup.pk for dup in matches[1:]]
+            QCRecord.objects.filter(pk__in=extra_ids).delete()
+        rec.pieces_cut = clean_cut
+        rec.counted_pieces = clean_good
+        rec.defect_pieces = clean_defect
+        if can_write_notes:
+            rec.notes = clean_notes
+        rec.checked_by = clean_checker
+        rec.created_at_str = clean_ts
+        rec.save()
+        return rec
+
+    clean_client_id = str(client_id).strip()[:100] if client_id else None
+    if clean_client_id == '':
+        clean_client_id = None
+
+    try:
+        with transaction.atomic():
+            return QCRecord.objects.create(
+                client_id=clean_client_id,
+                model=model,
+                stage=clean_stage,
+                part_type=clean_part,
+                color_name=clean_color,
+                size=clean_size,
+                pieces_cut=clean_cut,
+                counted_pieces=clean_good,
+                defect_pieces=clean_defect,
+                notes=clean_notes if can_write_notes else '',
+                checked_by=clean_checker,
+                created_at_str=clean_ts,
+            )
+    except IntegrityError:
+        # في حال تزامن طلبين على نفس الخلية في نفس اللحظة: نحدّث السجل الفائز بدلاً من رمي 500.
+        rec = QCRecord.objects.select_for_update().filter(**lookup).order_by('id').first()
+        if rec is None:
+            raise
+        rec.pieces_cut = clean_cut
+        rec.counted_pieces = clean_good
+        rec.defect_pieces = clean_defect
+        if can_write_notes:
+            rec.notes = clean_notes
+        rec.checked_by = clean_checker
+        rec.created_at_str = clean_ts
+        rec.save()
+        return rec
 
 
 def _append_receive_note(existing_notes, clean_notes):

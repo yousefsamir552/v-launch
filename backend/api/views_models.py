@@ -1221,8 +1221,9 @@ class ModelItemViewSet(BasePermViewSet):
     @action(detail=True, methods=['post'])
     def record_qc_count(self, request, pk=None):
         model = self.get_object()
-        stage = request.data.get('stage') or 'before_print'
-        raw_notes = (request.data.get('notes') or request.data.get('defectNotes') or '').strip()
+        data = request.data if isinstance(request.data, dict) else {}
+        stage = str(data.get('stage') or 'before_print').strip() or 'before_print'
+        raw_notes = str(data.get('notes') or data.get('defectNotes') or '').strip()
 
         profile = getattr(request, 'user_profile', None)
         can_write_notes = True
@@ -1235,193 +1236,263 @@ class ModelItemViewSet(BasePermViewSet):
             raw_notes = ''
 
         notes = raw_notes
-        advance_stage = request.data.get('advanceStage', True)
-        user = request.data.get('user') or request.data.get('user_name') or 'مراقب الجودة'
+        advance_raw = data.get('advanceStage')
+        if advance_raw is None:
+            advance_raw = data.get('advance_stage', True)
+        advance_stage = parse_bool_flag(advance_raw, default=True)
+        user = str(data.get('user') or data.get('user_name') or 'مراقب الجودة').strip() or 'مراقب الجودة'
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-        pieces_cut_ref = model.total_cut_pieces or model.target_cut_quantity or 0
-        default_part_type = normalize_part_key(request.data.get('part_type') or request.data.get('partType') or 'shirt')
-        # Legacy models keep working: seed per-part stages before the first touch.
-        seed_part_stages_from_status(model)
+        pieces_cut_ref = int(model.total_cut_pieces or model.target_cut_quantity or 0)
+        model_default_part = (get_model_parts(model) or ['shirt'])[0]
+        default_part_type = normalize_part_key(data.get('part_type') or data.get('partType') or model_default_part)
 
-        matrix_entries = request.data.get('matrix_entries') or request.data.get('matrixEntries')
-        touched_parts = (
-            sorted({
-                normalize_part_key(entry.get('part_type') or entry.get('partType') or default_part_type)
-                for entry in matrix_entries if isinstance(entry, dict)
-            })
-            if isinstance(matrix_entries, list) and len(matrix_entries) > 0
-            else [default_part_type]
-        )
+        matrix_entries = data.get('matrix_entries')
+        if matrix_entries is None:
+            matrix_entries = data.get('matrixEntries')
+        if matrix_entries is not None and not isinstance(matrix_entries, list):
+            return Response(
+                {'detail': 'صيغة بيانات مصفوفة الفرز غير صالحة'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        parsed_matrix = []
+        fallback_payload = None
         try:
-            validate_qc_stage_progression(model, stage, touched_parts)
-        except ValueError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        saved_records = []
-
-        with transaction.atomic():
             if isinstance(matrix_entries, list) and len(matrix_entries) > 0:
-                # Upsert each (color_name, size) cell for this model and stage
                 for entry in matrix_entries:
-                    c_name = (entry.get('color_name') or entry.get('colorName') or '').strip()
-                    sz = (entry.get('size') or '').strip()
+                    if not isinstance(entry, dict):
+                        continue
+                    c_name = str(entry.get('color_name') or entry.get('colorName') or '').strip()
+                    sz = str(entry.get('size') or '').strip()
                     if not c_name and not sz:
                         continue
-                    g_qty = max(0, int(entry.get('good_qty') if entry.get('good_qty') is not None else (entry.get('goodQty') or entry.get('counted_pieces') or 0)))
-                    d_qty = max(0, int(entry.get('defect_qty') if entry.get('defect_qty') is not None else (entry.get('defectQty') or entry.get('defect_pieces') or 0)))
+                    raw_good = entry.get('good_qty')
+                    if raw_good is None or raw_good == '':
+                        raw_good = entry.get('goodQty')
+                    if raw_good is None or raw_good == '':
+                        raw_good = entry.get('counted_pieces')
+                    raw_defect = entry.get('defect_qty')
+                    if raw_defect is None or raw_defect == '':
+                        raw_defect = entry.get('defectQty')
+                    if raw_defect is None or raw_defect == '':
+                        raw_defect = entry.get('defect_pieces')
+                    g_qty = parse_qc_nonneg_int(raw_good, f'الكمية السليمة ({c_name or sz})', default=0)
+                    d_qty = parse_qc_nonneg_int(raw_defect, f'الكمية التالفة ({c_name or sz})', default=0)
                     cell_notes = (
-                        (entry.get('notes') or entry.get('defect_notes') or notes or '').strip()
+                        str(entry.get('notes') or entry.get('defect_notes') or notes or '').strip()
                         if can_write_notes else ''
                     )
                     entry_part = normalize_part_key(
                         entry.get('part_type') or entry.get('partType') or default_part_type
                     )
+                    parsed_matrix.append({
+                        'part_type': entry_part,
+                        'color_name': c_name,
+                        'size': sz,
+                        'good_qty': g_qty,
+                        'defect_qty': d_qty,
+                        'notes': cell_notes,
+                        'client_id': entry.get('id') or entry.get('client_id'),
+                    })
+            else:
+                raw_counted = data.get('counted_pieces')
+                if raw_counted is None or raw_counted == '':
+                    raw_counted = data.get('piecesCounted')
+                if raw_counted is None or raw_counted == '':
+                    raw_counted = data.get('counted')
+                raw_defects = data.get('defect_pieces')
+                if raw_defects is None or raw_defects == '':
+                    raw_defects = data.get('defectQty')
+                counted_val = parse_qc_nonneg_int(raw_counted, 'عدد القطع السليمة', default=0)
+                defects_val = parse_qc_nonneg_int(raw_defects, 'عدد القطع التالفة', default=0)
+                c_name = str(data.get('color_name') or data.get('colorName') or model.model_type or 'الأساسي').strip()
+                sz = str(data.get('size') or '').strip()
+                fallback_payload = {
+                    'part_type': default_part_type,
+                    'color_name': c_name,
+                    'size': sz,
+                    'good_qty': counted_val,
+                    'defect_qty': defects_val,
+                    'notes': notes,
+                    'client_id': data.get('qc_id'),
+                }
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-                    existing_rec = QCRecord.objects.filter(
-                        model=model,
-                        stage=stage,
-                        part_type=entry_part,
-                        color_name=c_name,
-                        size=sz
-                    ).first()
+        touched_parts = (
+            sorted({item['part_type'] for item in parsed_matrix})
+            if parsed_matrix
+            else [default_part_type]
+        )
 
-                    if existing_rec:
-                        existing_rec.pieces_cut = pieces_cut_ref
-                        existing_rec.counted_pieces = g_qty
-                        existing_rec.defect_pieces = d_qty
-                        if can_write_notes:
-                            existing_rec.notes = cell_notes
-                        existing_rec.checked_by = user
-                        existing_rec.created_at_str = now_str
-                        existing_rec.save()
-                        saved_records.append(existing_rec)
-                    else:
-                        new_rec = QCRecord.objects.create(
-                            client_id=entry.get('id') or entry.get('client_id'),
-                            model=model,
+        saved_by_id = {}
+        try:
+            with transaction.atomic():
+                model = ModelItem.objects.select_for_update().get(pk=model.pk)
+                # Legacy models keep working: seed per-part stages before validation.
+                seed_part_stages_from_status(model)
+                validate_qc_stage_progression(model, stage, touched_parts)
+
+                if parsed_matrix:
+                    for item in parsed_matrix:
+                        rec = upsert_qc_record(
+                            model,
                             stage=stage,
-                            part_type=entry_part,
-                            color_name=c_name,
-                            size=sz,
+                            part_type=item['part_type'],
+                            color_name=item['color_name'],
+                            size=item['size'],
                             pieces_cut=pieces_cut_ref,
-                            counted_pieces=g_qty,
-                            defect_pieces=d_qty,
-                            notes=cell_notes,
+                            good_qty=item['good_qty'],
+                            defect_qty=item['defect_qty'],
+                            notes=item['notes'],
+                            can_write_notes=can_write_notes,
                             checked_by=user,
                             created_at_str=now_str,
+                            client_id=item['client_id'],
                         )
-                        saved_records.append(new_rec)
+                        saved_by_id[rec.pk] = rec
 
-                # Calculate total counted & defects across all matrix cells in this stage for the model
-                stage_qs = QCRecord.objects.filter(model=model, stage=stage)
-                counted = sum(int(r.counted_pieces or 0) for r in stage_qs)
-                defects = sum(int(r.defect_pieces or 0) for r in stage_qs)
-            else:
-                counted = int(request.data.get('counted_pieces') or request.data.get('piecesCounted') or 0)
-                defects = int(request.data.get('defect_pieces') or request.data.get('defectQty') or 0)
-                c_name = (request.data.get('color_name') or request.data.get('colorName') or model.model_type or 'الأساسي').strip()
-                sz = (request.data.get('size') or '').strip()
-                qc_rec = QCRecord.objects.create(
-                    client_id=request.data.get('qc_id'),
-                    model=model,
-                    stage=stage,
-                    part_type=default_part_type,
-                    color_name=c_name,
-                    size=sz,
-                    pieces_cut=pieces_cut_ref,
-                    counted_pieces=counted,
-                    defect_pieces=defects,
-                    notes=notes,
-                    checked_by=user,
-                    created_at_str=now_str,
-                )
-                saved_records.append(qc_rec)
+                    stage_qs = QCRecord.objects.filter(model=model, stage=stage)
+                    counted = sum(int(r.counted_pieces or 0) for r in stage_qs)
+                    defects = sum(int(r.defect_pieces or 0) for r in stage_qs)
+                elif fallback_payload is not None:
+                    qc_rec = upsert_qc_record(
+                        model,
+                        stage=stage,
+                        part_type=fallback_payload['part_type'],
+                        color_name=fallback_payload['color_name'],
+                        size=fallback_payload['size'],
+                        pieces_cut=pieces_cut_ref,
+                        good_qty=fallback_payload['good_qty'],
+                        defect_qty=fallback_payload['defect_qty'],
+                        notes=fallback_payload['notes'],
+                        can_write_notes=can_write_notes,
+                        checked_by=user,
+                        created_at_str=now_str,
+                        client_id=fallback_payload['client_id'],
+                    )
+                    saved_by_id[qc_rec.pk] = qc_rec
+                    counted = fallback_payload['good_qty']
+                    defects = fallback_payload['defect_qty']
+                else:
+                    stage_qs = QCRecord.objects.filter(model=model, stage=stage)
+                    counted = sum(int(r.counted_pieces or 0) for r in stage_qs)
+                    defects = sum(int(r.defect_pieces or 0) for r in stage_qs)
 
-            matrix_snapshot = [
-                {
-                    'part_type': r.part_type or 'shirt',
-                    'color_name': r.color_name,
-                    'size': r.size,
-                    'good_qty': r.counted_pieces,
-                    'defect_qty': r.defect_pieces,
+                saved_records = list(saved_by_id.values())
+
+                matrix_snapshot = [
+                    {
+                        'part_type': r.part_type or 'shirt',
+                        'color_name': r.color_name,
+                        'size': r.size,
+                        'good_qty': int(r.counted_pieces or 0),
+                        'defect_qty': int(r.defect_pieces or 0),
+                    }
+                    for r in saved_records
+                ]
+
+                qc_details = {
+                    'phase_type': f'qc_{stage}',
+                    'record_id': get_ext_id(saved_records[0]) if saved_records else '',
+                    'qc_stage': stage,
+                    'pieces_cut': pieces_cut_ref,
+                    'counted_pieces': int(counted),
+                    'defect_pieces': int(defects),
+                    'deficit': pieces_cut_ref - int(counted),
+                    'matrix_entries': matrix_snapshot,
+                    'inspector_name': user,
+                    'operator_name': user,
+                    'worker_notes': notes,
                 }
-                for r in saved_records
-            ]
 
-            qc_details = {
-                'phase_type': f'qc_{stage}',
-                'record_id': get_ext_id(saved_records[0]) if saved_records else '',
-                'qc_stage': stage,
-                'pieces_cut': pieces_cut_ref,
-                'counted_pieces': counted,
-                'defect_pieces': defects,
-                'deficit': pieces_cut_ref - counted,
-                'matrix_entries': matrix_snapshot,
-                'inspector_name': user,
-                'operator_name': user,
-                'worker_notes': notes,
-            }
+                # Each QC stage advances only the part(s) actually counted. The coarse
+                # model status is then derived from the least advanced part.
+                advanced_parts = sorted({r.part_type for r in saved_records if r.part_type}) or [default_part_type]
+                if advance_stage:
+                    next_stage = {
+                        'before_print': 'printing',
+                        'after_print': 'sewing',
+                        'after_sewing': 'finishing',
+                    }.get(stage)
+                    if next_stage:
+                        for part in advanced_parts:
+                            advance_parts_to_stage(model, next_stage, [part])
+                        derive_pipeline_status(model)
 
-            # Each QC stage advances only the part(s) actually counted. The coarse
-            # model status is then derived from the least advanced part.
-            advanced_parts = sorted({r.part_type for r in saved_records if r.part_type}) or [default_part_type]
-            if advance_stage:
-                next_stage = {
-                    'before_print': 'printing',
-                    'after_print': 'sewing',
-                    'after_sewing': 'finishing',
-                }.get(stage)
-                if next_stage:
-                    for part in advanced_parts:
-                        advance_parts_to_stage(model, next_stage, [part])
-                    derive_pipeline_status(model)
+                if stage == 'before_print':
+                    model.count_before_print = counted
+                    tl_text = f"مصفوفة الفرز قبل الطباعة — إجمالي السليم: {counted} | إجمالي التالف: {defects} {'-> تحويل للمطابع والتطريز' if advance_stage else ''}"
+                    if notes:
+                        tl_text += f" | ملاحظات: {notes}"
+                    ModelTimeline.objects.create(
+                        model=model,
+                        stage="العد قبل الطباعة",
+                        title="إتمام العد والفرز قبل الطباعة (جدول الألوان والمقاسات)",
+                        notes=tl_text,
+                        user=user,
+                        timestamp_str=now_str,
+                        details=qc_details,
+                    )
+                elif stage == 'after_print':
+                    model.count_after_print = counted
+                    tl_text = f"مصفوفة الفرز بعد الطباعة — إجمالي السليم: {counted} قطعة | إجمالي التالف: {defects} {'-> تحويل لقسم المكن' if advance_stage else ''}"
+                    if notes:
+                        tl_text += f" | ملاحظات: {notes}"
+                    ModelTimeline.objects.create(
+                        model=model,
+                        stage="العد بعد الطباعة",
+                        title="إتمام العد والفرز بعد الطباعة (جدول الألوان والمقاسات)",
+                        notes=tl_text,
+                        user=user,
+                        timestamp_str=now_str,
+                        details=qc_details,
+                    )
+                elif stage == 'after_sewing':
+                    model.count_after_sewing = counted
+                    tl_text = f"مصفوفة الفحص النهائي بعد المكن — إجمالي السليم: {counted} قطعة | إجمالي التالف: {defects} {'-> تحويل لقسم التشطيب' if advance_stage else ''}"
+                    if notes:
+                        tl_text += f" | ملاحظات: {notes}"
+                    ModelTimeline.objects.create(
+                        model=model,
+                        stage="العد بعد المكن",
+                        title="إتمام العد النهائي بعد المكن (جدول الألوان والمقاسات)",
+                        notes=tl_text,
+                        user=user,
+                        timestamp_str=now_str,
+                        details=qc_details,
+                    )
 
-            if stage == 'before_print':
-                model.count_before_print = counted
-                tl_text = f"مصفوفة الفرز قبل الطباعة — إجمالي السليم: {counted} | إجمالي التالف: {defects} {'-> تحويل للمطابع والتطريز' if advance_stage else ''}"
-                if notes:
-                    tl_text += f" | ملاحظات: {notes}"
-                ModelTimeline.objects.create(
-                    model=model,
-                    stage="العد قبل الطباعة",
-                    title="إتمام العد والفرز قبل الطباعة (جدول الألوان والمقاسات)",
-                    notes=tl_text,
-                    user=user,
-                    timestamp_str=now_str,
-                    details=qc_details,
-                )
-            elif stage == 'after_print':
-                model.count_after_print = counted
-                tl_text = f"مصفوفة الفرز بعد الطباعة — إجمالي السليم: {counted} قطعة | إجمالي التالف: {defects} {'-> تحويل لقسم المكن' if advance_stage else ''}"
-                if notes:
-                    tl_text += f" | ملاحظات: {notes}"
-                ModelTimeline.objects.create(
-                    model=model,
-                    stage="العد بعد الطباعة",
-                    title="إتمام العد والفرز بعد الطباعة (جدول الألوان والمقاسات)",
-                    notes=tl_text,
-                    user=user,
-                    timestamp_str=now_str,
-                    details=qc_details,
-                )
-            elif stage == 'after_sewing':
-                model.count_after_sewing = counted
-                tl_text = f"مصفوفة الفحص النهائي بعد المكن — إجمالي السليم: {counted} قطعة | إجمالي التالف: {defects} {'-> تحويل لقسم التشطيب' if advance_stage else ''}"
-                if notes:
-                    tl_text += f" | ملاحظات: {notes}"
-                ModelTimeline.objects.create(
-                    model=model,
-                    stage="العد بعد المكن",
-                    title="إتمام العد النهائي بعد المكن (جدول الألوان والمقاسات)",
-                    notes=tl_text,
-                    user=user,
-                    timestamp_str=now_str,
-                    details=qc_details,
-                )
+                model._skip_timeline_signal = True
+                model.save(update_fields=[
+                    'status', 'part_stages',
+                    'count_before_print', 'count_after_print', 'count_after_sewing',
+                    'updated_at',
+                ])
+                recompute_model_part_totals(model)
+        except (ValueError, ValidationError, IntegrityError) as exc:
+            return Response(
+                {'detail': format_validation_error(exc, 'تعذر تسجيل واعتماد بيانات الفرز')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-            model._skip_timeline_signal = True
-            model.save()
-            recompute_model_part_totals(model)
+        stage_label = QC_STAGE_ARABIC_LABELS.get(stage, stage)
+        set_audit_meta(
+            request,
+            section='العد والجودة',
+            action_type='status_change' if advance_stage else 'update',
+            target_name=model.model_code,
+            details=(
+                f"اعتماد وترحيل ({stage_label}) للموديل {model.model_code}: سليم {counted}، تالف {defects}"
+                if advance_stage
+                else f"تسجيل ({stage_label}) للموديل {model.model_code}: سليم {counted}، تالف {defects}"
+            ),
+            changes=[
+                {'field': 'stage', 'label': 'المرحلة', 'old': '—', 'new': stage_label},
+                {'field': 'counted_pieces', 'label': 'إجمالي السليم', 'old': '—', 'new': str(counted)},
+                {'field': 'defect_pieces', 'label': 'إجمالي التالف', 'old': '—', 'new': str(defects)},
+            ],
+        )
 
         # Only return the parts touched by this request so the client never duplicates
         # records belonging to the other garment parts.
@@ -1438,28 +1509,41 @@ class ModelItemViewSet(BasePermViewSet):
     @action(detail=True, methods=['post'])
     def finish_qc_approval(self, request, pk=None):
         model = self.get_object()
-        try:
-            validate_qc_stage_progression(model, 'before_print', get_model_parts(model))
-        except ValueError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        data = request.data if isinstance(request.data, dict) else {}
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-        user_name = request.data.get('user_name') or 'مراقب الجودة'
-        advance_parts_to_stage(model, 'printing')
-        derive_pipeline_status(model)
-        model._skip_timeline_signal = True
-        model.save()
-        ModelTimeline.objects.create(
-            model=model,
-            stage='المطابع والتطريز',
-            title='الاعتماد وجاهزية الإرسال للمطابع',
-            notes='تم اعتماد نتائج الفرز وأصبح الموديل جاهزاً للتسليم للمطابع',
-            user=user_name,
-            timestamp_str=now_str,
-            details={
-                'phase_type': 'qc_approved',
-                'count_before_print': model.count_before_print or model.total_cut_pieces or 0,
-                'operator_name': user_name,
-            }
+        user_name = str(data.get('user_name') or data.get('user') or 'مراقب الجودة').strip() or 'مراقب الجودة'
+        try:
+            with transaction.atomic():
+                model = ModelItem.objects.select_for_update().get(pk=model.pk)
+                validate_qc_stage_progression(model, 'before_print', get_model_parts(model))
+                advance_parts_to_stage(model, 'printing')
+                derive_pipeline_status(model)
+                model._skip_timeline_signal = True
+                model.save(update_fields=['status', 'part_stages', 'updated_at'])
+                ModelTimeline.objects.create(
+                    model=model,
+                    stage='المطابع والتطريز',
+                    title='الاعتماد وجاهزية الإرسال للمطابع',
+                    notes='تم اعتماد نتائج الفرز وأصبح الموديل جاهزاً للتسليم للمطابع',
+                    user=user_name,
+                    timestamp_str=now_str,
+                    details={
+                        'phase_type': 'qc_approved',
+                        'count_before_print': int(model.count_before_print or model.total_cut_pieces or 0),
+                        'operator_name': user_name,
+                    }
+                )
+        except (ValueError, ValidationError, IntegrityError) as exc:
+            return Response(
+                {'detail': format_validation_error(exc, 'تعذر اعتماد نتائج الفرز')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        set_audit_meta(
+            request,
+            section='العد والجودة',
+            action_type='status_change',
+            target_name=model.model_code,
+            details=f"اعتماد الفرز وجاهزية الإرسال للمطابع للموديل {model.model_code}",
         )
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
@@ -1493,30 +1577,43 @@ class ModelItemViewSet(BasePermViewSet):
     @action(detail=True, methods=['post'])
     def finish_qc_to_production(self, request, pk=None):
         model = self.get_object()
-        try:
-            validate_qc_stage_progression(model, 'after_sewing', get_model_parts(model))
-        except ValueError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        data = request.data if isinstance(request.data, dict) else {}
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-        notes = request.data.get('notes') or ''
-        user_name = request.data.get('user_name') or 'مراقب الجودة'
-        set_all_part_stages(model, 'completed')
-        model.status = 'مخزن الإنتاج التام'
-        model._skip_timeline_signal = True
-        model.save()
-        ModelTimeline.objects.create(
-            model=model,
-            stage='مخزن الإنتاج التام',
-            title='الاعتماد النهائي ودخول مخزن الإنتاج التام',
-            notes=f"تم الفحص النهائي بنجاح ودخول البضاعة الجاهزة إلى مخزن الإنتاج. {notes}",
-            user=user_name,
-            timestamp_str=now_str,
-            details={
-                'phase_type': 'production_warehouse',
-                'count_after_sewing': model.count_after_sewing or 0,
-                'operator_name': user_name,
-                'worker_notes': notes,
-            }
+        notes = str(data.get('notes') or '').strip()
+        user_name = str(data.get('user_name') or data.get('user') or 'مراقب الجودة').strip() or 'مراقب الجودة'
+        try:
+            with transaction.atomic():
+                model = ModelItem.objects.select_for_update().get(pk=model.pk)
+                validate_qc_stage_progression(model, 'after_sewing', get_model_parts(model))
+                set_all_part_stages(model, 'completed', save=False)
+                model.status = 'مخزن الإنتاج التام'
+                model._skip_timeline_signal = True
+                model.save(update_fields=['status', 'part_stages', 'updated_at'])
+                ModelTimeline.objects.create(
+                    model=model,
+                    stage='مخزن الإنتاج التام',
+                    title='الاعتماد النهائي ودخول مخزن الإنتاج التام',
+                    notes=f"تم الفحص النهائي بنجاح ودخول البضاعة الجاهزة إلى مخزن الإنتاج. {notes}".strip(),
+                    user=user_name,
+                    timestamp_str=now_str,
+                    details={
+                        'phase_type': 'production_warehouse',
+                        'count_after_sewing': int(model.count_after_sewing or 0),
+                        'operator_name': user_name,
+                        'worker_notes': notes,
+                    }
+                )
+        except (ValueError, ValidationError, IntegrityError) as exc:
+            return Response(
+                {'detail': format_validation_error(exc, 'تعذر اعتماد التحويل لمخزن الإنتاج التام')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        set_audit_meta(
+            request,
+            section='العد والجودة',
+            action_type='status_change',
+            target_name=model.model_code,
+            details=f"الاعتماد النهائي ودخول مخزن الإنتاج التام للموديل {model.model_code}",
         )
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 

@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.exceptions import PermissionDenied, ValidationError as DRFValidationError
 from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.db.models import Q
 from django.http import Http404, HttpResponse
 from django.utils import timezone
@@ -85,12 +85,17 @@ from .services import (
     packaging_readiness,
     part_stages_payload,
     normalize_part_key,
+    get_model_parts,
     recompute_model_part_totals,
     advance_parts_to_stage,
     derive_pipeline_status,
     seed_part_stages_from_status,
     get_part_stages,
     set_all_part_stages,
+    validate_qc_stage_progression,
+    parse_qc_nonneg_int,
+    upsert_qc_record,
+    QC_STAGE_ARABIC_LABELS,
 )
 from .reports import (
     get_production_report,
@@ -615,6 +620,42 @@ class BaseReadOnlyPermViewSet(viewsets.ReadOnlyModelViewSet):
         context = super().get_serializer_context()
         context['request'] = self.request
         return context
+
+
+def parse_bool_flag(value, default=True) -> bool:
+    """Convert boolean/string payload flags safely (never treats 'false'/'0' as True)."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ('false', '0', 'no', 'off', ''):
+        return False
+    if text in ('true', '1', 'yes', 'on'):
+        return True
+    return default
+
+
+def format_validation_error(exc, fallback='تعذر حفظ البيانات بسبب قيمة غير صالحة') -> str:
+    """Extract a readable Arabic validation message from ValidationError/ValueError/IntegrityError."""
+    if isinstance(exc, ValidationError):
+        if hasattr(exc, 'message_dict') and isinstance(exc.message_dict, dict):
+            parts = []
+            for msgs in exc.message_dict.values():
+                if isinstance(msgs, (list, tuple)):
+                    parts.extend(str(m) for m in msgs if m)
+                elif msgs:
+                    parts.append(str(msgs))
+            if parts:
+                return ' — '.join(parts)
+        if hasattr(exc, 'messages') and exc.messages:
+            return ' — '.join(str(m) for m in exc.messages if m)
+    if isinstance(exc, IntegrityError):
+        return 'يوجد تعارض أو تكرار في بيانات الخلية، يرجى إعادة المحاولة.'
+    msg = str(exc or '').strip()
+    return msg or fallback
 
 
 def to_decimal(value, default=Decimal('0'), places=3) -> Decimal:
