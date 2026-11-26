@@ -40,8 +40,19 @@ import {
   renderSignatureBar,
   safeImageSrc
 } from '../utils/printShared';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
 
 type ReadinessBucket = 'ready' | 'in_progress' | 'completed';
+type ReadinessSortKey = 'code_asc' | 'code_desc' | 'qty_desc' | 'qty_asc' | 'newest' | 'oldest';
+
+const READINESS_SORT_OPTIONS: { value: ReadinessSortKey; label: string }[] = [
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' },
+  { value: 'qty_desc', label: 'العدد (الأكثر أولاً)' },
+  { value: 'qty_asc', label: 'العدد (الأقل أولاً)' },
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' }
+];
 type GenderBucket = 'boys' | 'girls' | 'other';
 type PhotoCardFilter =
   | 'all'
@@ -217,17 +228,22 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
     normalizePartKey,
     hasPermission,
     hasAssemblyPackagingAccess,
+    canViewPreviousModels,
     globalSettings,
     logAction,
     addFlashMessage
   } = useApp();
 
+  const canSeePrevious = canViewPreviousModels();
   const cfg = STAGE_CONFIGS[stage];
   const StageIcon = cfg.icon;
 
   // 3-state segmented switcher (defaults to 'ready' whenever stage changes)
   const [bucket, setBucket] = useState<ReadinessBucket>('ready');
+  const effectiveBucket: ReadinessBucket =
+    bucket === 'completed' && !canSeePrevious ? 'ready' : bucket;
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [sortBy, setSortBy] = useState<ReadinessSortKey>('code_asc');
   const [genderFilter, setGenderFilter] = useState<'all' | GenderBucket>('all');
   const [sizeCategoryFilter, setSizeCategoryFilter] = useState<string>('all');
   const [issuesOnly, setIssuesOnly] = useState<boolean>(false);
@@ -600,12 +616,12 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
     normalizePartKey
   ]);
 
-  const bucketItems = indexed[bucket];
+  const bucketItems = indexed[effectiveBucket];
 
-  // Apply Search & Smart Filters
+  // Apply Search, Smart Filters & Sort By
   const filteredItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return bucketItems.filter((item) => {
+    const list = bucketItems.filter((item) => {
       if (genderFilter !== 'all' && item.gender !== genderFilter) return false;
       if (sizeCategoryFilter !== 'all' && (item.model.size_category_id || '') !== sizeCategoryFilter) {
         return false;
@@ -633,7 +649,15 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
       }
       return true;
     });
-  }, [bucketItems, searchQuery, genderFilter, sizeCategoryFilter, issuesOnly, photoCardFilter]);
+    return [...list].sort((a, b) => {
+      if (sortBy === 'code_desc') return compareNatural(b.model.model_code, a.model.model_code);
+      if (sortBy === 'qty_desc') return b.totalPieces - a.totalPieces;
+      if (sortBy === 'qty_asc') return a.totalPieces - b.totalPieces;
+      if (sortBy === 'newest') return toTimestamp(b.model.created_at) - toTimestamp(a.model.created_at);
+      if (sortBy === 'oldest') return toTimestamp(a.model.created_at) - toTimestamp(b.model.created_at);
+      return compareNatural(a.model.model_code, b.model.model_code);
+    });
+  }, [bucketItems, searchQuery, genderFilter, sizeCategoryFilter, issuesOnly, photoCardFilter, sortBy]);
 
   // Dynamic KPIs for current tab & filters
   const kpis = useMemo(() => {
@@ -900,22 +924,26 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
           </div>
         </div>
 
-        {/* 3-State Segmented Switcher */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80">
+        {/* Segmented Switcher ("تم الانتهاء منها" gated by previous_models_view) */}
+        <div
+          className={`grid grid-cols-1 ${
+            canSeePrevious ? 'sm:grid-cols-3' : 'sm:grid-cols-2'
+          } gap-2 bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80`}
+        >
           <button
             type="button"
             onClick={() => setBucket('ready')}
             className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition cursor-pointer ${
-              bucket === 'ready'
+              effectiveBucket === 'ready'
                 ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <CheckCircle2 className={`w-4 h-4 ${bucket === 'ready' ? 'text-emerald-600' : 'text-slate-400'}`} />
+            <CheckCircle2 className={`w-4 h-4 ${effectiveBucket === 'ready' ? 'text-emerald-600' : 'text-slate-400'}`} />
             <span>جاهزة للدخول</span>
             <span
               className={`px-2 py-0.5 rounded-full text-[11px] font-mono font-black ${
-                bucket === 'ready'
+                effectiveBucket === 'ready'
                   ? 'bg-emerald-100 text-emerald-800'
                   : 'bg-slate-200 text-slate-600'
               }`}
@@ -928,16 +956,16 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
             type="button"
             onClick={() => setBucket('in_progress')}
             className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition cursor-pointer ${
-              bucket === 'in_progress'
+              effectiveBucket === 'in_progress'
                 ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <Clock className={`w-4 h-4 ${bucket === 'in_progress' ? 'text-amber-600' : 'text-slate-400'}`} />
+            <Clock className={`w-4 h-4 ${effectiveBucket === 'in_progress' ? 'text-amber-600' : 'text-slate-400'}`} />
             <span>قيد التشغيل حالياً</span>
             <span
               className={`px-2 py-0.5 rounded-full text-[11px] font-mono font-black ${
-                bucket === 'in_progress'
+                effectiveBucket === 'in_progress'
                   ? 'bg-amber-100 text-amber-900'
                   : 'bg-slate-200 text-slate-600'
               }`}
@@ -946,27 +974,29 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
             </span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setBucket('completed')}
-            className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition cursor-pointer ${
-              bucket === 'completed'
-                ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Layers className={`w-4 h-4 ${bucket === 'completed' ? 'text-blue-600' : 'text-slate-400'}`} />
-            <span>تم الانتهاء منها</span>
-            <span
-              className={`px-2 py-0.5 rounded-full text-[11px] font-mono font-black ${
-                bucket === 'completed'
-                  ? 'bg-blue-100 text-blue-800'
-                  : 'bg-slate-200 text-slate-600'
+          {canSeePrevious && (
+            <button
+              type="button"
+              onClick={() => setBucket('completed')}
+              className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition cursor-pointer ${
+                effectiveBucket === 'completed'
+                  ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200'
+                  : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              {indexed.completed.length}
-            </span>
-          </button>
+              <Layers className={`w-4 h-4 ${effectiveBucket === 'completed' ? 'text-blue-600' : 'text-slate-400'}`} />
+              <span>تم الانتهاء منها</span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[11px] font-mono font-black ${
+                  effectiveBucket === 'completed'
+                    ? 'bg-blue-100 text-blue-800'
+                    : 'bg-slate-200 text-slate-600'
+                }`}
+              >
+                {indexed.completed.length}
+              </span>
+            </button>
+          )}
         </div>
 
         {/* Dynamic KPI Summary Cards */}
@@ -1082,6 +1112,12 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
                 </option>
               ))}
             </select>
+
+            <SortBySelect
+              value={sortBy}
+              onChange={(v) => setSortBy(v as ReadinessSortKey)}
+              options={READINESS_SORT_OPTIONS}
+            />
 
             {/* Photo & Card Status Filter */}
             <select

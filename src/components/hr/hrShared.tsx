@@ -242,21 +242,19 @@ export const weekDatesBeforeWeeklyOff = (offDayIso: string): string[] => {
   return dates;
 };
 
-/** نسبة خصم يوم الإجازة الأسبوعية según عدد أيام الغياب بدون عذر في الأسبوع. */
+/** نسبة خصم يوم الإجازة الأسبوعية وفق عدد أيام الغياب بدون عذر في الأسبوع. */
 export const weeklyOffRatioForAbsences = (count: number): number => {
   if (count >= 5) return 1;
   if (count === 4) return 2 / 3;
-  if (count === 3) return 1 / 2;
-  if (count === 2) return 1 / 3;
+  if (count === 2 || count === 3) return 1 / 3;
   return 0;
 };
 
 /** وصف عربي لنسبة خصم يوم الإجازة الأسبوعية. */
 export const weeklyOffRatioLabel = (days: number): string => {
   if (days >= 1) return 'يوم كامل';
-  if (days >= 2 / 3) return 'ثلثي يوم';
-  if (days >= 1 / 2) return 'نصف يوم';
-  if (days >= 1 / 3) return 'ثلث يوم';
+  if (days >= 2 / 3 - 0.001) return 'ثلثي يوم';
+  if (days >= 1 / 3 - 0.001) return 'ثلث يوم';
   return '';
 };
 
@@ -302,9 +300,6 @@ export const sumWeeklyOffDeductionsForEmployeeMonth = (
     if (cursor.getDay() !== weeklyOffIndex) continue;
     const offDayIso = isoDate(cursor);
     if (upToIso && offDayIso > upToIso) continue;
-    // يوم الإجازة الذي سُجّلت له بصمة حضور يُعامل كيوم عمل، فلا يُخصم.
-    const offDayRecord = recordsByDate.get(offDayIso);
-    if (offDayRecord && offDayRecord.check_in) continue;
     total += weeklyOffDeductionForDate(recordsByDate, offDayIso);
   }
   return total;
@@ -343,11 +338,19 @@ export const timeToMinutes = (value?: string | null): number | null => {
   return hours * 60 + minutes;
 };
 
-/** دقائق التأخير = وقت الحضور − الموعد الرسمي (صفر إذا حضر مبكراً). */
-export const lateMinutesFor = (checkIn?: string | null, officialStart?: string | null): number => {
-  const inMinutes = timeToMinutes(checkIn);
+/** دقائق التأخير = وقت الحضور − الموعد الرسمي (مع دعم الوردية الليلية التي تعبر منتصف الليل). */
+export const lateMinutesFor = (
+  checkIn?: string | null,
+  officialStart?: string | null,
+  officialEnd?: string | null
+): number => {
+  let inMinutes = timeToMinutes(checkIn);
   const startMinutes = timeToMinutes(officialStart);
   if (inMinutes == null || startMinutes == null) return 0;
+  const endMinutes = timeToMinutes(officialEnd);
+  if (endMinutes != null && endMinutes <= startMinutes && inMinutes <= endMinutes) {
+    inMinutes += 1440;
+  }
   const diff = inMinutes - startMinutes;
   return diff > 0 ? Math.round(diff) : 0;
 };
@@ -492,11 +495,6 @@ export const computeMonthAccrual = (
     // اليوم الحالي (بعد نقطة التوقف = أمس) يُحتسب إذا وُجدت له بصمة حضور فعلية.
     if (upToIso && iso > upToIso && !hasCheckIn) continue;
     if (cursor.getDay() === weeklyOffIndex) {
-      // العمل يوم الإجازة الأسبوعية يمنح أجراً إضافياً فوق سقف الـ 30 يوماً.
-      if (hasCheckIn) {
-        workedWeeklyOffDays += 1;
-        continue;
-      }
       const weekDates = weekDatesBeforeWeeklyOff(iso);
       const hasWeekData = weekDates.some((dateStr) => recordsByDate.has(dateStr));
       if (hasWeekData) {
@@ -505,6 +503,10 @@ export const computeMonthAccrual = (
         paidSundayDays += Math.max(0, 1 - ded);
       } else if (monthComplete) {
         sundayDeductionDays += 1;
+      }
+      // العمل يوم الإجازة الأسبوعية يمنح أجراً إضافياً فوق سقف الـ 30 يوماً بنفس المعادلة في منتصف ونهاية الشهر.
+      if (hasCheckIn) {
+        workedWeeklyOffDays += 1;
       }
       continue;
     }

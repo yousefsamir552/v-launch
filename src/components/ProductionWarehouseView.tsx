@@ -1,17 +1,31 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { Boxes, Printer, X, CheckCircle2, Factory, Package, AlertTriangle } from 'lucide-react';
+import { Boxes, Printer, X, Package, AlertTriangle, Search } from 'lucide-react';
 import {
+  buildPrintDocumentHtml,
   escapeHtml,
-  isImageLogo,
   logClientPrintAction,
   openUnifiedPrintWindow,
   renderSignatureBar,
-  safeImageSrc
+  safeImageSrc,
+  UnifiedPrintDocumentOptions
 } from '../utils/printShared';
 import { finishedSetsOf, photographyHoldLabel, photographyOutstandingOf } from '../utils/completedModels';
 import { ZoomableImage } from './ZoomableImage';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
+import { useModalBackHandler } from '../utils/mobileBackNav';
 import type { DesignModel } from '../types';
+
+type ProdSortKey = 'newest' | 'oldest' | 'code_asc' | 'code_desc' | 'qty_desc' | 'qty_asc';
+
+const PROD_SORT_OPTIONS: { value: ProdSortKey; label: string }[] = [
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' },
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' },
+  { value: 'qty_desc', label: 'الأطقم الجاهزة (الأكثر)' },
+  { value: 'qty_asc', label: 'الأطقم الجاهزة (الأقل)' }
+];
 
 /**
  * تنبيه صغير يظهر بجانب رقم الأطقم عندما تكون هناك قطع عينة محتجزة في التصوير
@@ -34,18 +48,37 @@ const PhotographyHoldBadge: React.FC<{ model: DesignModel }> = ({ model }) => {
 export const ProductionWarehouseView: React.FC = () => {
   const { models, globalSettings, exportProductionWarehouseCsv } = useApp();
   const [showPrintModal, setShowPrintModal] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sortBy, setSortBy] = useState<ProdSortKey>('newest');
+
+  useModalBackHandler(showPrintModal, () => setShowPrintModal(false));
 
   // Finished production models — فقط الموديلات التي وصلت فعلاً لمخزن الإنتاج التام
   // (بعد اكتمال التشطيب ← المكواة ← التعبئة والتغليف ← الدَست).
-  const finishedModels = models.filter(
-    (m) => !m.is_deleted && (m.status === 'مخزن الإنتاج التام' || m.status === 'مكتمل الإنتاج')
-  );
+  const finishedModels = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    const list = models.filter(
+      (m) =>
+        !m.is_deleted &&
+        (m.status === 'مخزن الإنتاج التام' || m.status === 'مكتمل الإنتاج') &&
+        (!q ||
+          (m.model_code || '').toLowerCase().includes(q) ||
+          (m.model_type || '').toLowerCase().includes(q))
+    );
+    return [...list].sort((a, b) => {
+      if (sortBy === 'code_asc') return compareNatural(a.model_code, b.model_code);
+      if (sortBy === 'code_desc') return compareNatural(b.model_code, a.model_code);
+      if (sortBy === 'qty_desc') return finishedSetsOf(b) - finishedSetsOf(a);
+      if (sortBy === 'qty_asc') return finishedSetsOf(a) - finishedSetsOf(b);
+      if (sortBy === 'oldest') return toTimestamp(a.created_at) - toTimestamp(b.created_at);
+      return toTimestamp(b.created_at) - toTimestamp(a.created_at);
+    });
+  }, [models, searchTerm, sortBy]);
 
   // الأطقم التامة الفعلية (completed_sets من الباك إند بعد خصم عينات التصوير).
   const totalFinishedSets = finishedModels.reduce((sum, m) => sum + finishedSetsOf(m), 0);
 
-  const handlePrintProductionWarehouse = () => {
-    logClientPrintAction('مخزن الإنتاج', 'طباعة تقرير جرد مخزن الإنتاج التام', 'جرد الإنتاج التام');
+  const buildProductionPrintOptions = (): UnifiedPrintDocumentOptions => {
     const totalTarget = finishedModels.reduce((sum, m) => sum + Number(m.target_cut_quantity || 0), 0);
     const rowsHtml = finishedModels
       .map((m, idx) => {
@@ -105,7 +138,7 @@ export const ProductionWarehouseView: React.FC = () => {
       ${renderSignatureBar(['أمين مخزن الإنتاج التام', 'مراقبة الجودة والتعبئة', 'اعتماد مدير المصنع'], true)}
     `;
 
-    openUnifiedPrintWindow({
+    return {
       documentTitle: 'كشف جرد مخزن الإنتاج التام الجاهز للشحن',
       mode: 'multi-page-table',
       orientation: 'landscape',
@@ -121,7 +154,12 @@ export const ProductionWarehouseView: React.FC = () => {
         .prod-thumb { width: 28px; height: 28px; object-fit: contain; border: 1px solid #cbd5e1; border-radius: 3px; background: #fff; display: block; margin: 0 auto; }
       `,
       popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة كشف مخزن الإنتاج التام.'
-    });
+    };
+  };
+
+  const handlePrintProductionWarehouse = () => {
+    logClientPrintAction('مخزن الإنتاج', 'طباعة تقرير جرد مخزن الإنتاج التام', 'جرد الإنتاج التام');
+    openUnifiedPrintWindow(buildProductionPrintOptions());
   };
 
   return (
@@ -167,16 +205,33 @@ export const ProductionWarehouseView: React.FC = () => {
 
       {/* Finished Goods Inventory Table */}
       <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
-        <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+        <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Package className="w-5 h-5 text-indigo-600" />
             <h3 className="font-extrabold text-base text-slate-900">
               قائمة تشغيلات الإنتاج التام بالمخزن ({finishedModels.length} موديلات)
             </h3>
           </div>
-          <span className="text-xs font-bold px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
-            إجمالي الأطقم الجاهزة: {totalFinishedSets} طقم
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-full sm:w-56">
+              <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="بحث بكود الموديل أو النوع..."
+                className="w-full ps-9 pe-3 py-1.5 rounded-full border border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20"
+              />
+            </div>
+            <SortBySelect
+              value={sortBy}
+              onChange={(v) => setSortBy(v as ProdSortKey)}
+              options={PROD_SORT_OPTIONS}
+            />
+            <span className="text-xs font-bold px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
+              إجمالي الأطقم الجاهزة: {totalFinishedSets} طقم
+            </span>
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -237,18 +292,24 @@ export const ProductionWarehouseView: React.FC = () => {
         </div>
       </div>
 
-      {/* PRINT INVENTORY REPORT MODAL */}
+      {/* PRINT INVENTORY REPORT MODAL — exact A4 final print sheet preview */}
       {showPrintModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-            <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 no-print bg-slate-50">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in"
+          onClick={() => setShowPrintModal(false)}
+        >
+          <div
+            className="bg-white rounded-3xl w-[96vw] sm:w-full max-w-6xl h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 no-print bg-slate-50 shrink-0">
               <div className="flex items-center gap-2">
                 <div className="p-2 bg-indigo-600 text-white rounded-xl">
                   <Printer className="w-5 h-5" />
                 </div>
                 <div>
                   <h3 className="font-extrabold text-base text-slate-900">
-                    تقرير جرد مخزن الإنتاج التام
+                    معاينة تقرير جرد مخزن الإنتاج التام (مطابق للطباعة النهائية A4)
                   </h3>
                   <p className="text-xs text-slate-500">كشف رسمي بالبضاعة الجاهزة الصالحة للتسليم</p>
                 </div>
@@ -263,90 +324,23 @@ export const ProductionWarehouseView: React.FC = () => {
                   <Printer className="w-4 h-4" />
                   <span>طباعة الكشف (A4 أفقي)</span>
                 </button>
-                <button onClick={() => setShowPrintModal(false)} className="text-slate-400 hover:text-slate-700">
+                <button
+                  onClick={() => setShowPrintModal(false)}
+                  className="p-2 rounded-xl text-slate-400 hover:text-slate-700 cursor-pointer"
+                >
                   <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
-            <div
-              className="p-8 overflow-y-auto space-y-6 print:p-0"
-              style={{ fontFamily: 'Tahoma, Arial, sans-serif' }}
-            >
-              <div className="text-center border-b-[3px] border-double border-slate-900 pb-3">
-                <div className="flex items-center justify-center mb-1">
-                  {isImageLogo(globalSettings?.logo) ? (
-                    <img
-                      src={globalSettings?.logo}
-                      alt={globalSettings?.site_name || 'شعار المصنع'}
-                      className="h-14 w-auto max-w-[190px] object-contain"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                      }}
-                    />
-                  ) : (
-                    <span className="text-4xl leading-none">{globalSettings?.logo || '🏭'}</span>
-                  )}
-                </div>
-                <h1 className="text-xl font-black text-slate-900">
-                  {globalSettings?.site_name || 'مصنع الملابس الجاهزة'} — كشف جرد مخزن
-                  الإنتاج التام الجاهز للشحن
-                </h1>
-                <p className="text-xs text-slate-600 mt-0.5 font-bold">
-                  تاريخ الاستخراج: {new Date().toLocaleString('ar-EG', { hour12: false })} —
-                  إجمالي الأطقم الجاهزة: {totalFinishedSets} طقم
-                </p>
-              </div>
-
-              <div className="overflow-x-auto -mx-2 px-2">
-                <table className="w-full text-xs text-start border-collapse">
-                  <thead className="bg-slate-100 text-slate-900 font-black">
-                    <tr>
-                      <th className="border border-slate-800 p-2.5">صورة الموديل</th>
-                      <th className="border border-slate-800 p-2.5">كود الموديل</th>
-                      <th className="border border-slate-800 p-2.5">النوع</th>
-                      <th className="border border-slate-800 p-2.5 text-center">الكمية المستهدفة</th>
-                      <th className="border border-slate-800 p-2.5 text-center">الكمية التامة الفعلية</th>
-                      <th className="border border-slate-800 p-2.5 text-center">الحالة</th>
-                    </tr>
-                  </thead>
-                  <tbody className="font-semibold">
-                    {finishedModels.map((m) => {
-                      const actual = finishedSetsOf(m);
-                      return (
-                        <tr key={m.id}>
-                          <td className="border border-slate-800 p-2.5">
-                            <img
-                              src={m.image}
-                              alt={m.model_code}
-                              className="w-10 h-10 rounded object-contain bg-slate-50 border border-slate-300 p-0.5"
-                              onError={(e) => {
-                                (e.target as HTMLImageElement).style.display = 'none';
-                              }}
-                            />
-                          </td>
-                          <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{m.model_code}</td>
-                          <td className="border border-slate-800 p-2.5 text-slate-700">{m.model_type}</td>
-                          <td className="border border-slate-800 p-2.5 text-center">{m.target_cut_quantity}</td>
-                          <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900">
-                            <span className="inline-flex items-center gap-1">
-                              {actual} طقم
-                              <PhotographyHoldBadge model={m} />
-                            </span>
-                          </td>
-                          <td className="border border-slate-800 p-2.5 text-center text-slate-700">{m.status}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="pt-6 border-t-2 border-slate-900 text-xs text-slate-700 flex justify-between font-bold">
-                <span>مسؤول مخزن الإنتاج: ______________________</span>
-                <span>اعتماد مدير المصنع: ______________________</span>
-              </div>
-            </div>
+            <iframe
+              title="معاينة جرد مخزن الإنتاج التام"
+              srcDoc={buildPrintDocumentHtml({
+                ...buildProductionPrintOptions(),
+                autoPrint: false
+              })}
+              className="w-full flex-1 border-0 bg-slate-200/70"
+            />
           </div>
         </div>
       )}

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { api } from '../api/client';
+import { useModalBackHandler } from '../utils/mobileBackNav';
 import { X, Upload, Layers, FileText, Lock, Image as ImageIcon } from 'lucide-react';
 import {
   DesignModel,
@@ -21,6 +22,7 @@ interface EditModelModalProps {
  * وملاحظات التصميم، ثم تحفظها عبر `updateDesignModelBasicInfo`.
  */
 export const EditModelModal: React.FC<EditModelModalProps> = ({ model, onClose }) => {
+  useModalBackHandler(true, onClose);
   const { sizeDefs, updateDesignModelBasicInfo, canAddDesignNotes } = useApp();
   const canWriteNotes = canAddDesignNotes();
 

@@ -245,6 +245,28 @@ def dispatch_model_to_sewing_service(
 
     with transaction.atomic():
         model = ModelItem.objects.select_for_update().get(pk=model.pk)
+        if (model.status or '').strip() in ('مرحلة التصميم', 'تصميم'):
+            raise ValueError(
+                'لا يمكن إرسال الموديل لورشة المكن وهو لا يزال في مرحلة التصميم؛ يجب صرف القماش والقص أولاً.'
+            )
+        part_cut = 0
+        if piece_type in ('shirt', 'pants', 'jacket'):
+            part_cut = int(getattr(model, f'cut_{piece_type}_pieces', 0) or 0)
+        if part_cut <= 0:
+            part_cut = int(model.total_cut_pieces or 0)
+        if part_cut <= 0:
+            raise ValueError('لا يمكن إرسال الموديل لورشة المكن قبل تسجيل كميات القص الفعلية.')
+        from django.db.models import Sum as _Sum
+        already_sent = int(
+            SewingDispatch.objects.filter(model=model, piece_type=piece_type)
+            .aggregate(total=_Sum('pieces_count'))['total'] or 0
+        )
+        if already_sent + int(pieces_count) > part_cut:
+            remaining_allowed = max(0, part_cut - already_sent)
+            raise ValueError(
+                f'إجمالي القطع المرسلة للمكن ({already_sent + int(pieces_count)}) يتجاوز الكمية المقصوصة ({part_cut})؛ '
+                f'المتاح للإرسال حالياً: {remaining_allowed} قطعة.'
+            )
         if piece_type == 'shirt':
             model.sewing_shirt_workshop = workshop_name
             model.sewing_shirt_expected_date = expected_delivery_date
@@ -317,15 +339,23 @@ def dispatch_model_to_sewing_service(
     return dispatch
 
 
-def receive_model_from_sewing_service(dispatch_id, user_name='مراقب الجودة', notes='', received_qty=None):
+def receive_model_from_sewing_service(
+    dispatch_id,
+    user_name='مراقب الجودة',
+    notes='',
+    received_qty=None,
+    quick_receive=False,
+):
     """
     Receives model from sewing workshop and routes it to QC (العد بعد المكن) once complete.
 
-    Supports partial receipt on several batches: every call requires an explicit
-    positive ``received_qty`` (0 < received_qty <= remaining), recalculates
-    ``total_cost = round(received_pieces * cost_per_piece, 2)``, and keeps the
-    part in ``sewing`` until ``received_pieces >= pieces_count`` so partial
-    batches never prematurely lock the stage.
+    - When ``quick_receive=True``: records receipt date/timestamp immediately without
+      requiring piece count entry at receipt time (marks the dispatch received and moves
+      the part to ``qc_after_sewing`` so counting & workshop evaluation happen in QC).
+    - Otherwise supports partial receipt on several batches: requires an explicit
+      positive ``received_qty`` (0 < received_qty <= remaining), recalculates
+      ``total_cost = round(received_pieces * cost_per_piece, 2)``, and keeps the
+      part in ``sewing`` until ``received_pieces >= pieces_count``.
     """
     target = resolve_by_id(SewingDispatch, dispatch_id)
     if not target:
@@ -341,38 +371,47 @@ def receive_model_from_sewing_service(dispatch_id, user_name='مراقب الج�
         already_received = int(dispatch.received_pieces or 0)
         remaining_before = max(0, total_pieces - already_received)
 
-        if remaining_before <= 0:
-            raise ValueError('تم استلام كامل كمية هذه التشغيلة مسبقاً')
+        if quick_receive:
+            if dispatch.status == 'تم الاستلام' and remaining_before <= 0:
+                raise ValueError('تم استلام هذه التشغيلة مسبقاً')
+            batch_qty = remaining_before
+        else:
+            if remaining_before <= 0:
+                raise ValueError('تم استلام كامل كمية هذه التشغيلة مسبقاً')
 
-        if received_qty in (None, ''):
-            raise ValueError('يجب تحديد عدد القطع المستلمة صراحةً (أكبر من صفر)')
-        try:
-            requested_qty = int(received_qty)
-        except (TypeError, ValueError):
-            raise ValueError('عدد القطع المستلمة يجب أن يكون رقماً صحيحاً موجباً')
+            if received_qty in (None, ''):
+                raise ValueError('يجب تحديد عدد القطع المستلمة صراحةً (أكبر من صفر)')
+            try:
+                requested_qty = int(received_qty)
+            except (TypeError, ValueError):
+                raise ValueError('عدد القطع المستلمة يجب أن يكون رقماً صحيحاً موجباً')
 
-        if requested_qty <= 0:
-            raise ValueError('عدد القطع المستلمة يجب أن يكون أكبر من صفر')
-        if requested_qty > remaining_before:
-            raise ValueError(
-                f'لا يمكن استلام ({requested_qty}) قطعة — المتبقي بالورشة ({remaining_before}) قطعة فقط'
-            )
+            if requested_qty <= 0:
+                raise ValueError('عدد القطع المستلمة يجب أن يكون أكبر من صفر')
+            if requested_qty > remaining_before:
+                raise ValueError(
+                    f'لا يمكن استلام ({requested_qty}) قطعة — المتبقي بالورشة ({remaining_before}) قطعة فقط'
+                )
 
-        batch_qty = requested_qty
+            batch_qty = requested_qty
+
         dispatch.received_pieces = already_received + batch_qty
         dispatch.total_cost = round(
             float(dispatch.cost_per_piece or 0) * int(dispatch.received_pieces or 0), 2
         )
         history = list(dispatch.receive_history) if isinstance(dispatch.receive_history, list) else []
-        history.append({
+        history_entry = {
             'date': now_str,
             'qty': batch_qty,
             'total_received': dispatch.received_pieces,
             'user': user_name,
             'notes': clean_notes,
-        })
+        }
+        if quick_receive:
+            history_entry['quick_receive'] = True
+        history.append(history_entry)
         dispatch.receive_history = history
-        is_complete = dispatch.received_pieces >= total_pieces
+        is_complete = quick_receive or (dispatch.received_pieces >= total_pieces)
         dispatch.status = 'تم الاستلام' if is_complete else 'استلام جزئي'
         dispatch.received_date = date.today()
         dispatch.received_at_str = now_str
@@ -401,11 +440,17 @@ def receive_model_from_sewing_service(dispatch_id, user_name='مراقب الج�
         model.save()
 
         label = dispatch.piece_label or PART_LABELS.get(dispatch.piece_type, 'قطعة')
-        tl_notes = (
-            f"استلام دفعة ({batch_qty} قطعة) — إجمالي المستلم {dispatch.received_pieces} من {total_pieces} [{label}] "
-            f"من ورشة {dispatch.workshop_name}"
-            f"{' واكتمال القطع وتوجيه الموديل تلقائياً إلى الفرز والجودة (العد بعد المكن)' if all_done else ''}"
-        )
+        if quick_receive:
+            tl_notes = (
+                f"تم تسجيل استلام [{label}] من ورشة {dispatch.workshop_name} بتاريخ {now_str} "
+                f"(بانتظار العد الفعلي وتقييم الورشة في الفرز بعد المكن)"
+            )
+        else:
+            tl_notes = (
+                f"استلام دفعة ({batch_qty} قطعة) — إجمالي المستلم {dispatch.received_pieces} من {total_pieces} [{label}] "
+                f"من ورشة {dispatch.workshop_name}"
+                f"{' واكتمال القطع وتوجيه الموديل تلقائياً إلى الفرز والجودة (العد بعد المكن)' if all_done else ''}"
+            )
         if clean_notes:
             tl_notes += f" | ملاحظات: {clean_notes}"
 
@@ -730,6 +775,8 @@ def receive_finishing_service(record_id, actual_exit_date=None, notes=None,
     clean_notes = (notes or '').strip()
     with transaction.atomic():
         record = FinishingRecord.objects.select_for_update().select_related('model').get(pk=target.pk)
+        if record.actual_exit_date is not None:
+            return record
         model = ModelItem.objects.select_for_update().get(pk=record.model_id)
         record.actual_exit_date = actual
         if clean_notes:
@@ -933,6 +980,8 @@ def receive_ironing_service(record_id, actual_exit_date=None, notes=None,
     clean_notes = (notes or '').strip()
     with transaction.atomic():
         record = AssemblyStageRecord.objects.select_for_update().select_related('model').get(pk=target.pk)
+        if record.actual_exit_date is not None:
+            return record
         model = ModelItem.objects.select_for_update().get(pk=record.model_id)
         record.actual_exit_date = actual
         if clean_notes:
@@ -1147,6 +1196,7 @@ def _validate_and_deduct_packaging_materials(model, sets_count, now_str):
             operation='deduct',
             amount=required,
             price_per_unit=sr.price_per_unit or 0,
+            model=model,
             model_code_ref=model.model_code,
             notes=(
                 f"خصم تلقائي عند دخول التعبئة والتغليف — موديل {model.model_code} "
@@ -1396,6 +1446,8 @@ def receive_assembly_stage_service(record_id, actual_exit_date=None, notes=None,
 
     with transaction.atomic():
         record = AssemblyStageRecord.objects.select_for_update().select_related('model').get(pk=target.pk)
+        if record.actual_exit_date is not None:
+            return record
         model = ModelItem.objects.select_for_update().get(pk=record.model_id)
 
         record.actual_exit_date = actual

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { makeIdempotentRequestId } from '../context/appContextTypes';
 import {
   Scissors,
   ArrowRight,
@@ -391,10 +392,12 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
     currentSpreadTotalLayers * (Number(piecesPerLayer) > 0 ? Number(piecesPerLayer) : 0);
 
   const submitSpreadLockRef = React.useRef(false);
+  const pendingSpreadReqIdRef = React.useRef<string | null>(null);
+  const [isSubmittingSpread, setIsSubmittingSpread] = useState(false);
 
-  const handleSubmitSpread = (e: React.FormEvent) => {
+  const handleSubmitSpread = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submitSpreadLockRef.current) return;
+    if (submitSpreadLockRef.current || isSubmittingSpread) return;
     const validLayers = spreadLayers.filter(
       (l) => l.color_name.trim() !== '' && Number(l.layers_count) > 0
     );
@@ -420,10 +423,18 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
       return;
     }
 
+    if (!pendingSpreadReqIdRef.current) {
+      pendingSpreadReqIdRef.current = makeIdempotentRequestId('cut');
+    }
+    const reqId = pendingSpreadReqIdRef.current;
+
     submitSpreadLockRef.current = true;
+    setIsSubmittingSpread(true);
+    let ok = false;
     try {
-      addCuttingRecord({
+      ok = await addCuttingRecord({
         modelId,
+        clientId: reqId,
         // يتم توليد رقم الفرشة تلقائياً على الباك إند داخل قفل الموديل لمنع أي تكرار.
         spreadNumber: undefined as unknown as number,
         partType: selectedPart,
@@ -448,23 +459,25 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
         notes: canWriteNotes ? cuttingNotes.trim() : ''
       });
     } finally {
-      window.setTimeout(() => {
-        submitSpreadLockRef.current = false;
-      }, 600);
+      submitSpreadLockRef.current = false;
+      setIsSubmittingSpread(false);
     }
 
-    // Reset for next spread
-    setSpreadLayers([
-      {
-        color_name: availableColors[0] || '',
-        layers_count: 50,
-        layer_weight: 0,
-        shade_degree: '',
-        isCustomColor: false
-      }
-    ]);
-    setShadeDegree('');
-    setCuttingNotes('');
+    if (ok) {
+      pendingSpreadReqIdRef.current = null;
+      // Reset for next spread
+      setSpreadLayers([
+        {
+          color_name: availableColors[0] || '',
+          layers_count: 50,
+          layer_weight: 0,
+          shade_degree: '',
+          isCustomColor: false
+        }
+      ]);
+      setShadeDegree('');
+      setCuttingNotes('');
+    }
   };
 
   const handleFinishCutting = (parts?: GarmentPart[]) => {
@@ -1281,11 +1294,16 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
                   <div className="pt-2">
                     <button
                       type="submit"
-                      className="w-full py-3.5 rounded-full bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs transition shadow-lg shadow-rose-500/20 cursor-pointer flex items-center justify-center gap-2"
+                      disabled={isSubmittingSpread}
+                      className="w-full py-3.5 rounded-full bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs transition shadow-lg shadow-rose-500/20 cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       <Plus className="w-4 h-4" />
                       <span>
-                        {isSubCut ? 'حفظ القصة الفرعية وإضافتها للسجل' : 'حفظ الفرشة بالكامل وإضافتها للسجل'}
+                        {isSubmittingSpread
+                          ? 'جاري الحفظ...'
+                          : isSubCut
+                          ? 'حفظ القصة الفرعية وإضافتها للسجل'
+                          : 'حفظ الفرشة بالكامل وإضافتها للسجل'}
                       </span>
                     </button>
                   </div>

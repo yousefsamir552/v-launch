@@ -13,10 +13,12 @@ import {
   FileText,
   Lock,
   Star,
-  Printer
+  Printer,
+  Ruler
 } from 'lucide-react';
 import { ZoomableImage } from './ZoomableImage';
 import { EditModelModal } from './EditModelModal';
+import { useModalBackHandler } from '../utils/mobileBackNav';
 import {
   AccessoryGroup,
   AccessoryItem,
@@ -97,6 +99,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
 }) => {
   const {
     models,
+    sizeDefs,
     fabrics,
     fabricColors,
     suppliers,
@@ -105,6 +108,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     accessoryTypes,
     accessoryItems,
     globalSettings,
+    getModelSizeList,
     addModelRequirement,
     deleteModelRequirement,
     addModelAccessory,
@@ -125,6 +129,8 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
   const model = models.find((m) => m.id === modelId && !m.is_deleted);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [accessoryManagerOpen, setAccessoryManagerOpen] = useState(false);
+
+  useModalBackHandler(accessoryManagerOpen, () => setAccessoryManagerOpen(false));
 
   const modelReqs = requirements.filter((r) => r.model_id === modelId);
   const modelAccs = accessories.filter((a) => a.model_id === modelId);
@@ -680,9 +686,36 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 {isDesignCompleted && <EndedModelBadge currentStage={currentStageLabel(model)} />}
               </div>
               <p className="text-slate-500 text-xs sm:text-sm mt-1">
-                النوع: <strong className="text-slate-800">{model.model_type || 'أولادي'}</strong> | تاريخ الإنشاء:{' '}
-                {new Date(model.created_at).toLocaleDateString('ar-EG')}
+                النوع: <strong className="text-slate-800">{model.model_type || 'أولادي'}</strong> | التكوين:{' '}
+                <strong className="text-slate-800">
+                  {GARMENT_COMPOSITION_LABELS[model.garment_composition || DEFAULT_GARMENT_COMPOSITION]}
+                </strong>{' '}
+                | تاريخ الإنشاء: {new Date(model.created_at).toLocaleDateString('ar-EG')}
               </p>
+              {(() => {
+                const sizes = getModelSizeList(model.id);
+                const sizeDef = sizeDefs.find((s) => s.id === model.size_category_id);
+                const distinctColors = new Set(modelReqs.map((r) => r.color_id).filter(Boolean)).size;
+                return (
+                  <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200 text-[11px] font-extrabold">
+                      <Ruler className="w-3.5 h-3.5" />
+                      <span>المقاسات{sizeDef?.name ? ` (${sizeDef.name})` : ''}:</span>
+                    </span>
+                    {sizes.map((sz) => (
+                      <span
+                        key={sz}
+                        className="px-2.5 py-0.5 rounded-lg bg-slate-100 text-slate-900 border border-slate-200 text-xs font-black"
+                      >
+                        {sz}
+                      </span>
+                    ))}
+                    <span className="px-2.5 py-0.5 rounded-full bg-purple-50 text-purple-800 border border-purple-200 text-[11px] font-bold">
+                      {distinctColors} {distinctColors === 1 ? 'لون مخصص' : 'ألوان مخصصة'}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* TARGET CUTTING QUANTITY */}

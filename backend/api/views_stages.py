@@ -22,47 +22,55 @@ class CuttingRecordViewSet(BasePermViewSet):
 
         # Aggregate layers and build color summary from color_layers
         parsed_layers = []
-        if isinstance(raw_layers, list) and len(raw_layers) > 0:
-            for item in raw_layers:
-                c_name = (item.get('color_name') or item.get('colorName') or '').strip()
-                l_count = max(0, int(item.get('layers_count') or item.get('layersCount') or 0))
-                l_weight = max(0.0, float(item.get('layer_weight') or item.get('layerWeight') or 0))
-                l_pieces = max(0, int(item.get('pieces_count') or item.get('piecesCount') or 0))
-                l_shade = (item.get('shade_degree') or item.get('shadeDegree') or '').strip()
-                l_notes = (item.get('notes') or '').strip()
-                if c_name and l_count > 0:
-                    parsed_layers.append({
-                        'id': item.get('id') or item.get('client_id'),
-                        'color_name': c_name,
-                        'layers_count': l_count,
-                        'layer_weight': l_weight,
-                        'pieces_count': l_pieces,
-                        'shade_degree': l_shade,
-                        'notes': l_notes,
-                    })
-
-        total_layers_from_items = sum(item['layers_count'] for item in parsed_layers)
-
-        if parsed_layers:
-            layers = total_layers_from_items
-        else:
-            layers = max(0, int(data.get('layers_count') or data.get('layersCount') or 0))
-        pieces_per_layer = max(0, int(data.get('pieces_per_layer') or data.get('piecesPerLayer') or 0))
         try:
+            if isinstance(raw_layers, list) and len(raw_layers) > 0:
+                for item in raw_layers:
+                    if not isinstance(item, dict):
+                        continue
+                    c_name = (item.get('color_name') or item.get('colorName') or '').strip()
+                    raw_lc = item.get('layers_count') if 'layers_count' in item else item.get('layersCount')
+                    raw_lw = item.get('layer_weight') if 'layer_weight' in item else item.get('layerWeight')
+                    raw_lp = item.get('pieces_count') if 'pieces_count' in item else item.get('piecesCount')
+                    l_count = int(parse_finite_float(raw_lc, 'عدد الراقات', default=0.0, minimum=0.0))
+                    l_weight = parse_finite_float(raw_lw, 'وزن الراق', default=0.0, minimum=0.0)
+                    l_pieces = int(parse_finite_float(raw_lp, 'عدد القطع', default=0.0, minimum=0.0))
+                    l_shade = (item.get('shade_degree') or item.get('shadeDegree') or '').strip()
+                    l_notes = (item.get('notes') or '').strip()
+                    if c_name and l_count > 0:
+                        parsed_layers.append({
+                            'id': item.get('id') or item.get('client_id'),
+                            'color_name': c_name,
+                            'layers_count': l_count,
+                            'layer_weight': l_weight,
+                            'pieces_count': l_pieces,
+                            'shade_degree': l_shade,
+                            'notes': l_notes,
+                        })
+
+            total_layers_from_items = sum(item['layers_count'] for item in parsed_layers)
+
+            if parsed_layers:
+                layers = total_layers_from_items
+            else:
+                raw_layers_count = data.get('layers_count') if 'layers_count' in data else data.get('layersCount')
+                layers = int(parse_finite_float(raw_layers_count, 'عدد الراقات', default=0.0, minimum=0.0))
+            raw_ppl = data.get('pieces_per_layer') if 'pieces_per_layer' in data else data.get('piecesPerLayer')
+            pieces_per_layer = int(parse_finite_float(raw_ppl, 'عدد القطع في الراق', default=0.0, minimum=0.0))
             weight = parse_finite_float(
                 data.get('layer_weight') if 'layer_weight' in data else data.get('layerWeight'),
                 'وزن الطبقة',
                 default=0.0,
                 minimum=0.0,
             )
+
+            # Automatically calculate cut pieces = layers * pieces_per_layer (fallback to pieces_count if legacy)
+            if pieces_per_layer > 0 and layers > 0:
+                pieces = layers * pieces_per_layer
+            else:
+                raw_pc = data.get('pieces_count') if 'pieces_count' in data else data.get('piecesCount')
+                pieces = int(parse_finite_float(raw_pc, 'عدد القطع', default=0.0, minimum=0.0))
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Automatically calculate cut pieces = layers * pieces_per_layer (fallback to pieces_count if legacy)
-        if pieces_per_layer > 0 and layers > 0:
-            pieces = layers * pieces_per_layer
-        else:
-            pieces = max(0, int(data.get('pieces_count') or data.get('piecesCount') or 0))
 
         if parsed_layers:
             color_name = ' + '.join(f"{item['color_name']} ({item['layers_count']} راق)" for item in parsed_layers)
@@ -79,7 +87,7 @@ class CuttingRecordViewSet(BasePermViewSet):
         if is_sub_cut and not sub_cut_label:
             sub_cut_label = 'قصة ' + {'shirt': 'تيشرت', 'pants': 'بنطلون', 'jacket': 'جاكيت', 'single': 'قطعة'}.get(part_type, 'فرعية')
 
-        req_client_id = data.get('id') or data.get('client_id')
+        req_client_id = data.get('id') or data.get('client_id') or data.get('request_id')
         with transaction.atomic():
             # اقفل سجل الموديل أولاً ثم احسب رقم الفرشة، حتى لا تحصل فرشتان
             # متزامنتان على نفس الرقم (Race Condition). نستخدم أكبر رقم موجود + 1
@@ -645,7 +653,7 @@ class PrintDispatchViewSet(BasePermViewSet):
         notes = (data.get('notes') or '').strip() if can_printing_notes else ''
         now_str = data.get('dispatched_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
         user_name = data.get('user_name') or 'مسؤول المطابع'
-        req_client_id = data.get('id') or data.get('client_id')
+        req_client_id = data.get('id') or data.get('client_id') or data.get('request_id')
 
         with transaction.atomic():
             model = ModelItem.objects.select_for_update().get(pk=model.pk)
@@ -656,6 +664,26 @@ class PrintDispatchViewSet(BasePermViewSet):
                         PrintDispatchSerializer(existing_disp, context={'request': request}).data,
                         status=status.HTTP_200_OK,
                     )
+            if (model.status or '').strip() in ('مرحلة التصميم', 'تصميم'):
+                return Response(
+                    {'detail': 'لا يمكن إرسال الموديل للمطبعة وهو لا يزال في مرحلة التصميم؛ يجب صرف القماش والقص أولاً.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            part_cut = 0
+            if piece_type in ('shirt', 'pants', 'jacket'):
+                part_cut = int(getattr(model, f'cut_{piece_type}_pieces', 0) or 0)
+            if part_cut <= 0:
+                part_cut = int(model.total_cut_pieces or 0)
+            if part_cut <= 0:
+                return Response(
+                    {'detail': 'لا يمكن إرسال الموديل للمطبعة قبل تسجيل كميات القص الفعلية.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if pieces > part_cut:
+                return Response(
+                    {'detail': f'عدد القطع المرسلة للمطبعة ({pieces}) يتجاوز الكمية المقصوصة ({part_cut}).'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             disp = PrintDispatch.objects.create(
                 client_id=req_client_id,
                 model=model,
@@ -737,9 +765,14 @@ class PrintDispatchViewSet(BasePermViewSet):
         received_qty_raw = data.get('received_qty')
         if received_qty_raw is None:
             received_qty_raw = data.get('receivedQty')
+        quick_receive = parse_bool_flag(
+            data.get('quick_receive') if 'quick_receive' in data else data.get('quickReceive'),
+            default=False,
+        )
         has_qty_input = received_qty_raw not in (None, '')
         is_receiving = (
-            new_status in ('تم الاستلام', 'تم الاستلام بالمصنع')
+            quick_receive
+            or new_status in ('تم الاستلام', 'تم الاستلام بالمصنع')
             or has_qty_input
         )
 
@@ -752,53 +785,64 @@ class PrintDispatchViewSet(BasePermViewSet):
             remaining_before = max(0, total_pieces - already_received)
 
             if is_receiving:
-                if remaining_before <= 0:
-                    return Response(
-                        {'detail': 'تم استلام كامل كمية هذه التشغيلة مسبقاً'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                if not has_qty_input:
-                    return Response(
-                        {'detail': 'يجب تحديد عدد القطع المستلمة صراحةً (أكبر من صفر)'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                try:
-                    requested_qty = int(received_qty_raw)
-                except (TypeError, ValueError):
-                    return Response(
-                        {'detail': 'عدد القطع المستلمة يجب أن يكون رقماً صحيحاً موجباً'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                if requested_qty <= 0:
-                    return Response(
-                        {'detail': 'عدد القطع المستلمة يجب أن يكون أكبر من صفر'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                if requested_qty > remaining_before:
-                    return Response(
-                        {
-                            'detail': f'لا يمكن استلام ({requested_qty}) قطعة — المتبقي عند المطبعة ({remaining_before}) قطعة فقط'
-                        },
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+                if quick_receive:
+                    if disp.status in ('تم الاستلام', 'تم الاستلام بالمصنع') and remaining_before <= 0:
+                        return Response(
+                            {'detail': 'تم استلام هذه التشغيلة مسبقاً'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    batch_qty = remaining_before
+                else:
+                    if remaining_before <= 0:
+                        return Response(
+                            {'detail': 'تم استلام كامل كمية هذه التشغيلة مسبقاً'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    if not has_qty_input:
+                        return Response(
+                            {'detail': 'يجب تحديد عدد القطع المستلمة صراحةً (أكبر من صفر)'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    try:
+                        requested_qty = int(received_qty_raw)
+                    except (TypeError, ValueError):
+                        return Response(
+                            {'detail': 'عدد القطع المستلمة يجب أن يكون رقماً صحيحاً موجباً'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    if requested_qty <= 0:
+                        return Response(
+                            {'detail': 'عدد القطع المستلمة يجب أن يكون أكبر من صفر'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    if requested_qty > remaining_before:
+                        return Response(
+                            {
+                                'detail': f'لا يمكن استلام ({requested_qty}) قطعة — المتبقي عند المطبعة ({remaining_before}) قطعة فقط'
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    batch_qty = requested_qty
 
-                batch_qty = requested_qty
                 disp.received_pieces = already_received + batch_qty
                 history = list(disp.receive_history) if isinstance(disp.receive_history, list) else []
-                history.append({
+                history_entry = {
                     'date': now_str,
                     'qty': batch_qty,
                     'total_received': disp.received_pieces,
                     'user': user_name,
                     'notes': clean_notes,
-                })
+                }
+                if quick_receive:
+                    history_entry['quick_receive'] = True
+                history.append(history_entry)
                 disp.receive_history = history
                 disp.received_date = date.today()
                 disp.received_at_str = now_str
                 if clean_notes:
                     from .services_stages import _append_receive_note
                     disp.notes = _append_receive_note(disp.notes, clean_notes)
-                is_complete = disp.received_pieces >= total_pieces
+                is_complete = quick_receive or (disp.received_pieces >= total_pieces)
                 disp.status = 'تم الاستلام بالمصنع' if is_complete else 'استلام جزئي'
             else:
                 batch_qty = 0
@@ -821,16 +865,25 @@ class PrintDispatchViewSet(BasePermViewSet):
                     m._skip_timeline_signal = True
                     m.save()
                 label = disp.piece_label or dict(PART_TYPE_CHOICES).get(disp.piece_type or 'shirt', disp.piece_type or '')
-                ModelTimeline.objects.create(
-                    model=m,
-                    stage='العد بعد الطباعة' if is_complete else 'المطابع والتطريز',
-                    title='استلام الموديل من المطبعة' if is_complete else 'استلام جزئي من المطبعة',
-                    notes=(
+                tl_notes = (
+                    (
+                        f"تم تسجيل استلام [{label}] من مطبعة {disp.print_house} بتاريخ {now_str} "
+                        f"(بانتظار العد الفعلي وتقييم المطبعة في الفرز بعد الطباعة)"
+                        + (f" | ملاحظات: {clean_notes}" if clean_notes else '')
+                    )
+                    if quick_receive
+                    else (
                         f"استلام دفعة ({batch_qty} قطعة) [{label}] — إجمالي المستلم {disp.received_pieces} من {total_pieces} "
                         f"من {disp.print_house}"
                         + (" وتوجيه الموديل تلقائياً للعد بعد الطباعة" if is_complete else "")
                         + (f" | ملاحظات: {clean_notes}" if clean_notes else '')
-                    ),
+                    )
+                )
+                ModelTimeline.objects.create(
+                    model=m,
+                    stage='العد بعد الطباعة' if is_complete else 'المطابع والتطريز',
+                    title='استلام الموديل من المطبعة' if is_complete else 'استلام جزئي من المطبعة',
+                    notes=tl_notes,
                     user=user_name,
                     timestamp_str=now_str,
                     details={
@@ -846,11 +899,24 @@ class PrintDispatchViewSet(BasePermViewSet):
                         'received_pieces': disp.received_pieces,
                         'remaining_pieces': max(0, total_pieces - disp.received_pieces),
                         'received_at': now_str,
+                        'quick_receive': quick_receive,
                         'status': disp.status,
                         'worker_notes': clean_notes,
                         'operator_name': user_name,
                     }
                 )
+        set_audit_meta(
+            request,
+            section='المطابع والتطريز',
+            action_type='status_change',
+            target_name=f"{m.model_code} - {disp.print_house}",
+            details=(
+                f"تسجيل استلام [{disp.piece_label or disp.piece_type}] لموديل {m.model_code} "
+                f"من {disp.print_house} بتاريخ {now_str}"
+                if quick_receive
+                else f"تحديث حالة إرسالية المطبعة ({disp.print_house}) لموديل {m.model_code} إلى {disp.status}"
+            ),
+        )
         return Response(PrintDispatchSerializer(disp, context={'request': request}).data)
 
     @action(detail=True, methods=['post'])
@@ -942,12 +1008,34 @@ class SewingDispatchViewSet(BasePermViewSet):
         received_qty = request.data.get('received_qty')
         if received_qty is None:
             received_qty = request.data.get('receivedQty')
+        quick_receive = parse_bool_flag(
+            request.data.get('quick_receive')
+            if 'quick_receive' in request.data
+            else request.data.get('quickReceive'),
+            default=False,
+        )
         try:
             disp = receive_model_from_sewing_service(
-                get_ext_id(disp_obj), user, notes=notes, received_qty=received_qty
+                get_ext_id(disp_obj),
+                user,
+                notes=notes,
+                received_qty=received_qty,
+                quick_receive=quick_receive,
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        set_audit_meta(
+            request,
+            section='المكن',
+            action_type='status_change',
+            target_name=f"{disp.model.model_code} - {disp.workshop_name}",
+            details=(
+                f"تسجيل استلام [{disp.piece_label or disp.piece_type}] لموديل {disp.model.model_code} "
+                f"من ورشة {disp.workshop_name} بتاريخ {disp.received_at_str or ''}"
+                if quick_receive
+                else f"استلام إرسالية مكن لموديل {disp.model.model_code} من ورشة {disp.workshop_name} ({disp.status})"
+            ),
+        )
         return Response(SewingDispatchSerializer(disp, context={'request': request}).data)
 
 
@@ -1087,6 +1175,21 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
     def destroy(self, request, *args, **kwargs):
         rule = self.get_object()
         label = rule.label
+        if rule.size_rules.filter(current_stock__gt=0).exists():
+            return Response(
+                {'detail': f'لا يمكن حذف خامة التشغيل ({label}) لوجود رصيد فعلي بالمخزن. قم بتصفير الرصيد أولاً.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if PackagingMaterialTransaction.objects.filter(size_rule__rule=rule).exists():
+            return Response(
+                {'detail': f'لا يمكن حذف خامة التشغيل ({label}) لوجود سجل حركات تاريخية مرتبط بها حفاظاً على دقة التقارير.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if rule.size_rules.filter(consumption_per_piece__gt=0).exists():
+            return Response(
+                {'detail': f'لا يمكن حذف خامة التشغيل ({label}) لوجود قواعد استهلاك نشطة مرتبطة بها.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         rule.delete()
         return Response(
             {'detail': f'تم حذف خامة التشغيل ({label}) بنجاح'},
@@ -1109,14 +1212,29 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
             request, getattr(request, 'user_profile', None),
             'edit_assembly_prices', 'أسعار خامات التشغيل',
         )
+        req_client_id = data.get('id') or data.get('client_id') or data.get('request_id')
+        model_code_ref = str(data.get('modelCodeRef') or data.get('model_code_ref') or '').strip()
+        linked_model = resolve_by_id(ModelItem, data.get('model_id') or data.get('modelId'))
+        if linked_model is None and model_code_ref:
+            linked_model = ModelItem.objects.filter(model_code__iexact=model_code_ref, is_deleted=False).first()
         old_stock = float(size_rule.current_stock or 0)
         try:
             txn = apply_packaging_material_transaction(
                 size_rule, operation, data.get('amount'), data.get('notes') or '',
                 data.get('timestamp') or '', price_per_unit=price_per_unit,
+                client_id=req_client_id, model=linked_model, model_code_ref=model_code_ref,
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if getattr(txn, '_idempotent_hit', False):
+            return Response({
+                'sizeRule': PackagingMaterialSizeRuleSerializer(
+                    size_rule, context={'request': request}
+                ).data,
+                'transaction': PackagingMaterialTransactionSerializer(
+                    txn, context={'request': request}
+                ).data,
+            }, status=status.HTTP_200_OK)
         new_stock = float(size_rule.current_stock or 0)
         op_label = {'add': 'وارد (إضافة)', 'deduct': 'منصرف (خصم)', 'adjust': 'تعديل رصيد'}.get(operation, operation)
         set_audit_meta(
@@ -1147,7 +1265,7 @@ class PackagingMaterialTransactionViewSet(BasePermViewSet):
     """سجل حركات مخزون خامات التشغيل (وارد / منصرف / تعديل رصيد)."""
     permission_classes = [HasDynamicSectionPermission]
     required_section = 'assembly_packaging'
-    queryset = PackagingMaterialTransaction.objects.select_related('size_rule').all()
+    queryset = PackagingMaterialTransaction.objects.select_related('size_rule', 'model').all()
     serializer_class = PackagingMaterialTransactionSerializer
     # الحركات تُسجَّل فقط؛ لا تعديل/حذف لسجلات المخزون التاريخية.
     http_method_names = ['get', 'post', 'head', 'options']
@@ -1166,14 +1284,29 @@ class PackagingMaterialTransactionViewSet(BasePermViewSet):
             request, getattr(request, 'user_profile', None),
             'edit_assembly_prices', 'أسعار خامات التشغيل',
         )
+        req_client_id = data.get('id') or data.get('client_id') or data.get('request_id')
+        model_code_ref = str(data.get('modelCodeRef') or data.get('model_code_ref') or '').strip()
+        linked_model = resolve_by_id(ModelItem, data.get('model_id') or data.get('modelId'))
+        if linked_model is None and model_code_ref:
+            linked_model = ModelItem.objects.filter(model_code__iexact=model_code_ref, is_deleted=False).first()
         old_stock = float(size_rule.current_stock or 0)
         try:
             txn = apply_packaging_material_transaction(
                 size_rule, operation, data.get('amount'), data.get('notes') or '',
                 data.get('timestamp') or '', price_per_unit=price_per_unit,
+                client_id=req_client_id, model=linked_model, model_code_ref=model_code_ref,
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if getattr(txn, '_idempotent_hit', False):
+            return Response({
+                'sizeRule': PackagingMaterialSizeRuleSerializer(
+                    size_rule, context={'request': request}
+                ).data,
+                'transaction': PackagingMaterialTransactionSerializer(
+                    txn, context={'request': request}
+                ).data,
+            }, status=status.HTTP_200_OK)
         new_stock = float(size_rule.current_stock or 0)
         op_label = {'add': 'وارد (إضافة)', 'deduct': 'منصرف (خصم)', 'adjust': 'تعديل رصيد'}.get(operation, operation)
         set_audit_meta(
@@ -1212,6 +1345,7 @@ class WorkshopEvaluationViewSet(BasePermViewSet):
     serializer_class = WorkshopEvaluationSerializer
 
     READ_PERMS = (
+        'qc_view', 'qc_edit',
         'printing_view', 'printing_edit',
         'sewing_view', 'sewing_edit',
         'assembly_packaging_view', 'assembly_packaging_edit',
@@ -1219,7 +1353,7 @@ class WorkshopEvaluationViewSet(BasePermViewSet):
         'models_tracking_view', 'models_tracking_edit',
     )
     WRITE_PERMS = (
-        'printing_edit', 'sewing_edit', 'assembly_packaging_edit',
+        'qc_edit', 'printing_edit', 'sewing_edit', 'assembly_packaging_edit',
         'reports_edit', 'manage_permissions',
     )
 

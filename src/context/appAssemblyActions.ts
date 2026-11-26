@@ -70,7 +70,7 @@ import { exportCsv, exportZipCsv, datedFileName, CsvValue, CsvSheet } from '../u
  * ربط مرحلة التنبيه بمفتاح الصلاحية المطلوبة لرؤيته.
  * التنبيهات لا تظهر إلا لمن يملك صلاحية القسم — حساب sudo يرى كل شيء.
  */
-import { NOTIFICATION_STAGE_PERMISSION, FlashMessage, modelPartsOf, seedModelPartStages, patchModelPartStage, patchModelPartsStage, DEFAULT_GLOBAL_SETTINGS, DESIGN_STAGES, PRE_PRODUCTION_STAGES, auditHeadersForModel, AppInternalContext } from './appContextTypes';
+import { NOTIFICATION_STAGE_PERMISSION, FlashMessage, modelPartsOf, seedModelPartStages, patchModelPartStage, patchModelPartsStage, DEFAULT_GLOBAL_SETTINGS, DESIGN_STAGES, PRE_PRODUCTION_STAGES, auditHeadersForModel, AppInternalContext, makeIdempotentRequestId } from './appContextTypes';
 
 export const buildAssemblyActions = (ctx: AppInternalContext) => {
   const {
@@ -824,6 +824,7 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
     amount: number;
     notes?: string;
     pricePerUnit?: number;
+    clientId?: string;
   }): Promise<{ success: boolean; message: string }> => {
     const sizeRule = packagingMaterialRules
       .flatMap((rule) => rule.size_rules || [])
@@ -833,8 +834,11 @@ export const buildAssemblyActions = (ctx: AppInternalContext) => {
       return { success: false, message: 'صف خامة التشغيل غير موجود' };
     }
 
+    const reqId = data.clientId || makeIdempotentRequestId('pack-mat-txn');
     try {
       const res = await api.recordPackagingMaterialTransaction({
+        id: reqId,
+        client_id: reqId,
         size_rule_id: data.sizeRuleId,
         operation: data.operation,
         amount: data.amount,

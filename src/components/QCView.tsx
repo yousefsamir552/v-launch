@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   CheckCircle,
@@ -12,7 +12,10 @@ import {
   FileText,
   Lock,
   Grid,
-  Save
+  Save,
+  Star,
+  Factory,
+  Clock
 } from 'lucide-react';
 import { QCStageType, Model, QCMatrixCellInput, GarmentPart, PartStage, PART_EMOJI, getPartLabel } from '../types';
 import {
@@ -32,9 +35,29 @@ import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle'
 import { currentStageLabel, stageRank, stageBeyond } from '../utils/completedModels';
 import { resolveDefaultGoodQtyForCell, findSavedQcCell } from '../utils/qcCutDefaults';
 import { qcPartStageCounts } from '../utils/qcStageCounts';
+import { resolveQCStageWorkshopSummary } from '../utils/qcWorkshopContext';
 import { ZoomableImage } from './ZoomableImage';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
+import { useModalBackHandler } from '../utils/mobileBackNav';
+import {
+  InlineEvaluationDraft,
+  InlineWorkshopEvaluationBox,
+  WorkshopEvaluationModal,
+  WorkshopEvaluationTarget,
+  createInitialEvaluationDraft
+} from './WorkshopEvaluationModal';
 
 type QCPartCard = { model: Model; part: GarmentPart };
+type QCSortKey = 'newest' | 'oldest' | 'code_asc' | 'code_desc' | 'qty_desc' | 'qty_asc';
+
+const QC_SORT_OPTIONS: { value: QCSortKey; label: string }[] = [
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' },
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' },
+  { value: 'qty_desc', label: 'الكمية (الأكثر أولاً)' },
+  { value: 'qty_asc', label: 'الكمية (الأقل أولاً)' }
+];
 
 // QC tab -> the per-part stage that belongs in that tab.
 const QC_STAGE_TO_PART_STAGE: Record<QCStageType, string> = {
@@ -50,6 +73,9 @@ export const QCView: React.FC = () => {
     cuttingRecords,
     printDispatches,
     sewingDispatches,
+    workshops,
+    workshopEvaluations,
+    submitWorkshopEvaluation,
     normalizePartKey,
     getModelParts,
     getPartStages,
@@ -59,6 +85,7 @@ export const QCView: React.FC = () => {
     recordQCStageCount,
     canAddQCBeforePrintNotes,
     canAddQCAfterPrintNotes,
+    canViewPreviousModels,
     hasPermission,
     globalSettings
   } = useApp();
@@ -67,11 +94,21 @@ export const QCView: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<QCStageType>('before_print');
   const [searchTerm, setSearchTerm] = useState('');
+  const [sortBy, setSortBy] = useState<QCSortKey>('newest');
   const [showCompleted, setShowCompleted] = useState(false);
+  const effectiveShowCompleted = showCompleted && canViewPreviousModels();
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [qcPrintPreview, setQcPrintPreview] = useState<QCPrintPreviewConfig | null>(null);
   const [countingModel, setCountingModel] = useState<Model | null>(null);
   const [modalPart, setModalPart] = useState<GarmentPart>('shirt');
+  const [evalTarget, setEvalTarget] = useState<WorkshopEvaluationTarget | null>(null);
+  const [evalDraft, setEvalDraft] = useState<InlineEvaluationDraft>(() =>
+    createInitialEvaluationDraft()
+  );
+
+  useModalBackHandler(Boolean(countingModel), () => setCountingModel(null));
+  useModalBackHandler(showPrintModal, () => setShowPrintModal(false));
+  useModalBackHandler(Boolean(qcPrintPreview), () => setQcPrintPreview(null));
   // Only parts currently waiting in this QC stage can be counted here, plus the
   // specifically selected part (so ended parts can still be reviewed/edited).
   const modalParts: GarmentPart[] = countingModel
@@ -118,11 +155,47 @@ export const QCView: React.FC = () => {
     return cards;
   };
 
-  const currentTabCards = getPartCardsForStage(activeTab).filter(
-    ({ model }) =>
-      model.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (model.model_type && model.model_type.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const sortQCCards = (cards: QCPartCard[]): QCPartCard[] =>
+    [...cards].sort((a, b) => {
+      if (sortBy === 'code_asc') return compareNatural(a.model.model_code, b.model.model_code);
+      if (sortBy === 'code_desc') return compareNatural(b.model.model_code, a.model.model_code);
+      if (sortBy === 'qty_desc') {
+        const qa = Number(a.model.cut_summary?.[a.part] ?? a.model.target_cut_quantity ?? 0);
+        const qb = Number(b.model.cut_summary?.[b.part] ?? b.model.target_cut_quantity ?? 0);
+        return qb - qa;
+      }
+      if (sortBy === 'qty_asc') {
+        const qa = Number(a.model.cut_summary?.[a.part] ?? a.model.target_cut_quantity ?? 0);
+        const qb = Number(b.model.cut_summary?.[b.part] ?? b.model.target_cut_quantity ?? 0);
+        return qa - qb;
+      }
+      if (sortBy === 'oldest') return toTimestamp(a.model.created_at) - toTimestamp(b.model.created_at);
+      return toTimestamp(b.model.created_at) - toTimestamp(a.model.created_at);
+    });
+
+  const currentTabCards = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    const list = getPartCardsForStage(activeTab).filter(({ model, part }) => {
+      if (!q) return true;
+      const ws = resolveQCStageWorkshopSummary({
+        stage: activeTab,
+        model,
+        part,
+        printDispatches,
+        sewingDispatches,
+        workshops,
+        workshopEvaluations,
+        normalizePartKey
+      });
+      return (
+        model.model_code.toLowerCase().includes(q) ||
+        (model.model_type && model.model_type.toLowerCase().includes(q)) ||
+        getPartLabel(part).toLowerCase().includes(q) ||
+        (ws?.workshopName || '').toLowerCase().includes(q)
+      );
+    });
+    return sortQCCards(list);
+  }, [models, activeTab, searchTerm, sortBy, printDispatches, sewingDispatches, workshops, workshopEvaluations]);
 
   // القطع التي تجاوزت مرحلة هذا التبويب (منتهية من هذا القسم).
   const getEndedPartCards = (stage: QCStageType): QCPartCard[] => {
@@ -140,11 +213,73 @@ export const QCView: React.FC = () => {
     return cards;
   };
 
-  const endedTabCards = getEndedPartCards(activeTab).filter(
-    ({ model }) =>
-      model.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (model.model_type && model.model_type.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const endedTabCards = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    const list = getEndedPartCards(activeTab).filter(({ model, part }) => {
+      if (!q) return true;
+      const ws = resolveQCStageWorkshopSummary({
+        stage: activeTab,
+        model,
+        part,
+        printDispatches,
+        sewingDispatches,
+        workshops,
+        workshopEvaluations,
+        normalizePartKey
+      });
+      return (
+        model.model_code.toLowerCase().includes(q) ||
+        (model.model_type && model.model_type.toLowerCase().includes(q)) ||
+        getPartLabel(part).toLowerCase().includes(q) ||
+        (ws?.workshopName || '').toLowerCase().includes(q)
+      );
+    });
+    return sortQCCards(list);
+  }, [models, activeTab, searchTerm, sortBy, printDispatches, sewingDispatches, workshops, workshopEvaluations]);
+
+  const modalWorkshopSummary = useMemo(() => {
+    if (!countingModel) return null;
+    return resolveQCStageWorkshopSummary({
+      stage: activeTab,
+      model: countingModel,
+      part: modalPart,
+      printDispatches,
+      sewingDispatches,
+      workshops,
+      workshopEvaluations,
+      normalizePartKey
+    });
+  }, [
+    countingModel,
+    activeTab,
+    modalPart,
+    printDispatches,
+    sewingDispatches,
+    workshops,
+    workshopEvaluations,
+    normalizePartKey
+  ]);
+
+  useEffect(() => {
+    if (!countingModel) return;
+    if (modalWorkshopSummary) {
+      setEvalDraft(
+        createInitialEvaluationDraft(
+          modalWorkshopSummary.expectedDate,
+          modalWorkshopSummary.receivedAt,
+          modalWorkshopSummary.existingEvaluation
+        )
+      );
+    } else {
+      setEvalDraft(createInitialEvaluationDraft());
+    }
+  }, [
+    countingModel?.id,
+    modalPart,
+    activeTab,
+    modalWorkshopSummary?.workshopName,
+    modalWorkshopSummary?.existingEvaluation?.id
+  ]);
 
   const beforePrintCount = getPartCardsForStage('before_print').length;
   const afterPrintCount = getPartCardsForStage('after_print').length;
@@ -297,7 +432,23 @@ export const QCView: React.FC = () => {
     return entries;
   };
 
-  const handleSaveMatrixOnly = () => {
+  const submitModalWorkshopEvalIfEnabled = async () => {
+    if (!countingModel || !modalWorkshopSummary || !evalDraft.enabled) return;
+    await submitWorkshopEvaluation({
+      workshopId: modalWorkshopSummary.workshopId,
+      workshopName: modalWorkshopSummary.workshopName,
+      stage: modalWorkshopSummary.stage,
+      modelId: countingModel.id,
+      printDispatchId: modalWorkshopSummary.printDispatchId,
+      sewingDispatchId: modalWorkshopSummary.sewingDispatchId,
+      deliveryTimeliness: evalDraft.deliveryTimeliness,
+      workQuality: evalDraft.workQuality,
+      finishingQuality: evalDraft.finishingQuality,
+      notes: evalDraft.notes
+    });
+  };
+
+  const handleSaveMatrixOnly = async () => {
     if (!countingModel) return;
     const entries = buildMatrixEntriesFromState(countingModel);
     saveQCMatrix({
@@ -307,9 +458,10 @@ export const QCView: React.FC = () => {
       matrixEntries: entries,
       notes: canWriteNotesForCurrentStage ? qcNotes.trim() : ''
     });
+    await submitModalWorkshopEvalIfEnabled();
   };
 
-  const handleApproveAndAdvance = (e: React.FormEvent) => {
+  const handleApproveAndAdvance = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!countingModel) return;
     if (isModalPartEnded) {
@@ -342,6 +494,7 @@ export const QCView: React.FC = () => {
       advanceStage: true
     });
 
+    await submitModalWorkshopEvalIfEnabled();
     setCountingModel(null);
   };
 
@@ -679,20 +832,25 @@ export const QCView: React.FC = () => {
           </button>
         </div>
 
-        {/* Search + Completed models toggle */}
+        {/* Search + Sort + Completed models toggle */}
         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-          <div className="relative flex-grow sm:flex-none sm:w-72">
+          <div className="relative flex-grow sm:flex-none sm:w-64">
             <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="بحث برقم الموديل أو النوع..."
+              placeholder="بحث برقم الموديل أو الورشة..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition"
             />
           </div>
+          <SortBySelect
+            value={sortBy}
+            onChange={(v) => setSortBy(v as QCSortKey)}
+            options={QC_SORT_OPTIONS}
+          />
           <CompletedModelsToggle
-            enabled={showCompleted}
+            enabled={effectiveShowCompleted}
             count={endedTabCards.length}
             onChange={setShowCompleted}
             tone="purple"
@@ -713,7 +871,8 @@ export const QCView: React.FC = () => {
         </span>
       </div>
 
-      {/* Grid of Models in this stage */}
+      {/* Grid of Active Models in this stage — hidden exclusively when viewing previous models */}
+      {!effectiveShowCompleted && (
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
         {currentTabCards.length > 0 ? (
           currentTabCards.map(({ model, part }) => {
@@ -724,6 +883,16 @@ export const QCView: React.FC = () => {
               qcRecords,
               printDispatches,
               sewingDispatches,
+              normalizePartKey
+            });
+            const workshopSummary = resolveQCStageWorkshopSummary({
+              stage: activeTab,
+              model,
+              part,
+              printDispatches,
+              sewingDispatches,
+              workshops,
+              workshopEvaluations,
               normalizePartKey
             });
             const mColors = getModelColorList(model.id, part);
@@ -802,6 +971,26 @@ export const QCView: React.FC = () => {
 
                 <div className="p-5 flex flex-col justify-between flex-grow space-y-4">
                   <div>
+                    {/* Compact subtle workshop summary pill for post-stage QC */}
+                    {workshopSummary && (
+                      <div className="mb-2.5 px-2.5 py-1.5 rounded-xl bg-slate-50 border border-slate-200/80 text-[10px] text-slate-600 flex flex-wrap items-center gap-x-2 gap-y-0.5 leading-snug">
+                        <span className="inline-flex items-center gap-1 font-extrabold text-slate-800">
+                          <Factory className="w-3 h-3 text-purple-600 shrink-0" />
+                          <span className="truncate max-w-[120px]">{workshopSummary.workshopName}</span>
+                        </span>
+                        {workshopSummary.dispatchedAt && (
+                          <span className="text-slate-500 font-mono">
+                            • خروج: {workshopSummary.dispatchedAt}
+                          </span>
+                        )}
+                        {workshopSummary.receivedAt && (
+                          <span className="text-emerald-700 font-mono font-bold">
+                            • استلام: {workshopSummary.receivedAt}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
                     <div className="flex items-center justify-between mb-1">
                       <h3 className="text-xl font-extrabold text-slate-900">
                         {model.model_code}
@@ -904,6 +1093,37 @@ export const QCView: React.FC = () => {
                       <Grid className="w-4 h-4" />
                       <span>فتح جدول الفرز (الألوان × المقاسات)</span>
                     </button>
+                    {workshopSummary && canEdit && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEvalTarget({
+                            workshopId: workshopSummary.workshopId,
+                            workshopName: workshopSummary.workshopName,
+                            stage: workshopSummary.stage,
+                            modelId: model.id,
+                            modelCode: model.model_code,
+                            printDispatchId: workshopSummary.printDispatchId,
+                            sewingDispatchId: workshopSummary.sewingDispatchId,
+                            expectedDate: workshopSummary.expectedDate,
+                            actualDate: workshopSummary.receivedAt,
+                            existing: workshopSummary.existingEvaluation
+                          })
+                        }
+                        className={`w-full py-2 px-4 rounded-full font-bold text-xs border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                          workshopSummary.existingEvaluation
+                            ? 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300'
+                            : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200'
+                        }`}
+                      >
+                        <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+                        <span>
+                          {workshopSummary.existingEvaluation
+                            ? `تقييم الورشة: ${workshopSummary.existingEvaluation.overall_score}/5 (تعديل)`
+                            : 'تقييم أداء الورشة'}
+                        </span>
+                      </button>
+                    )}
                     <button
                       onClick={() => handlePrintManualSheet(model, part)}
                       className="w-full py-2 px-4 rounded-full bg-white hover:bg-purple-50 text-purple-700 border border-purple-300 font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
@@ -928,14 +1148,15 @@ export const QCView: React.FC = () => {
           </div>
         )}
       </div>
+      )}
 
-      {/* Ended parts in this QC stage */}
-      {showCompleted && (
+      {/* Ended parts in this QC stage (exclusive view when "الموديلات السابقة" is ON) */}
+      {effectiveShowCompleted && (
         <div className="space-y-4 pt-2">
           <div className="flex items-center gap-3">
             <span className="h-px flex-grow bg-slate-200" />
             <h3 className="text-sm font-black text-slate-700 whitespace-nowrap">
-              موديلات منتهية من "{getStageTitle(activeTab)}" ({endedTabCards.length})
+              الموديلات السابقة / المنتهية من "{getStageTitle(activeTab)}" ({endedTabCards.length})
             </h3>
             <span className="h-px flex-grow bg-slate-200" />
           </div>
@@ -1055,6 +1276,35 @@ export const QCView: React.FC = () => {
                   العدد المتاح للقطعة:{' '}
                   {Number(countingModel?.sewing_available?.[modalPart] ?? countingModel?.cut_summary?.[modalPart] ?? 0).toLocaleString('ar-EG')} قطعة
                 </span>
+              </div>
+            )}
+
+            {/* Compact subtle workshop summary pill in post-stage QC modal */}
+            {modalWorkshopSummary && (
+              <div className="mt-3 px-3.5 py-2 rounded-2xl bg-slate-50 border border-slate-200/80 flex flex-wrap items-center justify-between gap-2 text-[11px] shrink-0">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-600">
+                  <span className="inline-flex items-center gap-1.5 font-extrabold text-slate-900">
+                    <Factory className="w-3.5 h-3.5 text-purple-600" />
+                    <span>
+                      {activeTab === 'after_print' ? 'المطبعة / الورشة:' : 'ورشة المكن:'}{' '}
+                      {modalWorkshopSummary.workshopName}
+                    </span>
+                  </span>
+                  <span className="inline-flex items-center gap-1 font-mono text-slate-500">
+                    <Clock className="w-3 h-3 text-slate-400" />
+                    <span>الخروج: {modalWorkshopSummary.dispatchedAt || '—'}</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1 font-mono font-bold text-emerald-700">
+                    <CheckCircle className="w-3 h-3 text-emerald-600" />
+                    <span>الاستلام: {modalWorkshopSummary.receivedAt || '—'}</span>
+                  </span>
+                </div>
+                {modalWorkshopSummary.existingEvaluation && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200 font-black text-[10px]">
+                    <Star className="w-3 h-3 fill-amber-400 text-amber-500" />
+                    <span>تقييم مسجّل: {modalWorkshopSummary.existingEvaluation.overall_score}/5</span>
+                  </span>
+                )}
               </div>
             )}
 
@@ -1387,6 +1637,23 @@ export const QCView: React.FC = () => {
                 />
               </div>
 
+              {/* Post-stage QC Workshop Evaluation (delivery timeliness, work quality, finishing quality) */}
+              {modalWorkshopSummary && canEdit && (
+                <InlineWorkshopEvaluationBox
+                  workshopName={modalWorkshopSummary.workshopName}
+                  expectedDate={modalWorkshopSummary.expectedDate}
+                  actualDate={modalWorkshopSummary.receivedAt}
+                  title={
+                    activeTab === 'after_print'
+                      ? `تقييم أداء المطبعة / الورشة (${modalWorkshopSummary.workshopName})`
+                      : `تقييم أداء ورشة المكن (${modalWorkshopSummary.workshopName})`
+                  }
+                  isEditing={Boolean(modalWorkshopSummary.existingEvaluation)}
+                  draft={evalDraft}
+                  onChange={setEvalDraft}
+                />
+              )}
+
               <div className="pt-2 flex flex-wrap items-center justify-end gap-2.5 border-t border-slate-100">
                 <button
                   type="button"
@@ -1659,6 +1926,8 @@ export const QCView: React.FC = () => {
           onClose={() => setQcPrintPreview(null)}
         />
       )}
+
+      <WorkshopEvaluationModal target={evalTarget} onClose={() => setEvalTarget(null)} />
     </div>
   );
 };

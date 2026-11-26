@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, X } from 'lucide-react';
+import { useModalBackHandler } from '../utils/mobileBackNav';
 
 /** صورة بديلة موحّدة تُستخدم عند فشل تحميل صورة الموديل (نفس الصورة المستخدمة في الشاشات الحالية). */
 export const FALLBACK_MODEL_IMAGE =
@@ -37,6 +38,8 @@ const FullscreenImage: React.FC<FullscreenImageProps> = ({
   downloadName,
   onClose
 }) => {
+  useModalBackHandler(true, onClose);
+
   // قفل تمرير الصفحة + الإغلاق بمفتاح Escape أثناء العرض.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

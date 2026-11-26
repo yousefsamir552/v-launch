@@ -49,6 +49,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     appNotifications,
     snoozeNotification,
     getPartStages,
+    getModelParts,
     exportWarehouseInventoryCsv,
     hasPermission
   } = useApp();
@@ -58,7 +59,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const totalModels = activeModels.length;
   const totalFabrics = fabricColors.length;
 
-  const inDesignCount = activeModels.filter((m) => m.status === 'تصميم' || m.status === 'مرحلة التصميم').length;
+  const inDesignModels = activeModels.filter((m) => m.status === 'تصميم' || m.status === 'مرحلة التصميم');
+  const inDesignCount = inDesignModels.length;
+  // توحيد وحدة قياس شريط التقدم (القطع/الأجزاء) حتى تجمع النسب 100% بالضبط بدون خلط موديلات مع قطع.
+  const inDesignPartItems = inDesignModels.reduce(
+    (sum, m) => sum + Math.max(1, getModelParts(m.id).length),
+    0
+  );
 
   /**
    * إحصائيات المراحل مبنية على **المرحلة الحالية لكل قطعة** لا على الحالة الكلية للموديل.
@@ -143,12 +150,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   );
 
   const totalPartItems = stageStats.totalPartItems;
-  const progressDenominator = totalPartItems + inDesignCount;
-  const designPct = progressDenominator > 0 ? (inDesignCount / progressDenominator) * 100 : 0;
+  const progressDenominator = totalPartItems + inDesignPartItems;
+  const designPct = progressDenominator > 0 ? (inDesignPartItems / progressDenominator) * 100 : 0;
   const cuttingPct = progressDenominator > 0 ? (inCuttingCount / progressDenominator) * 100 : 0;
   const printingPct = progressDenominator > 0 ? (inPrintingCount / progressDenominator) * 100 : 0;
   const qcPct = progressDenominator > 0 ? (inQcCount / progressDenominator) * 100 : 0;
   const sewingPct = progressDenominator > 0 ? (inSewingCount / progressDenominator) * 100 : 0;
+  const assemblyPct = progressDenominator > 0 ? (inAssemblyCount / progressDenominator) * 100 : 0;
   const finishedPct = progressDenominator > 0 ? (finishedCount / progressDenominator) * 100 : 0;
 
   const recentModels = [...activeModels]
@@ -430,21 +438,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         {/* Visual Segmented Progress Bar */}
         <div className="space-y-2">
           <div className="w-full h-5 bg-slate-100 rounded-full overflow-hidden p-0.5 flex border border-slate-200 shadow-inner">
-            {inDesignCount > 0 && (
+            {inDesignPartItems > 0 && (
               <div
-                style={{ width: `${Math.max(designPct, 8)}%` }}
-                title={`مرحلة التصميم: ${inDesignCount} موديل`}
-                className="bg-amber-400 hover:bg-amber-500 transition-all rounded-l-full flex items-center justify-center text-[10px] font-black text-amber-950 px-1 truncate cursor-pointer"
+                style={{ width: `${designPct}%` }}
+                title={`مرحلة التصميم: ${inDesignCount} موديل (${inDesignPartItems} قطعة)`}
+                className="bg-amber-400 hover:bg-amber-500 transition-all first:rounded-r-full last:rounded-l-full flex items-center justify-center text-[10px] font-black text-amber-950 px-1 truncate cursor-pointer min-w-[2.5rem]"
                 onClick={() => onNavigate('design')}
               >
-                تصميم ({inDesignCount})
+                تصميم ({inDesignPartItems})
               </div>
             )}
             {inCuttingCount > 0 && (
               <div
-                style={{ width: `${Math.max(cuttingPct, 8)}%` }}
-                title={`القص: ${inCuttingCount} موديل`}
-                className="bg-rose-500 hover:bg-rose-600 transition-all flex items-center justify-center text-[10px] font-black text-white px-1 truncate cursor-pointer"
+                style={{ width: `${cuttingPct}%` }}
+                title={`القص: ${inCuttingCount} قطعة`}
+                className="bg-rose-500 hover:bg-rose-600 transition-all first:rounded-r-full last:rounded-l-full flex items-center justify-center text-[10px] font-black text-white px-1 truncate cursor-pointer min-w-[2.5rem]"
                 onClick={() => onNavigate('cutting')}
               >
                 قص ({inCuttingCount})
@@ -452,9 +460,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             )}
             {inPrintingCount > 0 && (
               <div
-                style={{ width: `${Math.max(printingPct, 8)}%` }}
-                title={`المطابع والتطريز: ${inPrintingCount} موديل`}
-                className="bg-indigo-500 hover:bg-indigo-600 transition-all flex items-center justify-center text-[10px] font-black text-white px-1 truncate cursor-pointer"
+                style={{ width: `${printingPct}%` }}
+                title={`المطابع والتطريز: ${inPrintingCount} قطعة`}
+                className="bg-indigo-500 hover:bg-indigo-600 transition-all first:rounded-r-full last:rounded-l-full flex items-center justify-center text-[10px] font-black text-white px-1 truncate cursor-pointer min-w-[2.5rem]"
                 onClick={() => onNavigate('printing')}
               >
                 مطابع ({inPrintingCount})
@@ -462,9 +470,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             )}
             {inQcCount > 0 && (
               <div
-                style={{ width: `${Math.max(qcPct, 8)}%` }}
-                title={`الفرز والكنترول: ${inQcCount} موديل`}
-                className="bg-purple-500 hover:bg-purple-600 transition-all flex items-center justify-center text-[10px] font-black text-white px-1 truncate cursor-pointer"
+                style={{ width: `${qcPct}%` }}
+                title={`الفرز والكنترول: ${inQcCount} قطعة`}
+                className="bg-purple-500 hover:bg-purple-600 transition-all first:rounded-r-full last:rounded-l-full flex items-center justify-center text-[10px] font-black text-white px-1 truncate cursor-pointer min-w-[2.5rem]"
                 onClick={() => onNavigate('qc')}
               >
                 فرز ({inQcCount})
@@ -472,19 +480,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             )}
             {inSewingCount > 0 && (
               <div
-                style={{ width: `${Math.max(sewingPct, 8)}%` }}
-                title={`قسم المكن: ${inSewingCount} موديل`}
-                className="bg-emerald-500 hover:bg-emerald-600 transition-all flex items-center justify-center text-[10px] font-black text-white px-1 truncate cursor-pointer"
+                style={{ width: `${sewingPct}%` }}
+                title={`قسم المكن: ${inSewingCount} قطعة`}
+                className="bg-emerald-500 hover:bg-emerald-600 transition-all first:rounded-r-full last:rounded-l-full flex items-center justify-center text-[10px] font-black text-white px-1 truncate cursor-pointer min-w-[2.5rem]"
                 onClick={() => onNavigate('sewing')}
               >
                 مكن ({inSewingCount})
               </div>
             )}
+            {inAssemblyCount > 0 && (
+              <div
+                style={{ width: `${assemblyPct}%` }}
+                title={`التشطيب والتجهيز والتعبئة: ${inAssemblyCount} قطعة`}
+                className="bg-sky-500 hover:bg-sky-600 transition-all first:rounded-r-full last:rounded-l-full flex items-center justify-center text-[10px] font-black text-white px-1 truncate cursor-pointer min-w-[2.5rem]"
+                onClick={() => onNavigate('assembly_packaging')}
+              >
+                تجهيز ({inAssemblyCount})
+              </div>
+            )}
             {finishedCount > 0 && (
               <div
-                style={{ width: `${Math.max(finishedPct, 8)}%` }}
-                title={`مكتمل الإنتاج: ${finishedCount} موديل`}
-                className="bg-teal-500 hover:bg-teal-600 transition-all rounded-r-full flex items-center justify-center text-[10px] font-black text-white px-1 truncate cursor-pointer"
+                style={{ width: `${finishedPct}%` }}
+                title={`مكتمل الإنتاج: ${finishedCount} قطعة`}
+                className="bg-teal-500 hover:bg-teal-600 transition-all first:rounded-r-full last:rounded-l-full flex items-center justify-center text-[10px] font-black text-white px-1 truncate cursor-pointer min-w-[2.5rem]"
                 onClick={() => onNavigate('production_warehouse')}
               >
                 إنتاج ({finishedCount})

@@ -241,6 +241,7 @@ PERMISSION_LABELS = {
     'readiness_ironing': 'جاهزية الموديلات — المكواة',
     'readiness_packaging': 'جاهزية الموديلات — التغليف',
     'readiness_dest': 'جاهزية الموديلات — الدَست',
+    'previous_models_view': 'عرض الموديلات السابقة / المنتهية',
     'can_reports': 'التقارير',
     'can_settings': 'الإعدادات',
 }

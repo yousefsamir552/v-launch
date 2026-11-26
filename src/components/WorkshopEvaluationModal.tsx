@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Star, X, CheckCircle2, Sparkles } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { useModalBackHandler } from '../utils/mobileBackNav';
 import {
   WorkshopEvaluation,
   WorkshopEvaluationStage,
@@ -95,39 +96,57 @@ export interface InlineEvaluationDraft {
 
 export const createInitialEvaluationDraft = (
   expectedDate?: string | null,
-  actualDate?: string | null
-): InlineEvaluationDraft => ({
-  enabled: false,
-  deliveryTimeliness: suggestTimelinessRating(expectedDate, actualDate).score,
-  workQuality: 5,
-  finishingQuality: 5,
-  notes: ''
-});
+  actualDate?: string | null,
+  existing?: WorkshopEvaluation | null
+): InlineEvaluationDraft => {
+  if (existing) {
+    return {
+      enabled: true,
+      deliveryTimeliness: existing.delivery_timeliness || 5,
+      workQuality: existing.work_quality || 5,
+      finishingQuality: existing.finishing_quality || 5,
+      notes: existing.notes || ''
+    };
+  }
+  return {
+    enabled: false,
+    deliveryTimeliness: suggestTimelinessRating(expectedDate, actualDate).score,
+    workQuality: 5,
+    finishingQuality: 5,
+    notes: ''
+  };
+};
 
 /**
- * قسم تقييم اختياري مدمج داخل نوافذ استلام المطابع والمكن والتشطيب.
+ * قسم تقييم اختياري مدمج داخل نوافذ العد بعد الطباعة/المكن والتشطيب.
  */
 export const InlineWorkshopEvaluationBox: React.FC<{
   workshopName: string;
   expectedDate?: string | null;
+  actualDate?: string | null;
+  title?: string;
+  isEditing?: boolean;
   draft: InlineEvaluationDraft;
   onChange: (next: InlineEvaluationDraft) => void;
-}> = ({ workshopName, expectedDate, draft, onChange }) => {
-  const suggestion = suggestTimelinessRating(expectedDate);
+}> = ({ workshopName, expectedDate, actualDate, title, isEditing = false, draft, onChange }) => {
+  const suggestion = suggestTimelinessRating(expectedDate, actualDate);
   const avg = ((draft.deliveryTimeliness + draft.workQuality + draft.finishingQuality) / 3).toFixed(1);
 
   return (
     <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-3 space-y-2.5">
       <label className="flex items-center justify-between gap-2 cursor-pointer">
         <span className="flex items-center gap-1.5 text-xs font-black text-amber-900">
-          <Star className="w-4 h-4 fill-amber-400 text-amber-500" />
-          <span>تقييم الورشة عند الاستلام ({workshopName}) — اختياري</span>
+          <Star className="w-4 h-4 fill-amber-400 text-amber-500 shrink-0" />
+          <span>
+            {title || `تقييم أداء الورشة (${workshopName})`}
+            {isEditing ? ' — تعديل التقييم المسجّل' : ' — اختياري'}
+          </span>
         </span>
         <input
           type="checkbox"
           checked={draft.enabled}
           onChange={(e) => onChange({ ...draft, enabled: e.target.checked })}
-          className="w-4 h-4 accent-amber-600 rounded cursor-pointer"
+          className="w-4 h-4 accent-amber-600 rounded cursor-pointer shrink-0"
         />
       </label>
 
@@ -199,6 +218,8 @@ export const WorkshopEvaluationModal: React.FC<{
   const [finishingQuality, setFinishingQuality] = useState(5);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  useModalBackHandler(Boolean(target), onClose);
 
   useEffect(() => {
     if (!target) return;

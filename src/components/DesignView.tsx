@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { api } from '../api/client';
 import {
@@ -12,10 +12,13 @@ import {
   Image as ImageIcon,
   FileText,
   Lock,
-  Layers
+  Layers,
+  Ruler
 } from 'lucide-react';
 import { ZoomableImage } from './ZoomableImage';
 import { EditModelModal } from './EditModelModal';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
+import { useModalBackHandler } from '../utils/mobileBackNav';
 
 import {
   DesignModel,
@@ -27,6 +30,17 @@ import {
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel } from '../utils/completedModels';
 
+type DesignSortKey = 'newest' | 'oldest' | 'code_asc' | 'code_desc' | 'qty_desc' | 'qty_asc';
+
+const DESIGN_SORT_OPTIONS: { value: DesignSortKey; label: string }[] = [
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' },
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' },
+  { value: 'qty_desc', label: 'الكمية المستهدفة (الأكثر)' },
+  { value: 'qty_asc', label: 'الكمية المستهدفة (الأقل)' }
+];
+
 interface DesignViewProps {
   onOpenModelDetails: (modelId: string) => void;
 }
@@ -37,18 +51,22 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
     sizeDefs,
     requirements,
     accessories,
+    getModelSizeList,
     addDesignModel,
     cloneDesignModel,
     hasPermission,
     canAddDesignNotes,
+    canViewPreviousModels,
     exportDesignModelsCsv
   } = useApp();
   const canEdit = hasPermission('design', true);
   const canWriteNotes = canAddDesignNotes();
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<DesignSortKey>('newest');
   const [currentPage, setCurrentPage] = useState(1);
   const [showCompleted, setShowCompleted] = useState(false);
+  const effectiveShowCompleted = showCompleted && canViewPreviousModels();
   const itemsPerPage = 12;
 
   // Add Model Modal State
@@ -88,6 +106,9 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
     setCloneTargetQty(500);
   };
 
+  useModalBackHandler(showAddModal, () => setShowAddModal(false));
+  useModalBackHandler(Boolean(cloneSourceId), closeCloneModal);
+
   const handleCloneSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!cloneSource || !cloneCode.trim() || cloning) return;
@@ -110,35 +131,64 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
     }
   };
 
-  // Filter models (Only display models in design stage)
-  const filteredModels = models
-    .filter((m) => !m.is_deleted && (m.status === 'مرحلة التصميم' || m.status === 'تصميم'))
-    .filter((m) => {
-      if (!searchQuery.trim()) return true;
-      const q = searchQuery.toLowerCase().trim();
-      return (
-        m.model_code.toLowerCase().includes(q) ||
-        (m.model_type && m.model_type.toLowerCase().includes(q))
-      );
+  const sortDesignModels = (list: DesignModel[]): DesignModel[] =>
+    [...list].sort((a, b) => {
+      if (sortBy === 'code_asc') return compareNatural(a.model_code, b.model_code);
+      if (sortBy === 'code_desc') return compareNatural(b.model_code, a.model_code);
+      if (sortBy === 'qty_desc') return Number(b.target_cut_quantity || 0) - Number(a.target_cut_quantity || 0);
+      if (sortBy === 'qty_asc') return Number(a.target_cut_quantity || 0) - Number(b.target_cut_quantity || 0);
+      if (sortBy === 'oldest') return toTimestamp(a.created_at) - toTimestamp(b.created_at);
+      return toTimestamp(b.created_at) - toTimestamp(a.created_at);
     });
+
+  // Filter models (Only display models in design stage)
+  const filteredModels = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    const list = models
+      .filter((m) => !m.is_deleted && (m.status === 'مرحلة التصميم' || m.status === 'تصميم'))
+      .filter((m) => {
+        if (!q) return true;
+        const sizeList = getModelSizeList(m.id).join(' ').toLowerCase();
+        return (
+          m.model_code.toLowerCase().includes(q) ||
+          (m.model_type && m.model_type.toLowerCase().includes(q)) ||
+          sizeList.includes(q)
+        );
+      });
+    return sortDesignModels(list);
+  }, [models, searchQuery, sortBy, sizeDefs]);
 
   // الموديلات التي تجاوزت قسم التصميم (منتهية من هذا القسم).
-  const endedModels = models
-    .filter((m) => !m.is_deleted && m.status !== 'مرحلة التصميم' && m.status !== 'تصميم')
-    .filter((m) => {
-      if (!searchQuery.trim()) return true;
-      const q = searchQuery.toLowerCase().trim();
-      return (
-        m.model_code.toLowerCase().includes(q) ||
-        (m.model_type && m.model_type.toLowerCase().includes(q))
-      );
-    });
+  const endedModels = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    const list = models
+      .filter((m) => !m.is_deleted && m.status !== 'مرحلة التصميم' && m.status !== 'تصميم')
+      .filter((m) => {
+        if (!q) return true;
+        const sizeList = getModelSizeList(m.id).join(' ').toLowerCase();
+        return (
+          m.model_code.toLowerCase().includes(q) ||
+          (m.model_type && m.model_type.toLowerCase().includes(q)) ||
+          sizeList.includes(q)
+        );
+      });
+    return sortDesignModels(list);
+  }, [models, searchQuery, sortBy, sizeDefs]);
 
-  const totalPages = Math.ceil(filteredModels.length / itemsPerPage) || 1;
-  const paginatedModels = filteredModels.slice(
+  const activeList = effectiveShowCompleted ? endedModels : filteredModels;
+  const totalPages = Math.ceil(activeList.length / itemsPerPage) || 1;
+  const paginatedModels = activeList.slice(
     (currentPage - 1) * itemsPerPage,
     currentPage * itemsPerPage
   );
+
+  const getModelCardMeta = (model: DesignModel) => {
+    const sizes = getModelSizeList(model.id);
+    const sizeDef = sizeDefs.find((s) => s.id === model.size_category_id);
+    const modelReqs = requirements.filter((r) => r.model_id === model.id);
+    const distinctColorsCount = new Set(modelReqs.map((r) => r.color_id).filter(Boolean)).size;
+    return { sizes, sizeDefName: sizeDef?.name || '', distinctColorsCount };
+  };
 
   const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -218,9 +268,12 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
 
         <div className="flex flex-wrap items-center gap-3">
           <CompletedModelsToggle
-            enabled={showCompleted}
+            enabled={effectiveShowCompleted}
             count={endedModels.length}
-            onChange={setShowCompleted}
+            onChange={(next) => {
+              setShowCompleted(next);
+              setCurrentPage(1);
+            }}
             tone="slate"
           />
           <button
@@ -242,9 +295,9 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
         </div>
       </div>
 
-      {/* Search Input */}
-      <div className="flex items-center gap-2 max-w-xl">
-        <div className="relative flex-grow">
+      {/* Search & Sort Bar */}
+      <div className="flex flex-wrap items-center gap-2.5">
+        <div className="relative flex-grow max-w-xl">
           <input
             type="text"
             value={searchQuery}
@@ -252,25 +305,39 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
               setSearchQuery(e.target.value);
               setCurrentPage(1);
             }}
-            placeholder="ابحث بكود الموديل أو النوع..."
+            placeholder="ابحث بكود الموديل أو النوع أو المقاس..."
             className="w-full px-5 py-2.5 rounded-full border border-slate-300 bg-white text-sm focus:ring-2 focus:ring-slate-900 focus:outline-hidden pe-10 shadow-xs"
           />
           <Search className="w-4 h-4 text-slate-400 absolute end-4 top-1/2 -translate-y-1/2 pointer-events-none" />
         </div>
+        <SortBySelect
+          value={sortBy}
+          onChange={(v) => {
+            setSortBy(v as DesignSortKey);
+            setCurrentPage(1);
+          }}
+          options={DESIGN_SORT_OPTIONS}
+        />
         {searchQuery && (
           <button
-            onClick={() => setSearchQuery('')}
-            className="px-4 py-2.5 rounded-full border border-slate-300 bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold transition shadow-xs"
+            onClick={() => {
+              setSearchQuery('');
+              setCurrentPage(1);
+            }}
+            className="px-4 py-2.5 rounded-full border border-slate-300 bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold transition shadow-xs cursor-pointer"
           >
             إلغاء
           </button>
         )}
       </div>
 
-      {/* Models Grid */}
+      {/* Active Models Grid — hidden exclusively when viewing previous/completed models */}
+      {!effectiveShowCompleted && (
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
         {paginatedModels.length > 0 ? (
-          paginatedModels.map((model) => (
+          paginatedModels.map((model) => {
+            const { sizes, sizeDefName, distinctColorsCount } = getModelCardMeta(model);
+            return (
             <div
               key={model.id}
               className="bg-white rounded-3xl border border-slate-200/80 shadow-xs hover:shadow-lg transition-all duration-200 overflow-hidden flex flex-col justify-between group"
@@ -301,15 +368,43 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
               <div className="p-5 text-center flex flex-col justify-between flex-grow">
                 <div>
                   <h3 className="text-xl font-extrabold text-slate-900 mb-2">{model.model_code}</h3>
-                  <div className="mb-3">
+                  <div className="mb-2.5 flex items-center justify-center flex-wrap gap-1.5">
                     <span
-                      className={`inline-block px-3.5 py-1 rounded-full text-xs font-extrabold border ${getStatusBadge(
+                      className={`inline-block px-3 py-0.5 rounded-full text-[11px] font-extrabold border ${getStatusBadge(
                         model.status
                       )}`}
                     >
                       {model.status}
                     </span>
+                    <span className="inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-800 border border-blue-200">
+                      {Number(model.target_cut_quantity || 0).toLocaleString('ar-EG')} ق
+                    </span>
+                    <span className="inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-50 text-purple-800 border border-purple-200">
+                      {distinctColorsCount} {distinctColorsCount === 1 ? 'لون' : 'ألوان'}
+                    </span>
                   </div>
+
+                  {/* Sizes clearly displayed alongside colors & quantities */}
+                  <div className="mb-3 rounded-xl bg-slate-50 border border-slate-200/80 px-2.5 py-2 text-start">
+                    <div className="flex items-center justify-between gap-1 text-[10px] font-bold text-slate-500 mb-1">
+                      <span className="inline-flex items-center gap-1">
+                        <Ruler className="w-3 h-3 text-indigo-600" />
+                        <span>المقاسات{sizeDefName ? ` (${sizeDefName})` : ''}:</span>
+                      </span>
+                      <span className="text-slate-400">{sizes.length} مقاس</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {sizes.map((sz) => (
+                        <span
+                          key={sz}
+                          className="px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-800 text-[10px] font-black"
+                        >
+                          {sz}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
                   {(model.design_notes || model.notes_shirt || model.notes_pants || model.notes_jacket) && (
                     <p className="text-[11px] text-slate-500 line-clamp-1 mb-3 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-100">
                       📝 {model.design_notes || model.notes_shirt || model.notes_pants || model.notes_jacket}
@@ -347,7 +442,8 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                 </div>
               </div>
             </div>
-          ))
+            );
+          })
         ) : (
           <div className="col-span-full py-16 text-center bg-white rounded-3xl border border-slate-200/80 p-8 text-slate-400">
             <Palette className="w-12 h-12 mx-auto mb-2 text-slate-300" />
@@ -358,21 +454,24 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
           </div>
         )}
       </div>
+      )}
 
-      {/* Ended models in this section */}
-      {showCompleted && (
-        <div className="space-y-4 pt-2">
+      {/* Ended models in this section (exclusive view when "الموديلات السابقة" is ON) */}
+      {effectiveShowCompleted && (
+        <div className="space-y-4 pt-1">
           <div className="flex items-center gap-3">
             <span className="h-px flex-grow bg-slate-200" />
             <h3 className="text-sm font-black text-slate-700 whitespace-nowrap">
-              الموديلات المنتهية في هذا القسم ({endedModels.length})
+              الموديلات السابقة / المنتهية من قسم التصميم ({endedModels.length})
             </h3>
             <span className="h-px flex-grow bg-slate-200" />
           </div>
 
-          {endedModels.length > 0 ? (
+          {paginatedModels.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-              {endedModels.map((model) => (
+              {paginatedModels.map((model) => {
+                const { sizes, sizeDefName, distinctColorsCount } = getModelCardMeta(model);
+                return (
                 <div
                   key={model.id}
                   className="bg-slate-50/90 rounded-3xl border-2 border-dashed border-slate-300 shadow-xs overflow-hidden flex flex-col justify-between"
@@ -398,9 +497,29 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                   <div className="p-4 space-y-2">
                     <EndedModelBadge currentStage={currentStageLabel(model)} />
                     <h3 className="text-lg font-extrabold text-slate-800">{model.model_code}</h3>
-                    <p className="text-xs text-slate-500 font-semibold">
-                      النوع: {model.model_type || 'غير محدد'}
-                    </p>
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600 font-semibold">
+                      <span>{model.model_type || 'غير محدد'}</span>
+                      <span>•</span>
+                      <span>{Number(model.target_cut_quantity || 0).toLocaleString('ar-EG')} ق</span>
+                      <span>•</span>
+                      <span>{distinctColorsCount} ألوان</span>
+                    </div>
+                    <div className="rounded-xl bg-white border border-slate-200 px-2.5 py-1.5">
+                      <div className="text-[10px] font-bold text-slate-500 mb-1 flex items-center gap-1">
+                        <Ruler className="w-3 h-3 text-slate-400" />
+                        <span>المقاسات{sizeDefName ? ` (${sizeDefName})` : ''}:</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {sizes.map((sz) => (
+                          <span
+                            key={sz}
+                            className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-bold"
+                          >
+                            {sz}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
                     <button
                       onClick={() => onOpenModelDetails(model.id)}
                       className="w-full py-2 px-4 rounded-full border border-slate-400 text-slate-700 hover:bg-slate-700 hover:text-white font-bold text-xs transition cursor-pointer"
@@ -418,7 +537,8 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                     )}
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="py-8 text-center bg-white rounded-3xl border border-dashed border-slate-300 text-slate-400 text-sm font-bold">
@@ -499,6 +619,9 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                   </span>
                   <span className="px-2 py-0.5 rounded-full bg-white border border-indigo-200">
                     {cloneSourceAccCount} إكسسوار
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-white border border-indigo-200">
+                    المقاسات: {getModelSizeList(cloneSource.id).join('، ')}
                   </span>
                 </div>
                 <p className="text-[10px] text-indigo-700/80 leading-relaxed">

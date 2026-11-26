@@ -86,6 +86,13 @@ export const NOTIFICATION_STAGE_PERMISSION: Record<AppNotification['stage'], str
   materials: 'assembly_packaging'
 };
 
+export const makeIdempotentRequestId = (prefix: string): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
 export interface FlashMessage {
   id: string;
   type: 'success' | 'danger' | 'warning' | 'info';
@@ -304,6 +311,7 @@ export interface AppContextType {
     notes?: string;
     /** سعر الوحدة (يُرسل فقط لمن يملك edit_assembly_prices). */
     pricePerUnit?: number;
+    clientId?: string;
   }) => Promise<{ success: boolean; message: string }>;
   deletePackagingMaterialRule: (ruleId: string) => Promise<{ success: boolean; message: string }>;
   appNotifications: AppNotification[];
@@ -365,6 +373,8 @@ export interface AppContextType {
   // Per-stage Model Readiness permissions (الصلاحيات المستقلة لجاهزية الموديلات)
   canAccessReadinessStage: (stage: ReadinessStageKey) => boolean;
   canAccessAnyReadiness: () => boolean;
+  /** صلاحية مستقلة لعرض الموديلات السابقة / المنتهية في الأقسام. */
+  canViewPreviousModels: () => boolean;
 
   // Department Notes Permission Checkers (Task 4)
   canAddDesignNotes: () => boolean;
@@ -408,14 +418,15 @@ export interface AppContextType {
     hexCode?: string;
     quantity: number;
     supplierId?: string;
-  }) => { success: boolean; message: string; fabricId: string };
+  }) => { success: boolean; message: string; fabricId: string; promise?: Promise<boolean> };
   recordTransaction: (data: {
     colorId: string;
     operation: 'add' | 'deduct';
     amount: number;
     modelCodeRef?: string;
     notes?: string;
-  }) => { success: boolean; message: string };
+    clientId?: string;
+  }) => { success: boolean; message: string; promise?: Promise<boolean> };
   exportWarehouseInventoryCsv: () => void;
   updateColorPrice: (colorId: string, price: number) => void;
   /** تعديل بيانات لون القماش الأساسية (الكود، الاسم، الدرجة، والسعر حسب الصلاحية). */
@@ -460,7 +471,8 @@ export interface AppContextType {
     amount: number;
     modelCodeRef?: string;
     notes?: string;
-  }) => { success: boolean; message: string };
+    clientId?: string;
+  }) => { success: boolean; message: string; promise?: Promise<boolean> };
   exportAccessoryInventoryCsv: () => void;
   markAccessoryWithdrawn: (accessoryId: string) => void;
   issueModelAccessories: (
@@ -616,7 +628,8 @@ export interface AppContextType {
     partType?: GarmentPart;
     isSubCut?: boolean;
     subCutLabel?: string;
-  }) => void;
+    clientId?: string;
+  }) => Promise<boolean>;
   /** تعديل كامل لفرشة قص قائمة (يشمل تحويلها بين أساسية/فرعية). */
   updateCuttingRecord: (recordId: string, updates: CuttingRecordUpdate) => void;
   /** حذف فرشة قص نهائياً مع إعادة حساب أعداد القطع وفائض القماش. */
@@ -690,12 +703,14 @@ export interface AppContextType {
     costPerPiece?: number;
     totalCost?: number;
     notes?: string;
-  }) => void;
+    clientId?: string;
+  }) => Promise<boolean>;
   updateDispatchStatus: (
     dispatchId: string,
     status: DispatchStatus,
     receivedQty?: number,
-    notes?: string
+    notes?: string,
+    quickReceive?: boolean
   ) => void;
   skipPrintToSewing: (modelId: string, part: GarmentPart) => void;
 
@@ -711,12 +726,14 @@ export interface AppContextType {
     costPerPiece?: number;
     totalCost?: number;
     notes?: string;
-  }) => void;
+    clientId?: string;
+  }) => Promise<boolean>;
   receiveModelFromSewing: (
     dispatchId: string,
     modelId?: string,
     notes?: string,
-    receivedQty?: number
+    receivedQty?: number,
+    quickReceive?: boolean
   ) => void;
   finishSewingToQC: (modelId: string, notes?: string) => void;
   finishQCToProduction: (modelId: string, notes?: string) => void;

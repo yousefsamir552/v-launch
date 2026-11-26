@@ -664,14 +664,15 @@ export const api = {
     userName?: string,
     auditHeaders?: Record<string, string>,
     receivedQty?: number,
-    notes?: string
+    notes?: string,
+    quickReceive?: boolean
   ) =>
     request<any>(`/dispatches/${encodeURIComponent(id)}/update_status/`, {
       method: 'POST',
       body: JSON.stringify({
         status,
         user_name: userName,
-        received_qty: receivedQty,
+        ...(quickReceive ? { quick_receive: true } : { received_qty: receivedQty }),
         notes
       }),
       ...(auditHeaders ? { headers: auditHeaders } : {})
@@ -682,10 +683,20 @@ export const api = {
       body: JSON.stringify({ model_id: modelId, piece_type: pieceType, user_name: userName })
     }),
   getSewingDispatches: () => request<any[]>('/sewing-dispatches/'),
-  receiveFromSewing: (id: string, userName?: string, notes?: string, receivedQty?: number) =>
+  receiveFromSewing: (
+    id: string,
+    userName?: string,
+    notes?: string,
+    receivedQty?: number,
+    quickReceive?: boolean
+  ) =>
     request<any>(`/sewing-dispatches/${encodeURIComponent(id)}/receive/`, {
       method: 'POST',
-      body: JSON.stringify({ user_name: userName, notes, received_qty: receivedQty })
+      body: JSON.stringify({
+        user_name: userName,
+        notes,
+        ...(quickReceive ? { quick_receive: true } : { received_qty: receivedQty })
+      })
     }),
 
   // التنبيهات، الرسائل الداخلية، وسجل المراقبة

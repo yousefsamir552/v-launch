@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { makeIdempotentRequestId } from '../context/appContextTypes';
 import {
   Printer,
   Plus,
@@ -8,23 +9,35 @@ import {
   Layers,
   X,
   Lock,
-  Star
+  Star,
+  Search,
+  Clock
 } from 'lucide-react';
 import { DispatchStatus, GarmentPart, PART_EMOJI, getPartLabel, PrintDispatch, PART_STAGE_LABELS, PartStage } from '../types';
 import { PrintShopOrderModal } from './PrintShopOrderModal';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { stageBeyond } from '../utils/completedModels';
 import { ZoomableImage } from './ZoomableImage';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
+import { useModalBackHandler } from '../utils/mobileBackNav';
 import {
-  InlineEvaluationDraft,
-  InlineWorkshopEvaluationBox,
   WorkshopEvaluationModal,
-  WorkshopEvaluationTarget,
-  createInitialEvaluationDraft
+  WorkshopEvaluationTarget
 } from './WorkshopEvaluationModal';
 
 /** نوع تشغيل افتراضي يُرسل للباك إند بعد إخفاء حقل "نوع التشغيل" من الواجهة. */
 const DEFAULT_PRINT_TYPE = 'سلك سكرين مائي';
+
+type PrintSortKey = 'newest' | 'oldest' | 'code_asc' | 'code_desc' | 'qty_desc' | 'qty_asc';
+
+const PRINT_SORT_OPTIONS: { value: PrintSortKey; label: string }[] = [
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' },
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' },
+  { value: 'qty_desc', label: 'الكمية (الأكثر أولاً)' },
+  { value: 'qty_asc', label: 'الكمية (الأقل أولاً)' }
+];
 
 export const DispatchAssemblyView: React.FC = () => {
   const {
@@ -38,9 +51,9 @@ export const DispatchAssemblyView: React.FC = () => {
     skipPrintToSewing,
     workshops,
     workshopEvaluations,
-    submitWorkshopEvaluation,
     openWhatsAppOrder,
     hasPermission,
+    canViewPreviousModels,
     canViewPrintingPrices,
     canEditPrintingPrices,
     canAddPrintingNotes,
@@ -50,6 +63,12 @@ export const DispatchAssemblyView: React.FC = () => {
 
   const canEdit = hasPermission('printing', true) || hasPermission('qc', true) || hasPermission('cutting', true);
   const allowPrintNotes = canAddPrintingNotes() || canAddQCBeforePrintNotes();
+  const canSeePrevious = canViewPreviousModels();
+
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sortBy, setSortBy] = useState<PrintSortKey>('newest');
+  const [showCompleted, setShowCompleted] = useState(false);
+  const effectiveShowCompleted = showCompleted && canSeePrevious;
 
   // Parts that already have an open print dispatch are not "ready" any more;
   // they wait in the dispatches table until received.
@@ -84,7 +103,83 @@ export const DispatchAssemblyView: React.FC = () => {
       .map((part) => ({ model: m, part }));
   });
 
-  const [showCompleted, setShowCompleted] = useState(false);
+  const getPartGoodQty = (modelIdVal: string, part: GarmentPart) => {
+    const m = models.find((mm) => mm.id === modelIdVal);
+    const partQcRecords = qcRecords.filter(
+      (q) => q.model_id === modelIdVal && (q.part_type || 'shirt') === part
+    );
+    return (
+      m?.qc_summary?.[part] ??
+      partQcRecords.reduce((sum, q) => sum + (q.good_qty ?? q.counted_pieces ?? 0), 0)
+    );
+  };
+
+  const filteredReadyPartCards = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    const list = readyPartCards.filter(({ model, part }) => {
+      if (!q) return true;
+      return (
+        (model.model_code || '').toLowerCase().includes(q) ||
+        (model.model_type || '').toLowerCase().includes(q) ||
+        getPartLabel(part).toLowerCase().includes(q)
+      );
+    });
+    return [...list].sort((a, b) => {
+      if (sortBy === 'code_asc') return compareNatural(a.model.model_code, b.model.model_code);
+      if (sortBy === 'code_desc') return compareNatural(b.model.model_code, a.model.model_code);
+      if (sortBy === 'qty_desc') return getPartGoodQty(b.model.id, b.part) - getPartGoodQty(a.model.id, a.part);
+      if (sortBy === 'qty_asc') return getPartGoodQty(a.model.id, a.part) - getPartGoodQty(b.model.id, b.part);
+      if (sortBy === 'oldest') return toTimestamp(a.model.created_at) - toTimestamp(b.model.created_at);
+      return toTimestamp(b.model.created_at) - toTimestamp(a.model.created_at);
+    });
+  }, [readyPartCards, searchTerm, sortBy, qcRecords]);
+
+  const filteredEndedPartCards = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    const list = endedPartCards.filter(({ model, part }) => {
+      if (!q) return true;
+      return (
+        (model.model_code || '').toLowerCase().includes(q) ||
+        (model.model_type || '').toLowerCase().includes(q) ||
+        getPartLabel(part).toLowerCase().includes(q)
+      );
+    });
+    return [...list].sort((a, b) => {
+      if (sortBy === 'code_asc') return compareNatural(a.model.model_code, b.model.model_code);
+      if (sortBy === 'code_desc') return compareNatural(b.model.model_code, a.model.model_code);
+      if (sortBy === 'qty_desc') return getPartGoodQty(b.model.id, b.part) - getPartGoodQty(a.model.id, a.part);
+      if (sortBy === 'qty_asc') return getPartGoodQty(a.model.id, a.part) - getPartGoodQty(b.model.id, b.part);
+      if (sortBy === 'oldest') return toTimestamp(a.model.created_at) - toTimestamp(b.model.created_at);
+      return toTimestamp(b.model.created_at) - toTimestamp(a.model.created_at);
+    });
+  }, [endedPartCards, searchTerm, sortBy, qcRecords]);
+
+  const visibleDispatches = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    const list = printDispatches.filter((disp) => {
+      const isDone = disp.status === 'تم الاستلام بالمصنع';
+      if (effectiveShowCompleted ? !isDone : isDone) return false;
+      if (!q) return true;
+      const m = models.find((mm) => mm.id === disp.model_id);
+      return (
+        (m?.model_code || '').toLowerCase().includes(q) ||
+        (disp.shop_name || '').toLowerCase().includes(q) ||
+        (disp.piece_label || getPartLabel(disp.piece_type || 'shirt')).toLowerCase().includes(q) ||
+        (disp.print_location || '').toLowerCase().includes(q) ||
+        (disp.print_details || '').toLowerCase().includes(q)
+      );
+    });
+    return [...list].sort((a, b) => {
+      const ma = models.find((mm) => mm.id === a.model_id);
+      const mb = models.find((mm) => mm.id === b.model_id);
+      if (sortBy === 'code_asc') return compareNatural(ma?.model_code, mb?.model_code);
+      if (sortBy === 'code_desc') return compareNatural(mb?.model_code, ma?.model_code);
+      if (sortBy === 'qty_desc') return Number(b.pieces_count || 0) - Number(a.pieces_count || 0);
+      if (sortBy === 'qty_asc') return Number(a.pieces_count || 0) - Number(b.pieces_count || 0);
+      if (sortBy === 'oldest') return toTimestamp(a.dispatched_at) - toTimestamp(b.dispatched_at);
+      return toTimestamp(b.dispatched_at) - toTimestamp(a.dispatched_at);
+    });
+  }, [printDispatches, models, searchTerm, sortBy, effectiveShowCompleted]);
 
   const [showModal, setShowModal] = useState(false);
   const [modelId, setModelId] = useState(readyModels[0]?.id || '');
@@ -115,70 +210,38 @@ export const DispatchAssemblyView: React.FC = () => {
   const [printCost, setPrintCost] = useState('');
   const [printTarget, setPrintTarget] = useState<PrintDispatch | null>(null);
 
-  // استلام جزئي على دفعات من المطبعة.
+  // استلام سريع من المطبعة (تسجيل وقت الاستلام فقط — والعد وتقييم الورشة يتم في "العد بعد الطباعة").
   const [receivingDispatch, setReceivingDispatch] = useState<PrintDispatch | null>(null);
-  const [receiveQty, setReceiveQty] = useState<number>(0);
   const [receiveNotes, setReceiveNotes] = useState('');
-  const [evalDraft, setEvalDraft] = useState<InlineEvaluationDraft>(() =>
-    createInitialEvaluationDraft()
-  );
   const [evalTarget, setEvalTarget] = useState<WorkshopEvaluationTarget | null>(null);
 
-  const getReceivedPieces = (disp: PrintDispatch) => Math.max(0, Number(disp.received_pieces || 0));
-  const getRemainingPieces = (disp: PrintDispatch) =>
-    Math.max(0, Number(disp.pieces_count || 0) - getReceivedPieces(disp));
+  useModalBackHandler(showModal, () => setShowModal(false));
+  useModalBackHandler(Boolean(receivingDispatch), () => setReceivingDispatch(null));
+  useModalBackHandler(Boolean(printTarget), () => setPrintTarget(null));
 
   const openReceiveModal = (disp: PrintDispatch) => {
     setReceivingDispatch(disp);
-    setReceiveQty(getRemainingPieces(disp));
     setReceiveNotes(disp.notes || '');
-    setEvalDraft(createInitialEvaluationDraft(disp.expected_delivery_date));
   };
 
   const [isReceivingSubmitting, setIsReceivingSubmitting] = useState(false);
+  const [isDispatchSubmitting, setIsDispatchSubmitting] = useState(false);
   const submitLockRef = React.useRef(false);
+  const pendingDispatchReqIdRef = React.useRef<string | null>(null);
 
-  const confirmPartialReceive = async (e: React.FormEvent) => {
+  const confirmQuickReceive = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!receivingDispatch || isReceivingSubmitting) return;
-    const remaining = getRemainingPieces(receivingDispatch);
-    const qty = Math.floor(Number(receiveQty) || 0);
-    if (remaining <= 0) {
-      alert('تم استلام كامل كمية هذه التشغيلة مسبقاً');
-      return;
-    }
-    if (qty <= 0) {
-      alert('أدخل كمية استلام أكبر من صفر');
-      return;
-    }
-    if (qty > remaining) {
-      alert(`الكمية المتبقية عند المطبعة ${remaining} قطعة فقط — لا يمكن استلام أكثر منها`);
-      return;
-    }
     setIsReceivingSubmitting(true);
     try {
       updateDispatchStatus(
         receivingDispatch.id,
         'تم الاستلام بالمصنع',
-        qty,
-        allowPrintNotes ? receiveNotes.trim() : undefined
+        undefined,
+        allowPrintNotes ? receiveNotes.trim() : undefined,
+        true
       );
-      if (evalDraft.enabled && receivingDispatch.shop_name) {
-        const matchedW = workshops.find((w) => w.name === receivingDispatch.shop_name);
-        await submitWorkshopEvaluation({
-          workshopId: matchedW?.id,
-          workshopName: receivingDispatch.shop_name,
-          stage: 'printing',
-          modelId: receivingDispatch.model_id,
-          printDispatchId: receivingDispatch.id,
-          deliveryTimeliness: evalDraft.deliveryTimeliness,
-          workQuality: evalDraft.workQuality,
-          finishingQuality: evalDraft.finishingQuality,
-          notes: evalDraft.notes
-        });
-      }
       setReceivingDispatch(null);
-      setReceiveQty(0);
       setReceiveNotes('');
     } finally {
       setIsReceivingSubmitting(false);
@@ -213,13 +276,20 @@ export const DispatchAssemblyView: React.FC = () => {
       .join('\n');
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modelId || !resolvedShopName || submitLockRef.current) return;
+    if (!modelId || !resolvedShopName || submitLockRef.current || isDispatchSubmitting) return;
+    if (!pendingDispatchReqIdRef.current) {
+      pendingDispatchReqIdRef.current = makeIdempotentRequestId('disp');
+    }
+    const reqId = pendingDispatchReqIdRef.current;
     submitLockRef.current = true;
+    setIsDispatchSubmitting(true);
+    let ok = false;
     try {
-      addPrintDispatch({
+      ok = await addPrintDispatch({
         modelId,
+        clientId: reqId,
         shopName: resolvedShopName,
         piecesCount: Number(piecesCount) || 0,
         printType: DEFAULT_PRINT_TYPE,
@@ -231,17 +301,19 @@ export const DispatchAssemblyView: React.FC = () => {
         costPerPiece: canEditPrintingPrices() ? Math.max(0, parseFloat(printCost) || 0) : 0,
         notes: allowPrintNotes ? notes.trim() : ''
       });
+    } finally {
+      submitLockRef.current = false;
+      setIsDispatchSubmitting(false);
+    }
 
+    if (ok) {
+      pendingDispatchReqIdRef.current = null;
       setShowModal(false);
       setShopSelection('');
       setCustomShopName('');
       setNotes('');
       setPrintCost('');
       setPrintDetails('');
-    } finally {
-      window.setTimeout(() => {
-        submitLockRef.current = false;
-      }, 600);
     }
   };
 
@@ -275,6 +347,21 @@ export const DispatchAssemblyView: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="relative w-full sm:w-56">
+            <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="بحث بكود الموديل أو المطبعة..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full ps-9 pe-3 py-2 rounded-full border border-slate-200 bg-white text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
+            />
+          </div>
+          <SortBySelect
+            value={sortBy}
+            onChange={(v) => setSortBy(v as PrintSortKey)}
+            options={PRINT_SORT_OPTIONS}
+          />
           <button
             type="button"
             onClick={exportPrintDispatchesCsv}
@@ -283,12 +370,12 @@ export const DispatchAssemblyView: React.FC = () => {
             <span>📊 تصدير Excel</span>
           </button>
           <CompletedModelsToggle
-            enabled={showCompleted}
+            enabled={effectiveShowCompleted}
             count={endedPartCards.length}
             onChange={setShowCompleted}
             tone="teal"
           />
-          {canEdit && readyModels.length > 0 && (
+          {canEdit && readyModels.length > 0 && !effectiveShowCompleted && (
             <button
               onClick={() => {
                 if (readyModels.length > 0) {
@@ -305,12 +392,13 @@ export const DispatchAssemblyView: React.FC = () => {
         </div>
       </div>
 
-      {/* Ready Parts — every garment part is its own card */}
+      {/* Ready Parts — hidden exclusively when viewing previous/completed models */}
+      {!effectiveShowCompleted && (
       <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-xs">
         <h3 className="font-extrabold text-slate-900 text-sm mb-4 flex items-center justify-between">
           <span className="flex items-center gap-2">
             <Layers className="w-4 h-4 text-teal-600" />
-            <span>القطع الجاهزة للإرسال للمطابع والتطريز ({readyPartCards.length}):</span>
+            <span>القطع الجاهزة للإرسال للمطابع والتطريز ({filteredReadyPartCards.length}):</span>
           </span>
           <span className="text-[11px] text-slate-400 font-normal">
             (كل قطعة تُرسل وتُستلم وتُتخطى بشكل مستقل)
@@ -318,17 +406,9 @@ export const DispatchAssemblyView: React.FC = () => {
         </h3>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {readyPartCards.length > 0 ? (
-            readyPartCards.map(({ model: m, part }) => {
-              const partQcRecords = qcRecords.filter(
-                (q) => q.model_id === m.id && (q.part_type || 'shirt') === part
-              );
-              const partGoodQty =
-                m.qc_summary?.[part] ??
-                partQcRecords.reduce(
-                  (sum, q) => sum + (q.good_qty ?? q.counted_pieces ?? 0),
-                  0
-                );
+          {filteredReadyPartCards.length > 0 ? (
+            filteredReadyPartCards.map(({ model: m, part }) => {
+              const partGoodQty = getPartGoodQty(m.id, part);
 
               return (
                 <div
@@ -390,23 +470,24 @@ export const DispatchAssemblyView: React.FC = () => {
           )}
         </div>
       </div>
+      )}
 
-      {/* Ended parts in this section (already beyond printing) */}
-      {showCompleted && (
+      {/* Ended parts in this section (exclusive view when "الموديلات السابقة" is ON) */}
+      {effectiveShowCompleted && (
         <div className="bg-slate-50/70 rounded-3xl p-6 border-2 border-dashed border-slate-300 shadow-xs space-y-4">
           <h3 className="font-extrabold text-slate-800 text-sm flex items-center justify-between">
             <span className="flex items-center gap-2">
               <Layers className="w-4 h-4 text-slate-500" />
-              <span>موديلات منتهية من المطابع والتطريز ({endedPartCards.length}):</span>
+              <span>الموديلات السابقة / المنتهية من المطابع والتطريز ({filteredEndedPartCards.length}):</span>
             </span>
             <span className="text-[11px] text-slate-500 font-normal">
               (تم تحويلها مسبقاً — إعادة الإرسال معطلة)
             </span>
           </h3>
 
-          {endedPartCards.length > 0 ? (
+          {filteredEndedPartCards.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {endedPartCards.map(({ model: m, part }) => {
+              {filteredEndedPartCards.map(({ model: m, part }) => {
                 const stage = getPartStages(m.id)[part] || 'cutting';
                 return (
                   <div
@@ -448,7 +529,7 @@ export const DispatchAssemblyView: React.FC = () => {
             </div>
           ) : (
             <p className="text-center text-slate-500 text-xs py-4">
-              لا توجد قطع منتهية من المطابع والتطريز حالياً.
+              لا توجد قطع منتهية من المطابع والتطريز مطابقة للبحث حالياً.
             </p>
           )}
         </div>
@@ -460,11 +541,13 @@ export const DispatchAssemblyView: React.FC = () => {
           <div className="flex items-center gap-2">
             <Truck className="w-5 h-5 text-teal-700" />
             <h3 className="font-extrabold text-base text-slate-900">
-              سجل تشغيلات وتسليمات المطابع والتطريز
+              {effectiveShowCompleted
+                ? 'سجل تشغيلات المطابع السابقة (المستلمة)'
+                : 'سجل تشغيلات المطابع والتطريز النشطة'}
             </h3>
           </div>
           <span className="text-xs text-slate-500 font-semibold">
-            إجمالي التشغيلات: {printDispatches.length}
+            المعروض: {visibleDispatches.length}
           </span>
         </div>
 
@@ -474,7 +557,7 @@ export const DispatchAssemblyView: React.FC = () => {
               <tr>
                 <th className="px-6 py-3.5">كود الموديل</th>
                 <th className="px-6 py-3.5">المطبعة / ورشة التطريز</th>
-                <th className="px-6 py-3.5 text-center">القطع المسلمة</th>
+                <th className="px-6 py-3.5 text-center">القطع المرسلة</th>
                 <th className="px-6 py-3.5 text-center">نوع القطعة</th>
                 <th className="px-6 py-3.5">نوع الطباعة / التشغيل</th>
                 {canViewPrintingPrices() && (
@@ -484,21 +567,18 @@ export const DispatchAssemblyView: React.FC = () => {
                   </>
                 )}
                 <th className="px-6 py-3.5 text-center">تاريخ الإرسال</th>
-                <th className="px-6 py-3.5 text-center">الاستلام المتوقع</th>
+                <th className="px-6 py-3.5 text-center">الاستلام المتوقع / الفعلي</th>
                 <th className="px-6 py-3.5 text-center">الحالة</th>
                 <th className="px-6 py-3.5 text-center">الإجراء</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {printDispatches.length > 0 ? (
-                printDispatches.map((disp) => {
+              {visibleDispatches.length > 0 ? (
+                visibleDispatches.map((disp) => {
                   const m = models.find((model) => model.id === disp.model_id);
-                  const receivedPieces = getReceivedPieces(disp);
-                  const remainingPieces = getRemainingPieces(disp);
-                  const progressPct =
-                    Number(disp.pieces_count || 0) > 0
-                      ? Math.min(100, Math.round((receivedPieces / Number(disp.pieces_count)) * 100))
-                      : 0;
+                  const receivedPieces = Math.max(0, Number(disp.received_pieces || 0));
+                  const remainingPieces = Math.max(0, Number(disp.pieces_count || 0) - receivedPieces);
+                  const isReceivedStatus = disp.status === 'تم الاستلام بالمصنع';
 
                   return (
                     <tr key={disp.id} className="hover:bg-slate-50 transition">
@@ -515,25 +595,18 @@ export const DispatchAssemblyView: React.FC = () => {
                       </td>
                       <td className="px-6 py-4 font-bold text-slate-800">{disp.shop_name}</td>
                       <td className="px-6 py-4 text-center font-black text-slate-900 text-sm">
-                        <div>{disp.pieces_count}</div>
-                        <div className="mt-1.5 w-24 mx-auto">
-                          <div className="h-1.5 rounded-full bg-slate-200 overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all ${
-                                progressPct >= 100 ? 'bg-emerald-500' : 'bg-amber-500'
-                              }`}
-                              style={{ width: `${progressPct}%` }}
-                            />
+                        <div>{Number(disp.pieces_count || 0).toLocaleString('ar-EG')}</div>
+                        {isReceivedStatus ? (
+                          <div className="mt-1 text-[10px] font-bold text-emerald-700">
+                            {receivedPieces > 0
+                              ? `مستلم: ${receivedPieces.toLocaleString('ar-EG')}`
+                              : 'بانتظار العد بالفرز'}
                           </div>
-                          <div className="mt-1 flex items-center justify-between text-[9px] font-extrabold">
-                            <span className="text-emerald-700">
-                              مستلم {receivedPieces.toLocaleString('ar-EG')}
-                            </span>
-                            <span className="text-amber-700">
-                              متبقي {remainingPieces.toLocaleString('ar-EG')}
-                            </span>
+                        ) : receivedPieces > 0 ? (
+                          <div className="mt-1 text-[10px] font-bold text-amber-700">
+                            مستلم {receivedPieces.toLocaleString('ar-EG')} • متبقي {remainingPieces.toLocaleString('ar-EG')}
                           </div>
-                        </div>
+                        ) : null}
                       </td>
                       <td className="px-6 py-4 text-center">
                         <span className="px-2 py-0.5 rounded-md bg-teal-700 text-white font-bold text-[10px] whitespace-nowrap">
@@ -606,6 +679,11 @@ export const DispatchAssemblyView: React.FC = () => {
                         })() : (
                           <span className="text-slate-400">-</span>
                         )}
+                        {disp.received_at && (
+                          <span className="block mt-1 font-mono text-[10px] font-bold text-emerald-700">
+                            استلم: {disp.received_at}
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-4 text-center">
                         <span
@@ -622,9 +700,9 @@ export const DispatchAssemblyView: React.FC = () => {
                             <button
                               onClick={() => openReceiveModal(disp)}
                               className="px-3.5 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
-                              title="استلام من المطبعة على دفعات وتحويل تلقائي للعد بعد الطباعة"
+                              title="تسجيل وقت الاستلام بالمصنع وتحويل تلقائي للعد بعد الطباعة"
                             >
-                              {receivedPieces > 0 ? 'استلام المتبقي 📥' : 'استلام بالمصنع 📥'}
+                              استلام بالمصنع 📥
                             </button>
                           ) : (
                             <span className="text-emerald-700 font-bold text-xs flex items-center justify-center gap-1">
@@ -933,9 +1011,10 @@ export const DispatchAssemblyView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2 rounded-full bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs shadow-md shadow-teal-700/20"
+                  disabled={isDispatchSubmitting}
+                  className="px-6 py-2 rounded-full bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs shadow-md shadow-teal-700/20 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  تأكيد الإرسال للمطبعة
+                  {isDispatchSubmitting ? 'جاري الإرسال...' : 'تأكيد الإرسال للمطبعة'}
                 </button>
               </div>
             </form>
@@ -943,10 +1022,16 @@ export const DispatchAssemblyView: React.FC = () => {
         </div>
       )}
 
-      {/* Modal: استلام جزئي/كلي من المطبعة (دفعات) */}
+      {/* Modal: تأكيد استلام تشغيلة من المطبعة (تسجيل تاريخ/وقت الاستلام فقط — العد وتقييم الورشة في الفرز) */}
       {receivingDispatch && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
-          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-lg shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4"
+          onClick={() => setReceivingDispatch(null)}
+        >
+          <div
+            className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-md shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white z-10">
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-2xl bg-emerald-600 text-white flex items-center justify-center">
@@ -954,7 +1039,7 @@ export const DispatchAssemblyView: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="font-black text-slate-900 text-base leading-tight">
-                    استلام من المطبعة / التطريز
+                    تسجيل استلام من المطبعة / التطريز
                   </h3>
                   <p className="text-[11px] text-slate-500">
                     {models.find((mm) => mm.id === receivingDispatch.model_id)?.model_code || 'موديل'} •{' '}
@@ -972,72 +1057,45 @@ export const DispatchAssemblyView: React.FC = () => {
               </button>
             </div>
 
-            <form onSubmit={confirmPartialReceive} className="p-6 space-y-4">
-              <div className="grid grid-cols-3 gap-2">
-                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-3 text-center">
-                  <span className="block text-[10px] font-bold text-slate-500 mb-0.5">الإجمالي</span>
-                  <span className="text-lg font-black text-slate-800">
-                    {Number(receivingDispatch.pieces_count || 0).toLocaleString('ar-EG')}
+            <form onSubmit={confirmQuickReceive} className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-3">
+                  <span className="block text-[10px] font-bold text-slate-500 mb-0.5">المطبعة / الورشة</span>
+                  <span className="text-xs font-black text-slate-800 block truncate">
+                    {receivingDispatch.shop_name}
                   </span>
                 </div>
-                <div className="rounded-2xl bg-emerald-50 border border-emerald-200 p-3 text-center">
-                  <span className="block text-[10px] font-bold text-emerald-600 mb-0.5">تم استلامه</span>
-                  <span className="text-lg font-black text-emerald-700">
-                    {getReceivedPieces(receivingDispatch).toLocaleString('ar-EG')}
+                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-3">
+                  <span className="block text-[10px] font-bold text-slate-500 mb-0.5">العدد المرسل</span>
+                  <span className="text-xs font-black text-slate-800">
+                    {Number(receivingDispatch.pieces_count || 0).toLocaleString('ar-EG')} قطعة
                   </span>
                 </div>
-                <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3 text-center">
-                  <span className="block text-[10px] font-bold text-amber-600 mb-0.5">المتبقي</span>
-                  <span className="text-lg font-black text-amber-700">
-                    {getRemainingPieces(receivingDispatch).toLocaleString('ar-EG')}
+                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-3">
+                  <span className="block text-[10px] font-bold text-slate-500 mb-0.5">تاريخ الخروج</span>
+                  <span className="text-xs font-mono font-bold text-slate-700">
+                    {receivingDispatch.dispatched_at || '—'}
+                  </span>
+                </div>
+                <div className="rounded-2xl bg-emerald-50 border border-emerald-200 p-3">
+                  <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-700 mb-0.5">
+                    <Clock className="w-3 h-3" />
+                    وقت الاستلام الآن
+                  </span>
+                  <span className="text-xs font-mono font-black text-emerald-800">
+                    {new Date().toLocaleString('ar-EG', {
+                      year: 'numeric',
+                      month: '2-digit',
+                      day: '2-digit',
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    })}
                   </span>
                 </div>
               </div>
 
-              {(() => {
-                const total = Number(receivingDispatch.pieces_count || 0);
-                const received = getReceivedPieces(receivingDispatch);
-                const pct = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
-                return (
-                  <div>
-                    <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-emerald-500 transition-all"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                    <div className="mt-1 text-[10px] font-bold text-slate-500 text-center">
-                      نسبة الاستلام {pct}%
-                    </div>
-                  </div>
-                );
-              })()}
-
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  الكمية المستلمة في هذه الدفعة *
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min={1}
-                    max={getRemainingPieces(receivingDispatch) || 1}
-                    required
-                    value={receiveQty || ''}
-                    onChange={(e) => setReceiveQty(parseInt(e.target.value) || 0)}
-                    className="flex-1 px-4 py-2.5 rounded-xl border border-slate-300 text-sm text-center font-black text-emerald-800 focus:ring-2 focus:ring-emerald-600 focus:outline-hidden"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setReceiveQty(getRemainingPieces(receivingDispatch))}
-                    className="px-3.5 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 font-bold text-[11px] hover:bg-emerald-100 whitespace-nowrap cursor-pointer"
-                  >
-                    استلام الكل ({getRemainingPieces(receivingDispatch).toLocaleString('ar-EG')})
-                  </button>
-                </div>
-                <p className="mt-1 text-[10px] text-slate-400">
-                  عند استلام جزء فقط تبقى التشغيلة مفتوحة بحالة «استلام جزئي» لمتابعة باقي الكمية.
-                </p>
+              <div className="rounded-2xl bg-teal-50/70 border border-teal-200 px-3.5 py-2.5 text-[11px] font-semibold text-teal-900 leading-relaxed">
+                سيتم تسجيل <strong>تاريخ ووقت الاستلام</strong> وتحويل القطعة مباشرة إلى <strong>العد بعد الطباعة (QC)</strong>، حيث يتم إدخال العد الفعلي وتقييم أداء المطبعة.
               </div>
 
               {allowPrintNotes && (
@@ -1049,66 +1107,26 @@ export const DispatchAssemblyView: React.FC = () => {
                     rows={2}
                     value={receiveNotes}
                     onChange={(e) => setReceiveNotes(e.target.value)}
-                    placeholder="مثال: الدفعة الأولى بها 3 قطع معيبة تحتاج إعادة طباعة..."
+                    placeholder="أي ملاحظات سريعة عند الاستلام..."
                     className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-600 focus:outline-hidden"
                   ></textarea>
                 </div>
-              )}
-
-              {(receivingDispatch.receive_history || []).length > 0 && (
-                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
-                  <div className="flex items-center gap-1.5 text-[11px] font-black text-slate-600 mb-2">
-                    📜 سجل الدفعات السابقة
-                  </div>
-                  <ul className="space-y-1 max-h-32 overflow-y-auto">
-                    {(receivingDispatch.receive_history || []).map((entry, idx) => (
-                      <li
-                        key={`${entry.date}-${idx}`}
-                        className="flex items-center justify-between gap-2 rounded-lg bg-white border border-slate-100 px-2.5 py-1.5 text-[10px]"
-                      >
-                        <span className="font-mono text-slate-500">{entry.date || '-'}</span>
-                        <span className="font-black text-emerald-700">
-                          +{Number(entry.qty || 0).toLocaleString('ar-EG')} قطعة
-                        </span>
-                        <span className="text-slate-500">
-                          إجمالي {Number(entry.total_received || 0).toLocaleString('ar-EG')}
-                        </span>
-                        {entry.user && <span className="text-slate-400">{entry.user}</span>}
-                        {entry.notes && (
-                          <span className="text-slate-400 truncate max-w-[6rem]" title={entry.notes}>
-                            {entry.notes}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {receivingDispatch.shop_name && (
-                <InlineWorkshopEvaluationBox
-                  workshopName={receivingDispatch.shop_name}
-                  expectedDate={receivingDispatch.expected_delivery_date}
-                  draft={evalDraft}
-                  onChange={setEvalDraft}
-                />
               )}
 
               <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setReceivingDispatch(null)}
-                  className="px-4 py-2 rounded-full text-xs font-bold text-slate-600 hover:bg-slate-100"
+                  className="px-4 py-2 rounded-full text-xs font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-600/20 cursor-pointer"
+                  disabled={isReceivingSubmitting}
+                  className="px-6 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-600/20 cursor-pointer disabled:opacity-60"
                 >
-                  {receiveQty >= getRemainingPieces(receivingDispatch)
-                    ? 'تأكيد الاستلام الكامل'
-                    : 'تأكيد الاستلام الجزئي'}
+                  {isReceivingSubmitting ? 'جارٍ التسجيل...' : 'تأكيد الاستلام وتحويل للعد'}
                 </button>
               </div>
             </form>

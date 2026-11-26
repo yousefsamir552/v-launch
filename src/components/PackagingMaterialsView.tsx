@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { makeIdempotentRequestId } from '../context/appContextTypes';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -101,8 +102,10 @@ const MaterialStockRow: React.FC<{
   );
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
+  const pendingReqIdRef = useRef<string | null>(null);
 
   const submit = async () => {
+    if (busy) return;
     const value = Number(amount);
     const invalid =
       amount.trim() === '' ||
@@ -115,21 +118,30 @@ const MaterialStockRow: React.FC<{
       );
       return;
     }
+    if (!pendingReqIdRef.current) {
+      pendingReqIdRef.current = makeIdempotentRequestId('pack-mat-txn');
+    }
+    const reqId = pendingReqIdRef.current;
     setBusy(true);
-    const result = await recordPackagingMaterialTransaction({
-      sizeRuleId: row.id,
-      operation,
-      amount: value,
-      notes: notes.trim(),
-      ...(canEditAssemblyPrices() && price !== ''
-        ? { pricePerUnit: Math.max(0, Number(price) || 0) }
-        : {})
-    });
-    setBusy(false);
-    if (result.success) {
-      setOpen(false);
-      setAmount('');
-      setNotes('');
+    try {
+      const result = await recordPackagingMaterialTransaction({
+        sizeRuleId: row.id,
+        operation,
+        amount: value,
+        notes: notes.trim(),
+        clientId: reqId,
+        ...(canEditAssemblyPrices() && price !== ''
+          ? { pricePerUnit: Math.max(0, Number(price) || 0) }
+          : {})
+      });
+      if (result.success) {
+        pendingReqIdRef.current = null;
+        setOpen(false);
+        setAmount('');
+        setNotes('');
+      }
+    } finally {
+      setBusy(false);
     }
   };
 

@@ -61,7 +61,12 @@ interface PayrollRow {
 }
 
 export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
-  const { addFlashMessage, logAction, globalSettings } = useApp();
+  const { addFlashMessage, logAction, globalSettings, currentUser, canManagePermissions } = useApp();
+  const canUnlockPayroll = Boolean(
+    currentUser?.is_sudo ||
+    currentUser?.username?.toLowerCase() === 'sudo' ||
+    canManagePermissions()
+  );
 
   const [month, setMonth] = useState(currentMonth());
   const [records, setRecords] = useState<HRAttendanceRecord[]>([]);
@@ -193,6 +198,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
         ? isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1))
         : undefined;
     const officialStart = settings?.official_start_time || '08:30';
+    const officialEnd = settings?.official_end_time || '17:30';
     const r2 = (v: number) => Math.round(v * 100) / 100;
 
     return employees
@@ -235,7 +241,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           let dedHours = Number(record.calculated_deduction_hours) || 0;
           // احتياطي ديناميكي: لو لم يُخزَّن الخصم (لسجل معتمد أو تلقائي)، طبّق شريحة التأخير من الإعدادات.
           if (dedDays === 0 && dedHours === 0 && employee.rule_application_mode !== 'manual_review') {
-            const lateMinutes = lateMinutesFor(record.check_in, officialStart);
+            const lateMinutes = lateMinutesFor(record.check_in, officialStart, officialEnd);
             const rule = matchLateRule(settings?.rules_json, lateMinutes);
             const ruleValue = Number(rule?.deduction_value) || 0;
             if (rule && ruleValue > 0 && rule.apply_mode !== 'manual_review') {
@@ -366,6 +372,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
     const dayRate = dailyRateFor(row.baseSalary);
     const hourRate = hourlyRateFor(row.baseSalary, shiftHours);
     const officialStart = effectiveSettings?.official_start_time || '08:30';
+    const officialEnd = effectiveSettings?.official_end_time || '17:30';
     const statusLabels: Record<string, string> = {
       present: 'حاضر',
       absent: 'غائب',
@@ -423,11 +430,11 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       if (isAttendedRecord(record) && !record.is_excused && !waivedByReview) {
         dedDays = Number(record.calculated_deduction_days) || 0;
         dedHours = Number(record.calculated_deduction_hours) || 0;
-        if (dedDays === 0 && dedHours === 0) {
-          const lm = lateMinutesFor(record.check_in, officialStart);
+        if (dedDays === 0 && dedHours === 0 && row.employee.rule_application_mode !== 'manual_review') {
+          const lm = lateMinutesFor(record.check_in, officialStart, officialEnd);
           const rule = matchLateRule(effectiveSettings?.rules_json, lm);
           const rv = Number(rule?.deduction_value) || 0;
-          if (rule && rv > 0) {
+          if (rule && rv > 0 && rule.apply_mode !== 'manual_review') {
             if (rule.deduction_type === 'days') dedDays = rv;
             else dedHours = rv;
           }
@@ -437,7 +444,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       const overtime =
         (Number(record.overtime_days) || 0) * dayRate +
         (Number(record.overtime_hours) || 0) * hourRate;
-      const lateMinutes = lateMinutesFor(record.check_in, officialStart);
+      const lateMinutes = lateMinutesFor(record.check_in, officialStart, officialEnd);
       let reason = isWeeklyOff ? `عمل يوم الإجازة الأسبوعية (×${weeklyOffMultiplier})` : 'حضور كامل';
       if (record.is_excused) reason = `بعذر: ${record.excuse_note || 'بدون خصم'}`;
       else if (record.review_status === 'rejected') reason = 'تم رفض الخصم (بدون خصم)';
@@ -715,14 +722,21 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           </div>
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             {lockedSnapshot ? (
-              <button
-                type="button"
-                onClick={() => setIsUnlockModalOpen(true)}
-                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-amber-400 text-slate-950 text-[11px] font-black hover:bg-amber-300 transition cursor-pointer"
-              >
-                <Unlock className="w-4 h-4" />
-                الشهر معتمد ومغلق — إعادة فتح
-              </button>
+              canUnlockPayroll ? (
+                <button
+                  type="button"
+                  onClick={() => setIsUnlockModalOpen(true)}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-amber-400 text-slate-950 text-[11px] font-black hover:bg-amber-300 transition cursor-pointer"
+                >
+                  <Unlock className="w-4 h-4" />
+                  الشهر معتمد ومغلق — إعادة فتح
+                </button>
+              ) : (
+                <span className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-amber-400/90 text-slate-950 text-[11px] font-black">
+                  <Lock className="w-4 h-4" />
+                  الشهر معتمد ومغلق
+                </span>
+              )
             ) : (
               <button
                 type="button"

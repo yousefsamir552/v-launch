@@ -143,6 +143,14 @@ class FabricTransaction(models.Model):
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     color = models.ForeignKey(FabricColor, on_delete=models.CASCADE, related_name="transactions", verbose_name="اللون")
     fabric = models.ForeignKey(Fabric, on_delete=models.CASCADE, related_name="transactions", verbose_name="الخامة")
+    model = models.ForeignKey(
+        'api.ModelItem',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='fabric_transactions',
+        verbose_name="الموديل",
+    )
     model_code_ref = models.CharField(max_length=150, blank=True, default='', verbose_name="المرجع / كود الموديل")
     notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
     operation = models.CharField(max_length=20, default='deduct', verbose_name="نوع العملية")
@@ -250,6 +258,14 @@ class AccessoryTransaction(models.Model):
     accessory_name = models.CharField(max_length=200, blank=True, default='', verbose_name="اسم الصنف")
     operation = models.CharField(max_length=20, default='deduct', verbose_name="نوع العملية")
     amount = models.FloatField(default=0.0, verbose_name="الكمية")
+    model = models.ForeignKey(
+        'api.ModelItem',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='accessory_transactions',
+        verbose_name="الموديل",
+    )
     model_code_ref = models.CharField(max_length=150, blank=True, default='', verbose_name="كود الموديل")
     notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
     # سعر الوحدة التاريخي وقت الحركة: يثبّت تكلفة الموديلات القديمة حتى لو تغير سعر المخزن.

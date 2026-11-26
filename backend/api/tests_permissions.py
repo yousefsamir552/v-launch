@@ -192,6 +192,13 @@ class FinancialFieldGatingTests(PermissionTestBase):
 class WorkshopLinkServiceTests(PermissionTestBase):
     """الربط التلقائي للورشة المسجلة من الاسم النصي بدون كسر السجلات القديمة."""
 
+    def setUp(self):
+        super().setUp()
+        self.model.status = 'في قسم المكن'
+        self.model.total_cut_pieces = 20
+        self.model.cut_shirt_pieces = 20
+        self.model.save(update_fields=['status', 'total_cut_pieces', 'cut_shirt_pieces'])
+
     def test_sewing_dispatch_links_registered_workshop_by_name(self):
         workshop = Workshop.objects.create(name='ورشة الأمل')
         dispatch = dispatch_model_to_sewing_service(
@@ -376,6 +383,10 @@ class DepartmentPriceIsolationTests(PermissionTestBase):
 
     def setUp(self):
         super().setUp()
+        self.model.status = 'في قسم المكن'
+        self.model.total_cut_pieces = 20
+        self.model.cut_shirt_pieces = 20
+        self.model.save(update_fields=['status', 'total_cut_pieces', 'cut_shirt_pieces'])
         self.sewing_dispatch = SewingDispatch.objects.create(
             model=self.model, workshop_name='ورشة النور', pieces_count=10,
             received_pieces=10,

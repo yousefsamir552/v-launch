@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { User, UserPermissions, RolePermissions, HR_SECTION_PERM_MAP } from '../types';
 import { useApp } from '../context/AppContext';
+import { useModalBackHandler } from '../utils/mobileBackNav';
 import {
   SYSTEM_SECTIONS,
   NOTES_PERMISSIONS_LIST,
@@ -38,6 +39,7 @@ interface EditUserModalProps {
 }
 
 export const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSave }) => {
+  useModalBackHandler(true, onClose);
   const {
     roles,
     visibleRankOptions,

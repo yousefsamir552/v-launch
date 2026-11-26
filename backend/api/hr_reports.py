@@ -142,9 +142,7 @@ def _weekly_off_ratio(absent_count):
         return 1.0
     if absent_count == 4:
         return 2.0 / 3.0
-    if absent_count == 3:
-        return 0.5
-    if absent_count == 2:
+    if absent_count in (2, 3):
         return 1.0 / 3.0
     return 0.0
 
@@ -195,10 +193,10 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso,
         if up_to_iso and cursor > up_to_iso and not has_check_in:
             continue
         # يوم الإجازة الأسبوعية المدفوعة (يأتي من إعدادات الحضور، والأحد افتراضياً).
+        # يُحتسب استحقاق/خصم الإجازة الأسبوعية دائماً وفق غياب الأسبوع السابق،
+        # وإذا عمل الموظف في يوم الإجازة يُضاف له أجر العمل الإضافي (weekly_off_work_multiplier)
+        # فوق سقف الـ 30 يوماً بنفس المعادلة في منتصف الشهر ونهايته بدون أي قفزة مفاجئة.
         if cursor.weekday() == weekly_off_index:
-            if has_check_in:
-                worked_weekly_off_days += 1.0
-                continue
             week_dates = [cursor - timedelta(days=offset) for offset in range(6, 0, -1)]
             if any(day_key in records_by_date for day_key in week_dates):
                 ded = _weekly_off_deduction_for_date(records_by_date, cursor)
@@ -207,6 +205,8 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso,
             elif month_complete:
                 # أسبوع كامل بلا أي حضور في شهر مكتمل = 6 أيام غياب => خصم يوم الإجازة كاملاً.
                 sunday_deduction_days += 1.0
+            if has_check_in:
+                worked_weekly_off_days += 1.0
             continue
         workdays_in_scope += 1
         if record and _is_attended(record):

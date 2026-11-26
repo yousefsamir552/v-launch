@@ -38,6 +38,8 @@ interface LoanDueRow {
   salary: number;
   workdays: number;
   earnedDays: number;
+  earnedDaysRaw: number;
+  overtimeMoney: number;
   attendedDays: number;
   paidSundayDays: number;
   attendanceDeductionDays: number;
@@ -209,7 +211,7 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
           weeklyOffIndex,
           weeklyOffMultiplier
         );
-        const earned = dayRate * accrual.earnedDays;
+        const earned = dayRate * accrual.earnedDaysRaw;
         const overtimeMoney = dayRate * overtimeDays + hourRate * overtimeHours;
         const deductionMoney =
           dayRate * (attendanceDeductionDays + penaltyDays) +
@@ -220,6 +222,8 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
           salary,
           workdays: duePeriod.workdays,
           earnedDays: accrual.earnedDays,
+          earnedDaysRaw: accrual.earnedDaysRaw,
+          overtimeMoney,
           attendedDays: accrual.attendedDays,
           paidSundayDays: accrual.paidSundayDays,
           attendanceDeductionDays,
@@ -273,7 +277,8 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
     if (!row) return 0;
     const rawNet =
       row.salary > 0
-        ? (row.salary / 30) * row.earnedDays -
+        ? (row.salary / 30) * row.earnedDaysRaw +
+          row.overtimeMoney -
           (row.salary / 30) * (row.attendanceDeductionDays + row.penaltyDays) -
           (row.salary / 30 / shiftHours) * (row.attendanceDeductionHours + row.penaltyHours) -
           row.previousLoans

@@ -59,6 +59,9 @@ READINESS_PERM_KEYS = (
     'readiness_dest',
 )
 
+# صلاحية عرض الموديلات السابقة / المنتهية داخل أقسام الإنتاج.
+PREVIOUS_MODELS_PERM_KEY = 'previous_models_view'
+
 # صلاحيات قراءة/تعديل المرتب الشهري — مطابقة لواجهة canAccessHRSection('payroll')
 # في الفرونت إند (hr_payroll أو can_manage_hr أو manage_permissions) مع تجاوز sudo.
 SALARY_PERMISSION_KEYS = ('hr_payroll', 'can_manage_hr', 'manage_permissions')
@@ -418,6 +421,8 @@ class Role(models.Model):
             'readiness_ironing': False,
             'readiness_packaging': False,
             'readiness_dest': False,
+            # Dedicated permission for viewing previous / completed models inside sections
+            'previous_models_view': False,
         }
         if isinstance(self.permissions_json, dict) and self.permissions_json:
             base.update(self.permissions_json)

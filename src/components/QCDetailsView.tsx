@@ -9,7 +9,10 @@ import {
   Lock,
   Grid,
   Save,
-  Sparkles
+  Sparkles,
+  Factory,
+  Clock,
+  Star
 } from 'lucide-react';
 import {
   QCStageType,
@@ -28,6 +31,15 @@ import {
   findSavedQcCell
 } from '../utils/qcCutDefaults';
 import { qcPartStageCounts } from '../utils/qcStageCounts';
+import { resolveQCStageWorkshopSummary } from '../utils/qcWorkshopContext';
+import { useModalBackHandler } from '../utils/mobileBackNav';
+import {
+  InlineEvaluationDraft,
+  InlineWorkshopEvaluationBox,
+  WorkshopEvaluationModal,
+  WorkshopEvaluationTarget,
+  createInitialEvaluationDraft
+} from './WorkshopEvaluationModal';
 
 interface QCDetailsViewProps {
   modelId: string;
@@ -50,6 +62,9 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
     cuttingRecords,
     printDispatches,
     sewingDispatches,
+    workshops,
+    workshopEvaluations,
+    submitWorkshopEvaluation,
     normalizePartKey,
     saveQCMatrix,
     recordQCStageCount,
@@ -87,6 +102,55 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
   });
 
   const [qcPrintPreview, setQcPrintPreview] = useState<QCPrintPreviewConfig | null>(null);
+  const [evalTarget, setEvalTarget] = useState<WorkshopEvaluationTarget | null>(null);
+  const [evalDraft, setEvalDraft] = useState<InlineEvaluationDraft>(() =>
+    createInitialEvaluationDraft()
+  );
+
+  useModalBackHandler(Boolean(qcPrintPreview), () => setQcPrintPreview(null));
+
+  const workshopSummary = useMemo(() => {
+    if (!model) return null;
+    return resolveQCStageWorkshopSummary({
+      stage: selectedStage,
+      model,
+      part: selectedPart,
+      printDispatches,
+      sewingDispatches,
+      workshops,
+      workshopEvaluations,
+      normalizePartKey
+    });
+  }, [
+    model,
+    selectedStage,
+    selectedPart,
+    printDispatches,
+    sewingDispatches,
+    workshops,
+    workshopEvaluations,
+    normalizePartKey
+  ]);
+
+  useEffect(() => {
+    if (workshopSummary) {
+      setEvalDraft(
+        createInitialEvaluationDraft(
+          workshopSummary.expectedDate,
+          workshopSummary.receivedAt,
+          workshopSummary.existingEvaluation
+        )
+      );
+    } else {
+      setEvalDraft(createInitialEvaluationDraft());
+    }
+  }, [
+    modelId,
+    selectedStage,
+    selectedPart,
+    workshopSummary?.workshopName,
+    workshopSummary?.existingEvaluation?.id
+  ]);
 
   const selectedPartStages = getPartStages(modelId);
   const selectedStageKey = (
@@ -308,7 +372,23 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
     return entries;
   };
 
-  const handleSaveMatrix = (e: React.FormEvent) => {
+  const submitWorkshopEvalIfEnabled = async () => {
+    if (!workshopSummary || !evalDraft.enabled) return;
+    await submitWorkshopEvaluation({
+      workshopId: workshopSummary.workshopId,
+      workshopName: workshopSummary.workshopName,
+      stage: workshopSummary.stage,
+      modelId,
+      printDispatchId: workshopSummary.printDispatchId,
+      sewingDispatchId: workshopSummary.sewingDispatchId,
+      deliveryTimeliness: evalDraft.deliveryTimeliness,
+      workQuality: evalDraft.workQuality,
+      finishingQuality: evalDraft.finishingQuality,
+      notes: evalDraft.notes
+    });
+  };
+
+  const handleSaveMatrix = async (e: React.FormEvent) => {
     e.preventDefault();
     const entries = buildMatrixEntries();
     saveQCMatrix({
@@ -318,9 +398,10 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
       matrixEntries: entries,
       notes: canWriteNotes ? defectNotes.trim() : ''
     });
+    await submitWorkshopEvalIfEnabled();
   };
 
-  const handleFinishQC = () => {
+  const handleFinishQC = async () => {
     if (isSelectedPartEnded) {
       alert('تم الانتهاء وخرجت هذه القطعة من المرحلة بالفعل ولا يمكن إعادة ترحيلها.');
       return;
@@ -348,6 +429,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
         defectNotes: canWriteNotes ? defectNotes.trim() : '',
         advanceStage: true
       });
+      await submitWorkshopEvalIfEnabled();
 
       // Stay on the screen while another part is still waiting in this stage.
       const stageKey =
@@ -536,6 +618,60 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
           ))}
         </div>
       </div>
+
+      {/* Compact subtle workshop summary pill for post-stage QC */}
+      {workshopSummary && (
+        <div className="no-print px-4 py-2.5 rounded-2xl bg-slate-50 border border-slate-200/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-600">
+            <span className="inline-flex items-center gap-1.5 font-extrabold text-slate-900">
+              <Factory className="w-4 h-4 text-purple-600" />
+              <span>
+                {selectedStage === 'after_print' ? 'المطبعة / الورشة:' : 'ورشة المكن:'}{' '}
+                {workshopSummary.workshopName}
+              </span>
+            </span>
+            <span className="inline-flex items-center gap-1 font-mono text-slate-500">
+              <Clock className="w-3.5 h-3.5 text-slate-400" />
+              <span>الخروج: {workshopSummary.dispatchedAt || '—'}</span>
+            </span>
+            <span className="inline-flex items-center gap-1 font-mono font-bold text-emerald-700">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              <span>الاستلام: {workshopSummary.receivedAt || '—'}</span>
+            </span>
+          </div>
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() =>
+                setEvalTarget({
+                  workshopId: workshopSummary.workshopId,
+                  workshopName: workshopSummary.workshopName,
+                  stage: workshopSummary.stage,
+                  modelId,
+                  modelCode: model.model_code,
+                  printDispatchId: workshopSummary.printDispatchId,
+                  sewingDispatchId: workshopSummary.sewingDispatchId,
+                  expectedDate: workshopSummary.expectedDate,
+                  actualDate: workshopSummary.receivedAt,
+                  existing: workshopSummary.existingEvaluation
+                })
+              }
+              className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-bold border transition cursor-pointer ${
+                workshopSummary.existingEvaluation
+                  ? 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300'
+                  : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200'
+              }`}
+            >
+              <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+              <span>
+                {workshopSummary.existingEvaluation
+                  ? `تقييم الورشة: ${workshopSummary.existingEvaluation.overall_score}/5`
+                  : 'تقييم الورشة'}
+              </span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Garment part selector — each part is counted independently */}
       <div className="no-print flex items-center gap-2 flex-wrap bg-white rounded-2xl border border-slate-200/80 px-4 py-3 shadow-xs">
@@ -931,6 +1067,23 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
             />
           </div>
 
+          {/* Post-stage QC Workshop Evaluation */}
+          {workshopSummary && canEdit && (
+            <InlineWorkshopEvaluationBox
+              workshopName={workshopSummary.workshopName}
+              expectedDate={workshopSummary.expectedDate}
+              actualDate={workshopSummary.receivedAt}
+              title={
+                selectedStage === 'after_print'
+                  ? `تقييم أداء المطبعة / الورشة (${workshopSummary.workshopName})`
+                  : `تقييم أداء ورشة المكن (${workshopSummary.workshopName})`
+              }
+              isEditing={Boolean(workshopSummary.existingEvaluation)}
+              draft={evalDraft}
+              onChange={setEvalDraft}
+            />
+          )}
+
           {canEdit && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
               <button
@@ -974,6 +1127,8 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
           onClose={() => setQcPrintPreview(null)}
         />
       )}
+
+      <WorkshopEvaluationModal target={evalTarget} onClose={() => setEvalTarget(null)} />
     </div>
   );
 };

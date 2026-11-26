@@ -958,6 +958,14 @@ class PackagingMaterialTransaction(models.Model):
     price_per_unit = models.DecimalField(
         max_digits=12, decimal_places=2, default=0.0, verbose_name="سعر الوحدة"
     )
+    model = models.ForeignKey(
+        ModelItem,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='packaging_material_transactions',
+        verbose_name="الموديل",
+    )
     model_code_ref = models.CharField(
         max_length=150, blank=True, default='', db_index=True, verbose_name="كود الموديل"
     )

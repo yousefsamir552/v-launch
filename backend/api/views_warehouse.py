@@ -312,6 +312,19 @@ class FabricColorViewSet(BasePermViewSet):
                     new_qty = parse_finite_float(data['quantity'], 'الكمية', default=0.0, minimum=0.0)
                 except ValueError as exc:
                     return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                live_reserved = float(
+                    ModelRequirement.objects.filter(
+                        color=col,
+                        model__is_deleted=False,
+                        model__status__in=('مرحلة التصميم', 'تصميم'),
+                    ).aggregate(total=models.Sum('planned_quantity'))['total'] or 0
+                )
+                reserved = max(float(col.reserved_quantity or 0), live_reserved)
+                if new_qty + 1e-6 < reserved:
+                    return Response(
+                        {'detail': f'لا يمكن تعديل الرصيد الفعلي ({new_qty:g}) لأقل من الكمية المحجوزة ({reserved:g}) لموديلات في مرحلة التصميم'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
                 col.quantity = round(new_qty, 2)
             if 'color_code' in data and str(data['color_code']).strip():
                 col.color_code = str(data['color_code']).strip()
@@ -379,7 +392,11 @@ class FabricColorViewSet(BasePermViewSet):
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        txn_client_id = data.get('id') or data.get('client_id')
+        txn_client_id = data.get('id') or data.get('client_id') or data.get('request_id')
+        model_code_ref = str(data.get('modelCodeRef') or data.get('model_code_ref') or '').strip()
+        linked_model = resolve_by_id(ModelItem, data.get('model_id') or data.get('modelId'))
+        if linked_model is None and model_code_ref:
+            linked_model = ModelItem.objects.filter(model_code__iexact=model_code_ref, is_deleted=False).first()
 
         # Lock the row: two concurrent deductions must never spend the same stock twice
         # nor eat into stock reserved for models in Design.
@@ -419,10 +436,11 @@ class FabricColorViewSet(BasePermViewSet):
             new_qty = round(float(col.quantity or 0), 2)
 
             tr = FabricTransaction.objects.create(
-                client_id=data.get('id') or data.get('client_id'),
+                client_id=txn_client_id,
                 color=col,
                 fabric=col.fabric,
-                model_code_ref=data.get('modelCodeRef') or '',
+                model=linked_model,
+                model_code_ref=model_code_ref,
                 notes=data.get('notes') or '',
                 operation=op,
                 amount=amount,
@@ -618,18 +636,38 @@ class AccessoryViewSet(BasePermViewSet):
             if 'supplier_id' in data:
                 acc.supplier_id_ref = data['supplier_id']
             stock_updated = False
+            new_stk = None
             if 'quantity' in data:
                 new_stk = to_decimal(data['quantity'], Decimal('0'))
                 if new_stk < 0:
                     return Response({'detail': 'الكمية لا يمكن أن تكون سالبة'}, status=status.HTTP_400_BAD_REQUEST)
-                acc.current_stock = new_stk
                 stock_updated = True
             elif 'current_stock' in data:
                 new_stk = to_decimal(data['current_stock'], Decimal('0'))
                 if new_stk < 0:
                     return Response({'detail': 'الكمية لا يمكن أن تكون سالبة'}, status=status.HTTP_400_BAD_REQUEST)
-                acc.current_stock = new_stk
                 stock_updated = True
+            if stock_updated and new_stk is not None:
+                acc_refs = [str(acc.pk)]
+                if acc.client_id:
+                    acc_refs.append(str(acc.client_id))
+                live_reserved_float = float(
+                    ModelAccessory.objects.filter(
+                        model__is_deleted=False,
+                        is_issued=False,
+                        accessory_id_ref__in=acc_refs,
+                    ).aggregate(total=models.Sum('planned_quantity'))['total'] or 0
+                )
+                reserved_dec = max(
+                    to_decimal(acc.reserved_quantity, Decimal('0')),
+                    to_decimal(live_reserved_float, Decimal('0')),
+                )
+                if new_stk + Decimal('0.000001') < reserved_dec:
+                    return Response(
+                        {'detail': f'لا يمكن تعديل الرصيد الفعلي ({float(new_stk):g}) لأقل من الكمية المحجوزة ({float(reserved_dec):g}) لموديلات لم تُصرف بعد'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                acc.current_stock = new_stk
             if 'price_per_unit' in data and can_edit_price and data['price_per_unit'] not in (None, ''):
                 try:
                     acc.price_per_unit = parse_finite_float(data['price_per_unit'], 'سعر الوحدة', default=0.0, minimum=0.0)
@@ -720,7 +758,11 @@ class AccessoryViewSet(BasePermViewSet):
         if amount_dec <= 0:
             return Response({'detail': 'الكمية يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
 
-        txn_client_id = data.get('id') or data.get('client_id')
+        txn_client_id = data.get('id') or data.get('client_id') or data.get('request_id')
+        model_code_ref = str(data.get('modelCodeRef') or data.get('model_code_ref') or '').strip()
+        linked_model = resolve_by_id(ModelItem, data.get('model_id') or data.get('modelId'))
+        if linked_model is None and model_code_ref:
+            linked_model = ModelItem.objects.filter(model_code__iexact=model_code_ref, is_deleted=False).first()
 
         # Lock the row: concurrent deductions must not oversell stock nor eat reserved stock.
         with transaction.atomic():
@@ -768,13 +810,14 @@ class AccessoryViewSet(BasePermViewSet):
             new_stock_num = float(acc.current_stock)
 
             tr = AccessoryTransaction.objects.create(
-                client_id=data.get('id') or data.get('client_id'),
+                client_id=txn_client_id,
                 accessory=acc,
                 accessory_code=acc.code,
                 accessory_name=acc.name,
                 operation=op,
                 amount=amount,
-                model_code_ref=data.get('modelCodeRef') or '',
+                model=linked_model,
+                model_code_ref=model_code_ref,
                 notes=data.get('notes') or '',
                 timestamp=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
                 # سعر الوحدة التاريخي وقت الحركة + ربط المورد تلقائياً من الإكسسوار عند عدم تمريره.

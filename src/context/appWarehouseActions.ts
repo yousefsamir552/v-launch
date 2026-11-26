@@ -71,7 +71,7 @@ import { exportCsv, exportZipCsv, datedFileName, CsvValue, CsvSheet } from '../u
  * ربط مرحلة التنبيه بمفتاح الصلاحية المطلوبة لرؤيته.
  * التنبيهات لا تظهر إلا لمن يملك صلاحية القسم — حساب sudo يرى كل شيء.
  */
-import { NOTIFICATION_STAGE_PERMISSION, FlashMessage, modelPartsOf, seedModelPartStages, patchModelPartStage, patchModelPartsStage, DEFAULT_GLOBAL_SETTINGS, DESIGN_STAGES, PRE_PRODUCTION_STAGES, auditHeadersForModel, AppInternalContext } from './appContextTypes';
+import { NOTIFICATION_STAGE_PERMISSION, FlashMessage, modelPartsOf, seedModelPartStages, patchModelPartStage, patchModelPartsStage, DEFAULT_GLOBAL_SETTINGS, DESIGN_STAGES, PRE_PRODUCTION_STAGES, auditHeadersForModel, AppInternalContext, makeIdempotentRequestId } from './appContextTypes';
 
 export const buildWarehouseActions = (ctx: AppInternalContext) => {
   const {
@@ -135,7 +135,7 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
       setFabricColors((prev) => [...prev, newColor]);
     }
 
-    api
+    const promise = api
       .addFabricOrColor({
         ...data,
         newFabricClientId,
@@ -156,13 +156,15 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
         }
         logAction('المخزن', `استلام كمية ${data.quantity} للون ${cleanCode}`);
         addFlashMessage(`تم حفظ بيانات اللون ${cleanCode} في قاعدة البيانات بنجاح`);
+        return true;
       })
       .catch((err) => {
         refreshState();
         addFlashMessage(err.message || 'فشل حفظ الخامة في الباك إند', 'danger');
+        return false;
       });
 
-    return { success: true, message: 'تم الحفظ بنجاح', fabricId: targetFabricId };
+    return { success: true, message: 'تم الحفظ بنجاح', fabricId: targetFabricId, promise };
   };
 
   const recordTransaction = (data: {
@@ -171,6 +173,7 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
     amount: number;
     modelCodeRef?: string;
     notes?: string;
+    clientId?: string;
   }) => {
     const color = fabricColors.find((c) => c.id === data.colorId);
     if (!color) return { success: false, message: 'اللون غير موجود' };
@@ -180,7 +183,7 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
       return { success: false, message: 'الكمية الموجودة بالمخزن لا تكفي للصرف' };
     }
 
-    const trId = 'tr-' + Date.now();
+    const trId = data.clientId || makeIdempotentRequestId('tr');
     const timestamp = new Date().toLocaleString('ar-EG', { hour12: false });
 
     setFabricColors((prev) =>
@@ -206,9 +209,10 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
     };
     setFabricTransactions((prev) => [transaction, ...prev]);
 
-    api
+    const promise = api
       .recordFabricTransaction({
         id: trId,
+        client_id: trId,
         colorId: data.colorId,
         operation: data.operation,
         amount: data.amount,
@@ -228,13 +232,15 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
         const opText = data.operation === 'add' ? 'إضافة / مرتجع' : 'صرف للمقص';
         logAction('المخزن', `حركة ${opText} بمقدار ${data.amount} للون ${color.color_code}`);
         addFlashMessage(`تم تنفيذ حركة ${opText} بنجاح`);
+        return true;
       })
       .catch((err) => {
         refreshState();
         addFlashMessage(err.message || 'فشل تسجيل الحركة في الباك إند', 'danger');
+        return false;
       });
 
-    return { success: true, message: 'تم تنفيذ الحركة بنجاح' };
+    return { success: true, message: 'تم تنفيذ الحركة بنجاح', promise };
   };
 
   const exportWarehouseInventoryCsv = () => {
@@ -553,6 +559,7 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
     amount: number;
     modelCodeRef?: string;
     notes?: string;
+    clientId?: string;
   }) => {
     const item = accessoryItems.find((a) => a.id === data.accessoryId);
     if (!item) return { success: false, message: 'الصنف غير موجود' };
@@ -562,7 +569,7 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
       return { success: false, message: 'الرصيد المتاح لا يكفي للصرف' };
     }
 
-    const trId = 'acc-tr-' + Date.now();
+    const trId = data.clientId || makeIdempotentRequestId('acc-tr');
     const timestamp = new Date().toLocaleString('ar-EG', { hour12: false });
 
     setAccessoryItems((prev) =>
@@ -599,9 +606,10 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
     };
     setAccessoryTransactions((prev) => [transaction, ...prev]);
 
-    api
+    const promise = api
       .recordAccessoryTransaction({
         id: trId,
+        client_id: trId,
         accessoryId: data.accessoryId,
         operation: data.operation,
         amount: data.amount,
@@ -623,13 +631,15 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
         const opText = data.operation === 'add' ? 'إضافة / توريد' : 'صرف للتشغيل';
         logAction('مخزن الإكسسوارات', `حركة ${opText} بمقدار ${data.amount} للصنف ${item.code}`);
         addFlashMessage(`تم تسجيل حركة ${opText} بنجاح`);
+        return true;
       })
       .catch((err) => {
         refreshState();
         addFlashMessage(err.message || 'فشل تسجيل حركة الإكسسوار في الباك إند', 'danger');
+        return false;
       });
 
-    return { success: true, message: 'تم تنفيذ الحركة بنجاح' };
+    return { success: true, message: 'تم تنفيذ الحركة بنجاح', promise };
   };
 
   const exportAccessoryInventoryCsv = () => {

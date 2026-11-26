@@ -1,6 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from './context/AppContext';
 import { HRSectionKey, ReadinessStageKey } from './types';
+import {
+  initRootNavHistory,
+  pushNavHistory,
+  replaceNavHistory,
+  stepBackOrNavigate,
+  subscribeNavPop
+} from './utils/mobileBackNav';
 import { Navbar } from './components/Navbar';
 import { FlashAlerts } from './components/FlashAlerts';
 import { DashboardView } from './components/DashboardView';
@@ -158,12 +165,42 @@ export const App: React.FC = () => {
     return true;
   };
 
+  // Initialize browser history root state once logged in & listen to hardware/browser Back button
+  const currentTabRef = useRef(currentTab);
+  currentTabRef.current = currentTab;
+  const canAccessTabRef = useRef(canAccessTab);
+  canAccessTabRef.current = canAccessTab;
+
+  useEffect(() => {
+    if (!currentUser) return;
+    initRootNavHistory(currentTabRef.current, selectedModelId);
+    const unsubscribe = subscribeNavPop((state) => {
+      if (state && state.tab) {
+        const nextTab = canAccessTabRef.current(state.tab) ? state.tab : 'dashboard';
+        setSelectedModelId(state.modelId || '');
+        setCurrentTab(nextTab);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      // If browser popped to an unknown state while not on dashboard, step back to dashboard without reloading
+      if (currentTabRef.current !== 'dashboard') {
+        setSelectedModelId('');
+        setCurrentTab('dashboard');
+        replaceNavHistory('dashboard', '');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    });
+    return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [Boolean(currentUser)]);
+
   // If user role changes and they lose permission for the current tab, send them to dashboard.
   // HR tabs are excluded so the dedicated "no permission" guard can render instead.
   useEffect(() => {
     if (currentUser && isHrTab(currentTab)) return;
     if (currentUser && !canAccessTab(currentTab)) {
       setCurrentTab('dashboard');
+      replaceNavHistory('dashboard', '');
     }
   }, [currentTab, currentUser]);
 
@@ -172,6 +209,7 @@ export const App: React.FC = () => {
       <LoginModal
         onSuccess={() => {
           setCurrentTab('dashboard');
+          initRootNavHistory('dashboard', '');
           addFlashMessage('تم تسجيل الدخول بنجاح');
         }}
       />
@@ -188,11 +226,17 @@ export const App: React.FC = () => {
       );
       return;
     }
-    if (modelId) {
+    const nextModelId = modelId !== undefined ? modelId : '';
+    pushNavHistory(tab, nextModelId);
+    if (modelId !== undefined) {
       setSelectedModelId(modelId);
     }
     setCurrentTab(tab);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleStepBack = (fallbackTab: string) => {
+    stepBackOrNavigate(() => handleNavigate(fallbackTab));
   };
 
   const handleLogout = () => {
@@ -236,7 +280,7 @@ export const App: React.FC = () => {
         {currentTab === 'model_details' && (
           <ModelDetailsView
             modelId={selectedModelId}
-            onBack={() => handleNavigate('design')}
+            onBack={() => handleStepBack('design')}
             onGoToCutting={(id) => handleNavigate('cutting_details', id)}
           />
         )}
@@ -249,7 +293,7 @@ export const App: React.FC = () => {
         {currentTab === 'cutting_details' && (
           <CuttingDetailsView
             modelId={selectedModelId}
-            onBack={() => handleNavigate('cutting')}
+            onBack={() => handleStepBack('cutting')}
             onFinishedToQC={() => handleNavigate('qc')}
           />
         )}
@@ -263,8 +307,8 @@ export const App: React.FC = () => {
         {currentTab === 'qc_details' && (
           <QCDetailsView
             modelId={selectedModelId}
-            onBack={() => handleNavigate('qc')}
-            onFinishedApproval={() => handleNavigate('qc')}
+            onBack={() => handleStepBack('qc')}
+            onFinishedApproval={() => handleStepBack('qc')}
           />
         )}
 
@@ -346,7 +390,7 @@ export const App: React.FC = () => {
         )}
 
         {currentTab === 'logs' && (
-          <AuditLogsView onBack={() => handleNavigate('settings')} />
+          <AuditLogsView onBack={() => handleStepBack('settings')} />
         )}
       </main>
 

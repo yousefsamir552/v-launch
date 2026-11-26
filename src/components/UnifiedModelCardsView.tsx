@@ -30,6 +30,27 @@ import {
 } from '../types';
 import { modelPackagingPieces } from '../utils/packagingMaterials';
 import { printUnifiedModelCard } from '../utils/printUnifiedModelCard';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
+import { useModalBackHandler } from '../utils/mobileBackNav';
+
+type UnifiedSortKey =
+  | 'newest'
+  | 'oldest'
+  | 'code_asc'
+  | 'code_desc'
+  | 'qty_desc'
+  | 'qty_asc'
+  | 'shortage_desc';
+
+const UNIFIED_SORT_OPTIONS: { value: UnifiedSortKey; label: string }[] = [
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' },
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' },
+  { value: 'qty_desc', label: 'المقصوص (الأكثر أولاً)' },
+  { value: 'qty_asc', label: 'المقصوص (الأقل أولاً)' },
+  { value: 'shortage_desc', label: 'العجز/الهالك (الأكثر)' }
+];
 
 type CoarseStageKey =
   | 'design'
@@ -128,11 +149,14 @@ export const UnifiedModelCardsView: React.FC = () => {
   } = useApp();
 
   const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState<UnifiedSortKey>('newest');
   const [stageFilter, setStageFilter] = useState<string>('all');
   const [workshopFilter, setWorkshopFilter] = useState<string>('all');
   const [shortageFilter, setShortageFilter] = useState<'all' | 'has_shortage' | 'no_shortage'>('all');
   const [completionFilter, setCompletionFilter] = useState<'all' | 'active' | 'completed'>('all');
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+
+  useModalBackHandler(Boolean(selectedModelId), () => setSelectedModelId(null));
 
   const activeModels = useMemo(() => models.filter((m) => !m.is_deleted), [models]);
 
@@ -241,7 +265,7 @@ export const UnifiedModelCardsView: React.FC = () => {
 
   const filteredSummaries = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return modelSummaries.filter((item) => {
+    const list = modelSummaries.filter((item) => {
       if (q) {
         const matchCode = item.model.model_code.toLowerCase().includes(q);
         const matchType = (item.model.model_type || '').toLowerCase().includes(q);
@@ -255,7 +279,16 @@ export const UnifiedModelCardsView: React.FC = () => {
       if (completionFilter === 'completed' && !item.completed) return false;
       return true;
     });
-  }, [modelSummaries, search, stageFilter, workshopFilter, shortageFilter, completionFilter]);
+    return [...list].sort((a, b) => {
+      if (sortBy === 'code_asc') return compareNatural(a.model.model_code, b.model.model_code);
+      if (sortBy === 'code_desc') return compareNatural(b.model.model_code, a.model.model_code);
+      if (sortBy === 'qty_desc') return b.totalCut - a.totalCut;
+      if (sortBy === 'qty_asc') return a.totalCut - b.totalCut;
+      if (sortBy === 'shortage_desc') return b.totalShortage - a.totalShortage;
+      if (sortBy === 'oldest') return toTimestamp(a.model.created_at) - toTimestamp(b.model.created_at);
+      return toTimestamp(b.model.created_at) - toTimestamp(a.model.created_at);
+    });
+  }, [modelSummaries, search, stageFilter, workshopFilter, shortageFilter, completionFilter, sortBy]);
 
   const selectedSummary = useMemo(
     () => modelSummaries.find((item) => item.model.id === selectedModelId) || null,
@@ -374,6 +407,14 @@ export const UnifiedModelCardsView: React.FC = () => {
               <option value="completed">مكتمل / مخزن التام</option>
             </select>
           </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
+          <SortBySelect
+            value={sortBy}
+            onChange={(v) => setSortBy(v as UnifiedSortKey)}
+            options={UNIFIED_SORT_OPTIONS}
+          />
         </div>
 
         {(search ||

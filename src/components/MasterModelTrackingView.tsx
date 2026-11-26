@@ -46,6 +46,19 @@ import {
   openUnifiedPrintWindow,
   renderSignatureBar
 } from '../utils/printShared';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
+import { useModalBackHandler } from '../utils/mobileBackNav';
+
+type MasterSortKey = 'newest' | 'oldest' | 'code_asc' | 'code_desc' | 'qty_desc' | 'qty_asc';
+
+const MASTER_SORT_OPTIONS: { value: MasterSortKey; label: string }[] = [
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' },
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' },
+  { value: 'qty_desc', label: 'الكمية المقصوصة (الأكثر)' },
+  { value: 'qty_asc', label: 'الكمية المقصوصة (الأقل)' }
+];
 
 /* ------------------------------------------------------------------ */
 /* Canonical production stages (derived from real records, no dupes)  */
@@ -757,10 +770,15 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [sortBy, setSortBy] = useState<MasterSortKey>('newest');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('all');
   const [activeModelForTimeline, setActiveModelForTimeline] = useState<Model | null>(null);
   const [selectedStage, setSelectedStage] = useState<{ model: Model; key: StageKey } | null>(null);
   const [showMasterPrintModal, setShowMasterPrintModal] = useState(false);
+
+  useModalBackHandler(Boolean(selectedStage), () => setSelectedStage(null));
+  useModalBackHandler(Boolean(activeModelForTimeline), () => setActiveModelForTimeline(null));
+  useModalBackHandler(showMasterPrintModal, () => setShowMasterPrintModal(false));
 
   const activeModels = models.filter((m) => !m.is_deleted);
 
@@ -1081,6 +1099,15 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
       return ['finishing', 'ironing', 'packaging', 'dest'].includes(currentKey);
     if (selectedStatusFilter === 'completed') return model.status.includes('مكتمل') || model.status.includes('الإنتاج التام');
     return true;
+  }).sort((a, b) => {
+    const qtyA = Number(a.total_cut_pieces || a.actual_cut_count || a.target_cut_quantity || 0);
+    const qtyB = Number(b.total_cut_pieces || b.actual_cut_count || b.target_cut_quantity || 0);
+    if (sortBy === 'code_asc') return compareNatural(a.model_code, b.model_code);
+    if (sortBy === 'code_desc') return compareNatural(b.model_code, a.model_code);
+    if (sortBy === 'qty_desc') return qtyB - qtyA;
+    if (sortBy === 'qty_asc') return qtyA - qtyB;
+    if (sortBy === 'oldest') return toTimestamp(a.created_at) - toTimestamp(b.created_at);
+    return toTimestamp(b.created_at) - toTimestamp(a.created_at);
   });
 
   const countByStage = (key: StageKey) => activeModels.filter((m) => resolveCurrentStageKey(m) === key).length;
@@ -1274,14 +1301,21 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
           ))}
         </div>
 
-        <div className="relative w-full md:w-80">
-          <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            placeholder="بحث برقم الموديل، المقصدار، المطبعة، ورشة الخياطة..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition"
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+          <div className="relative flex-grow md:w-72">
+            <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="بحث برقم الموديل، المقصدار، المطبعة، ورشة الخياطة..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full ps-9 pe-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition"
+            />
+          </div>
+          <SortBySelect
+            value={sortBy}
+            onChange={(v) => setSortBy(v as MasterSortKey)}
+            options={MASTER_SORT_OPTIONS}
           />
         </div>
       </div>

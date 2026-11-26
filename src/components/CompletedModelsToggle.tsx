@@ -1,12 +1,13 @@
 import React from 'react';
 import { CheckCircle2, History } from 'lucide-react';
+import { useApp } from '../context/AppContext';
 
 export type CompletedToggleTone = 'slate' | 'rose' | 'teal' | 'purple' | 'emerald' | 'orange';
 
 interface CompletedModelsToggleProps {
-  /** حالة التبديل الحالية. */
+  /** حالة التبديل الحالية (false = الموديلات الحالية فقط | true = الموديلات السابقة فقط). */
   enabled: boolean;
-  /** عدد الموديلات/القطع المنتهية في القسم (يظهر كشارة). */
+  /** عدد الموديلات/القطع السابقة/المنتهية في القسم (يظهر كشارة). */
   count?: number;
   onChange: (enabled: boolean) => void;
   className?: string;
@@ -24,9 +25,10 @@ const TONE_ACTIVE: Record<CompletedToggleTone, string> = {
 };
 
 /**
- * مفتاح موحّد لإظهار/إخفاء "الموديلات المنتهية" في أعلى كل شاشة إنتاج.
- * عند التفعيل تُعرض الموديلات التي تجاوزت مرحلة القسم الحالية ككروت
- * مميزة (إطار متقطع + شارة "منتهي") مع تعطيل أزرار التحويل المسبق.
+ * مفتاح عرض حصري موحّد للتبديل بين "الموديلات الحالية" و"الموديلات السابقة / المنتهية"
+ * في أعلى كل شاشة إنتاج.
+ * - لا يظهر إلا لمن يملك صلاحية `previous_models_view` (أو admin/sudo).
+ * - عند التفعيل تُخفى الموديلات الحالية وتُعرض الموديلات السابقة فقط.
  */
 export const CompletedModelsToggle: React.FC<CompletedModelsToggleProps> = ({
   enabled,
@@ -35,13 +37,23 @@ export const CompletedModelsToggle: React.FC<CompletedModelsToggleProps> = ({
   className = '',
   tone = 'slate'
 }) => {
+  const { canViewPreviousModels } = useApp();
+
+  if (!canViewPreviousModels()) {
+    return null;
+  }
+
   return (
     <button
       type="button"
       role="switch"
       aria-checked={enabled}
       onClick={() => onChange(!enabled)}
-      title={enabled ? 'إخفاء الموديلات المنتهية من هذا القسم' : 'إظهار الموديلات المنتهية في هذا القسم'}
+      title={
+        enabled
+          ? 'العودة لعرض الموديلات الحالية النشطة فقط'
+          : 'عرض الموديلات السابقة / المنتهية فقط (إخفاء الحالية)'
+      }
       className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-full border text-[11px] font-black transition shadow-xs cursor-pointer ${
         enabled
           ? `${TONE_ACTIVE[tone]} text-white`
@@ -49,7 +61,7 @@ export const CompletedModelsToggle: React.FC<CompletedModelsToggleProps> = ({
       } ${className}`}
     >
       <History className="w-4 h-4" />
-      <span>موديلات منتهية</span>
+      <span>الموديلات السابقة</span>
       {typeof count === 'number' && (
         <span
           className={`min-w-[20px] h-5 px-1 rounded-full text-[10px] flex items-center justify-center font-black ${

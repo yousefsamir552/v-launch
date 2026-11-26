@@ -147,7 +147,8 @@ export const buildPermissionHelpers = (ctx: AppInternalContext) => {
         readiness_finishing: true,
         readiness_ironing: true,
         readiness_packaging: true,
-        readiness_dest: true
+        readiness_dest: true,
+        previous_models_view: true
       };
     }
 
@@ -378,6 +379,16 @@ export const buildPermissionHelpers = (ctx: AppInternalContext) => {
   const canAccessAnyReadiness = (): boolean =>
     READINESS_STAGE_KEYS.some((stage) => canAccessReadinessStage(stage));
 
+  // صلاحية عرض الموديلات السابقة / المنتهية (مستقلة عن صلاحيات الأقسام؛ متاحة أيضاً لـ admin/sudo).
+  const canViewPreviousModels = (): boolean => {
+    if (!currentUser) return false;
+    if (isCurrentUserSudo()) return true;
+    return (
+      hasSpecificPermission('previous_models_view') ||
+      hasSpecificPermission('manage_permissions')
+    );
+  };
+
   // -------------------------------------------------------------------------
   // Strict Hierarchical Ranks (الرتب الهرمية الصارمة والمخفية)
   // 0 = Sudo → {0,1,2,3} | 1 → {2,3} | 2 → {3} | 3 → {3} (أقران فقط)
@@ -572,6 +583,7 @@ export const buildPermissionHelpers = (ctx: AppInternalContext) => {
     canManageHR,
     canAccessReadinessStage,
     canAccessAnyReadiness,
+    canViewPreviousModels,
     currentUserRank,
     visibleRankLevels,
     visibleRankOptions,

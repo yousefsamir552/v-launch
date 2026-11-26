@@ -46,6 +46,8 @@ export interface UnifiedPrintDocumentOptions {
   popupBlockedMessage?: string;
   /** دالة اختيارية عند حظر النوافذ المنبثقة بدلاً من alert. */
   onPopupBlocked?: () => void;
+  /** عند false يُبنى مستند المعاينة مطابقاً للورقة النهائية بدون تشغيل نافذة الطباعة تلقائياً. */
+  autoPrint?: boolean;
 }
 
 /** يسجّل عملية طباعة ورقة/أوردر رسمي بشكل دائم في سجل المراقبة بالباك إند. */
@@ -798,7 +800,7 @@ export const buildPrintDocumentHtml = (options: UnifiedPrintDocumentOptions): st
 </head>
 <body>
   <div class="print-root">${contentHtml}</div>
-  ${buildPrintRuntimeScript(options.mode, orientation)}
+  ${options.autoPrint === false ? '' : buildPrintRuntimeScript(options.mode, orientation)}
 </body>
 </html>`;
 };

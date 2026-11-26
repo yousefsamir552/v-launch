@@ -1,5 +1,32 @@
 from rest_framework import permissions
-from .models import UserProfile, HR_PERM_KEYS, READINESS_PERM_KEYS
+from .models import UserProfile, HR_PERM_KEYS, READINESS_PERM_KEYS, PREVIOUS_MODELS_PERM_KEY
+
+
+def can_view_previous_models(profile) -> bool:
+    """
+    هل يملك المستخدم صلاحية عرض الموديلات السابقة / المنتهية؟
+    صلاحية القسم وحدها لا تمنح ذلك تلقائياً — يلزم previous_models_view أو manage_permissions أو sudo.
+    """
+    if profile is None:
+        return False
+    if profile.is_sudo or (profile.username or '').lower() == 'sudo':
+        return True
+    return bool(
+        profile.has_perm(PREVIOUS_MODELS_PERM_KEY)
+        or profile.has_perm('manage_permissions')
+    )
+
+
+class CanViewPreviousModels(permissions.BasePermission):
+    """يتحقق من صلاحية عرض الموديلات السابقة / المنتهية (previous_models_view)."""
+    message = 'ليس لديك صلاحية عرض الموديلات السابقة أو المنتهية.'
+
+    def has_permission(self, request, view):
+        profile = resolve_profile_from_request(request)
+        if profile is None:
+            return False
+        request.user_profile = profile
+        return can_view_previous_models(profile)
 
 
 def resolve_profile_from_request(request):

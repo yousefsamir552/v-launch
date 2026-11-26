@@ -390,10 +390,12 @@ def resolve_cost_values(cost_per_piece, total_cost=None, pieces_count=None):
 
 
 def apply_packaging_material_transaction(size_rule, operation, amount, notes='', timestamp='',
-                                         price_per_unit=0.0):
+                                         price_per_unit=0.0, client_id=None, model=None,
+                                         model_code_ref=''):
     """
     Applies an add / deduct / adjust movement to a packaging-material size row
-    and records it in the ledger. Returns the created transaction.
+    and records it in the ledger. Supports idempotency via ``client_id``.
+    Returns the created (or existing idempotent) transaction.
     """
     try:
         amount = float(amount if amount not in (None, '') else 0)
@@ -412,10 +414,19 @@ def apply_packaging_material_transaction(size_rule, operation, amount, notes='',
     except (TypeError, ValueError):
         unit_price = 0.0
 
+    clean_client_id = str(client_id).strip() if client_id else None
+
     with transaction.atomic():
         # اقفل صف الرصيد لمنع تضارب الأرصدة عند الصرف المتزامن، واقرأ أحدث قيمة
         # من قاعدة البيانات بدلاً من الاعتماد على نسخة قديمة في الذاكرة.
         locked_rule = PackagingMaterialSizeRule.objects.select_for_update().get(pk=size_rule.pk)
+        if clean_client_id:
+            existing_txn = PackagingMaterialTransaction.objects.filter(client_id=clean_client_id).first()
+            if existing_txn:
+                size_rule.current_stock = locked_rule.current_stock
+                size_rule.updated_at = locked_rule.updated_at
+                existing_txn._idempotent_hit = True
+                return existing_txn
         current = round(float(locked_rule.current_stock or 0), 3)
         if operation == 'add':
             new_stock = round(current + amount, 3)
@@ -432,10 +443,13 @@ def apply_packaging_material_transaction(size_rule, operation, amount, notes='',
         locked_rule.current_stock = new_stock
         locked_rule.save(update_fields=['current_stock', 'updated_at'])
         txn = PackagingMaterialTransaction.objects.create(
+            client_id=clean_client_id,
             size_rule=locked_rule,
             operation=operation,
             amount=round(amount, 3),
             price_per_unit=round(unit_price, 2),
+            model=model,
+            model_code_ref=(model.model_code if model else (model_code_ref or '')),
             notes=notes or '',
             timestamp=timestamp or '',
         )
@@ -906,7 +920,10 @@ def generate_assembly_delivery_notifications():
     tomorrow = today + timedelta(days=1)
     notifications = []
 
-    active_finishing = FinishingRecord.objects.filter(actual_exit_date__isnull=True).select_related('model')
+    active_finishing = FinishingRecord.objects.filter(
+        actual_exit_date__isnull=True,
+        model__is_deleted=False,
+    ).select_related('model')
     for rec in active_finishing:
         urgency, days_diff = _notification_urgency(rec.expected_exit_date, today, tomorrow)
         if not urgency:
@@ -945,7 +962,9 @@ def generate_assembly_delivery_notifications():
 
     for stage_key in ('ironing', 'packaging', 'dest'):
         records = AssemblyStageRecord.objects.filter(
-            stage=stage_key, actual_exit_date__isnull=True
+            stage=stage_key,
+            actual_exit_date__isnull=True,
+            model__is_deleted=False,
         ).select_related('model')
         notifications.extend(
             _notifications_for_assembly_stage(

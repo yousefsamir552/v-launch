@@ -1285,14 +1285,11 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
             section='الموارد البشرية',
             action_type='status_change',
             target_name=f'كشف رواتب شهر {month_raw}',
-            details=(
-                f"اعتمد وأغلق كشف مرتبات شهر {month_raw} ({totals_json['employees_count']} موظف، "
-                f"إجمالي الصافي: {totals_json['net_pay']:g})"
-            ),
+            # لا نسجّل إجماليات المبالغ أو عدد الموظفين الكلي هنا حتى لا تنكشف رواتب
+            # الرتب الأعلى في سجل المراقبة لمستخدمين من رتب أدنى.
+            details=f"اعتمد وأغلق كشف مرتبات شهر {month_raw}",
             changes=[
                 {'field': 'is_locked', 'label': 'حالة كشف الرواتب', 'old': 'مفتوح', 'new': 'معتمد ومغلق'},
-                {'field': 'employees_count', 'label': 'عدد الموظفين', 'old': '—', 'new': str(totals_json['employees_count'])},
-                {'field': 'net_pay', 'label': 'إجمالي صافي المرتبات', 'old': '—', 'new': f"{totals_json['net_pay']:g}"},
             ],
         )
         return Response({
@@ -1303,6 +1300,9 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
 
     @action(detail=False, methods=['post'])
     def unlock(self, request):
+        profile = resolve_request_user_profile(request)
+        if not (is_sudo_profile(profile) or (profile is not None and profile.has_perm('manage_permissions'))):
+            raise PermissionDenied('فك إغلاق كشف المرتبات مخصص لحساب sudo أو من يملك صلاحية إدارة الصلاحيات فقط')
         month_raw = str(request.data.get('month') or '').strip()
         if not re.match(r'^\d{4}-\d{2}$', month_raw):
             return Response({'detail': 'صيغة الشهر غير صحيحة (YYYY-MM)'}, status=status.HTTP_400_BAD_REQUEST)

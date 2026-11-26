@@ -40,6 +40,7 @@ import {
 import { InternalMessagingModal } from './InternalMessagingModal';
 import { SNOOZE_OPTIONS } from '../types';
 import { computeAccessoryShortages } from '../utils/accessoryShortages';
+import { useModalBackHandler } from '../utils/mobileBackNav';
 
 interface NavbarProps {
   currentTab: string;
@@ -78,6 +79,11 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
   const [messagesModalOpen, setMessagesModalOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [comingSoonModal, setComingSoonModal] = useState<string | null>(null);
+
+  useModalBackHandler(mobileMenuOpen, () => setMobileMenuOpen(false));
+  useModalBackHandler(notificationsOpen, () => setNotificationsOpen(false));
+  useModalBackHandler(messagesModalOpen, () => setMessagesModalOpen(false));
+  useModalBackHandler(Boolean(comingSoonModal), () => setComingSoonModal(null));
 
   const isSudo = currentUser?.username?.toLowerCase() === 'sudo' || currentUser?.is_sudo;
   const siteName = globalSettings?.site_name || 'نظام إدارة المصنع';

@@ -69,7 +69,7 @@ import { exportCsv, exportZipCsv, datedFileName, CsvValue, CsvSheet } from '../u
  * ربط مرحلة التنبيه بمفتاح الصلاحية المطلوبة لرؤيته.
  * التنبيهات لا تظهر إلا لمن يملك صلاحية القسم — حساب sudo يرى كل شيء.
  */
-import { NOTIFICATION_STAGE_PERMISSION, FlashMessage, modelPartsOf, seedModelPartStages, patchModelPartStage, patchModelPartsStage, DEFAULT_GLOBAL_SETTINGS, DESIGN_STAGES, PRE_PRODUCTION_STAGES, auditHeadersForModel, AppInternalContext } from './appContextTypes';
+import { NOTIFICATION_STAGE_PERMISSION, FlashMessage, modelPartsOf, seedModelPartStages, patchModelPartStage, patchModelPartsStage, DEFAULT_GLOBAL_SETTINGS, DESIGN_STAGES, PRE_PRODUCTION_STAGES, auditHeadersForModel, AppInternalContext, makeIdempotentRequestId } from './appContextTypes';
 
 export const buildPrintSewingActions = (ctx: AppInternalContext) => {
   const {
@@ -89,9 +89,10 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     costPerPiece?: number;
     totalCost?: number;
     notes?: string;
-  }) => {
+    clientId?: string;
+  }): Promise<boolean> => {
     const targetModel = models.find((m) => m.id === data.modelId);
-    const dispId = 'disp-' + Date.now();
+    const dispId = data.clientId || makeIdempotentRequestId('disp');
     const dispatchedAt = new Date().toLocaleString('ar-EG', { hour12: false });
     const cleanNotes = canAddPrintingNotes() || canAddQCBeforePrintNotes() ? (data.notes?.trim() || '') : '';
     const pieceType = data.pieceType || 'shirt';
@@ -138,9 +139,10 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
       })
     );
 
-    api
+    return api
       .createPrintDispatch({
         id: dispId,
+        client_id: dispId,
         model_id: data.modelId,
         shop_name: data.shopName.trim(),
         piece_type: pieceType,
@@ -163,10 +165,12 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
           `إرسال ${data.piecesCount} قطعة من موديل ${targetModel?.model_code} إلى ${data.shopName}`
         );
         addFlashMessage(`تم إرسال الموديل للمطبعة (${data.shopName}) بنجاح`);
+        return true;
       })
       .catch((err) => {
         refreshState();
         addFlashMessage(err.message || 'فشل تسجيل إرسالية المطبعة في الباك إند', 'danger');
+        return false;
       });
   };
 
@@ -174,7 +178,8 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     dispatchId: string,
     status: DispatchStatus,
     receivedQty?: number,
-    notes?: string
+    notes?: string,
+    quickReceive?: boolean
   ) => {
     const disp = printDispatches.find((d) => d.id === dispatchId);
     if (!disp) return;
@@ -182,15 +187,20 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     const totalPieces = Math.max(0, Number(disp.pieces_count || 0));
     const alreadyReceived = Math.max(0, Number(disp.received_pieces || 0));
     const remainingBefore = Math.max(0, totalPieces - alreadyReceived);
-    const requestedQty = receivedQty && receivedQty > 0 ? Math.floor(Number(receivedQty)) : 0;
-    const isReceiving = status === 'تم الاستلام بالمصنع' || requestedQty > 0;
+    const isQuick = Boolean(quickReceive);
+    const requestedQty = isQuick
+      ? remainingBefore
+      : receivedQty && receivedQty > 0
+      ? Math.floor(Number(receivedQty))
+      : 0;
+    const isReceiving = isQuick || status === 'تم الاستلام بالمصنع' || requestedQty > 0;
     const cleanNotes = notes?.trim() || '';
 
-    if (isReceiving && remainingBefore === 0) {
+    if (isReceiving && !isQuick && remainingBefore === 0) {
       addFlashMessage('تم استلام كامل كمية هذه التشغيلة مسبقاً', 'danger');
       return;
     }
-    if (isReceiving && (requestedQty <= 0 || requestedQty > remainingBefore)) {
+    if (isReceiving && !isQuick && (requestedQty <= 0 || requestedQty > remainingBefore)) {
       addFlashMessage(
         requestedQty <= 0
           ? 'يجب إدخال كمية استلام موجبة أكبر من صفر'
@@ -200,10 +210,10 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
       return;
     }
 
-    // الاستلام الجزئي على دفعات: كل استلام يضيف الكمية المستلمة ويحفظ سجل الدفعة.
+    // الاستلام الجزئي على دفعات أو الاستلام السريع بتوقيت الاستلام فقط (العد والتقييم في QC).
     const batchQty = isReceiving ? requestedQty : 0;
     const newReceived = isReceiving ? alreadyReceived + batchQty : alreadyReceived;
-    const isComplete = isReceiving && newReceived >= totalPieces;
+    const isComplete = isReceiving && (isQuick || newReceived >= totalPieces);
     const resolvedStatus: DispatchStatus = isReceiving
       ? isComplete
         ? 'تم الاستلام بالمصنع'
@@ -239,7 +249,7 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
       })
     );
 
-    // لا نُرقّي القطعة إلى «العد بعد الطباعة» إلا بعد اكتمال استلام كامل الكمية.
+    // ترقية القطعة إلى «العد بعد الطباعة» عند اكتمال الاستلام.
     if (isComplete) {
       const receivedPart = (disp.piece_type || 'shirt') as GarmentPart;
       setModels((prev) =>
@@ -258,20 +268,25 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
           models.find((m) => m.id === disp.model_id),
           'المطابع والتطريز'
         ),
-        isReceiving ? batchQty : undefined,
-        cleanNotes || undefined
+        isReceiving && !isQuick ? batchQty : undefined,
+        cleanNotes || undefined,
+        isQuick
       )
       .then((saved) => {
         setPrintDispatches((prev) => prev.map((d) => (d.id === dispatchId ? saved : d)));
         refreshState();
         logAction(
           'المطابع والتطريز',
-          isReceiving
+          isQuick
+            ? `تسجيل استلام إرسالية ${disp.shop_name} بتاريخ ${nowStr} وتوجيهها للعد بعد الطباعة`
+            : isReceiving
             ? `استلام دفعة (${batchQty} قطعة) من إرسالية ${disp.shop_name} — إجمالي المستلم ${newReceived} من ${totalPieces}`
             : `تحديث حالة الإرسالية إلى: ${status}`
         );
         addFlashMessage(
-          isReceiving
+          isQuick
+            ? `تم تسجيل وقت الاستلام من ${disp.shop_name} وتحويل القطعة إلى «العد بعد الطباعة» لإدخال الأعداد وتقييم المطبعة`
+            : isReceiving
             ? `تم استلام دفعة (${batchQty} قطعة) — إجمالي المستلم ${newReceived} من ${totalPieces}${
                 isComplete ? ' واكتمال الاستلام' : ''
               }`
@@ -327,11 +342,12 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     costPerPiece?: number;
     totalCost?: number;
     notes?: string;
-  }) => {
+    clientId?: string;
+  }): Promise<boolean> => {
     const targetModel = models.find((m) => m.id === data.modelId);
     const resolvedType = data.pieceType || 'shirt';
     const resolvedLabel = data.pieceLabel || getPartLabel(resolvedType);
-    const dispId = 'sew-disp-' + Date.now();
+    const dispId = data.clientId || makeIdempotentRequestId('sew-disp');
     const cleanNotes = canAddSewingNotes() ? (data.notes?.trim() || '') : '';
     // السعر يُرسل فقط لمن يملك صلاحية تعديل أسعار المكن.
     const canSetPrice = canEditSewingPrices();
@@ -382,9 +398,10 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
       })
     );
 
-    api
+    return api
       .dispatchModelToSewing(data.modelId, {
         id: dispId,
+        client_id: dispId,
         workshop_name: data.workshopName.trim(),
         pieces_count: Math.max(0, data.piecesCount),
         expected_delivery_date: data.expectedDeliveryDate,
@@ -403,10 +420,12 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
           `إرسال ${data.piecesCount} قطعة [${resolvedLabel}] من موديل ${targetModel?.model_code} إلى ورشة ${data.workshopName}`
         );
         addFlashMessage(`تم تسجيل خروج [${resolvedLabel}] لورشة الخياطة (${data.workshopName}) بنجاح`);
+        return true;
       })
       .catch((err) => {
         refreshState();
         addFlashMessage(err.message || 'فشل تسجيل خروج الخياطة في الباك إند', 'danger');
+        return false;
       });
   };
 
@@ -414,7 +433,8 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     dispatchId: string,
     modelId?: string,
     notes?: string,
-    receivedQty?: number
+    receivedQty?: number,
+    quickReceive?: boolean
   ) => {
     const disp = sewingDispatches.find((d) => d.id === dispatchId);
     const targetModelId = modelId || disp?.model_id;
@@ -424,17 +444,22 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     const pieceLabel = disp?.piece_label || getPartLabel(pieceType);
     const cleanNotes = canAddSewingNotes() ? (notes?.trim() || '') : '';
 
-    // الاستلام الجزئي على دفعات: نحسب المتبقي قبل هذه الدفعة ثم نثبّت حدود الكمية.
+    // الاستلام الجزئي على دفعات أو الاستلام السريع بتوقيت الاستلام فقط (العد والتقييم في QC).
     const totalPieces = Math.max(0, Number(disp?.pieces_count || 0));
     const alreadyReceived = Math.max(0, Number(disp?.received_pieces || 0));
     const remainingBefore = Math.max(0, totalPieces - alreadyReceived);
-    const requestedQty = receivedQty && receivedQty > 0 ? Math.floor(Number(receivedQty)) : 0;
+    const isQuick = Boolean(quickReceive);
+    const requestedQty = isQuick
+      ? remainingBefore
+      : receivedQty && receivedQty > 0
+      ? Math.floor(Number(receivedQty))
+      : 0;
 
-    if (remainingBefore === 0) {
+    if (!isQuick && remainingBefore === 0) {
       addFlashMessage('تم استلام كامل كمية هذه التشغيلة مسبقاً', 'danger');
       return;
     }
-    if (requestedQty <= 0 || requestedQty > remainingBefore) {
+    if (!isQuick && (requestedQty <= 0 || requestedQty > remainingBefore)) {
       addFlashMessage(
         requestedQty <= 0
           ? 'يجب إدخال كمية استلام موجبة أكبر من صفر'
@@ -446,7 +471,7 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
 
     const batchQty = requestedQty;
     const newReceived = Math.min(totalPieces, alreadyReceived + batchQty);
-    const isComplete = newReceived >= totalPieces;
+    const isComplete = isQuick || newReceived >= totalPieces;
     const resolvedStatus: SewingDispatchStatus = isComplete ? 'تم الاستلام' : 'استلام جزئي';
     const nowStr = new Date().toLocaleString('ar-EG', { hour12: false });
 
@@ -513,16 +538,26 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     }
 
     api
-      .receiveFromSewing(dispatchId, currentUser?.real_name || 'مسؤول الإنتاج', cleanNotes, batchQty)
+      .receiveFromSewing(
+        dispatchId,
+        currentUser?.real_name || 'مسؤول الإنتاج',
+        cleanNotes,
+        isQuick ? undefined : batchQty,
+        isQuick
+      )
       .then((saved) => {
         setSewingDispatches((prev) => prev.map((d) => (d.id === dispatchId ? saved : d)));
         refreshState();
         logAction(
           'قسم المكن',
-          `استلام دفعة (${batchQty} قطعة) [${pieceLabel}] موديل ${targetModel?.model_code} من ورشة ${disp?.workshop_name} — إجمالي المستلم ${newReceived} من ${totalPieces}`
+          isQuick
+            ? `تسجيل استلام [${pieceLabel}] موديل ${targetModel?.model_code} من ورشة ${disp?.workshop_name} بتاريخ ${nowStr} وتوجيهه للعد بعد المكن`
+            : `استلام دفعة (${batchQty} قطعة) [${pieceLabel}] موديل ${targetModel?.model_code} من ورشة ${disp?.workshop_name} — إجمالي المستلم ${newReceived} من ${totalPieces}`
         );
         addFlashMessage(
-          isComplete
+          isQuick
+            ? `تم تسجيل وقت الاستلام لـ [${pieceLabel}] من ورشة ${disp?.workshop_name || ''} وتحويله إلى «العد بعد المكن» لإدخال الأعداد وتقييم الورشة`
+            : isComplete
             ? `تم استلام كامل كمية [${pieceLabel}] بنجاح${
                 allPiecesReceived ? ' واكتمال القطع ونقل الموديل إلى العد بعد المكن بالفرز' : ''
               }`

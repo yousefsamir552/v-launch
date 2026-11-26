@@ -629,6 +629,7 @@ DEFAULT_ROLES_SEED = [
             'can_add_design_notes': True, 'can_add_cutting_notes': True,
             'can_add_qc_before_print_notes': True, 'can_add_qc_after_print_notes': True,
             'can_add_sewing_notes': True, 'can_add_printing_notes': True,
+            'previous_models_view': True,
         }
     },
     {
@@ -913,15 +914,22 @@ def refund_model_consumed_inventory(model, user_name=''):
         if getattr(model, 'pk', None):
             ModelItem.objects.select_for_update().filter(pk=model.pk).first()
 
-        # 1. تجميع الصافي المنصرف لكل لون قماش / إكسسوار من الحركات المرتبطة بالموديل.
+        # 1. تجميع الصافي المنصرف لكل لون قماش / إكسسوار من الحركات المرتبطة بالموديل
+        # (بالعلاقة المباشرة model أولاً، مع دعم السجلات القديمة التي لا تحمل model_id).
         # القاعدة المحاسبية المؤكدة: لا يُعاد قماش العيوب (defect) أبداً للرصيد السليم:
         #   refund = total_deducted - total_returned_good (add) - total_defect (defect)
+        from django.db.models import Q as _Q
+        txn_filter = _Q(model=model) if getattr(model, 'pk', None) else _Q()
+        if model_code:
+            legacy_q = _Q(model__isnull=True, model_code_ref__iexact=model_code)
+            txn_filter = (txn_filter | legacy_q) if getattr(model, 'pk', None) else legacy_q
+
         fabric_net = defaultdict(float)
         accessory_net = defaultdict(float)
-        if model_code:
+        if getattr(model, 'pk', None) or model_code:
             for txn in (
                 FabricTransaction.objects
-                .filter(model_code_ref__iexact=model_code)
+                .filter(txn_filter)
                 .values('color_id', 'operation', 'amount')
             ):
                 color_id = txn['color_id']
@@ -935,7 +943,7 @@ def refund_model_consumed_inventory(model, user_name=''):
 
             for txn in (
                 AccessoryTransaction.objects
-                .filter(model_code_ref__iexact=model_code)
+                .filter(txn_filter)
                 .values('accessory_id', 'operation', 'amount')
             ):
                 accessory_id = txn['accessory_id']
@@ -967,6 +975,7 @@ def refund_model_consumed_inventory(model, user_name=''):
             FabricTransaction.objects.create(
                 color=col,
                 fabric=fabric,
+                model=model if getattr(model, 'pk', None) else None,
                 model_code_ref=model.model_code,
                 notes=refund_note,
                 operation='add',
@@ -1004,6 +1013,7 @@ def refund_model_consumed_inventory(model, user_name=''):
                 accessory_name=item.name or '',
                 operation='add',
                 amount=net,
+                model=model if getattr(model, 'pk', None) else None,
                 model_code_ref=model.model_code,
                 notes=refund_note,
                 timestamp=now_str,
@@ -1020,11 +1030,11 @@ def refund_model_consumed_inventory(model, user_name=''):
 
         # 3.5. استرداد خامات التشغيل والتغليف المنصرفة تلقائياً للموديل (Idempotent via deduct - add).
         packaging_details = []
-        if model_code:
+        if getattr(model, 'pk', None) or model_code:
             pack_net = defaultdict(float)
             for txn in (
                 PackagingMaterialTransaction.objects
-                .filter(model_code_ref__iexact=model_code)
+                .filter(txn_filter)
                 .values('size_rule_id', 'operation', 'amount')
             ):
                 sr_id = txn['size_rule_id']
@@ -1050,6 +1060,7 @@ def refund_model_consumed_inventory(model, user_name=''):
                     operation='add',
                     amount=net,
                     price_per_unit=float(sr.price_per_unit or 0),
+                    model=model if getattr(model, 'pk', None) else None,
                     model_code_ref=model.model_code,
                     notes=refund_note,
                     timestamp=now_str,

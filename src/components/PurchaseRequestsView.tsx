@@ -42,6 +42,19 @@ import {
   renderSignatureBar,
   safeImageSrc
 } from '../utils/printShared';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
+import { useModalBackHandler } from '../utils/mobileBackNav';
+
+type PurchaseSortKey = 'newest' | 'oldest' | 'code_asc' | 'code_desc' | 'qty_desc' | 'qty_asc';
+
+const PURCHASE_SORT_OPTIONS: { value: PurchaseSortKey; label: string }[] = [
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' },
+  { value: 'code_asc', label: 'الصنف / الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الصنف / الكود (تنازلي)' },
+  { value: 'qty_desc', label: 'الكمية (الأكثر أولاً)' },
+  { value: 'qty_asc', label: 'الكمية (الأقل أولاً)' }
+];
 
 const COMMON_UNITS = ['قطعة', 'كيلو', 'متر', 'دستة', 'بكرة', 'لفة', 'كرتونة', 'كيس', 'توب'];
 
@@ -96,6 +109,7 @@ export const PurchaseRequestsView: React.FC = () => {
   // Strict top toggle: OFF = active pending requests + low-stock shortages | ON = purchased history ONLY
   const [showHistory, setShowHistory] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [sortBy, setSortBy] = useState<PurchaseSortKey>('newest');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [shortageSubTab, setShortageSubTab] = useState<'all' | 'stock' | 'custom_model'>('all');
 
@@ -136,6 +150,13 @@ export const PurchaseRequestsView: React.FC = () => {
   const [fulfillQty, setFulfillQty] = useState<string>('100');
   const [fulfillNotes, setFulfillNotes] = useState<string>('');
   const [copiedWhatsapp, setCopiedWhatsapp] = useState<boolean>(false);
+
+  useModalBackHandler(showRequestModal, () => {
+    setShowRequestModal(false);
+    setEditingRequest(null);
+  });
+  useModalBackHandler(Boolean(purchasingTarget), () => setPurchasingTarget(null));
+  useModalBackHandler(Boolean(fulfillTarget), () => setFulfillTarget(null));
 
   const activeModels = useMemo(() => models.filter((m) => !m.is_deleted), [models]);
 
@@ -189,14 +210,26 @@ export const PurchaseRequestsView: React.FC = () => {
     );
   };
 
+  const sortRequests = (list: PurchaseRequest[]): PurchaseRequest[] =>
+    [...list].sort((a, b) => {
+      if (sortBy === 'code_asc') return compareNatural(a.item_name, b.item_name);
+      if (sortBy === 'code_desc') return compareNatural(b.item_name, a.item_name);
+      if (sortBy === 'qty_desc') return Number(b.quantity || 0) - Number(a.quantity || 0);
+      if (sortBy === 'qty_asc') return Number(a.quantity || 0) - Number(b.quantity || 0);
+      const tsA = toTimestamp(a.purchased_at_iso || a.purchased_at || a.created_at_iso || a.created_at);
+      const tsB = toTimestamp(b.purchased_at_iso || b.purchased_at || b.created_at_iso || b.created_at);
+      if (sortBy === 'oldest') return tsA - tsB;
+      return tsB - tsA;
+    });
+
   const filteredPendingRequests = useMemo(
-    () => pendingRequests.filter(matchesRequestSearch),
-    [pendingRequests, q, categoryFilter]
+    () => sortRequests(pendingRequests.filter(matchesRequestSearch)),
+    [pendingRequests, q, categoryFilter, sortBy]
   );
 
   const filteredPurchasedRequests = useMemo(
-    () => purchasedRequests.filter(matchesRequestSearch),
-    [purchasedRequests, q, categoryFilter]
+    () => sortRequests(purchasedRequests.filter(matchesRequestSearch)),
+    [purchasedRequests, q, categoryFilter, sortBy]
   );
 
   const filteredAccessoryShortages = useMemo(() => {
@@ -207,17 +240,24 @@ export const PurchaseRequestsView: React.FC = () => {
         ? modelShortages
         : accessoryShortages;
     if (categoryFilter !== 'all' && categoryFilter !== 'إكسسوارات') return [];
-    if (!q) return base;
-    return base.filter(({ item, supplier }) => {
-      return (
-        (item.name || '').toLowerCase().includes(q) ||
-        (item.code || '').toLowerCase().includes(q) ||
-        (item.type_name || '').toLowerCase().includes(q) ||
-        (item.custom_model_code || '').toLowerCase().includes(q) ||
-        (supplier?.name || '').toLowerCase().includes(q)
-      );
+    const list = !q
+      ? base
+      : base.filter(({ item, supplier }) => {
+          return (
+            (item.name || '').toLowerCase().includes(q) ||
+            (item.code || '').toLowerCase().includes(q) ||
+            (item.type_name || '').toLowerCase().includes(q) ||
+            (item.custom_model_code || '').toLowerCase().includes(q) ||
+            (supplier?.name || '').toLowerCase().includes(q)
+          );
+        });
+    return [...list].sort((a, b) => {
+      if (sortBy === 'code_desc') return compareNatural(b.item.code || b.item.name, a.item.code || a.item.name);
+      if (sortBy === 'qty_desc') return Number(b.deficit || 0) - Number(a.deficit || 0);
+      if (sortBy === 'qty_asc') return Number(a.deficit || 0) - Number(b.deficit || 0);
+      return compareNatural(a.item.code || a.item.name, b.item.code || b.item.name);
     });
-  }, [accessoryShortages, stockShortages, modelShortages, shortageSubTab, q, categoryFilter]);
+  }, [accessoryShortages, stockShortages, modelShortages, shortageSubTab, q, categoryFilter, sortBy]);
 
   const totalSpentHistory = useMemo(
     () =>
@@ -726,29 +766,36 @@ export const PurchaseRequestsView: React.FC = () => {
             ))}
           </div>
 
-          <div className="relative w-full sm:w-72">
-            <Search className="w-4 h-4 text-slate-400 absolute start-3 top-2.5" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={
-                showHistory
-                  ? 'بحث بالصنف، الموديل، المورد، أو المنفذ...'
-                  : 'بحث باسم الصنف، الكود، الموديل، أو المورد...'
-              }
-              className="w-full ps-9 pe-8 py-2 bg-slate-50 border border-slate-200 rounded-full text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            <SortBySelect
+              value={sortBy}
+              onChange={(v) => setSortBy(v as PurchaseSortKey)}
+              options={PURCHASE_SORT_OPTIONS}
             />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                className="absolute end-2.5 top-2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                aria-label="مسح البحث"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
+            <div className="relative flex-grow sm:flex-none sm:w-72">
+              <Search className="w-4 h-4 text-slate-400 absolute start-3 top-2.5" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={
+                  showHistory
+                    ? 'بحث بالصنف، الموديل، المورد، أو المنفذ...'
+                    : 'بحث باسم الصنف، الكود، الموديل، أو المورد...'
+                }
+                className="w-full ps-9 pe-8 py-2 bg-slate-50 border border-slate-200 rounded-full text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute end-2.5 top-2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  aria-label="مسح البحث"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>

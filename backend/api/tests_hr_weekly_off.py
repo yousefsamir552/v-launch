@@ -64,10 +64,12 @@ class MonthAccrualWeeklyOffTests(SimpleTestCase):
         self.assertEqual(accrual['earned_days'], 4)
 
     def test_worked_weekly_off_day_counts_as_workday(self):
-        # الجمعة 6 نوفمبر بها بصمة حضور → يوم عمل عادي مستحق.
+        # الجمعة 6 نوفمبر بها بصمة حضور مع 5 أيام عمل في الأسبوع (غياب 1 فقط = إجازة مستحقة 1.0)
+        # + مضاعف عمل الإجازة الافتراضي 1.0 فوق السقف => 5 عادي + 1 إجازة مدفوعة + 1 إضافي = 7 أيام.
         days = [date(2026, 11, day) for day in range(1, 7)]
         records = self._records(days)
         accrual = _compute_month_accrual(records, '2026-11', date(2026, 11, 6), weekly_off_index=4)
         self.assertEqual(accrual['attended_days'], 6)
-        self.assertEqual(accrual['paid_sunday_days'], 0)
-        self.assertEqual(accrual['earned_days'], 6)
+        self.assertEqual(accrual['paid_sunday_days'], 1)
+        self.assertEqual(accrual['weekly_off_extra_days'], 1)
+        self.assertEqual(accrual['earned_days'], 7)

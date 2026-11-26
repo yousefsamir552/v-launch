@@ -875,10 +875,10 @@ def sunday_deduction_for_week(records_by_date, week_dates):
     احتساب خصم يوم الإجازة الأسبوعية وفق عدد أيام الغياب بدون عذر
     خلال أيام العمل الستة السابقة له في نفس الأسبوع:
 
-      2 أيام  -> ثلث يوم (1/3)
-      3 أيام  -> نصف يوم (1/2)
-      4 أيام  -> ثلثين يوم (2/3)
-      5 أيام+ -> يوم كامل (1)
+      0 أو 1 يوم -> 0 (بدون خصم)
+      2 أو 3 أيام -> ثلث يوم (1/3)
+      4 أيام      -> ثلثي يوم (2/3)
+      5 أيام+     -> يوم كامل (1)
 
     Returns dict(sunday_deduction_days, sunday_deduction_note).
     """
@@ -902,9 +902,7 @@ def sunday_deduction_for_week(records_by_date, week_dates):
         ratio, label = 1.0, 'يوم الإجازة كاملاً'
     elif count == 4:
         ratio, label = 2.0 / 3.0, 'ثلثي يوم الإجازة'
-    elif count == 3:
-        ratio, label = 0.5, 'نصف يوم الإجازة'
-    elif count == 2:
+    elif count in (2, 3):
         ratio, label = 1.0 / 3.0, 'ثلث يوم الإجازة'
     else:
         return empty
@@ -989,12 +987,12 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
 
         weekly_off_days = 0.0
         weekly_off_note = ''
-        if is_weekly_off and not worked_weekly_off:
-            result = sunday_deduction_for_week(
-                records_by_date, _week_dates_before(record.date)
-            )
-            weekly_off_days = result['sunday_deduction_days']
-            weekly_off_note = result['sunday_deduction_note']
+        if is_weekly_off:
+            week_dates = _week_dates_before(record.date)
+            if any(day in records_by_date for day in week_dates):
+                result = sunday_deduction_for_week(records_by_date, week_dates)
+                weekly_off_days = result['sunday_deduction_days']
+                weekly_off_note = result['sunday_deduction_note']
 
         new_values = {
             'status': 'leave' if (is_weekly_off and not worked_weekly_off) else computed['status'],

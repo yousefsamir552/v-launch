@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { makeIdempotentRequestId } from '../context/appContextTypes';
 import {
   Package,
   Plus,
@@ -35,14 +36,96 @@ import {
 import { DesignModel, Fabric, FabricColor, FabricTransaction, ModelRequirement, Supplier } from '../types';
 import { api } from '../api/client';
 import {
+  buildPrintDocumentHtml,
   escapeHtml,
-  isImageLogo,
   logClientPrintAction,
   openUnifiedPrintWindow,
-  renderSignatureBar
+  renderSignatureBar,
+  UnifiedPrintDocumentOptions
 } from '../utils/printShared';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
+import { useModalBackHandler } from '../utils/mobileBackNav';
 
 type FabricViewSubTab = 'inventory' | 'alerts' | 'audit';
+type InventorySortKey = 'code_asc' | 'code_desc' | 'avail_desc' | 'avail_asc' | 'qty_desc' | 'qty_asc';
+type AuditSortKey = 'code_asc' | 'code_desc' | 'consumed_desc' | 'consumed_asc' | 'received_desc' | 'remaining_desc' | 'remaining_asc';
+type HistorySortKey = 'newest' | 'oldest' | 'amount_desc' | 'amount_asc' | 'code_asc';
+type MovementFilterKey = 'all' | 'add' | 'deduct' | 'return' | 'defect';
+type PeriodFilterKey = 'all' | 'today' | '7d' | '30d' | 'this_month' | 'custom';
+
+const INVENTORY_SORT_OPTIONS: { value: InventorySortKey; label: string }[] = [
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' },
+  { value: 'avail_desc', label: 'المتاح (الأكثر أولاً)' },
+  { value: 'avail_asc', label: 'المتاح (الأقل أولاً)' },
+  { value: 'qty_desc', label: 'الرصيد الفعلي (الأكثر)' },
+  { value: 'qty_asc', label: 'الرصيد الفعلي (الأقل)' }
+];
+
+const AUDIT_SORT_OPTIONS: { value: AuditSortKey; label: string }[] = [
+  { value: 'consumed_desc', label: 'المستهلك (الأكثر أولاً)' },
+  { value: 'consumed_asc', label: 'المستهلك (الأقل أولاً)' },
+  { value: 'received_desc', label: 'الوارد (الأكثر أولاً)' },
+  { value: 'remaining_desc', label: 'المتبقي (الأكثر أولاً)' },
+  { value: 'remaining_asc', label: 'المتبقي (الأقل أولاً)' },
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' }
+];
+
+const HISTORY_SORT_OPTIONS: { value: HistorySortKey; label: string }[] = [
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' },
+  { value: 'amount_desc', label: 'الكمية (الأكثر أولاً)' },
+  { value: 'amount_asc', label: 'الكمية (الأقل أولاً)' },
+  { value: 'code_asc', label: 'كود اللون (تصاعدي)' }
+];
+
+const isReturnTransaction = (t: FabricTransaction): boolean => {
+  if (t.operation !== 'add') return false;
+  const n = t.notes || '';
+  return n.includes('إرجاع فائض') || n.includes('استرداد') || n.includes('إرجاع فرق');
+};
+
+const transactionMatchesMovement = (t: FabricTransaction, movement: MovementFilterKey): boolean => {
+  if (movement === 'all') return true;
+  if (movement === 'return') return isReturnTransaction(t);
+  if (movement === 'add') return t.operation === 'add' && !isReturnTransaction(t);
+  if (movement === 'deduct') return t.operation === 'deduct';
+  if (movement === 'defect') return t.operation === 'defect';
+  return true;
+};
+
+const transactionMatchesPeriod = (
+  t: FabricTransaction,
+  period: PeriodFilterKey,
+  dateFrom?: string,
+  dateTo?: string
+): boolean => {
+  if (period === 'all') return true;
+  const ts = toTimestamp(t.timestamp);
+  if (!ts) return false;
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (period === 'today') return ts >= startOfToday;
+  if (period === '7d') return ts >= startOfToday - 6 * 24 * 60 * 60 * 1000;
+  if (period === '30d') return ts >= startOfToday - 29 * 24 * 60 * 60 * 1000;
+  if (period === 'this_month') {
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    return ts >= startOfMonth;
+  }
+  if (period === 'custom') {
+    if (dateFrom) {
+      const fromTs = new Date(`${dateFrom}T00:00:00`).getTime();
+      if (!Number.isNaN(fromTs) && ts < fromTs) return false;
+    }
+    if (dateTo) {
+      const toTs = new Date(`${dateTo}T23:59:59`).getTime();
+      if (!Number.isNaN(toTs) && ts > toTs) return false;
+    }
+    return true;
+  }
+  return true;
+};
 
 type FabricUsageBreakdownItem = {
   label: string;
@@ -59,6 +142,7 @@ type FabricAuditRow = {
   colorCode: string;
   colorName: string;
   hexCode: string;
+  supplierId: string;
   supplierName: string;
   totalReceived: number;
   totalConsumed: number;
@@ -70,8 +154,10 @@ type FabricAuditRow = {
   available: number;
   sizeBreakdown: FabricUsageBreakdownItem[];
   typeBreakdown: FabricUsageBreakdownItem[];
+  modelUsage: { code: string; modelType: string; quantity: number }[];
   modelCodes: string[];
   unlinkedConsumed: number;
+  matchedTransactions: FabricTransaction[];
 };
 
 /** بطاقة إحصائية صغيرة تُستخدم داخل تبويب جرد القماش. */
@@ -177,6 +263,26 @@ export const WarehouseView: React.FC = () => {
   const [maxAvailableQtyFilter, setMaxAvailableQtyFilter] = useState<string>('');
   const [supplierFilter, setSupplierFilter] = useState<string>('');
   const [searchAllFabrics, setSearchAllFabrics] = useState<boolean>(false);
+  const [inventorySortBy, setInventorySortBy] = useState<InventorySortKey>('code_asc');
+
+  // Audit (توزيع استهلاك القماش والحركات) Search & Filter states
+  const [auditSearch, setAuditSearch] = useState<string>('');
+  const [auditMovementFilter, setAuditMovementFilter] = useState<MovementFilterKey>('all');
+  const [auditPeriodFilter, setAuditPeriodFilter] = useState<PeriodFilterKey>('all');
+  const [auditDateFrom, setAuditDateFrom] = useState<string>('');
+  const [auditDateTo, setAuditDateTo] = useState<string>('');
+  const [auditSupplierFilter, setAuditSupplierFilter] = useState<string>('');
+  const [auditModelFilter, setAuditModelFilter] = useState<string>('');
+  const [auditSortBy, setAuditSortBy] = useState<AuditSortKey>('consumed_desc');
+  const [expandedAuditMovements, setExpandedAuditMovements] = useState<Record<string, boolean>>({});
+
+  // History modal filters
+  const [historySearch, setHistorySearch] = useState<string>('');
+  const [historyMovementFilter, setHistoryMovementFilter] = useState<MovementFilterKey>('all');
+  const [historyPeriodFilter, setHistoryPeriodFilter] = useState<PeriodFilterKey>('all');
+  const [historySupplierFilter, setHistorySupplierFilter] = useState<string>('');
+  const [historyModelFilter, setHistoryModelFilter] = useState<string>('');
+  const [historySortBy, setHistorySortBy] = useState<HistorySortKey>('newest');
 
   const hasActiveAdvancedFilters =
     colorSearchFilter.trim() !== '' ||
@@ -306,6 +412,15 @@ export const WarehouseView: React.FC = () => {
     }
 
     return true;
+  }).sort((a, b) => {
+    const availA = Number((a.quantity - a.reserved_quantity).toFixed(2));
+    const availB = Number((b.quantity - b.reserved_quantity).toFixed(2));
+    if (inventorySortBy === 'code_desc') return compareNatural(b.color_code, a.color_code);
+    if (inventorySortBy === 'avail_desc') return availB - availA;
+    if (inventorySortBy === 'avail_asc') return availA - availB;
+    if (inventorySortBy === 'qty_desc') return Number(b.quantity || 0) - Number(a.quantity || 0);
+    if (inventorySortBy === 'qty_asc') return Number(a.quantity || 0) - Number(b.quantity || 0);
+    return compareNatural(a.color_code, b.color_code);
   });
 
   // Modals state
@@ -383,6 +498,13 @@ export const WarehouseView: React.FC = () => {
     price_per_unit: '0'
   });
 
+  useModalBackHandler(showAddModal, () => setShowAddModal(false));
+  useModalBackHandler(showTransactionModal, () => setShowTransactionModal(false));
+  useModalBackHandler(showHistoryModal, () => setShowHistoryModal(false));
+  useModalBackHandler(Boolean(editingColor), () => setEditingColor(null));
+  useModalBackHandler(Boolean(reorderModalItem), () => setReorderModalItem(null));
+  useModalBackHandler(showPrintInventoryModal, () => setShowPrintInventoryModal(false));
+
   // Automatic low stock calculation across all warehouse fabrics (Strictly < minThreshold as requested: "تقل كميتها عن هذا الرقم")
   const lowStockColors = fabricColors
     .map((c) => {
@@ -412,6 +534,8 @@ export const WarehouseView: React.FC = () => {
     ? fabrics.find((f) => f.id === activeColor.fabric_id)
     : undefined;
   const submitLockRef = React.useRef(false);
+  const pendingTransReqIdRef = React.useRef<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleOpenReorder = (item: {
     color: FabricColor;
@@ -481,10 +605,11 @@ export const WarehouseView: React.FC = () => {
     setShowTransactionModal(true);
   };
 
-  const handleAddSubmit = (e: React.FormEvent) => {
+  const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submitLockRef.current) return;
+    if (submitLockRef.current || isSubmitting) return;
     submitLockRef.current = true;
+    setIsSubmitting(true);
     try {
       const res = addFabricOrColor({
         fabricId: addForm.fabricId || undefined,
@@ -498,48 +623,59 @@ export const WarehouseView: React.FC = () => {
       });
 
       if (res.success) {
-        if (res.fabricId) {
-          setSelectedFabricId(res.fabricId);
+        const savedOk = res.promise ? await res.promise : true;
+        if (savedOk) {
+          if (res.fabricId) {
+            setSelectedFabricId(res.fabricId);
+          }
+          setShowAddModal(false);
+          setAddForm({
+            fabricId: '',
+            newFabricName: '',
+            unit: 'كيلو',
+            colorCode: '',
+            colorName: '',
+            hexCode: '#3b82f6',
+            quantity: 10,
+            supplierId: ''
+          });
         }
-        setShowAddModal(false);
-        setAddForm({
-          fabricId: '',
-          newFabricName: '',
-          unit: 'كيلو',
-          colorCode: '',
-          colorName: '',
-          hexCode: '#3b82f6',
-          quantity: 10,
-          supplierId: ''
-        });
       }
     } finally {
-      window.setTimeout(() => {
-        submitLockRef.current = false;
-      }, 600);
+      submitLockRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
-  const handleTransSubmit = (e: React.FormEvent) => {
+  const handleTransSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeColorId || submitLockRef.current) return;
+    if (!activeColorId || submitLockRef.current || isSubmitting) return;
+    if (!pendingTransReqIdRef.current) {
+      pendingTransReqIdRef.current = makeIdempotentRequestId('tr');
+    }
+    const reqId = pendingTransReqIdRef.current;
     submitLockRef.current = true;
+    setIsSubmitting(true);
     try {
       const res = recordTransaction({
         colorId: activeColorId,
         operation: transForm.operation,
         amount: Number(transForm.amount) || 0,
         modelCodeRef: transForm.modelCodeRef,
-        notes: transForm.notes
+        notes: transForm.notes,
+        clientId: reqId
       });
 
       if (res.success) {
-        setShowTransactionModal(false);
+        const savedOk = res.promise ? await res.promise : true;
+        if (savedOk) {
+          pendingTransReqIdRef.current = null;
+          setShowTransactionModal(false);
+        }
       }
     } finally {
-      window.setTimeout(() => {
-        submitLockRef.current = false;
-      }, 600);
+      submitLockRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -754,6 +890,31 @@ export const WarehouseView: React.FC = () => {
 
     const resolvedSupplier = resolveColorSupplier(color);
 
+    const modelUsageMap = new Map<string, { code: string; modelType: string; quantity: number }>();
+    usageByModelId.forEach((rawQty, mId) => {
+      const qty = roundQty(Math.max(0, rawQty));
+      if (qty <= 0) return;
+      const m = modelById.get(mId);
+      const code = m?.model_code || mId;
+      const prev = modelUsageMap.get(code);
+      modelUsageMap.set(code, {
+        code,
+        modelType: m?.model_type || '',
+        quantity: roundQty((prev?.quantity || 0) + qty)
+      });
+    });
+    usageByModelCode.forEach((rawQty, code) => {
+      const qty = roundQty(Math.max(0, rawQty));
+      if (qty <= 0) return;
+      const prev = modelUsageMap.get(code);
+      modelUsageMap.set(code, {
+        code,
+        modelType: prev?.modelType || '',
+        quantity: roundQty((prev?.quantity || 0) + qty)
+      });
+    });
+    const modelUsage = Array.from(modelUsageMap.values()).sort((a, b) => b.quantity - a.quantity);
+
     fabricAuditRows.push({
       fabricId: fabric.id,
       fabricName: fabric.name,
@@ -762,6 +923,7 @@ export const WarehouseView: React.FC = () => {
       colorCode: color.color_code,
       colorName: color.color_name || '',
       hexCode: color.hex_code || '#64748b',
+      supplierId: resolvedSupplier?.id || '',
       supplierName: resolvedSupplier?.name || 'غير محدد',
       totalReceived,
       totalConsumed,
@@ -772,8 +934,10 @@ export const WarehouseView: React.FC = () => {
       available: roundQty(color.quantity - color.reserved_quantity),
       sizeBreakdown: toBreakdown(sizeTotals),
       typeBreakdown: toBreakdown(typeTotals),
+      modelUsage,
       modelCodes: Array.from(usedModelCodes).sort(),
-      unlinkedConsumed: unlinkedQty
+      unlinkedConsumed: unlinkedQty,
+      matchedTransactions: colorTransactions
     });
   };
 
@@ -816,8 +980,193 @@ export const WarehouseView: React.FC = () => {
     totalAvailable: roundQty(fabricAuditRows.reduce((sum, row) => sum + row.available, 0))
   };
 
-  const handlePrintFabricInventory = () => {
-    logClientPrintAction('مخزن القماش', 'طباعة تقرير جرد مخزن الأقمشة والخامات', 'جرد مخزن القماش');
+  // قائمة الموديلات المتاحة للفلترة في توزيع الاستهلاك وسجل الحركات
+  const auditModelOptions = useMemo(() => {
+    const codes = new Set<string>();
+    models.forEach((m) => {
+      if (!m.is_deleted && m.model_code) codes.add(m.model_code);
+    });
+    auditFabricTransactions.forEach((t) => {
+      if (t.model_code_ref) codes.add(t.model_code_ref.trim());
+    });
+    return Array.from(codes).sort(compareNatural);
+  }, [models, auditFabricTransactions]);
+
+  const hasActiveAuditFilters =
+    auditSearch.trim() !== '' ||
+    auditMovementFilter !== 'all' ||
+    auditPeriodFilter !== 'all' ||
+    auditSupplierFilter !== '' ||
+    auditModelFilter !== '';
+
+  const filteredAuditRows = useMemo(() => {
+    const q = auditSearch.trim().toLowerCase();
+    const selSup = suppliers.find((s) => s.id === auditSupplierFilter);
+    const hasTxFilter = auditMovementFilter !== 'all' || auditPeriodFilter !== 'all';
+
+    const list = fabricAuditRows
+      .map((row) => {
+        const filteredTxs = row.matchedTransactions.filter((t) => {
+          if (!transactionMatchesMovement(t, auditMovementFilter)) return false;
+          if (!transactionMatchesPeriod(t, auditPeriodFilter, auditDateFrom, auditDateTo)) return false;
+          if (auditModelFilter && (t.model_code_ref || '').trim().toUpperCase() !== auditModelFilter.toUpperCase()) {
+            return false;
+          }
+          return true;
+        });
+        return { ...row, matchedTransactions: filteredTxs };
+      })
+      .filter((row) => {
+        if (selSup) {
+          const matchesSup =
+            (row.supplierId && row.supplierId === selSup.id) ||
+            row.supplierName.trim().toLowerCase() === selSup.name.trim().toLowerCase();
+          if (!matchesSup) return false;
+        }
+        if (auditModelFilter) {
+          const matchesModel =
+            row.modelCodes.some((c) => c.toUpperCase() === auditModelFilter.toUpperCase()) ||
+            row.matchedTransactions.length > 0;
+          if (!matchesModel) return false;
+        }
+        if (hasTxFilter && row.matchedTransactions.length === 0) {
+          return false;
+        }
+        if (q) {
+          const modelNames = row.modelUsage
+            .map((mu) => `${mu.code} ${mu.modelType}`)
+            .join(' ')
+            .toLowerCase();
+          const txNotes = row.matchedTransactions
+            .map((t) => `${t.notes || ''} ${t.model_code_ref || ''} ${t.operation}`)
+            .join(' ')
+            .toLowerCase();
+          const hay = [
+            row.fabricName,
+            row.colorCode,
+            row.colorName,
+            row.supplierName,
+            row.modelCodes.join(' '),
+            modelNames,
+            txNotes
+          ]
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+
+    return [...list].sort((a, b) => {
+      if (auditSortBy === 'code_asc') return compareNatural(a.colorCode, b.colorCode);
+      if (auditSortBy === 'code_desc') return compareNatural(b.colorCode, a.colorCode);
+      if (auditSortBy === 'consumed_asc') return a.totalConsumed - b.totalConsumed;
+      if (auditSortBy === 'received_desc') return b.totalReceived - a.totalReceived;
+      if (auditSortBy === 'remaining_desc') return b.remaining - a.remaining;
+      if (auditSortBy === 'remaining_asc') return a.remaining - b.remaining;
+      return b.totalConsumed - a.totalConsumed;
+    });
+  }, [
+    fabricAuditRows,
+    auditSearch,
+    auditMovementFilter,
+    auditPeriodFilter,
+    auditDateFrom,
+    auditDateTo,
+    auditSupplierFilter,
+    auditModelFilter,
+    auditSortBy,
+    suppliers
+  ]);
+
+  const filteredAuditGroups = useMemo(() => {
+    const order: { id: string; name: string; unit: string }[] = [];
+    filteredAuditRows.forEach((row) => {
+      if (!order.some((f) => f.id === row.fabricId)) {
+        order.push({ id: row.fabricId, name: row.fabricName, unit: row.unit });
+      }
+    });
+    return order.map((fabric) => ({
+      fabric,
+      rows: filteredAuditRows.filter((row) => row.fabricId === fabric.id)
+    }));
+  }, [filteredAuditRows]);
+
+  const filteredAuditTotals = useMemo(
+    () => ({
+      totalReceived: roundQty(filteredAuditRows.reduce((sum, row) => sum + row.totalReceived, 0)),
+      totalConsumed: roundQty(filteredAuditRows.reduce((sum, row) => sum + row.totalConsumed, 0)),
+      totalDefect: roundQty(filteredAuditRows.reduce((sum, row) => sum + row.totalDefect, 0)),
+      totalRemaining: roundQty(filteredAuditRows.reduce((sum, row) => sum + row.remaining, 0)),
+      totalAvailable: roundQty(filteredAuditRows.reduce((sum, row) => sum + row.available, 0))
+    }),
+    [filteredAuditRows]
+  );
+
+  // سجل حركات المخزن المفلتر والمرتب (داخل Modal 3)
+  const filteredHistoryTransactions = useMemo(() => {
+    const q = historySearch.trim().toLowerCase();
+    const selSup = suppliers.find((s) => s.id === historySupplierFilter);
+    const list = auditFabricTransactions.filter((tr) => {
+      if (!transactionMatchesMovement(tr, historyMovementFilter)) return false;
+      if (!transactionMatchesPeriod(tr, historyPeriodFilter)) return false;
+      const color = fabricColors.find((c) => c.id === tr.color_id);
+      const fab = color ? fabrics.find((f) => f.id === color.fabric_id) : undefined;
+      const sup = color ? resolveColorSupplier(color) : null;
+      if (selSup) {
+        const matchesSup =
+          tr.supplier_id === selSup.id ||
+          (sup?.id && sup.id === selSup.id) ||
+          (sup?.name && sup.name.trim().toLowerCase() === selSup.name.trim().toLowerCase());
+        if (!matchesSup) return false;
+      }
+      if (historyModelFilter) {
+        if ((tr.model_code_ref || '').trim().toUpperCase() !== historyModelFilter.toUpperCase()) {
+          return false;
+        }
+      }
+      if (q) {
+        const hay = [
+          tr.model_code_ref || '',
+          tr.notes || '',
+          tr.timestamp || '',
+          color?.color_code || '',
+          color?.color_name || '',
+          fab?.name || '',
+          sup?.name || '',
+          tr.operation === 'defect' ? 'عيوب قماش' : isReturnTransaction(tr) ? 'مرتجع إرجاع' : tr.operation === 'add' ? 'إضافة وارد' : 'صرف للمقص'
+        ]
+          .join(' ')
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    return [...list].sort((a, b) => {
+      if (historySortBy === 'oldest') return toTimestamp(a.timestamp) - toTimestamp(b.timestamp);
+      if (historySortBy === 'amount_desc') return Number(b.amount || 0) - Number(a.amount || 0);
+      if (historySortBy === 'amount_asc') return Number(a.amount || 0) - Number(b.amount || 0);
+      if (historySortBy === 'code_asc') {
+        const ca = fabricColors.find((c) => c.id === a.color_id)?.color_code || '';
+        const cb = fabricColors.find((c) => c.id === b.color_id)?.color_code || '';
+        return compareNatural(ca, cb);
+      }
+      return toTimestamp(b.timestamp) - toTimestamp(a.timestamp);
+    });
+  }, [
+    auditFabricTransactions,
+    historySearch,
+    historyMovementFilter,
+    historyPeriodFilter,
+    historySupplierFilter,
+    historyModelFilter,
+    historySortBy,
+    fabricColors,
+    fabrics,
+    suppliers
+  ]);
+
+  const buildFabricInventoryPrintOptions = (): UnifiedPrintDocumentOptions => {
     const showPrices = canViewFabricPrices();
     const totalActualQty = fabricColors.reduce((sum, c) => sum + Number(c.quantity || 0), 0);
     const totalReservedQty = fabricColors.reduce((sum, c) => sum + Number(c.reserved_quantity || 0), 0);
@@ -909,7 +1258,7 @@ export const WarehouseView: React.FC = () => {
       ${renderSignatureBar(['مسؤول الجرد / أمين المخزن', 'المراجعة والحسابات', 'اعتماد مدير المصنع'], true)}
     `;
 
-    openUnifiedPrintWindow({
+    return {
       documentTitle: 'تقرير جرد مخزن الأقمشة والخامات',
       mode: 'multi-page-table',
       orientation: 'landscape',
@@ -927,7 +1276,12 @@ export const WarehouseView: React.FC = () => {
         table.inv-table th, table.inv-table td { padding: 3.5px 4px; }
       `,
       popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة تقرير جرد المخزن.'
-    });
+    };
+  };
+
+  const handlePrintFabricInventory = () => {
+    logClientPrintAction('مخزن القماش', 'طباعة تقرير جرد مخزن الأقمشة والخامات', 'جرد مخزن القماش');
+    openUnifiedPrintWindow(buildFabricInventoryPrintOptions());
   };
 
   const handlePrintFabricAudit = () => {
@@ -1429,11 +1783,11 @@ export const WarehouseView: React.FC = () => {
 
                 <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mt-4">
                   {[
-                    { label: 'إجمالي الوارد', value: auditTotals.totalReceived, cls: 'text-emerald-300' },
-                    { label: 'إجمالي المستهلك', value: auditTotals.totalConsumed, cls: 'text-rose-300' },
-                    { label: 'عيوب القماش', value: auditTotals.totalDefect, cls: 'text-amber-300' },
-                    { label: 'المتبقي بالمخزن', value: auditTotals.totalRemaining, cls: 'text-sky-300' },
-                    { label: 'المتاح للتصميم', value: auditTotals.totalAvailable, cls: 'text-violet-300' }
+                    { label: 'إجمالي الوارد', value: filteredAuditTotals.totalReceived, cls: 'text-emerald-300' },
+                    { label: 'إجمالي المستهلك', value: filteredAuditTotals.totalConsumed, cls: 'text-rose-300' },
+                    { label: 'عيوب القماش', value: filteredAuditTotals.totalDefect, cls: 'text-amber-300' },
+                    { label: 'المتبقي بالمخزن', value: filteredAuditTotals.totalRemaining, cls: 'text-sky-300' },
+                    { label: 'المتاح للتصميم', value: filteredAuditTotals.totalAvailable, cls: 'text-violet-300' }
                   ].map((item) => (
                     <div
                       key={item.label}
@@ -1447,13 +1801,139 @@ export const WarehouseView: React.FC = () => {
                 </div>
               </div>
 
-              {fabricAuditGroups.length === 0 ? (
+              {/* Search, Filters & Sort for Fabric Usage & Movements */}
+              <div className="bg-white rounded-3xl border border-slate-200/90 p-4 sm:p-5 shadow-xs space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Filter className="w-4 h-4 text-indigo-600" />
+                    <h3 className="text-xs sm:text-sm font-black text-slate-800">
+                      بحث وفلترة توزيع استهلاك القماش والحركات
+                    </h3>
+                    <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200">
+                      {filteredAuditRows.length} لون مطابق
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <SortBySelect
+                      value={auditSortBy}
+                      onChange={(v) => setAuditSortBy(v as AuditSortKey)}
+                      options={AUDIT_SORT_OPTIONS}
+                    />
+                    {hasActiveAuditFilters && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuditSearch('');
+                          setAuditMovementFilter('all');
+                          setAuditPeriodFilter('all');
+                          setAuditDateFrom('');
+                          setAuditDateTo('');
+                          setAuditSupplierFilter('');
+                          setAuditModelFilter('');
+                        }}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>إعادة ضبط</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+                  <div className="relative sm:col-span-2 lg:col-span-2">
+                    <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={auditSearch}
+                      onChange={(e) => setAuditSearch(e.target.value)}
+                      placeholder="بحث بكود الموديل، اسم القماش/اللون، المورد، أو ملاحظات الحركة..."
+                      className="w-full ps-9 pe-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    />
+                  </div>
+                  <select
+                    value={auditMovementFilter}
+                    onChange={(e) => setAuditMovementFilter(e.target.value as MovementFilterKey)}
+                    className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+                  >
+                    <option value="all">كل أنواع الحركات</option>
+                    <option value="add">توريد / إضافة فقط</option>
+                    <option value="deduct">صرف للمقص فقط</option>
+                    <option value="return">مرتجع / استرداد فقط</option>
+                    <option value="defect">عيوب قماش فقط</option>
+                  </select>
+                  <select
+                    value={auditPeriodFilter}
+                    onChange={(e) => setAuditPeriodFilter(e.target.value as PeriodFilterKey)}
+                    className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+                  >
+                    <option value="all">كل الفترات</option>
+                    <option value="today">اليوم</option>
+                    <option value="7d">آخر 7 أيام</option>
+                    <option value="30d">آخر 30 يوم</option>
+                    <option value="this_month">هذا الشهر</option>
+                    <option value="custom">فترة مخصصة...</option>
+                  </select>
+                  <select
+                    value={auditSupplierFilter}
+                    onChange={(e) => setAuditSupplierFilter(e.target.value)}
+                    className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+                  >
+                    <option value="">كل الموردين</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <select
+                    value={auditModelFilter}
+                    onChange={(e) => setAuditModelFilter(e.target.value)}
+                    className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 cursor-pointer min-w-[180px]"
+                  >
+                    <option value="">كل الموديلات</option>
+                    {auditModelOptions.map((code) => (
+                      <option key={code} value={code}>
+                        موديل {code}
+                      </option>
+                    ))}
+                  </select>
+
+                  {auditPeriodFilter === 'custom' && (
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <label className="font-bold text-slate-500">من:</label>
+                      <input
+                        type="date"
+                        value={auditDateFrom}
+                        onChange={(e) => setAuditDateFrom(e.target.value)}
+                        className="px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-mono font-bold"
+                      />
+                      <label className="font-bold text-slate-500">إلى:</label>
+                      <input
+                        type="date"
+                        value={auditDateTo}
+                        onChange={(e) => setAuditDateTo(e.target.value)}
+                        className="px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-mono font-bold"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {filteredAuditGroups.length === 0 ? (
                 <div className="bg-white rounded-3xl border border-slate-200 p-12 text-center text-slate-400">
                   <ClipboardList className="w-12 h-12 mx-auto mb-2 text-slate-300" />
-                  <p className="font-semibold text-slate-600">لا توجد ألوان مسجلة بالمخزن لعرض الجرد.</p>
+                  <p className="font-semibold text-slate-600">
+                    {hasActiveAuditFilters
+                      ? 'لا توجد ألوان أو حركات مطابقة لفلاتر البحث المحددة.'
+                      : 'لا توجد ألوان مسجلة بالمخزن لعرض الجرد.'}
+                  </p>
                 </div>
               ) : (
-                fabricAuditGroups.map((group) => {
+                filteredAuditGroups.map((group) => {
                   const groupReceived = roundQty(
                     group.rows.reduce((sum, row) => sum + row.totalReceived, 0)
                   );
@@ -1568,9 +2048,31 @@ export const WarehouseView: React.FC = () => {
                                 <div className="space-y-1.5">
                                   <span className="text-[11px] font-black text-slate-500 flex items-center gap-1.5">
                                     <Scissors className="w-3.5 h-3.5 text-slate-500" />
-                                    أكواد الموديلات المرتبطة بهذا اللون
+                                    الموديلات المستهلكة لهذا اللون (الكمية لكل موديل)
                                   </span>
-                                  {row.modelCodes.length > 0 ? (
+                                  {row.modelUsage.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {row.modelUsage.map((mu) => (
+                                        <button
+                                          key={`${row.colorId}-${mu.code}`}
+                                          type="button"
+                                          onClick={() => setAuditModelFilter(auditModelFilter === mu.code ? '' : mu.code)}
+                                          title="اضغط للفلترة بهذا الموديل"
+                                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-bold transition cursor-pointer ${
+                                            auditModelFilter.toUpperCase() === mu.code.toUpperCase()
+                                              ? 'bg-indigo-600 text-white border-indigo-600'
+                                              : 'bg-white border-slate-200 text-slate-700 hover:border-indigo-400'
+                                          }`}
+                                        >
+                                          <Boxes className="w-3 h-3 opacity-70" />
+                                          <span className="font-mono">{mu.code}</span>
+                                          <span className="font-mono font-black">
+                                            ({mu.quantity} {group.fabric.unit})
+                                          </span>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  ) : row.modelCodes.length > 0 ? (
                                     <div className="flex flex-wrap gap-1.5">
                                       {row.modelCodes.map((code) => (
                                         <span
@@ -1600,6 +2102,80 @@ export const WarehouseView: React.FC = () => {
                                 <Scissors className="w-3.5 h-3.5" />
                                 لا يوجد استهلاك مسجل على هذا اللون حتى الآن
                               </span>
+                            )}
+
+                            {/* Expandable matching movements breakdown for this color */}
+                            {row.matchedTransactions.length > 0 && (
+                              <div className="pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedAuditMovements((prev) => ({
+                                      ...prev,
+                                      [row.colorId]: !prev[row.colorId]
+                                    }))
+                                  }
+                                  className="inline-flex items-center gap-1.5 text-[11px] font-bold text-indigo-700 hover:text-indigo-900 cursor-pointer"
+                                >
+                                  <History className="w-3.5 h-3.5" />
+                                  <span>
+                                    {expandedAuditMovements[row.colorId]
+                                      ? `إخفاء سجل الحركات (${row.matchedTransactions.length})`
+                                      : `عرض سجل الحركات (${row.matchedTransactions.length} حركة)`}
+                                  </span>
+                                </button>
+                                {expandedAuditMovements[row.colorId] && (
+                                  <div className="mt-2 rounded-xl border border-slate-200 overflow-x-auto">
+                                    <table className="w-full text-[11px] text-start">
+                                      <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
+                                        <tr>
+                                          <th className="px-3 py-2">التاريخ</th>
+                                          <th className="px-3 py-2">النوع</th>
+                                          <th className="px-3 py-2">الكمية</th>
+                                          <th className="px-3 py-2">الموديل</th>
+                                          <th className="px-3 py-2">ملاحظات</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100">
+                                        {row.matchedTransactions.map((tr) => {
+                                          const isRet = isReturnTransaction(tr);
+                                          const isDef = tr.operation === 'defect';
+                                          const isAdd = tr.operation === 'add' && !isRet;
+                                          return (
+                                            <tr key={tr.id} className="hover:bg-slate-50">
+                                              <td className="px-3 py-1.5 font-mono text-slate-500">{tr.timestamp}</td>
+                                              <td className="px-3 py-1.5">
+                                                <span
+                                                  className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                                                    isDef
+                                                      ? 'bg-amber-100 text-amber-800'
+                                                      : isRet
+                                                      ? 'bg-sky-100 text-sky-800'
+                                                      : isAdd
+                                                      ? 'bg-emerald-100 text-emerald-800'
+                                                      : 'bg-rose-100 text-rose-800'
+                                                  }`}
+                                                >
+                                                  {isDef ? 'عيوب قماش' : isRet ? 'مرتجع' : isAdd ? '+ توريد' : '- صرف'}
+                                                </span>
+                                              </td>
+                                              <td className="px-3 py-1.5 font-mono font-black text-slate-800">
+                                                {tr.amount} {group.fabric.unit}
+                                              </td>
+                                              <td className="px-3 py-1.5 font-bold text-indigo-700 font-mono">
+                                                {tr.model_code_ref || '—'}
+                                              </td>
+                                              <td className="px-3 py-1.5 text-slate-500 max-w-xs truncate">
+                                                {tr.notes || '—'}
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </div>
                             )}
                           </div>
                         ))}
@@ -1631,7 +2207,12 @@ export const WarehouseView: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <SortBySelect
+                      value={inventorySortBy}
+                      onChange={(v) => setInventorySortBy(v as InventorySortKey)}
+                      options={INVENTORY_SORT_OPTIONS}
+                    />
                     <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200">
                       <input
                         type="checkbox"
@@ -2230,9 +2811,10 @@ export const WarehouseView: React.FC = () => {
                   <div className="pt-2">
                     <button
                       type="submit"
-                      className="w-full py-3 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm transition shadow-lg shadow-blue-500/20"
+                      disabled={isSubmitting}
+                      className="w-full py-3 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm transition shadow-lg shadow-blue-500/20 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                      حفظ الاستلام
+                      {isSubmitting ? 'جاري الحفظ...' : 'حفظ الاستلام'}
                     </button>
                   </div>
                 </form>
@@ -2323,9 +2905,10 @@ export const WarehouseView: React.FC = () => {
                   <div className="pt-2">
                     <button
                       type="submit"
-                      className="w-full py-3 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm transition shadow-lg shadow-blue-500/20"
+                      disabled={isSubmitting}
+                      className="w-full py-3 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm transition shadow-lg shadow-blue-500/20 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                      تنفيذ الحركة
+                      {isSubmitting ? 'جاري التنفيذ...' : 'تنفيذ الحركة'}
                     </button>
                   </div>
                 </form>
@@ -2484,66 +3067,164 @@ export const WarehouseView: React.FC = () => {
 
           {/* Modal 3: Transaction History Drawer */}
           {showHistoryModal && (
-            <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
-              <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-3xl p-4 sm:p-6 shadow-2xl border border-slate-100 max-h-[90vh] flex flex-col overflow-hidden">
+            <div
+              className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4"
+              onClick={() => setShowHistoryModal(false)}
+            >
+              <div
+                className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-5xl p-4 sm:p-6 shadow-2xl border border-slate-100 max-h-[90vh] flex flex-col overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
                 <div className="flex items-center justify-between pb-4 border-b border-slate-100">
                   <div className="flex items-center gap-2">
                     <History className="w-5 h-5 text-blue-600" />
-                    <h3 className="font-extrabold text-lg text-slate-900">سجل حركات المخزن (صرف وإضافة)</h3>
+                    <h3 className="font-extrabold text-lg text-slate-900">
+                      سجل حركات المخزن ({filteredHistoryTransactions.length})
+                    </h3>
                   </div>
                   <button
                     onClick={() => setShowHistoryModal(false)}
-                    className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+                    className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
                   >
                     <X className="w-5 h-5" />
                   </button>
                 </div>
 
-                <div className="overflow-auto mt-4 flex-grow">
+                {/* History Search, Filters & Sort */}
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2 shrink-0">
+                  <div className="relative sm:col-span-2">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={historySearch}
+                      onChange={(e) => setHistorySearch(e.target.value)}
+                      placeholder="بحث بالموديل، اللون، القماش، المورد، أو الملاحظات..."
+                      className="w-full ps-8 pe-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
+                  <select
+                    value={historyMovementFilter}
+                    onChange={(e) => setHistoryMovementFilter(e.target.value as MovementFilterKey)}
+                    className="px-2.5 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 cursor-pointer"
+                  >
+                    <option value="all">كل الحركات</option>
+                    <option value="add">توريد / إضافة</option>
+                    <option value="deduct">صرف للمقص</option>
+                    <option value="return">مرتجع / استرداد</option>
+                    <option value="defect">عيوب قماش</option>
+                  </select>
+                  <select
+                    value={historyPeriodFilter}
+                    onChange={(e) => setHistoryPeriodFilter(e.target.value as PeriodFilterKey)}
+                    className="px-2.5 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 cursor-pointer"
+                  >
+                    <option value="all">كل الفترات</option>
+                    <option value="today">اليوم</option>
+                    <option value="7d">آخر 7 أيام</option>
+                    <option value="30d">آخر 30 يوم</option>
+                    <option value="this_month">هذا الشهر</option>
+                  </select>
+                  <select
+                    value={historySupplierFilter}
+                    onChange={(e) => setHistorySupplierFilter(e.target.value)}
+                    className="px-2.5 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 cursor-pointer"
+                  >
+                    <option value="">كل الموردين</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={historyModelFilter}
+                    onChange={(e) => setHistoryModelFilter(e.target.value)}
+                    className="px-2.5 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 cursor-pointer"
+                  >
+                    <option value="">كل الموديلات</option>
+                    {auditModelOptions.map((code) => (
+                      <option key={code} value={code}>
+                        {code}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-2 flex-wrap shrink-0">
+                  <SortBySelect
+                    value={historySortBy}
+                    onChange={(v) => setHistorySortBy(v as HistorySortKey)}
+                    options={HISTORY_SORT_OPTIONS}
+                  />
+                  {(historySearch || historyMovementFilter !== 'all' || historyPeriodFilter !== 'all' || historySupplierFilter || historyModelFilter) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHistorySearch('');
+                        setHistoryMovementFilter('all');
+                        setHistoryPeriodFilter('all');
+                        setHistorySupplierFilter('');
+                        setHistoryModelFilter('');
+                      }}
+                      className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[11px] font-bold cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>مسح الفلاتر</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="overflow-auto mt-3 flex-grow">
                   <table className="w-full text-xs text-start">
                     <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
                       <tr>
                         <th className="px-4 py-3">التاريخ والوقت</th>
                         <th className="px-4 py-3">النوع</th>
-                        <th className="px-4 py-3">كود اللون</th>
+                        <th className="px-4 py-3">كود اللون / القماش</th>
                         <th className="px-4 py-3">الكمية</th>
                         <th className="px-4 py-3">المرجع</th>
                         <th className="px-4 py-3">ملاحظات</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {fabricTransactions.length > 0 ? (
-                        fabricTransactions.map((tr) => {
+                      {filteredHistoryTransactions.length > 0 ? (
+                        filteredHistoryTransactions.map((tr) => {
                           const color = fabricColors.find((c) => c.id === tr.color_id);
-                          const isAdd = tr.operation === 'add';
+                          const fab = color ? fabrics.find((f) => f.id === color.fabric_id) : undefined;
+                          const isRet = isReturnTransaction(tr);
+                          const isAdd = tr.operation === 'add' && !isRet;
                           const isDefect = tr.operation === 'defect';
                           const badgeClass = isDefect
                             ? 'bg-amber-100 text-amber-800'
-                            : isAdd
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-rose-100 text-rose-800';
+                            : isRet
+                              ? 'bg-sky-100 text-sky-800'
+                              : isAdd
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-rose-100 text-rose-800';
                           const badgeLabel = isDefect
                             ? '⚠️ عيوب قماش'
-                            : isAdd
-                              ? '+ إضافة / مرتجع'
-                              : '- صرف للمقص';
+                            : isRet
+                              ? '↩️ مرتجع / استرداد'
+                              : isAdd
+                                ? '+ إضافة / توريد'
+                                : '- صرف للمقص';
 
                           return (
                             <tr key={tr.id} className="hover:bg-slate-50 transition">
-                              <td className="px-4 py-3 text-slate-500">{tr.timestamp}</td>
+                              <td className="px-4 py-3 text-slate-500 font-mono">{tr.timestamp}</td>
                               <td className="px-4 py-3">
                                 <span className={`px-2.5 py-0.5 rounded-full font-bold ${badgeClass}`}>
                                   {badgeLabel}
                                 </span>
                               </td>
                               <td className="px-4 py-3 font-bold text-slate-900">
-                                {color?.color_code || 'غير معروف'}
+                                <div>{color?.color_code || 'غير معروف'}</div>
+                                {fab && <div className="text-[10px] text-slate-400 font-normal">{fab.name}</div>}
                               </td>
                               <td className="px-4 py-3 font-extrabold text-slate-900">{tr.amount}</td>
                               <td className="px-4 py-3 font-semibold text-blue-700">
                                 {tr.model_code_ref || '-'}
                               </td>
-                              <td className="px-4 py-3 text-slate-500 max-w-xs truncate">
+                              <td className="px-4 py-3 text-slate-500 max-w-xs truncate" title={tr.notes || ''}>
                                 {tr.notes || '-'}
                               </td>
                             </tr>
@@ -2552,7 +3233,7 @@ export const WarehouseView: React.FC = () => {
                       ) : (
                         <tr>
                           <td colSpan={6} className="text-center py-8 text-slate-400">
-                            لا توجد حركات مسجلة بالمخزن بعد.
+                            لا توجد حركات مطابقة للفلاتر المحددة.
                           </td>
                         </tr>
                       )}
@@ -2756,21 +3437,27 @@ export const WarehouseView: React.FC = () => {
             </div>
           )}
 
-          {/* PRINT INVENTORY REPORT MODAL */}
+          {/* PRINT INVENTORY REPORT MODAL — exact A4 final print sheet preview */}
           {showPrintInventoryModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
-              <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-                <div className="p-4 sm:p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 no-print bg-slate-50">
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
+              onClick={() => setShowPrintInventoryModal(false)}
+            >
+              <div
+                className="bg-white rounded-3xl w-[96vw] sm:w-full max-w-6xl h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 no-print bg-slate-50 shrink-0">
                   <div className="flex items-center gap-3">
                     <div className="p-2.5 rounded-2xl bg-blue-600 text-white shadow-xs">
                       <Printer className="w-5 h-5" />
                     </div>
                     <div>
-                      <h3 className="font-extrabold text-lg text-slate-900">
-                        معاينة تقرير جرد مخزن الأقمشة والخامات
+                      <h3 className="font-extrabold text-base sm:text-lg text-slate-900">
+                        معاينة تقرير جرد مخزن الأقمشة والخامات (مطابق للطباعة النهائية A4)
                       </h3>
                       <p className="text-xs text-slate-500">
-                        كشف جرد مفصل لجميع الخامات والألوان: الوارد مقابل المستهلك والرصيد الفعلي والمحجوز
+                        نفس تنسيق ورقة الطباعة النهائية بالضبط قبل إرسالها للطابعة
                       </p>
                     </div>
                   </div>
@@ -2793,154 +3480,15 @@ export const WarehouseView: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Printable Content Body */}
-                <div
-                  className="flex-grow overflow-y-auto p-8 space-y-6 print:p-0"
-                  style={{ fontFamily: 'Tahoma, Arial, sans-serif' }}
-                >
-                  <div className="text-center border-b-[3px] border-double border-slate-900 pb-3">
-                    <div className="flex items-center justify-center mb-1">
-                      {isImageLogo(globalSettings?.logo) ? (
-                        <img
-                          src={globalSettings?.logo}
-                          alt={globalSettings?.site_name || 'شعار المصنع'}
-                          className="h-14 w-auto max-w-[190px] object-contain"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
-                          }}
-                        />
-                      ) : (
-                        <span className="text-4xl leading-none">
-                          {globalSettings?.logo || '🏭'}
-                        </span>
-                      )}
-                    </div>
-                    <h1 className="text-xl font-black text-slate-900 tracking-tight">
-                      {globalSettings?.site_name || 'مصنع الملابس الجاهزة'} — تقرير جرد
-                      مخزن الأقمشة والخامات
-                    </h1>
-                    <p className="text-xs text-slate-600 mt-1 font-bold">
-                      تاريخ ووقت استخراج التقرير:{' '}
-                      {new Date().toLocaleString('ar-EG', { hour12: false })}
-                    </p>
-                  </div>
-
-                  {/* Summary Bar */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 text-center">
-                    <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
-                      <span className="text-[11px] text-slate-600 block font-bold">عدد أصناف الأقمشة</span>
-                      <strong className="text-lg text-slate-900 font-black">{fabrics.length}</strong>
-                    </div>
-                    <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
-                      <span className="text-[11px] text-slate-600 block font-bold">إجمالي ألوان القماش</span>
-                      <strong className="text-lg text-slate-900 font-black">{fabricColors.length}</strong>
-                    </div>
-                    <div className="p-2.5 bg-emerald-50 rounded-md border border-emerald-400">
-                      <span className="text-[11px] text-emerald-800 block font-bold">إجمالي الوارد</span>
-                      <strong className="text-lg text-emerald-900 font-black">{auditTotals.totalReceived}</strong>
-                    </div>
-                    <div className="p-2.5 bg-rose-50 rounded-md border border-rose-400">
-                      <span className="text-[11px] text-rose-800 block font-bold">إجمالي المستهلك</span>
-                      <strong className="text-lg text-rose-900 font-black">{auditTotals.totalConsumed}</strong>
-                    </div>
-                    <div className="p-2.5 bg-amber-50 rounded-md border border-amber-400">
-                      <span className="text-[11px] text-amber-800 block font-bold">إجمالي عيوب القماش</span>
-                      <strong className="text-lg text-amber-900 font-black">{auditTotals.totalDefect}</strong>
-                    </div>
-                    <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
-                      <span className="text-[11px] text-slate-600 block font-bold">إجمالي الرصيد الفعلي (كجم/توب)</span>
-                      <strong className="text-lg text-slate-900 font-black">
-                        {fabricColors.reduce((sum, c) => sum + c.quantity, 0).toFixed(1)}
-                      </strong>
-                    </div>
-                    <div className="p-2.5 bg-slate-50 rounded-md border border-slate-400">
-                      <span className="text-[11px] text-slate-600 block font-bold">إجمالي الرصيد المحجوز</span>
-                      <strong className="text-lg text-slate-900 font-black">
-                        {fabricColors.reduce((sum, c) => sum + c.reserved_quantity, 0).toFixed(1)}
-                      </strong>
-                    </div>
-                  </div>
-
-                  {/* Comprehensive Inventory Table */}
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs text-start border-collapse">
-                      <thead className="bg-slate-100 text-slate-900 font-bold">
-                        <tr>
-                          <th className="border border-slate-800 px-3 py-2">عينة اللون / الصورة</th>
-                          <th className="border border-slate-800 px-3 py-2">الخامة الأساسية</th>
-                          <th className="border border-slate-800 px-3 py-2">كود اللون</th>
-                          <th className="border border-slate-800 px-3 py-2">اسم اللون</th>
-                          <th className="border border-slate-800 px-3 py-2 text-center">الرصيد الفعلي</th>
-                          <th className="border border-slate-800 px-3 py-2 text-center">إجمالي الوارد</th>
-                          <th className="border border-slate-800 px-3 py-2 text-center">إجمالي المستهلك</th>
-                          <th className="border border-slate-800 px-3 py-2 text-center">عيوب القماش</th>
-                          <th className="border border-slate-800 px-3 py-2 text-center">المحجوز</th>
-                          <th className="border border-slate-800 px-3 py-2 text-center">المتاح للتصميم</th>
-                          <th className="border border-slate-800 px-3 py-2 text-center">الوحدة</th>
-                          {canViewFabricPrices() && (
-                            <>
-                              <th className="border border-slate-800 px-3 py-2 text-center">سعر الوحدة</th>
-                              <th className="border border-slate-800 px-3 py-2 text-center">إجمالي القيمة التقديرية</th>
-                            </>
-                          )}
-                        </tr>
-                      </thead>
-                      <tbody className="font-semibold">
-                        {fabricColors.map((color) => {
-                          const fab = fabrics.find((f) => f.id === color.fabric_id);
-                          const avail = Number((color.quantity - color.reserved_quantity).toFixed(2));
-                          const totalVal = (color.price_per_unit || 0) * color.quantity;
-                          const auditRow = auditRowsByColorId.get(color.id);
-
-                          return (
-                            <tr key={color.id} className="hover:bg-slate-50 transition">
-                              <td className="border border-slate-800 px-3 py-2">
-                                <div className="flex items-center gap-2">
-                                  <div
-                                    className="w-6 h-6 rounded border border-slate-400 shrink-0"
-                                    style={{ backgroundColor: color.hex_code || '#94a3b8' }}
-                                    title={color.color_name}
-                                  />
-                                </div>
-                              </td>
-                              <td className="border border-slate-800 px-3 py-2 font-bold text-slate-900">{fab?.name || 'خامة'}</td>
-                              <td className="border border-slate-800 px-3 py-2 font-mono font-bold text-slate-900">{color.color_code}</td>
-                              <td className="border border-slate-800 px-3 py-2 text-slate-700">{color.color_name || '-'}</td>
-                              <td className="border border-slate-800 px-3 py-2 text-center font-bold text-slate-900">{color.quantity}</td>
-                              <td className="border border-slate-800 px-3 py-2 text-center font-bold text-emerald-800">
-                                {auditRow ? auditRow.totalReceived : color.quantity}
-                              </td>
-                              <td className="border border-slate-800 px-3 py-2 text-center font-bold text-rose-800">
-                                {auditRow ? auditRow.totalConsumed : 0}
-                              </td>
-                              <td className="border border-slate-800 px-3 py-2 text-center font-bold text-amber-800">
-                                {auditRow ? auditRow.totalDefect : 0}
-                              </td>
-                              <td className="border border-slate-800 px-3 py-2 text-center font-bold text-slate-900">{color.reserved_quantity}</td>
-                              <td className="border border-slate-800 px-3 py-2 text-center font-black text-slate-900">{avail}</td>
-                              <td className="border border-slate-800 px-3 py-2 text-center text-slate-700">{fab?.unit || 'كيلو'}</td>
-                              {canViewFabricPrices() && (
-                                <>
-                                  <td className="border border-slate-800 px-3 py-2 text-center font-mono font-bold text-slate-900">
-                                    {color.price_per_unit || 0} ج.م
-                                  </td>
-                                  <td className="border border-slate-800 px-3 py-2 text-center font-mono font-black text-slate-900">
-                                    {totalVal.toLocaleString('ar-EG')} ج.م
-                                  </td>
-                                </>
-                              )}
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div className="pt-6 border-t-2 border-slate-900 text-xs text-slate-700 flex justify-between font-bold">
-                    <span>مسؤول الجرد: ______________________</span>
-                    <span>اعتماد مدير المصنع: ______________________</span>
-                  </div>
-                </div>
+                {/* Exact final A4 print layout rendered inside iframe */}
+                <iframe
+                  title="معاينة تقرير جرد مخزن القماش"
+                  srcDoc={buildPrintDocumentHtml({
+                    ...buildFabricInventoryPrintOptions(),
+                    autoPrint: false
+                  })}
+                  className="w-full flex-1 border-0 bg-slate-200/70"
+                />
               </div>
             </div>
           )}

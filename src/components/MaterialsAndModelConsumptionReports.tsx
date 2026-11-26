@@ -228,6 +228,7 @@ type FabricColorAudit = {
   supplierId: string;
   supplierName: string;
   price: number | null;
+  consumedValue: number | null;
   totalReceived: number;
   totalConsumed: number;
   totalReturned: number;
@@ -425,8 +426,10 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
 
   /* ---------------------- fabric audit (per color) ------------------- */
   const fabricGroups = useMemo<FabricAuditGroup[]>(() => {
+    const modelById = new Map<string, DesignModel>();
     const modelByCode = new Map<string, DesignModel>();
     models.filter((model) => !model.is_deleted).forEach((model) => {
+      modelById.set(String(model.id), model);
       modelByCode.set(normalizeCode(model.model_code), model);
     });
 
@@ -449,26 +452,44 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
             const sizeBucket = new Map<string, number>();
             const typeBucket = new Map<string, number>();
             const codes = new Set<string>();
+            const currentColorPrice = Number(color.price_per_unit || 0);
             let consumed = 0;
             let returned = 0;
             let defects = 0;
             let net = 0;
+            let rawConsumedValue = 0;
+            let weightedPriceNumerator = 0;
+            let weightedPriceDenominator = 0;
 
             txns.forEach((txn) => {
+              const amount = Number(txn.amount || 0);
+              const snapPrice = Number(txn.unit_price_snapshot || 0);
+              const txnUnitPrice = snapPrice > 0 ? snapPrice : currentColorPrice;
               if (txn.operation === 'defect') {
                 // العيوب تُسجل كهدر مستقل: لا تُضاف للرصيد ولا تُحسب استهلاكاً.
-                defects += Number(txn.amount || 0);
+                defects += amount;
                 return;
               }
               const netQty = netFabricQty(txn);
               if (!netQty) return;
               net += netQty;
-              if (txn.operation === 'deduct') consumed += Number(txn.amount || 0);
-              else returned += Number(txn.amount || 0);
+              if (txn.operation === 'deduct') {
+                consumed += amount;
+                rawConsumedValue += amount * txnUnitPrice;
+                if (txnUnitPrice > 0 && amount > 0) {
+                  weightedPriceNumerator += amount * txnUnitPrice;
+                  weightedPriceDenominator += amount;
+                }
+              } else {
+                returned += amount;
+                rawConsumedValue -= amount * txnUnitPrice;
+              }
 
               const code = String(txn.model_code_ref || '').trim();
               if (code) codes.add(code);
-              const model = modelByCode.get(normalizeCode(code));
+              const model = txn.model_id
+                ? modelById.get(String(txn.model_id))
+                : modelByCode.get(normalizeCode(code));
               const sizeName = model?.size_category_id
                 ? sizeById.get(String(model.size_category_id))?.name || 'فئة مقاس غير معروفة'
                 : 'بدون فئة مقاس';
@@ -478,29 +499,33 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
             });
 
             const netConsumed = round2(Math.max(0, net - defects));
-            const total = Math.abs(netConsumed);
+            // البسط يجمع netQty (قبل طرح الهالك)، لذا نقسم على إجمالي الصافي |net| حتى لا تتجاوز النسب 100%.
+            const breakdownTotal = Math.abs(net);
             const buildBreakdown = (bucket: Map<string, number>): BreakdownItem[] =>
               Array.from(bucket.entries())
                 .map(([label, qty]) => ({
                   label,
                   qty: round2(qty),
-                  percent: percentOf(Math.abs(qty), total)
+                  percent: percentOf(Math.abs(qty), breakdownTotal)
                 }))
                 .sort((a, b) => Math.abs(b.qty) - Math.abs(a.qty));
 
             const supplierFromTxn = txns.find((txn) => txn.supplier_id)?.supplier_id || '';
             const supplierId = fabric.supplier_id || supplierFromTxn;
-            const snapshotPrice = txns.find(
-              (txn) => Number(txn.unit_price_snapshot) > 0
-            )?.unit_price_snapshot;
-            const currentColorPrice = Number(color.price_per_unit);
-            // إعطاء الأولوية لسعر اللقطة التاريخية وقت الصرف (لحفظ دقة التكلفة التاريخية) ثم السعر الحالي.
+            const weightedAvgPrice =
+              weightedPriceDenominator > 0
+                ? round2(weightedPriceNumerator / weightedPriceDenominator)
+                : 0;
+            // سعر تقييم المتبقي: السعر الحالي بالخامة ثم المتوسط المرجّح للحركات التاريخية.
             const price = canViewFabricPrices()
-              ? snapshotPrice !== undefined && Number(snapshotPrice) > 0
-                ? Number(snapshotPrice)
-                : currentColorPrice > 0
+              ? currentColorPrice > 0
                 ? currentColorPrice
+                : weightedAvgPrice > 0
+                ? weightedAvgPrice
                 : (color.price_per_unit ?? null)
+              : null;
+            const consumedValue = canViewFabricPrices()
+              ? round2(Math.max(0, rawConsumedValue))
               : null;
 
             return {
@@ -512,6 +537,7 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
               supplierId: String(supplierId || ''),
               supplierName: supplierById.get(String(supplierId || '')) || '—',
               price,
+              consumedValue,
               totalReceived: round2(Number(color.quantity || 0) + netConsumed + defects),
               totalConsumed: round2(consumed),
               totalReturned: round2(returned),
@@ -550,17 +576,29 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
             String(txn.accessory_id || '') === String(item.id) ||
             (!!txn.accessory_code && txn.accessory_code === item.code)
         );
+        const currentItemPrice = Number(item.price_per_unit || 0);
         let consumed = 0;
         let returned = 0;
+        let rawConsumedValue = 0;
+        let weightedPriceNum = 0;
+        let weightedPriceDen = 0;
         const codes = new Set<string>();
 
         txns.forEach((txn) => {
           const amount = Number(txn.amount || 0);
+          const snapPrice = Number(txn.unit_price_snapshot || 0);
+          const txnUnitPrice = snapPrice > 0 ? snapPrice : currentItemPrice;
           if (txn.operation === 'deduct') {
             consumed += amount;
+            rawConsumedValue += amount * txnUnitPrice;
+            if (txnUnitPrice > 0 && amount > 0) {
+              weightedPriceNum += amount * txnUnitPrice;
+              weightedPriceDen += amount;
+            }
             if (txn.model_code_ref) codes.add(String(txn.model_code_ref).trim());
           } else if (isAccessoryReturn(txn.notes)) {
             returned += amount;
+            rawConsumedValue -= amount * txnUnitPrice;
           }
         });
 
@@ -578,13 +616,11 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
         const net = round2(consumed - returned);
         const supplierFromTxn = txns.find((txn) => txn.supplier_id)?.supplier_id || '';
         const supplierId = item.supplier_id || supplierFromTxn;
-        const snapshotPrice = txns.find(
-          (txn) => Number(txn.unit_price_snapshot) > 0
-        )?.unit_price_snapshot;
-        const currentItemPrice = Number(item.price_per_unit);
+        const weightedAvgPrice =
+          weightedPriceDen > 0 ? round2(weightedPriceNum / weightedPriceDen) : 0;
         const price = canViewAccessoryPrices()
-          ? snapshotPrice !== undefined && Number(snapshotPrice) > 0
-            ? Number(snapshotPrice)
+          ? weightedAvgPrice > 0
+            ? weightedAvgPrice
             : currentItemPrice > 0
             ? currentItemPrice
             : (item.price_per_unit ?? null)
@@ -601,7 +637,7 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
           reserved: round2(item.reserved_quantity || 0),
           modelCodes: Array.from(codes).sort(),
           price,
-          consumedValue: price === null ? null : round2(price * net)
+          consumedValue: canViewAccessoryPrices() ? round2(Math.max(0, rawConsumedValue)) : null
         };
       })
       .sort((a, b) => b.totalConsumed - a.totalConsumed);
@@ -1098,6 +1134,9 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
                             <span className="inline-flex items-center gap-1 font-semibold">
                               <Coins size={12} /> سعر الوحدة: {money(color.price)}
                             </span>
+                            {color.consumedValue !== null && color.consumedValue > 0 ? (
+                              <span className="font-semibold">قيمة المستهلك: {money(color.consumedValue)}</span>
+                            ) : null}
                             <span className="font-semibold">قيمة المتبقي: {money(color.price * color.remaining)}</span>
                           </div>
                         ) : null}
@@ -1473,9 +1512,10 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
     const fabricById = new Map<string, Fabric>();
     fabrics.forEach((fabric) => fabricById.set(String(fabric.id), fabric));
 
-    const modelFabricTxns = fabricTransactions.filter(
-      (txn) => normalizeCode(txn.model_code_ref) === code
-    );
+    const matchesModelTxn = (txn: { model_id?: string | null; model_code_ref?: string | null }) =>
+      txn.model_id ? String(txn.model_id) === String(model.id) : normalizeCode(txn.model_code_ref) === code;
+
+    const modelFabricTxns = fabricTransactions.filter((txn) => matchesModelTxn(txn));
     type FabricEntry = {
       key: string;
       fabricName: string;
@@ -1565,21 +1605,33 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
       return entry;
     };
 
+    const rawAccessoryValues = new Map<string, number>();
+    const rawAccessoryHasValue = new Set<string>();
+    const showAccPrices = canViewAccessoryPrices();
+
     accessoryTransactions
-      .filter((txn) => normalizeCode(txn.model_code_ref) === code)
+      .filter((txn) => matchesModelTxn(txn))
       .forEach((txn) => {
         const key = accKey(txn.accessory_id, txn.accessory_code, txn.accessory_name);
         if (!key) return;
         const entry = ensureAccessory(key, txn.accessory_name, txn.accessory_code);
         const amount = Number(txn.amount || 0);
-        if (txn.operation === 'deduct') entry.actual += amount;
-        else if (isAccessoryReturn(txn.notes)) entry.actual -= amount;
-        if (
-          (entry.price === null || entry.price <= 0) &&
-          canViewAccessoryPrices() &&
-          Number(txn.unit_price_snapshot) > 0
-        ) {
-          entry.price = Number(txn.unit_price_snapshot);
+        const snapPrice = Number(txn.unit_price_snapshot || 0);
+        if (txn.operation === 'deduct') {
+          entry.actual += amount;
+          if (showAccPrices && snapPrice > 0) {
+            rawAccessoryValues.set(key, (rawAccessoryValues.get(key) || 0) + amount * snapPrice);
+            rawAccessoryHasValue.add(key);
+          }
+        } else if (isAccessoryReturn(txn.notes)) {
+          entry.actual -= amount;
+          if (showAccPrices && snapPrice > 0) {
+            rawAccessoryValues.set(key, (rawAccessoryValues.get(key) || 0) - amount * snapPrice);
+            rawAccessoryHasValue.add(key);
+          }
+        }
+        if ((entry.price === null || entry.price <= 0) && showAccPrices && snapPrice > 0) {
+          entry.price = snapPrice;
         }
       });
 
@@ -1593,17 +1645,27 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
       entry.unit = acc.unit || entry.unit;
       entry.planned = round2(entry.planned + Number(acc.planned_quantity || 0));
       entry.perPiece = Number(acc.piece_consumption || 0);
-      if ((entry.price === null || entry.price <= 0) && canViewAccessoryPrices() && Number(acc.unit_price_snapshot) > 0) {
+      if ((entry.price === null || entry.price <= 0) && showAccPrices && Number(acc.unit_price_snapshot) > 0) {
         entry.price = Number(acc.unit_price_snapshot);
       }
     });
 
     const accessories = Array.from(accessoryMap.values())
-      .map((entry) => ({
-        ...entry,
-        actual: round2(entry.actual),
-        value: entry.price === null ? null : round2(entry.price * entry.actual)
-      }))
+      .map((entry) => {
+        const actual = round2(entry.actual);
+        const value = !showAccPrices
+          ? null
+          : rawAccessoryHasValue.has(entry.key)
+          ? round2(Math.max(0, rawAccessoryValues.get(entry.key) || 0))
+          : entry.price === null
+          ? null
+          : round2(entry.price * actual);
+        return {
+          ...entry,
+          actual,
+          value
+        };
+      })
       .sort((a, b) => Math.abs(b.actual) - Math.abs(a.actual));
 
     return {

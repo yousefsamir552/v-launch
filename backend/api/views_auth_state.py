@@ -143,7 +143,7 @@ STATE_SECTION_KEYS = {
     'packagingRequirements': ('assembly_packaging', 'tracking', 'reports', 'production_wh', 'readiness'),
     'finishingRecords': ('assembly_packaging', 'tracking', 'reports', 'production_wh', 'readiness'),
     'assemblyStageRecords': ('assembly_packaging', 'tracking', 'reports', 'production_wh', 'readiness'),
-    'workshopEvaluations': ('printing', 'sewing', 'assembly_packaging', 'tracking', 'reports'),
+    'workshopEvaluations': ('qc', 'printing', 'sewing', 'assembly_packaging', 'tracking', 'reports'),
     'packagingMaterialRules': ('assembly_packaging', 'production_wh', 'reports'),
     'packagingMaterialTransactions': ('assembly_packaging', 'production_wh', 'reports'),
     'fabrics': ('fabric', 'design', 'cutting', 'qc', 'assembly_packaging', 'tracking', 'reports', 'production_wh'),
@@ -295,7 +295,10 @@ class StateViewSet(viewsets.ViewSet):
         accessory_items_qs = list(Accessory.objects.all())
         for acc in accessory_items_qs:
             ext_key = get_ext_id(acc)
-            reserved_val = live_acc_reserved.get(ext_key, live_acc_reserved.get(str(acc.pk), 0.0))
+            pk_key = str(acc.pk)
+            reserved_val = live_acc_reserved.get(ext_key, 0.0)
+            if ext_key != pk_key:
+                reserved_val = round(reserved_val + live_acc_reserved.get(pk_key, 0.0), 3)
             acc.reserved_quantity = reserved_val
 
         payload = {
@@ -312,10 +315,10 @@ class StateViewSet(viewsets.ViewSet):
             'workshops': WorkshopSerializer(Workshop.objects.all(), many=True).data,
             'fabrics': FabricSerializer(Fabric.objects.filter(is_deleted=False), many=True, context=req_ctx).data,
             'fabricColors': FabricColorSerializer(fabric_colors_qs, many=True, context=req_ctx).data,
-            'fabricTransactions': FabricTransactionSerializer(FabricTransaction.objects.select_related('color', 'fabric').all()[:300], many=True, context=req_ctx).data,
+            'fabricTransactions': FabricTransactionSerializer(FabricTransaction.objects.select_related('color', 'fabric', 'model').all()[:300], many=True, context=req_ctx).data,
             'accessoryTypes': AccessoryTypeSerializer(AccessoryType.objects.all(), many=True).data,
             'accessoryItems': AccessorySerializer(accessory_items_qs, many=True, context=req_ctx).data,
-            'accessoryTransactions': AccessoryTransactionSerializer(AccessoryTransaction.objects.select_related('accessory').all()[:300], many=True, context=req_ctx).data,
+            'accessoryTransactions': AccessoryTransactionSerializer(AccessoryTransaction.objects.select_related('accessory', 'model').all()[:300], many=True, context=req_ctx).data,
             'purchaseRequests': PurchaseRequestSerializer(
                 PurchaseRequest.objects.select_related('model', 'supplier').all(),
                 many=True, context=req_ctx
@@ -354,6 +357,7 @@ class StateViewSet(viewsets.ViewSet):
             ).data,
             'internalMessages': InternalMessageSerializer(visible_messages, many=True).data,
             'auditLogs': AuditLogSerializer(visible_logs, many=True, context=req_ctx).data,
+            'canViewPreviousModels': can_view_previous_models(current_profile),
         }
         # كل قسم لا يملك المستخدم صلاحية عرضه يُعاد كقائمة فارغة (نفس الشكل، بلا بيانات).
         return Response(filter_state_by_sections(payload, visible_sections_for(current_profile)))

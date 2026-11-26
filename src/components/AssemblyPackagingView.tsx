@@ -34,6 +34,7 @@ import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle'
 import { currentStageLabel } from '../utils/completedModels';
 import { modelPackagingPieces } from '../utils/packagingMaterials';
 import { printAssemblyProductionSheet } from '../utils/printAssemblySheet';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
 import {
   InlineEvaluationDraft,
   InlineWorkshopEvaluationBox,
@@ -41,6 +42,17 @@ import {
   WorkshopEvaluationTarget,
   createInitialEvaluationDraft
 } from './WorkshopEvaluationModal';
+
+type AssemblySortKey = 'code_asc' | 'code_desc' | 'qty_desc' | 'qty_asc' | 'newest' | 'oldest';
+
+const ASSEMBLY_SORT_OPTIONS: { value: AssemblySortKey; label: string }[] = [
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' },
+  { value: 'qty_desc', label: 'الكمية (الأكثر أولاً)' },
+  { value: 'qty_asc', label: 'الكمية (الأقل أولاً)' },
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' }
+];
 
 const CUSTOM_WORKSHOP_OPTION = '__custom__';
 
@@ -1651,13 +1663,16 @@ export const AssemblyPackagingView: React.FC = () => {
     getPartStages,
     hasPermission,
     hasAssemblyPackagingAccess,
+    canViewPreviousModels,
     exportAssemblyPackagingCsv
   } = useApp();
 
   const canEdit = hasAssemblyPackagingAccess(true);
   const [activeTab, setActiveTab] = useState<TabKey>('requirements');
   const [searchTerm, setSearchTerm] = useState('');
+  const [sortBy, setSortBy] = useState<AssemblySortKey>('code_asc');
   const [showCompleted, setShowCompleted] = useState(false);
+  const effectiveShowCompleted = showCompleted && canViewPreviousModels();
 
   const requirementCompleteMap = useMemo(() => {
     const map: Record<string, boolean> = {};
@@ -1742,21 +1757,30 @@ export const AssemblyPackagingView: React.FC = () => {
   const pendingCountForTab = (tab: TabKey) =>
     visibleModels.filter((model) => modelInTab(model, tab) && !isDoneForTab(model, tab)).length;
 
+  const completedCountForTab = (tab: TabKey) =>
+    visibleModels.filter((model) => isDoneForTab(model, tab)).length;
+
   const sortedModels = useMemo(() => {
     return visibleModels
-      .filter((model) => modelInTab(model, activeTab))
-      .filter((model) => showCompleted || !isDoneForTab(model, activeTab))
+      .filter((model) =>
+        effectiveShowCompleted
+          ? isDoneForTab(model, activeTab)
+          : modelInTab(model, activeTab) && !isDoneForTab(model, activeTab)
+      )
       .sort((a, b) => {
-        const aDone = isDoneForTab(a, activeTab) ? 1 : 0;
-        const bDone = isDoneForTab(b, activeTab) ? 1 : 0;
-        if (aDone !== bDone) return aDone - bDone;
-        return a.model_code.localeCompare(b.model_code);
+        if (sortBy === 'code_desc') return compareNatural(b.model_code, a.model_code);
+        if (sortBy === 'qty_desc') return Number(b.target_cut_quantity || 0) - Number(a.target_cut_quantity || 0);
+        if (sortBy === 'qty_asc') return Number(a.target_cut_quantity || 0) - Number(b.target_cut_quantity || 0);
+        if (sortBy === 'newest') return toTimestamp(b.created_at) - toTimestamp(a.created_at);
+        if (sortBy === 'oldest') return toTimestamp(a.created_at) - toTimestamp(b.created_at);
+        return compareNatural(a.model_code, b.model_code);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     visibleModels,
     activeTab,
-    showCompleted,
+    effectiveShowCompleted,
+    sortBy,
     requirementCompleteMap,
     finishingRecords,
     assemblyStageRecords,
@@ -1814,13 +1838,14 @@ export const AssemblyPackagingView: React.FC = () => {
               className="w-full ps-9 pe-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-orange-300"
             />
           </div>
+          <SortBySelect
+            value={sortBy}
+            onChange={(v) => setSortBy(v as AssemblySortKey)}
+            options={ASSEMBLY_SORT_OPTIONS}
+          />
           <CompletedModelsToggle
-            enabled={showCompleted}
-            count={
-              visibleModels.filter(
-                (model) => modelInTab(model, activeTab) && isDoneForTab(model, activeTab)
-              ).length
-            }
+            enabled={effectiveShowCompleted}
+            count={completedCountForTab(activeTab)}
             onChange={setShowCompleted}
             tone="orange"
           />

@@ -31,8 +31,8 @@ def _apply_post_cutting_requirement_stock_delta(
     part_label = (part_name or 'متطلب قماش').strip()
     supplier_obj = resolve_supplier_link(
         None,
-        getattr(color_obj, 'supplier_id_ref', None),
-        getattr(color_obj, 'supplier', None),
+        getattr(color_obj.fabric, 'supplier_id_ref', None) if color_obj.fabric_id else None,
+        getattr(color_obj.fabric, 'supplier', None) if color_obj.fabric_id else None,
     )
 
     if delta > 0:
@@ -51,6 +51,7 @@ def _apply_post_cutting_requirement_stock_delta(
         txn = FabricTransaction.objects.create(
             color=color_obj,
             fabric=color_obj.fabric,
+            model=model,
             operation='deduct',
             amount=delta,
             model_code_ref=model.model_code,
@@ -72,6 +73,7 @@ def _apply_post_cutting_requirement_stock_delta(
         txn = FabricTransaction.objects.create(
             color=color_obj,
             fabric=color_obj.fabric,
+            model=model,
             operation='add',
             amount=refund_amt,
             model_code_ref=model.model_code,
@@ -111,6 +113,31 @@ def _apply_post_cutting_requirement_stock_delta(
         'color_label': f'{fabric_name} - {color_obj.color_name}',
         'unit': unit_label,
     }
+
+
+def _archive_soft_deleted_model_code(old_model):
+    """عند إعادة استخدام كود موديل محذوف ناعماً، نؤرشف كود القديم ونثبّت علاقة
+    حركاته به بدلاً من حذفه نهائياً حتى لا يختلط استهلاكه ولا تقاريره بالموديل الجديد."""
+    old_code = (old_model.model_code or '').strip()
+    if old_code:
+        FabricTransaction.objects.filter(
+            model__isnull=True, model_code_ref__iexact=old_code
+        ).update(model=old_model)
+        AccessoryTransaction.objects.filter(
+            model__isnull=True, model_code_ref__iexact=old_code
+        ).update(model=old_model)
+        PackagingMaterialTransaction.objects.filter(
+            model__isnull=True, model_code_ref__iexact=old_code
+        ).update(model=old_model)
+    base = (old_code or 'DEL')[:75]
+    archived = f"{base}__DEL_{old_model.pk}"
+    suffix = 1
+    while ModelItem.objects.filter(model_code__iexact=archived).exclude(pk=old_model.pk).exists():
+        archived = f"{base}__DEL_{old_model.pk}_{suffix}"
+        suffix += 1
+    old_model.model_code = archived
+    old_model._skip_timeline_signal = True
+    old_model.save(update_fields=['model_code'])
 
 
 class ModelItemViewSet(BasePermViewSet):
@@ -210,7 +237,7 @@ class ModelItemViewSet(BasePermViewSet):
         if existing and not existing.is_deleted:
             return Response({'detail': 'كود الموديل مستخدم بالفعل!'}, status=status.HTTP_400_BAD_REQUEST)
         elif existing and existing.is_deleted:
-            existing.delete()
+            _archive_soft_deleted_model_code(existing)
 
         profile = getattr(request, 'user_profile', None)
         can_design_notes = True if not profile else profile.has_perm('can_add_design_notes')
@@ -335,27 +362,33 @@ class ModelItemViewSet(BasePermViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             # تعارض محتمل مع موديل محذوف مؤقتاً يحمل نفس الكود (unique constraint):
-            # يُحذف نهائياً تماماً كما يفعل إنشاء الموديل، لتفادي خطأ حفظ غير واضح.
+            # نؤرشف كود الموديل المحذوف ونحافظ على ارتباط حركاته القديمة به حتى لا تختلط بالموديل الجديد.
             soft_deleted_collision = ModelItem.objects.filter(
                 model_code__iexact=clean_code, is_deleted=True
             ).exclude(pk=model.pk).first()
             if soft_deleted_collision:
-                soft_deleted_collision.delete()
+                _archive_soft_deleted_model_code(soft_deleted_collision)
             if clean_code != model.model_code:
                 old_code = model.model_code
-                FabricTransaction.objects.filter(model_code_ref__iexact=old_code).update(
-                    model_code_ref=clean_code
+                txn_q = models.Q(model=model) | models.Q(model__isnull=True, model_code_ref__iexact=old_code)
+                FabricTransaction.objects.filter(txn_q).update(
+                    model=model,
+                    model_code_ref=clean_code,
                 )
-                AccessoryTransaction.objects.filter(model_code_ref__iexact=old_code).update(
-                    model_code_ref=clean_code
+                AccessoryTransaction.objects.filter(txn_q).update(
+                    model=model,
+                    model_code_ref=clean_code,
                 )
-                PackagingMaterialTransaction.objects.filter(model_code_ref__iexact=old_code).update(
-                    model_code_ref=clean_code
+                PackagingMaterialTransaction.objects.filter(txn_q).update(
+                    model=model,
+                    model_code_ref=clean_code,
                 )
                 Accessory.objects.filter(custom_model_code__iexact=old_code).update(
                     custom_model_code=clean_code
                 )
-                PurchaseRequest.objects.filter(model_code_text__iexact=old_code).update(
+                PurchaseRequest.objects.filter(
+                    models.Q(model=model) | models.Q(model__isnull=True, model_code_text__iexact=old_code)
+                ).update(
                     model_code_text=clean_code
                 )
                 model.model_code = clean_code
@@ -478,7 +511,11 @@ class ModelItemViewSet(BasePermViewSet):
             )
             for model in deleted_models:
                 summary = refund_model_consumed_inventory(model, user_name)
-                if not (summary['fabric_colors_count'] or summary['accessories_count']):
+                if not (
+                    summary['fabric_colors_count']
+                    or summary['accessories_count']
+                    or summary.get('packaging_materials_count', 0)
+                ):
                     continue
                 refunded_models.append({
                     'model_id': get_ext_id(model),
@@ -489,11 +526,15 @@ class ModelItemViewSet(BasePermViewSet):
                     'accessories_count': summary['accessories_count'],
                     'accessories_total_quantity': summary['accessories_total_quantity'],
                     'accessory_details': summary['accessory_details'],
+                    'packaging_materials_count': summary.get('packaging_materials_count', 0),
+                    'packaging_total_quantity': summary.get('packaging_total_quantity', 0),
+                    'packaging_details': summary.get('packaging_details', []),
                 })
             sync_reserved_quantities()
 
         total_fab_qty = round(sum(m['fabric_total_quantity'] for m in refunded_models), 2)
         total_acc_qty = round(sum(m['accessories_total_quantity'] for m in refunded_models), 2)
+        total_pack_qty = round(sum(m.get('packaging_total_quantity', 0) for m in refunded_models), 3)
         set_audit_meta(
             request,
             section='الإعدادات',
@@ -501,12 +542,13 @@ class ModelItemViewSet(BasePermViewSet):
             target_name='الموديلات المحذوفة',
             details=(
                 f"فحص واسترداد أرصدة الموديلات المحذوفة: تم استرداد {len(refunded_models)} موديل "
-                f"(قماش: {total_fab_qty:g}، إكسسوارات: {total_acc_qty:g})"
+                f"(قماش: {total_fab_qty:g}، إكسسوارات: {total_acc_qty:g}، خامات تغليف: {total_pack_qty:g})"
             ),
             changes=[
                 {'field': 'refunded_models', 'label': 'الموديلات المستردة', 'old': '0', 'new': str(len(refunded_models))},
                 {'field': 'fabric_quantity', 'label': 'كمية القماش المستردة', 'old': '0', 'new': f'{total_fab_qty:g}'},
                 {'field': 'accessories_quantity', 'label': 'كمية الإكسسوارات المستردة', 'old': '0', 'new': f'{total_acc_qty:g}'},
+                {'field': 'packaging_quantity', 'label': 'كمية خامات التغليف المستردة', 'old': '0', 'new': f'{total_pack_qty:g}'},
             ],
         )
 
@@ -516,6 +558,7 @@ class ModelItemViewSet(BasePermViewSet):
             'total_models_refunded': len(refunded_models),
             'total_fabric_quantity': total_fab_qty,
             'total_accessories_quantity': total_acc_qty,
+            'total_packaging_quantity': total_pack_qty,
             'refunded_models': refunded_models,
         })
 
@@ -658,16 +701,23 @@ class ModelItemViewSet(BasePermViewSet):
             # Optional: if reqQuantities or accQuantities were sent in the same payload, apply them first
             req_quantities = request.data.get('reqQuantities') or {}
             acc_quantities = request.data.get('accQuantities') or {}
-            for req_id, qty in req_quantities.items():
-                req_obj = resolve_by_id(ModelRequirement, req_id)
-                if req_obj and req_obj.model_id == model.id:
-                    req_obj.planned_quantity = max(0.0, float(qty or 0))
-                    req_obj.save()
-            for acc_id, qty in acc_quantities.items():
-                acc_obj = resolve_by_id(ModelAccessory, acc_id)
-                if acc_obj and acc_obj.model_id == model.id and not acc_obj.is_issued:
-                    acc_obj.planned_quantity = max(0.0, float(qty or 0))
-                    acc_obj.save()
+            try:
+                for req_id, qty in req_quantities.items():
+                    req_obj = resolve_by_id(ModelRequirement, req_id)
+                    if req_obj and req_obj.model_id == model.id:
+                        req_obj.planned_quantity = parse_finite_float(
+                            qty, 'كمية القماش المطلوبة', default=0.0, minimum=0.0
+                        )
+                        req_obj.save()
+                for acc_id, qty in acc_quantities.items():
+                    acc_obj = resolve_by_id(ModelAccessory, acc_id)
+                    if acc_obj and acc_obj.model_id == model.id and not acc_obj.is_issued:
+                        acc_obj.planned_quantity = parse_finite_float(
+                            qty, 'كمية الإكسسوار المطلوبة', default=0.0, minimum=0.0
+                        )
+                        acc_obj.save()
+            except ValueError as exc:
+                return Response({'detail': str(exc), 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
             reqs = list(model.requirements.select_related('color', 'color__fabric').all())
             needed_by_color = {}
@@ -711,6 +761,7 @@ class ModelItemViewSet(BasePermViewSet):
                     FabricTransaction.objects.create(
                         color=col,
                         fabric=col.fabric,
+                        model=model,
                         model_code_ref=model.model_code,
                         notes=f"صرف خامات للقص - قطعة: {req.part_name}",
                         operation='deduct',
@@ -917,6 +968,7 @@ class ModelItemViewSet(BasePermViewSet):
                     accessory_name=item.name,
                     operation='deduct',
                     amount=qty,
+                    model=model,
                     model_code_ref=model.model_code,
                     notes=txn_notes,
                     timestamp=now_str,
@@ -1125,6 +1177,7 @@ class ModelItemViewSet(BasePermViewSet):
                 txn = FabricTransaction.objects.create(
                     color=col,
                     fabric=col.fabric,
+                    model=model,
                     operation='add',
                     amount=quantity,
                     unit_price_snapshot=float(
@@ -1154,6 +1207,7 @@ class ModelItemViewSet(BasePermViewSet):
                 defect_txn = FabricTransaction.objects.create(
                     color=col,
                     fabric=col.fabric,
+                    model=model,
                     operation='defect',
                     amount=defect_quantity,
                     unit_price_snapshot=float(
@@ -1359,7 +1413,13 @@ class ModelItemViewSet(BasePermViewSet):
         can_edit_cost = can_edit_department_prices(profile, 'edit_sewing_prices')
 
         workshop_name = request.data.get('workshop_name') or request.data.get('workshopName')
-        pieces_count = int(request.data.get('pieces_count') or request.data.get('piecesCount') or 0)
+        try:
+            raw_pieces = request.data.get('pieces_count')
+            if raw_pieces in (None, ''):
+                raw_pieces = request.data.get('piecesCount')
+            pieces_count = int(parse_finite_float(raw_pieces, 'عدد القطع', default=0.0, minimum=0.0))
+        except ValueError as exc:
+            return Response({'detail': str(exc), 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         expected_date = request.data.get('expected_delivery_date') or request.data.get('expectedDeliveryDate')
         if expected_date and not isinstance(expected_date, date):
             expected_date = parse_date(str(expected_date)[:10])
@@ -1367,7 +1427,7 @@ class ModelItemViewSet(BasePermViewSet):
         user = request.data.get('user') or request.data.get('user_name') or 'مدير الإنتاج'
         piece_type = request.data.get('piece_type') or request.data.get('pieceType') or 'shirt'
         piece_label = request.data.get('piece_label') or request.data.get('pieceLabel')
-        client_id = request.data.get('id') or request.data.get('client_id')
+        client_id = request.data.get('id') or request.data.get('client_id') or request.data.get('request_id')
 
         # حقول السعر: تُتجاهل تماماً على الإنشاء لغير المصرح لهم، ويُرفض التعديل الصريح بـ 403.
         has_cost_payload = any(
@@ -1394,17 +1454,19 @@ class ModelItemViewSet(BasePermViewSet):
         if client_id:
             existing_disp = SewingDispatch.objects.filter(client_id=str(client_id)).first()
             if existing_disp:
-                model.refresh_from_db()
-                return Response({
-                    'model': ModelItemSerializer(model, context={'request': request}).data,
-                    'dispatch': SewingDispatchSerializer(existing_disp, context={'request': request}).data,
-                }, status=status.HTTP_200_OK)
+                return Response(
+                    SewingDispatchSerializer(existing_disp, context={'request': request}).data,
+                    status=status.HTTP_200_OK,
+                )
 
-        disp = dispatch_model_to_sewing_service(
-            get_ext_id(model), workshop_name, pieces_count, expected_date, notes, user, piece_type,
-            piece_label, client_id=client_id, cost_per_piece=cost_per_piece, total_cost=total_cost,
-            workshop=resolve_workshop_link(request.data, workshop_name),
-        )
+        try:
+            disp = dispatch_model_to_sewing_service(
+                get_ext_id(model), workshop_name, pieces_count, expected_date, notes, user, piece_type,
+                piece_label, client_id=client_id, cost_per_piece=cost_per_piece, total_cost=total_cost,
+                workshop=resolve_workshop_link(request.data, workshop_name),
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc), 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         log_price_change(
             request, 'قسم المكن والخياطة',
             f'{model.model_code} - {disp.workshop_name}',

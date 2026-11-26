@@ -70,7 +70,7 @@ import { qcSavedColorMatches } from '../utils/qcCutDefaults';
  * ربط مرحلة التنبيه بمفتاح الصلاحية المطلوبة لرؤيته.
  * التنبيهات لا تظهر إلا لمن يملك صلاحية القسم — حساب sudo يرى كل شيء.
  */
-import { NOTIFICATION_STAGE_PERMISSION, FlashMessage, modelPartsOf, seedModelPartStages, patchModelPartStage, patchModelPartsStage, DEFAULT_GLOBAL_SETTINGS, DESIGN_STAGES, PRE_PRODUCTION_STAGES, auditHeadersForModel, CuttingRecordUpdate, AppInternalContext } from './appContextTypes';
+import { NOTIFICATION_STAGE_PERMISSION, FlashMessage, modelPartsOf, seedModelPartStages, patchModelPartStage, patchModelPartsStage, DEFAULT_GLOBAL_SETTINGS, DESIGN_STAGES, PRE_PRODUCTION_STAGES, auditHeadersForModel, CuttingRecordUpdate, AppInternalContext, makeIdempotentRequestId } from './appContextTypes';
 
 export const buildCuttingQcActions = (ctx: AppInternalContext) => {
   const {
@@ -93,8 +93,9 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
     partType?: GarmentPart;
     isSubCut?: boolean;
     subCutLabel?: string;
-  }) => {
-    const recId = 'cut-' + Date.now();
+    clientId?: string;
+  }): Promise<boolean> => {
+    const recId = data.clientId || makeIdempotentRequestId('cut');
     const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
     const cleanNotes = canAddCuttingNotes() ? (data.notes?.trim() || '') : '';
     const existingModelSpreads = cuttingRecords.filter((r) => r.model_id === data.modelId);
@@ -260,9 +261,10 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
       })
     );
 
-    api
+    return api
       .createCuttingRecord({
         id: recId,
+        client_id: recId,
         model_id: data.modelId,
         spread_number: spreadNumber,
         part_type: partType,
@@ -289,10 +291,12 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
           logAction('القص', `تسجيل فرشة قص #${spreadNumber} للموديل: ${totalPieces} قطعة (${totalLayersCount} راق × ${piecesPerLayer} قطعة/راق | إجمالي وزن الراق: ${layerWeight} كجم)`);
           addFlashMessage(`تم تسجيل الفرشة رقم #${spreadNumber} بنجاح (${totalPieces} قطعة مقصوصة)`);
         }
+        return true;
       })
       .catch((err) => {
         refreshState();
         addFlashMessage(err.message || 'فشل تسجيل الفرشة في الباك إند', 'danger');
+        return false;
       });
   };
 

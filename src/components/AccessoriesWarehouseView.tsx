@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { makeIdempotentRequestId } from '../context/appContextTypes';
 import { api } from '../api/client';
 import {
   Sparkles,
@@ -26,14 +27,38 @@ import {
 } from 'lucide-react';
 import { AccessoryItem, AccessoryUnit, AccessoryUsageType, DesignModel, ModelAccessory, Supplier } from '../types';
 import {
+  buildPrintDocumentHtml,
   escapeHtml,
-  isImageLogo,
   logClientPrintAction,
   openUnifiedPrintWindow,
   renderSignatureBar,
-  safeImageSrc
+  safeImageSrc,
+  UnifiedPrintDocumentOptions
 } from '../utils/printShared';
 import { printAccessoryIssueOrder } from '../utils/printAccessoryIssueOrder';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
+import { useModalBackHandler } from '../utils/mobileBackNav';
+
+type AccSortKey = 'code_asc' | 'code_desc' | 'qty_desc' | 'qty_asc' | 'avail_desc' | 'avail_asc';
+type PermitSortKey = 'code_asc' | 'code_desc' | 'lines_desc' | 'lines_asc' | 'newest' | 'oldest';
+
+const ACC_SORT_OPTIONS: { value: AccSortKey; label: string }[] = [
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' },
+  { value: 'qty_desc', label: 'الرصيد الفعلي (الأكثر)' },
+  { value: 'qty_asc', label: 'الرصيد الفعلي (الأقل)' },
+  { value: 'avail_desc', label: 'المتاح (الأكثر)' },
+  { value: 'avail_asc', label: 'المتاح (الأقل)' }
+];
+
+const PERMIT_SORT_OPTIONS: { value: PermitSortKey; label: string }[] = [
+  { value: 'code_asc', label: 'كود الموديل (تصاعدي)' },
+  { value: 'code_desc', label: 'كود الموديل (تنازلي)' },
+  { value: 'lines_desc', label: 'عدد البنود (الأكثر)' },
+  { value: 'lines_asc', label: 'عدد البنود (الأقل)' },
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' }
+];
 
 type PermitGroup = { model: DesignModel; lines: ModelAccessory[] };
 
@@ -77,6 +102,8 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const [selectedTypeId, setSelectedTypeId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showLowStockOnly, setShowLowStockOnly] = useState<boolean>(false);
+  const [accSortBy, setAccSortBy] = useState<AccSortKey>('code_asc');
+  const [permitSortBy, setPermitSortBy] = useState<PermitSortKey>('code_asc');
 
   // Modals state
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
@@ -139,6 +166,15 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const [reorderQty, setReorderQty] = useState<number>(100);
   const [reorderNotes, setReorderNotes] = useState<string>('');
   const [copiedOrder, setCopiedOrder] = useState<boolean>(false);
+
+  useModalBackHandler(showAddModal, () => setShowAddModal(false));
+  useModalBackHandler(showEditModal, () => setShowEditModal(false));
+  useModalBackHandler(showAddTypeModal, () => setShowAddTypeModal(false));
+  useModalBackHandler(showTransactionModal, () => setShowTransactionModal(false));
+  useModalBackHandler(showPrintInventoryModal, () => setShowPrintInventoryModal(false));
+  useModalBackHandler(showPrintAlertsModal, () => setShowPrintAlertsModal(false));
+  useModalBackHandler(showHistoryModal, () => setShowHistoryModal(false));
+  useModalBackHandler(Boolean(reorderItem), () => setReorderItem(null));
 
   // New Accessory Form state (dynamic minThreshold + optional price for authorized users)
   const [addForm, setAddForm] = useState({
@@ -216,25 +252,36 @@ export const AccessoriesWarehouseView: React.FC = () => {
   const stockDeficits = lowStockItems.filter((e) => e.item.usage_type === 'stock');
   const modelDeficits = lowStockItems.filter((e) => e.item.usage_type === 'custom_model');
 
-  // Filtered accessories for the main list/grid
-  const filteredAccessories = accessoryItems.filter((item) => {
-    if (selectedTypeId !== 'all' && item.type_id !== selectedTypeId) return false;
+  // Filtered & sorted accessories for the main list/grid
+  const filteredAccessories = accessoryItems
+    .filter((item) => {
+      if (selectedTypeId !== 'all' && item.type_id !== selectedTypeId) return false;
 
-    if (showLowStockOnly) {
-      const isItemInLowList = lowStockItems.some((e) => e.item.id === item.id);
-      if (!isItemInLowList) return false;
-    }
+      if (showLowStockOnly) {
+        const isItemInLowList = lowStockItems.some((e) => e.item.id === item.id);
+        if (!isItemInLowList) return false;
+      }
 
-    if (searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
-      const matchName = item.name.toLowerCase().includes(q);
-      const matchCode = item.code.toLowerCase().includes(q);
-      const matchModel = item.custom_model_code?.toLowerCase().includes(q);
-      return matchName || matchCode || matchModel;
-    }
+      if (searchQuery.trim()) {
+        const q = searchQuery.trim().toLowerCase();
+        const matchName = item.name.toLowerCase().includes(q);
+        const matchCode = item.code.toLowerCase().includes(q);
+        const matchModel = item.custom_model_code?.toLowerCase().includes(q);
+        return matchName || matchCode || matchModel;
+      }
 
-    return true;
-  });
+      return true;
+    })
+    .sort((a, b) => {
+      const availA = Number((a.quantity - a.reserved_quantity).toFixed(2));
+      const availB = Number((b.quantity - b.reserved_quantity).toFixed(2));
+      if (accSortBy === 'code_desc') return compareNatural(b.code, a.code);
+      if (accSortBy === 'qty_desc') return Number(b.quantity || 0) - Number(a.quantity || 0);
+      if (accSortBy === 'qty_asc') return Number(a.quantity || 0) - Number(b.quantity || 0);
+      if (accSortBy === 'avail_desc') return availB - availA;
+      if (accSortBy === 'avail_asc') return availA - availB;
+      return compareNatural(a.code, b.code);
+    });
 
   const totalItemsCount = accessoryItems.length;
   const totalQuantitySum = accessoryItems.reduce((acc, it) => acc + it.quantity, 0);
@@ -302,16 +349,20 @@ export const AccessoriesWarehouseView: React.FC = () => {
       );
     };
 
-    const sortByCode = (a: PermitGroup, b: PermitGroup, desc = false) => {
-      const cmp = String(a.model.model_code || '').localeCompare(String(b.model.model_code || ''));
-      return desc ? -cmp : cmp;
+    const sortPermits = (a: PermitGroup, b: PermitGroup) => {
+      if (permitSortBy === 'code_desc') return compareNatural(b.model.model_code, a.model.model_code);
+      if (permitSortBy === 'lines_desc') return b.lines.length - a.lines.length;
+      if (permitSortBy === 'lines_asc') return a.lines.length - b.lines.length;
+      if (permitSortBy === 'newest') return toTimestamp(b.model.created_at) - toTimestamp(a.model.created_at);
+      if (permitSortBy === 'oldest') return toTimestamp(a.model.created_at) - toTimestamp(b.model.created_at);
+      return compareNatural(a.model.model_code, b.model.model_code);
     };
 
     return {
-      pending: Object.values(pendingByModel).filter(matches).sort((a, b) => sortByCode(a, b)),
-      issued: Object.values(issuedByModel).filter(matches).sort((a, b) => sortByCode(a, b, true))
+      pending: Object.values(pendingByModel).filter(matches).sort(sortPermits),
+      issued: Object.values(issuedByModel).filter(matches).sort(sortPermits)
     };
-  }, [accessories, activeModels, permitSearch]);
+  }, [accessories, activeModels, permitSearch, permitSortBy]);
 
   const pendingPermitsCount = permitGroups.pending.length;
 
@@ -411,28 +462,39 @@ export const AccessoriesWarehouseView: React.FC = () => {
   };
 
   const submitLockRef = React.useRef(false);
+  const pendingTransReqIdRef = React.useRef<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleConfirmTransaction = (e: React.FormEvent) => {
+  const handleConfirmTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeItem || submitLockRef.current) return;
+    if (!activeItem || submitLockRef.current || isSubmitting) return;
+    if (!pendingTransReqIdRef.current) {
+      pendingTransReqIdRef.current = makeIdempotentRequestId('acc-tr');
+    }
+    const reqId = pendingTransReqIdRef.current;
     submitLockRef.current = true;
+    setIsSubmitting(true);
     try {
       const res = recordAccessoryTransaction({
         accessoryId: activeItem.id,
         operation: transForm.operation,
         amount: Number(transForm.amount),
         modelCodeRef: transForm.modelCodeRef,
-        notes: transForm.notes
+        notes: transForm.notes,
+        clientId: reqId
       });
 
       if (res.success) {
-        setShowTransactionModal(false);
-        setActiveItem(null);
+        const savedOk = res.promise ? await res.promise : true;
+        if (savedOk) {
+          pendingTransReqIdRef.current = null;
+          setShowTransactionModal(false);
+          setActiveItem(null);
+        }
       }
     } finally {
-      window.setTimeout(() => {
-        submitLockRef.current = false;
-      }, 600);
+      submitLockRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -543,30 +605,39 @@ export const AccessoriesWarehouseView: React.FC = () => {
     openWhatsAppOrder(sup?.phone, sup?.whatsapp_group_link, text);
   };
 
-  const handleConfirmReorderReceive = (e: React.FormEvent) => {
+  const handleConfirmReorderReceive = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!reorderItem || submitLockRef.current) return;
+    if (!reorderItem || submitLockRef.current || isSubmitting) return;
 
     const amount = Number(reorderQty);
     if (amount <= 0) return;
 
+    if (!pendingTransReqIdRef.current) {
+      pendingTransReqIdRef.current = makeIdempotentRequestId('acc-tr');
+    }
+    const reqId = pendingTransReqIdRef.current;
     submitLockRef.current = true;
+    setIsSubmitting(true);
     try {
       const res = recordAccessoryTransaction({
         accessoryId: reorderItem.item.id,
         operation: 'add',
         amount,
         modelCodeRef: reorderItem.item.custom_model_code || 'إعادة توريد',
-        notes: `طلبية توريد - المورد: ${reorderItem.supplier?.name || 'غير محدد'}. ${reorderNotes}`
+        notes: `طلبية توريد - المورد: ${reorderItem.supplier?.name || 'غير محدد'}. ${reorderNotes}`,
+        clientId: reqId
       });
 
       if (res.success) {
-        setReorderItem(null);
+        const savedOk = res.promise ? await res.promise : true;
+        if (savedOk) {
+          pendingTransReqIdRef.current = null;
+          setReorderItem(null);
+        }
       }
     } finally {
-      window.setTimeout(() => {
-        submitLockRef.current = false;
-      }, 600);
+      submitLockRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -695,12 +766,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
     permitStatusFilter === 'pending' ? permitGroups.pending : permitGroups.issued;
   const permitIssuedMode = permitStatusFilter === 'issued';
 
-  const handlePrintAccessoriesInventory = () => {
-    logClientPrintAction(
-      'مخزن الإكسسوارات',
-      'طباعة تقرير جرد مخزن الإكسسوارات والمستلزمات',
-      'جرد الإكسسوارات'
-    );
+  const buildAccessoriesInventoryPrintOptions = (): UnifiedPrintDocumentOptions => {
     const showPrices = canViewAccessoryPrices();
     const totalQty = accessoryItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
     const totalReserved = accessoryItems.reduce((sum, item) => sum + Number(item.reserved_quantity || 0), 0);
@@ -800,7 +866,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
       ${renderSignatureBar(['أمين مخزن الإكسسوارات', 'المراجعة والجرد', 'اعتماد مدير المصنع'], true)}
     `;
 
-    openUnifiedPrintWindow({
+    return {
       documentTitle: 'كشف جرد مخزن الإكسسوارات والمستلزمات',
       mode: 'multi-page-table',
       orientation: 'landscape',
@@ -818,15 +884,19 @@ export const AccessoriesWarehouseView: React.FC = () => {
         table.acc-inv-table th, table.acc-inv-table td { padding: 3px 4px; }
       `,
       popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة كشف جرد الإكسسوارات.'
-    });
+    };
   };
 
-  const handlePrintAccessoriesAlerts = () => {
+  const handlePrintAccessoriesInventory = () => {
     logClientPrintAction(
       'مخزن الإكسسوارات',
-      'طباعة ورقة طلبيات نواقص الإكسسوارات للمشتريات',
-      'نواقص الإكسسوارات'
+      'طباعة تقرير جرد مخزن الإكسسوارات والمستلزمات',
+      'جرد الإكسسوارات'
     );
+    openUnifiedPrintWindow(buildAccessoriesInventoryPrintOptions());
+  };
+
+  const buildAccessoriesAlertsPrintOptions = (): UnifiedPrintDocumentOptions => {
     const scopeLabel =
       modalAlertTab === 'stock'
         ? 'إكسسوارات مستمرة (Stock)'
@@ -936,7 +1006,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
       ${renderSignatureBar(['أمين مخزن الإكسسوارات', 'مسؤول المشتريات', 'اعتماد مدير الإنتاج'], true)}
     `;
 
-    openUnifiedPrintWindow({
+    return {
       documentTitle: 'كشف طلبيات ونواقص الإكسسوارات العاجلة',
       mode: 'multi-page-table',
       orientation: 'landscape',
@@ -952,7 +1022,16 @@ export const AccessoriesWarehouseView: React.FC = () => {
         .acc-thumb { width: 24px; height: 24px; object-fit: contain; border: 1px solid #cbd5e1; border-radius: 3px; background: #fff; display: block; margin: 0 auto; }
       `,
       popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة ورقة النواقص.'
-    });
+    };
+  };
+
+  const handlePrintAccessoriesAlerts = () => {
+    logClientPrintAction(
+      'مخزن الإكسسوارات',
+      'طباعة ورقة طلبيات نواقص الإكسسوارات للمشتريات',
+      'نواقص الإكسسوارات'
+    );
+    openUnifiedPrintWindow(buildAccessoriesAlertsPrintOptions());
   };
 
   return (
@@ -1147,6 +1226,12 @@ export const AccessoriesWarehouseView: React.FC = () => {
             >
               ⚠️ النواقص فقط ({lowStockCount})
             </button>
+
+            <SortBySelect
+              value={accSortBy}
+              onChange={(v) => setAccSortBy(v as AccSortKey)}
+              options={ACC_SORT_OPTIONS}
+            />
 
             <div className="relative w-full sm:w-64">
               <Search className="w-4 h-4 text-slate-400 absolute start-3 top-2.5" />
@@ -1418,6 +1503,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
                     تم صرفها ({permitGroups.issued.length})
                   </button>
                 </div>
+                <SortBySelect
+                  value={permitSortBy}
+                  onChange={(v) => setPermitSortBy(v as PermitSortKey)}
+                  options={PERMIT_SORT_OPTIONS}
+                />
                 <div className="relative w-full sm:w-60">
                   <Search className="w-4 h-4 text-slate-400 absolute start-3 top-2.5" />
                   <input
@@ -2590,20 +2680,28 @@ export const AccessoriesWarehouseView: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 2: PRINT INVENTORY REPORT */}
+      {/* MODAL 2: PRINT INVENTORY REPORT — exact A4 final print sheet preview */}
       {showPrintInventoryModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between no-print bg-slate-50">
-              <div className="flex items-center gap-2">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in"
+          onClick={() => setShowPrintInventoryModal(false)}
+        >
+          <div
+            className="bg-white rounded-3xl w-[96vw] sm:w-full max-w-6xl h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 no-print bg-slate-50 shrink-0">
+              <div className="flex items-center gap-2.5">
                 <div className="p-2 bg-pink-600 text-white rounded-xl">
                   <Printer className="w-5 h-5" />
                 </div>
                 <div>
                   <h3 className="font-extrabold text-base text-slate-900">
-                    معاينة تقرير جرد مخزن الإكسسوارات والمستلزمات
+                    معاينة تقرير جرد مخزن الإكسسوارات والمستلزمات (مطابق للطباعة النهائية A4)
                   </h3>
-                  <p className="text-xs text-slate-500">كشف جرد مفصل لجميع الأصناف والكميات والوحدات</p>
+                  <p className="text-xs text-slate-500">
+                    نفس تنسيق ورقة الطباعة النهائية بالضبط قبل إرسالها للطابعة
+                  </p>
                 </div>
               </div>
 
@@ -2616,137 +2714,45 @@ export const AccessoriesWarehouseView: React.FC = () => {
                   <Printer className="w-4 h-4" />
                   <span>طباعة الكشف (A4 أفقي)</span>
                 </button>
-                <button onClick={() => setShowPrintInventoryModal(false)} className="text-slate-400 hover:text-slate-700">
+                <button
+                  onClick={() => setShowPrintInventoryModal(false)}
+                  className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-200/50 cursor-pointer"
+                >
                   <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
-            <div
-              className="p-4 sm:p-8 overflow-auto space-y-6 print:p-0"
-              style={{ fontFamily: 'Tahoma, Arial, sans-serif' }}
-            >
-              <div className="text-center border-b-[3px] border-double border-slate-900 pb-3">
-                <div className="flex items-center justify-center mb-1">
-                  {isImageLogo(globalSettings?.logo) ? (
-                    <img
-                      src={globalSettings?.logo}
-                      alt={globalSettings?.site_name || 'شعار المصنع'}
-                      className="h-14 w-auto max-w-[190px] object-contain"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                      }}
-                    />
-                  ) : (
-                    <span className="text-4xl leading-none">{globalSettings?.logo || '🏭'}</span>
-                  )}
-                </div>
-                <h1 className="text-xl font-black text-slate-900">
-                  {globalSettings?.site_name || 'مصنع الملابس الجاهزة'} — كشف جرد مخزن
-                  الإكسسوارات
-                </h1>
-                <p className="text-xs text-slate-600 mt-0.5 font-bold">
-                  تاريخ الاستخراج: {new Date().toLocaleString('ar-EG', { hour12: false })}
-                </p>
-              </div>
-
-              <table className="w-full text-xs text-start border-collapse">
-                <thead className="bg-slate-100 text-slate-900 font-bold">
-                  <tr>
-                    <th className="border border-slate-800 p-2.5">الصورة</th>
-                    <th className="border border-slate-800 p-2.5">الكود</th>
-                    <th className="border border-slate-800 p-2.5">النوع</th>
-                    <th className="border border-slate-800 p-2.5">اسم الصنف</th>
-                    <th className="border border-slate-800 p-2.5">نوع الاستخدام</th>
-                    <th className="border border-slate-800 p-2.5 text-center">الرصيد الفعلي</th>
-                    <th className="border border-slate-800 p-2.5 text-center">المحجوز</th>
-                    <th className="border border-slate-800 p-2.5 text-center">المتاح</th>
-                    <th className="border border-slate-800 p-2.5 text-center">حد التنبيه / المطلوب</th>
-                    <th className="border border-slate-800 p-2.5 text-center">الوحدة</th>
-                    {canViewAccessoryPrices() && (
-                      <>
-                        <th className="border border-slate-800 p-2.5 text-center">سعر الوحدة</th>
-                        <th className="border border-slate-800 p-2.5 text-center">قيمة الرصيد</th>
-                      </>
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {accessoryItems.map((item) => (
-                    <tr key={item.id} className="hover:bg-slate-50">
-                      <td className="border border-slate-800 p-2.5">
-                        <img
-                          src={item.image}
-                          alt={item.name}
-                          className="w-8 h-8 rounded object-contain bg-slate-50 border border-slate-300 p-0.5"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
-                          }}
-                        />
-                      </td>
-                      <td className="border border-slate-800 p-2.5 font-mono font-bold text-slate-900">{item.code}</td>
-                      <td className="border border-slate-800 p-2.5 font-semibold text-slate-700">{item.type_name}</td>
-                      <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{item.name}</td>
-                      <td className="border border-slate-800 p-2.5 text-slate-700 text-[11px]">
-                        {item.usage_type === 'custom_model'
-                          ? `خاص بموديل ${item.custom_model_code}`
-                          : item.usage_type === 'carryover'
-                          ? 'رصيد سابق / مرحّل'
-                          : 'رصيد مستمر'}
-                      </td>
-                      <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900">{item.quantity}</td>
-                      <td className="border border-slate-800 p-2.5 text-center font-bold text-slate-900">{item.reserved_quantity}</td>
-                      <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900">
-                        {item.quantity - item.reserved_quantity}
-                      </td>
-                      <td className="border border-slate-800 p-2.5 text-center font-bold text-slate-900">
-                        {item.usage_type === 'custom_model'
-                          ? item.target_quantity ?? item.min_threshold
-                          : item.usage_type === 'carryover' || Number(item.min_threshold ?? 0) <= 0
-                          ? '0 (ملغي)'
-                          : item.min_threshold}
-                      </td>
-                      <td className="border border-slate-800 p-2.5 text-center text-slate-700">{item.unit}</td>
-                      {canViewAccessoryPrices() && (
-                        <>
-                          <td className="border border-slate-800 p-2.5 text-center font-bold text-slate-900">
-                            {Number(item.price_per_unit || 0).toLocaleString('ar-EG')}
-                          </td>
-                          <td className="border border-slate-800 p-2.5 text-center font-black text-emerald-800">
-                            {Number(
-                              (
-                                Number(item.price_per_unit || 0) * Number(item.quantity || 0)
-                              ).toFixed(2)
-                            ).toLocaleString('ar-EG')}
-                          </td>
-                        </>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              <div className="pt-6 border-t-2 border-slate-900 text-xs text-slate-700 flex justify-between font-bold">
-                <span>أمين مخزن الإكسسوارات: ______________________</span>
-                <span>اعتماد مدير المصنع: ______________________</span>
-              </div>
-            </div>
+            <iframe
+              title="معاينة جرد مخزن الإكسسوارات"
+              srcDoc={buildPrintDocumentHtml({
+                ...buildAccessoriesInventoryPrintOptions(),
+                autoPrint: false
+              })}
+              className="w-full flex-1 border-0 bg-slate-200/70"
+            />
           </div>
         </div>
       )}
 
-      {/* MODAL 3: PRINT DEFICIT SHEET FOR PROCUREMENT */}
+      {/* MODAL 3: PRINT DEFICIT SHEET FOR PROCUREMENT — exact A4 final print sheet preview */}
       {showPrintAlertsModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white rounded-3xl w-[95vw] sm:w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between no-print bg-amber-50">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in"
+          onClick={() => setShowPrintAlertsModal(false)}
+        >
+          <div
+            className="bg-white rounded-3xl w-[96vw] sm:w-full max-w-6xl h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 no-print bg-amber-50 shrink-0">
               <div className="flex items-center gap-2">
                 <div className="p-2 bg-amber-500 text-white rounded-xl">
                   <AlertTriangle className="w-5 h-5" />
                 </div>
                 <div>
                   <h3 className="font-black text-base text-amber-950">
-                    ورقة طلبيات النواقص لعامل المشتريات والموردين
+                    ورقة طلبيات النواقص لعامل المشتريات والموردين (مطابقة للطباعة النهائية A4)
                   </h3>
                   <p className="text-xs text-amber-800">
                     كشف حصر العجز المطلوب شراؤه فوراً طبقاً للكميات المستهدفة والحدود الدنيا
@@ -2763,14 +2769,17 @@ export const AccessoriesWarehouseView: React.FC = () => {
                   <Printer className="w-4 h-4" />
                   <span>طباعة ورقة المشتريات (A4 أفقي)</span>
                 </button>
-                <button onClick={() => setShowPrintAlertsModal(false)} className="text-slate-400 hover:text-slate-700 cursor-pointer">
+                <button
+                  onClick={() => setShowPrintAlertsModal(false)}
+                  className="p-2 rounded-xl text-slate-400 hover:text-slate-700 cursor-pointer"
+                >
                   <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
             {/* Modal Tabs Bar */}
-            <div className="px-6 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-2 no-print overflow-x-auto">
+            <div className="px-6 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-2 no-print overflow-x-auto shrink-0">
               <span className="text-xs font-bold text-slate-500 ms-1">عرض وتصفية التقرير:</span>
               <button
                 type="button"
@@ -2806,155 +2815,14 @@ export const AccessoriesWarehouseView: React.FC = () => {
               </button>
             </div>
 
-            <div
-              className="p-4 sm:p-8 overflow-auto space-y-6 print:p-0"
-              style={{ fontFamily: 'Tahoma, Arial, sans-serif' }}
-            >
-              <div className="text-center border-b-[3px] border-double border-slate-900 pb-3">
-                <div className="flex items-center justify-center mb-1">
-                  {isImageLogo(globalSettings?.logo) ? (
-                    <img
-                      src={globalSettings?.logo}
-                      alt={globalSettings?.site_name || 'شعار المصنع'}
-                      className="h-14 w-auto max-w-[190px] object-contain"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                      }}
-                    />
-                  ) : (
-                    <span className="text-4xl leading-none">{globalSettings?.logo || '🏭'}</span>
-                  )}
-                </div>
-                <h1 className="text-xl font-black text-slate-900">
-                  {globalSettings?.site_name || 'مصنع الملابس الجاهزة'} — كشف طلبيات
-                  ونواقص الإكسسوارات العاجلة (شراء وتوريد)
-                </h1>
-                <p className="text-xs text-slate-600 mt-0.5 font-bold">
-                  تاريخ أمر الشراء: {new Date().toLocaleString('ar-EG', { hour12: false })} • تصنيف: {modalAlertTab === 'stock' ? 'إكسسوارات مستمرة (Stock)' : modalAlertTab === 'custom_model' ? 'إكسسوارات موديلات خاصة' : 'كافة النواقص المستمرة والمخصصة'}
-                </p>
-              </div>
-
-              {/* TABLE 1: Stock Deficits */}
-              {(modalAlertTab === 'all' || modalAlertTab === 'stock') && (
-                <div className="space-y-3">
-                  <h3 className="font-black text-sm text-slate-900 bg-slate-100 border border-slate-800 rounded px-2 py-1">
-                    أولاً: نواقص الإكسسوارات المستمرة (رصيد المخزن العام - Stock)
-                    <span className="text-xs text-slate-600 font-bold"> ({stockDeficits.length} صنف دون حد التنبيه)</span>
-                  </h3>
-
-                  {stockDeficits.length > 0 ? (
-                    <table className="w-full text-xs text-start border-collapse">
-                      <thead className="bg-slate-100 text-slate-900 font-black">
-                        <tr>
-                          <th className="border border-slate-800 p-2.5">م</th>
-                          <th className="border border-slate-800 p-2.5">الصورة</th>
-                          <th className="border border-slate-800 p-2.5">الكود</th>
-                          <th className="border border-slate-800 p-2.5">اسم الإكسسوار</th>
-                          <th className="border border-slate-800 p-2.5">التصنيف</th>
-                          <th className="border border-slate-800 p-2.5 text-center">الرصيد المتاح</th>
-                          <th className="border border-slate-800 p-2.5 text-center">حد التنبيه المخصص</th>
-                          <th className="border border-slate-800 p-2.5 text-center">العجز المطلوب شراؤه</th>
-                          <th className="border border-slate-800 p-2.5">المورد المقترح ورقم الهاتف</th>
-                        </tr>
-                      </thead>
-                      <tbody className="font-semibold">
-                        {stockDeficits.map(({ item, supplier, available, threshold, deficit }, idx) => (
-                          <tr key={item.id} className="hover:bg-slate-50">
-                            <td className="border border-slate-800 p-2.5 text-slate-600">{idx + 1}</td>
-                            <td className="border border-slate-800 p-2.5">
-                              <img
-                                src={item.image}
-                                alt={item.name}
-                                className="w-8 h-8 rounded object-contain bg-white border border-slate-300 p-0.5"
-                                onError={(e) => {
-                                  (e.target as HTMLImageElement).style.display = 'none';
-                                }}
-                              />
-                            </td>
-                            <td className="border border-slate-800 p-2.5 font-mono font-bold text-slate-900">{item.code}</td>
-                            <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{item.name}</td>
-                            <td className="border border-slate-800 p-2.5 text-slate-700">{item.type_name}</td>
-                            <td className="border border-slate-800 p-2.5 text-center text-slate-700">{available} {item.unit}</td>
-                            <td className="border border-slate-800 p-2.5 text-center text-slate-900 font-bold">{threshold} {item.unit}</td>
-                            <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900 text-sm">
-                              {deficit} {item.unit}
-                            </td>
-                            <td className="border border-slate-800 p-2.5 text-slate-700 text-[11px]">
-                              {supplier?.name || 'مورد عام'} {supplier?.phone ? `(${supplier.phone})` : ''}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <p className="text-xs text-slate-500 py-2 font-bold">لا توجد نواقص في الإكسسوارات المستمرة (رصيد المخزن في أمان).</p>
-                  )}
-                </div>
-              )}
-
-              {/* TABLE 2: Model-Specific Deficits */}
-              {(modalAlertTab === 'all' || modalAlertTab === 'custom_model') && (
-                <div className="space-y-3 pt-4 border-t-2 border-slate-900">
-                  <h3 className="font-black text-sm text-slate-900 bg-slate-100 border border-slate-800 rounded px-2 py-1">
-                    ثانياً: نواقص إكسسوارات الموديلات المخصصة (حسب تشغيلة الموديل المستهدفة - Model-Specific)
-                    <span className="text-xs text-slate-600 font-bold"> ({modelDeficits.length} صنف عجز توريد)</span>
-                  </h3>
-
-                  {modelDeficits.length > 0 ? (
-                    <table className="w-full text-xs text-start border-collapse">
-                      <thead className="bg-slate-100 text-slate-900 font-black">
-                        <tr>
-                          <th className="border border-slate-800 p-2.5">م</th>
-                          <th className="border border-slate-800 p-2.5">الصورة</th>
-                          <th className="border border-slate-800 p-2.5">الكود</th>
-                          <th className="border border-slate-800 p-2.5">اسم الإكسسوار</th>
-                          <th className="border border-slate-800 p-2.5">الموديل المخصص</th>
-                          <th className="border border-slate-800 p-2.5 text-center">الكمية الموردة</th>
-                          <th className="border border-slate-800 p-2.5 text-center">الكمية المستهدفة</th>
-                          <th className="border border-slate-800 p-2.5 text-center">العجز المطلوب توريده</th>
-                          <th className="border border-slate-800 p-2.5">المورد ورقم الهاتف</th>
-                        </tr>
-                      </thead>
-                      <tbody className="font-semibold">
-                        {modelDeficits.map(({ item, supplier, threshold, deficit }, idx) => (
-                          <tr key={item.id} className="hover:bg-slate-50">
-                            <td className="border border-slate-800 p-2.5 text-slate-600">{idx + 1}</td>
-                            <td className="border border-slate-800 p-2.5">
-                              <img
-                                src={item.image}
-                                alt={item.name}
-                                className="w-8 h-8 rounded object-contain bg-white border border-slate-300 p-0.5"
-                                onError={(e) => {
-                                  (e.target as HTMLImageElement).style.display = 'none';
-                                }}
-                              />
-                            </td>
-                            <td className="border border-slate-800 p-2.5 font-mono font-bold text-slate-900">{item.code}</td>
-                            <td className="border border-slate-800 p-2.5 font-bold text-slate-900">{item.name}</td>
-                            <td className="border border-slate-800 p-2.5 font-black text-slate-900">موديل {item.custom_model_code || 'خاص'}</td>
-                            <td className="border border-slate-800 p-2.5 text-center text-slate-700">{item.delivered_quantity ?? item.quantity} {item.unit}</td>
-                            <td className="border border-slate-800 p-2.5 text-center text-slate-900 font-bold">{threshold} {item.unit}</td>
-                            <td className="border border-slate-800 p-2.5 text-center font-black text-slate-900 text-sm">
-                              {deficit} {item.unit}
-                            </td>
-                            <td className="border border-slate-800 p-2.5 text-slate-700 text-[11px]">
-                              {supplier?.name || 'مورد عام'} {supplier?.phone ? `(${supplier.phone})` : ''}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <p className="text-xs text-slate-500 py-2 font-bold">لا توجد نواقص في إكسسوارات الموديلات المخصصة.</p>
-                  )}
-                </div>
-              )}
-
-              <div className="pt-6 border-t-2 border-slate-900 text-xs text-slate-700 flex justify-between font-bold">
-                <span>توقيع مسؤول المشتريات: ______________________</span>
-                <span>اعتماد مدير الإنتاج: ______________________</span>
-              </div>
-            </div>
+            <iframe
+              title="معاينة كشف طلبيات نواقص الإكسسوارات"
+              srcDoc={buildPrintDocumentHtml({
+                ...buildAccessoriesAlertsPrintOptions(),
+                autoPrint: false
+              })}
+              className="w-full flex-1 border-0 bg-slate-200/70"
+            />
           </div>
         </div>
       )}
@@ -3028,9 +2896,10 @@ export const AccessoriesWarehouseView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2 text-xs font-bold text-white bg-blue-600 rounded-xl shadow-xs"
+                  disabled={isSubmitting}
+                  className="flex-1 py-2 text-xs font-bold text-white bg-blue-600 rounded-xl shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  تأكيد الحركة
+                  {isSubmitting ? 'جاري التأكيد...' : 'تأكيد الحركة'}
                 </button>
               </div>
             </form>
@@ -3091,9 +2960,10 @@ export const AccessoriesWarehouseView: React.FC = () => {
               <div className="flex flex-col sm:flex-row gap-2 pt-2">
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs"
+                  disabled={isSubmitting}
+                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  تأكيد استلام التوريد وإضافته للرصيد (+)
+                  {isSubmitting ? 'جاري التسجيل...' : 'تأكيد استلام التوريد وإضافته للرصيد (+)'}
                 </button>
 
                 {canSendWhatsApp() && (

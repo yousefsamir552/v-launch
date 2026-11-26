@@ -39,7 +39,7 @@ from .models import (
     HR_DEPARTMENT_LABELS, WEEK_DAY_LABELS, HR_ATTENDANCE_STATUS_CHOICES,
     HR_REVIEW_STATUS_CHOICES, HR_PENALTY_TYPE_CHOICES,
     RANK_SUDO, RANK_LEVEL_ONE, RANK_LEVEL_TWO, RANK_LEVEL_THREE,
-    DEFAULT_RANK_LEVEL, RANK_LEVEL_KEYS, HR_PERM_KEYS, READINESS_PERM_KEYS, SALARY_PERMISSION_KEYS,
+    DEFAULT_RANK_LEVEL, RANK_LEVEL_KEYS, HR_PERM_KEYS, READINESS_PERM_KEYS, PREVIOUS_MODELS_PERM_KEY, SALARY_PERMISSION_KEYS,
     coerce_rank_level, visible_rank_levels, grantable_rank_levels,
     can_manage_rank, rank_visibility_label,
 )
@@ -111,8 +111,10 @@ from .reports import (
 from .permissions import (
     CanManageCatalog,
     CanManageHR,
+    CanViewPreviousModels,
     HasDynamicSectionPermission,
     IsAuthenticatedProfile,
+    can_view_previous_models,
 )
 from .audit_utils import (
     ACTION_TYPE_LABELS,

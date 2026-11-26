@@ -1,39 +1,79 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { Scissors, Lock } from 'lucide-react';
+import { Scissors, Lock, Search } from 'lucide-react';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { currentStageLabel, stageBeyond } from '../utils/completedModels';
 import { ZoomableImage } from './ZoomableImage';
+import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
+import { DesignModel } from '../types';
 
 interface CuttingViewProps {
   onOpenCuttingDetails: (modelId: string) => void;
 }
 
+type CuttingSortKey = 'newest' | 'oldest' | 'code_asc' | 'code_desc' | 'qty_desc' | 'qty_asc';
+
+const CUTTING_SORT_OPTIONS: { value: CuttingSortKey; label: string }[] = [
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' },
+  { value: 'code_asc', label: 'الكود (تصاعدي)' },
+  { value: 'code_desc', label: 'الكود (تنازلي)' },
+  { value: 'qty_desc', label: 'الكمية (الأكثر أولاً)' },
+  { value: 'qty_asc', label: 'الكمية (الأقل أولاً)' }
+];
+
 const DESIGN_STATUSES = ['مرحلة التصميم', 'تصميم'];
 
 export const CuttingView: React.FC<CuttingViewProps> = ({ onOpenCuttingDetails }) => {
-  const { models, getModelParts, getPartStages } = useApp();
+  const { models, getModelParts, getPartStages, canViewPreviousModels } = useApp();
   const [showCompleted, setShowCompleted] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sortBy, setSortBy] = useState<CuttingSortKey>('newest');
+  const effectiveShowCompleted = showCompleted && canViewPreviousModels();
+
+  const sortModels = (list: DesignModel[]): DesignModel[] =>
+    [...list].sort((a, b) => {
+      if (sortBy === 'code_asc') return compareNatural(a.model_code, b.model_code);
+      if (sortBy === 'code_desc') return compareNatural(b.model_code, a.model_code);
+      if (sortBy === 'qty_desc') return Number(b.target_cut_quantity || 0) - Number(a.target_cut_quantity || 0);
+      if (sortBy === 'qty_asc') return Number(a.target_cut_quantity || 0) - Number(b.target_cut_quantity || 0);
+      if (sortBy === 'oldest') return toTimestamp(a.created_at) - toTimestamp(b.created_at);
+      return toTimestamp(b.created_at) - toTimestamp(a.created_at);
+    });
 
   // تظهر في قسم القص فقط الموديلات التي لديها قطعة واحدة على الأقل ما زالت في القص.
-  const cuttingModels = models.filter(
-    (m) =>
-      !m.is_deleted &&
-      !DESIGN_STATUSES.includes(m.status) &&
-      getModelParts(m.id).some(
-        (part) => (getPartStages(m.id)[part] || 'cutting') === 'cutting'
-      )
-  );
+  const cuttingModels = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    const list = models.filter(
+      (m) =>
+        !m.is_deleted &&
+        !DESIGN_STATUSES.includes(m.status) &&
+        getModelParts(m.id).some(
+          (part) => (getPartStages(m.id)[part] || 'cutting') === 'cutting'
+        ) &&
+        (!q ||
+          (m.model_code || '').toLowerCase().includes(q) ||
+          (m.model_type || '').toLowerCase().includes(q))
+    );
+    return sortModels(list);
+  }, [models, searchTerm, sortBy]);
 
   // الموديلات التي تجاوزت *جميع* قطعها مرحلة القص (منتهية من هذا القسم).
-  const endedModels = models.filter(
-    (m) =>
-      !m.is_deleted &&
-      !DESIGN_STATUSES.includes(m.status) &&
-      getModelParts(m.id).every((part) =>
-        stageBeyond(getPartStages(m.id)[part], 'cutting')
-      )
-  );
+  const endedModels = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    const list = models.filter(
+      (m) =>
+        !m.is_deleted &&
+        !DESIGN_STATUSES.includes(m.status) &&
+        getModelParts(m.id).every((part) =>
+          stageBeyond(getPartStages(m.id)[part], 'cutting')
+        ) &&
+        (!q ||
+          (m.model_code || '').toLowerCase().includes(q) ||
+          (m.model_type || '').toLowerCase().includes(q))
+    );
+    return sortModels(list);
+  }, [models, searchTerm, sortBy]);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -47,15 +87,33 @@ export const CuttingView: React.FC<CuttingViewProps> = ({ onOpenCuttingDetails }
             الموديلات الجاهزة للقص والتي تم صرف قماشها وتخصيصها على بنك القص.
           </p>
         </div>
-        <CompletedModelsToggle
-          enabled={showCompleted}
-          count={endedModels.length}
-          onChange={setShowCompleted}
-          tone="rose"
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative w-full sm:w-56">
+            <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="بحث بكود الموديل أو النوع..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full ps-9 pe-3 py-2 rounded-full border border-slate-200 bg-white text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+            />
+          </div>
+          <SortBySelect
+            value={sortBy}
+            onChange={(v) => setSortBy(v as CuttingSortKey)}
+            options={CUTTING_SORT_OPTIONS}
+          />
+          <CompletedModelsToggle
+            enabled={effectiveShowCompleted}
+            count={endedModels.length}
+            onChange={setShowCompleted}
+            tone="rose"
+          />
+        </div>
       </div>
 
-      {/* Grid of Models in Cutting */}
+      {/* Grid of Active Models in Cutting — hidden exclusively when viewing previous models */}
+      {!effectiveShowCompleted && (
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
         {cuttingModels.length > 0 ? (
           cuttingModels.map((model) => (
@@ -110,14 +168,15 @@ export const CuttingView: React.FC<CuttingViewProps> = ({ onOpenCuttingDetails }
           </div>
         )}
       </div>
+      )}
 
-      {/* Ended models in this section */}
-      {showCompleted && (
+      {/* Ended models in this section (exclusive view when "الموديلات السابقة" is ON) */}
+      {effectiveShowCompleted && (
         <div className="space-y-4 pt-2">
           <div className="flex items-center gap-3">
             <span className="h-px flex-grow bg-slate-200" />
             <h3 className="text-sm font-black text-slate-700 whitespace-nowrap">
-              الموديلات المنتهية في هذا القسم ({endedModels.length})
+              الموديلات السابقة / المنتهية من قسم القص ({endedModels.length})
             </h3>
             <span className="h-px flex-grow bg-slate-200" />
           </div>

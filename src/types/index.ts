@@ -170,6 +170,9 @@ export interface RolePermissions {
   readiness_ironing?: boolean;
   readiness_packaging?: boolean;
   readiness_dest?: boolean;
+
+  // Dedicated permission to view previous / completed models inside sections
+  previous_models_view?: boolean;
 }
 
 /**
@@ -284,6 +287,9 @@ export interface UserPermissions {
   readiness_ironing?: boolean;
   readiness_packaging?: boolean;
   readiness_dest?: boolean;
+
+  // Previous / Completed models visibility override
+  previous_models_view?: boolean;
 
   [key: string]: any;
 }
@@ -444,6 +450,7 @@ export interface FabricTransaction {
   id: string;
   color_id: string;
   fabric_id: string;
+  model_id?: string;
   model_code_ref?: string;
   notes?: string;
   /** defect = عيوب قماش مسجلة أثناء قص/إرجاع الفائض (لا تُضاف للرصيد). */
@@ -963,6 +970,7 @@ export interface PackagingMaterialTransaction {
   operation: PackagingMaterialOperation;
   operation_label?: string;
   amount: number;
+  model_id?: string;
   model_code_ref?: string;
   notes?: string;
   timestamp?: string;
@@ -1384,6 +1392,7 @@ export interface AccessoryTransaction {
   accessory_name: string;
   operation: 'add' | 'deduct';
   amount: number;
+  model_id?: string;
   model_code_ref?: string;
   notes?: string;
   timestamp: string;
