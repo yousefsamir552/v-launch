@@ -330,8 +330,9 @@ export const buildAppNotifications = (ctx: Pick<AppInternalContext, 'printDispat
 
     // تنبيهات خامات التشغيل والأمبالاج: الرصيد وصل حد التنبيه أو لا يكفي الاحتياج الحالي.
     if (packagingMaterialRules.length) {
-      const demandMap = buildPackagingDemandMap(models, packagingMaterialRules);
+      const demandMap = buildPackagingDemandMap(models, packagingMaterialRules, assemblyStageRecords);
       packagingMaterialRules.forEach((rule) => {
+        if (rule.is_active === false) return;
         (rule.size_rules || []).forEach((row) => {
           const demand = demandMap[row.id];
           if (!demand) return;

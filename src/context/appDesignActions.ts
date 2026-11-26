@@ -307,39 +307,72 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
     if (!model) return { success: false, message: 'الموديل غير موجود' };
 
     const allowNotes = canAddDesignNotes();
+    const isPostCutting = !DESIGN_STAGES.has(model.status);
 
-    // Validate that planned quantities don't exceed available for design (including what this model already had reserved)
+    // Validate fabric quantities against available warehouse stock:
+    // - Pre-cutting (Design): validate against Available for Design (quantity - otherModelsReserved).
+    // - Post-cutting (already issued): only positive deltas (newQty - oldQty) consume additional real stock.
     const modelReqs = requirements.filter((r) => r.model_id === data.modelId);
-    for (const req of modelReqs) {
-      const nextQty = Math.max(0, Number(data.reqQuantities[req.id] ?? req.planned_quantity) || 0);
-      const col = fabricColors.find((c) => c.id === req.color_id);
-      if (col) {
-        const otherModelsReserved = requirements
-          .filter(
-            (r) =>
-              r.color_id === req.color_id &&
-              r.model_id !== data.modelId &&
-              designModelIdsSet.has(r.model_id)
-          )
-          .reduce((sum, r) => sum + (Number(r.planned_quantity) || 0), 0);
-        const sameModelOtherParts = modelReqs
-          .filter((r) => r.color_id === req.color_id && r.id !== req.id)
-          .reduce(
-            (sum, r) => sum + Math.max(0, Number(data.reqQuantities[r.id] ?? r.planned_quantity) || 0),
-            0
+    let anyFabricQtyChanged = false;
+    if (isPostCutting) {
+      const deltaByColor = new Map<string, number>();
+      for (const req of modelReqs) {
+        const oldQty = Number(req.planned_quantity) || 0;
+        const nextQty = Math.max(0, Number(data.reqQuantities[req.id] ?? oldQty) || 0);
+        const diff = nextQty - oldQty;
+        if (Math.abs(diff) > 1e-6) {
+          anyFabricQtyChanged = true;
+          deltaByColor.set(req.color_id, (deltaByColor.get(req.color_id) || 0) + diff);
+        }
+      }
+      for (const [colorId, netDelta] of deltaByColor.entries()) {
+        if (netDelta > 1e-6) {
+          const col = fabricColors.find((c) => c.id === colorId);
+          if (col && netDelta > Number(col.quantity || 0) + 1e-6) {
+            const availNow = Number(Number(col.quantity || 0).toFixed(2));
+            addFlashMessage(
+              `فرق الزيادة المطلوب للون (${col.color_code}) وهو (${Number(netDelta.toFixed(2))}) أكبر من الرصيد الفعلي المتاح بالمخزن (${availNow})!`,
+              'warning'
+            );
+            return {
+              success: false,
+              message: `رصيد المخزن غير كافٍ للزيادة المطلوبة (${availNow})`
+            };
+          }
+        }
+      }
+    } else {
+      for (const req of modelReqs) {
+        const nextQty = Math.max(0, Number(data.reqQuantities[req.id] ?? req.planned_quantity) || 0);
+        const col = fabricColors.find((c) => c.id === req.color_id);
+        if (col) {
+          const otherModelsReserved = requirements
+            .filter(
+              (r) =>
+                r.color_id === req.color_id &&
+                r.model_id !== data.modelId &&
+                designModelIdsSet.has(r.model_id)
+            )
+            .reduce((sum, r) => sum + (Number(r.planned_quantity) || 0), 0);
+          const sameModelOtherParts = modelReqs
+            .filter((r) => r.color_id === req.color_id && r.id !== req.id)
+            .reduce(
+              (sum, r) => sum + Math.max(0, Number(data.reqQuantities[r.id] ?? r.planned_quantity) || 0),
+              0
+            );
+          const maxAvailableForThisPart = Number(
+            Math.max(0, col.quantity - otherModelsReserved - sameModelOtherParts).toFixed(2)
           );
-        const maxAvailableForThisPart = Number(
-          Math.max(0, col.quantity - otherModelsReserved - sameModelOtherParts).toFixed(2)
-        );
-        if (nextQty > maxAvailableForThisPart) {
-          addFlashMessage(
-            `الكمية المطلوبة للون (${col.color_code}) تتجاوز المتاح للتصميم (${maxAvailableForThisPart})!`,
-            'warning'
-          );
-          return {
-            success: false,
-            message: `الكمية المطلوبة للون (${col.color_code}) تتجاوز المتاح للتصميم (${maxAvailableForThisPart})`
-          };
+          if (nextQty > maxAvailableForThisPart) {
+            addFlashMessage(
+              `الكمية المطلوبة للون (${col.color_code}) تتجاوز المتاح للتصميم (${maxAvailableForThisPart})!`,
+              'warning'
+            );
+            return {
+              success: false,
+              message: `الكمية المطلوبة للون (${col.color_code}) تتجاوز المتاح للتصميم (${maxAvailableForThisPart})`
+            };
+          }
         }
       }
     }
@@ -394,8 +427,14 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
       }, auditHeadersForModel(model, 'التصميم'))
       .then((savedModel) => {
         setModels((prev) => prev.map((m) => (m.id === data.modelId ? savedModel : m)));
-        logAction('التصميم', `تحديث خطة وخامات الموديل ${model.model_code} (حجز من المتاح للتصميم)`);
-        addFlashMessage('تم حفظ خطة الموديل وخصم الكميات المحددة من (المتاح للتصميم) فقط بنجاح');
+        if (isPostCutting && anyFabricQtyChanged) {
+          refreshState();
+          logAction('مخزن القماش', `تعديل كمية قماش بعد القص للموديل ${model.model_code} مع تسوية رصيد المخزن`);
+          addFlashMessage('تم حفظ تعديل كمية القماش وتسوية رصيد مخزن القماش وسجل الحركات بنجاح');
+        } else {
+          logAction('التصميم', `تحديث خطة وخامات الموديل ${model.model_code} (حجز من المتاح للتصميم)`);
+          addFlashMessage('تم حفظ خطة الموديل وخصم الكميات المحددة من (المتاح للتصميم) فقط بنجاح');
+        }
       })
       .catch((err) => {
         refreshState();
@@ -541,19 +580,25 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
     partName: string,
     plannedQuantity: number = 0
   ) => {
+    const targetModel = models.find((m) => m.id === modelId);
+    const isPostCutting = !!targetModel && !DESIGN_STAGES.has(targetModel.status);
     const col = fabricColors.find((c) => c.id === colorId);
     const cleanQty = Math.max(0, Number(plannedQuantity) || 0);
 
     if (col && cleanQty > 0) {
-      const availableForDesign = Number((col.quantity - col.reserved_quantity).toFixed(2));
-      if (cleanQty > availableForDesign) {
+      const availableLimit = isPostCutting
+        ? Number((col.quantity || 0).toFixed(2))
+        : Number((col.quantity - col.reserved_quantity).toFixed(2));
+      if (cleanQty > availableLimit + 1e-6) {
         addFlashMessage(
-          `الكمية المطلوبة (${cleanQty}) أكبر من المتاح للتصميم حالياً (${availableForDesign}) للون ${col.color_code}`,
+          isPostCutting
+            ? `الكمية المطلوبة (${cleanQty}) أكبر من الرصيد الفعلي المتاح بالمخزن (${availableLimit}) للون ${col.color_code}`
+            : `الكمية المطلوبة (${cleanQty}) أكبر من المتاح للتصميم حالياً (${availableLimit}) للون ${col.color_code}`,
           'warning'
         );
         return {
           success: false,
-          message: `الكمية المطلوبة أكبر من المتاح للتصميم (${availableForDesign})`
+          message: `الكمية المطلوبة أكبر من الرصيد المتاح (${availableLimit})`
         };
       }
     }
@@ -573,11 +618,16 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
       .createModelRequirement(newReq)
       .then((saved) => {
         setRequirements((prev) => prev.map((r) => (r.id === newReq.id ? saved : r)));
-        addFlashMessage(
-          cleanQty > 0
-            ? `تم تخصيص خامة اللون وحجز ${cleanQty} من المتاح للتصميم فقط (دون المساس بالمخزون الفعلي الكلي)`
-            : 'تمت إضافة خامة اللون بنجاح'
-        );
+        if (isPostCutting && cleanQty > 0) {
+          refreshState();
+          addFlashMessage(`تمت إضافة خامة اللون بعد القص وخصم ${cleanQty} مباشرة من رصيد المخزن وتسجيل الحركة`);
+        } else {
+          addFlashMessage(
+            cleanQty > 0
+              ? `تم تخصيص خامة اللون وحجز ${cleanQty} من المتاح للتصميم فقط (دون المساس بالمخزون الفعلي الكلي)`
+              : 'تمت إضافة خامة اللون بنجاح'
+          );
+        }
       })
       .catch((err) => {
         refreshState();
@@ -588,11 +638,19 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
   };
 
   const deleteModelRequirement = (reqId: string) => {
+    const existingReq = requirements.find((r) => r.id === reqId);
+    const targetModel = existingReq ? models.find((m) => m.id === existingReq.model_id) : undefined;
+    const isPostCutting = !!targetModel && !DESIGN_STAGES.has(targetModel.status);
     setRequirements((prev) => prev.filter((r) => r.id !== reqId));
     api
       .deleteModelRequirement(reqId)
       .then(() => {
-        addFlashMessage('تم حذف الخامة من الموديل وإعادة الكمية إلى المتاح للتصميم');
+        if (isPostCutting) {
+          refreshState();
+          addFlashMessage('تم حذف الخامة من الموديل وإرجاع الكمية إلى رصيد المخزن الفعلي مع تسجيل الحركة');
+        } else {
+          addFlashMessage('تم حذف الخامة من الموديل وإعادة الكمية إلى المتاح للتصميم');
+        }
       })
       .catch((err) => {
         refreshState();

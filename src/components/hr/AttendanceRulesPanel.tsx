@@ -180,7 +180,10 @@ export const AttendanceRulesPanel: React.FC<{
         rules_json: rules.map((rule) => ({
           ...rule,
           from_minutes: Number(rule.from_minutes) || 0,
-          to_minutes: Number(rule.to_minutes) || 0,
+          to_minutes:
+            rule.to_minutes === undefined || rule.to_minutes === null || (rule.to_minutes as unknown) === ''
+              ? null
+              : Number(rule.to_minutes),
           deduction_value: Number(rule.deduction_value) || 0
         })),
         overtime_rules: overtimeRules.map((rule) => ({
@@ -280,7 +283,7 @@ export const AttendanceRulesPanel: React.FC<{
           <span>
             الشهر الحسابي ثابت دائماً 30 يوماً (الغياب يخصم يوماً واحداً سواء كان الشهر 28 أو 30 أو 31 يوماً)،
             وساعات العمل اليومية المحسوبة = {Number(shiftHours.toFixed(2))} ساعة، وراتب اليوم = المرتب ÷ 30،
-            وراتب الساعة = راتب اليوم ÷ {Number(shiftHours.toFixed(2))} ساعة. العمل يوم الإجازة الأسبوعية يُضاف فوق سقف الـ30 يوماً بمعامل ×{Number(weeklyOffMultiplier) || 1}.
+            وراتب الساعة = راتب اليوم ÷ {Number(shiftHours.toFixed(2))} ساعة. العمل يوم الإجازة الأسبوعية يُضاف فوق سقف الـ30 يوماً بمعامل ×{Number.isFinite(Number(weeklyOffMultiplier)) && weeklyOffMultiplier !== '' ? Number(weeklyOffMultiplier) : 1}.
           </span>
         </div>
       </div>

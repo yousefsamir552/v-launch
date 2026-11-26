@@ -741,12 +741,22 @@ export const QCView: React.FC = () => {
                 : activeTab === 'after_print'
                 ? counts.afterPrintDefect
                 : counts.afterSewingDefect;
-            // العدد الذي دخل هذه المرحلة فعلياً لهذه القطعة.
+            // العدد الذي دخل هذه المرحلة فعلياً لهذه القطعة (دون عد مزدوج عند المرور بطباعة + تطريز معاً).
+            const beforeCap = counts.beforePrintGood || counts.cutPieces;
+            const bothPrintAndEmb = counts.printSent > 0 && counts.embroiderySent > 0;
+            const isSequentialBoth =
+              bothPrintAndEmb &&
+              (beforeCap > 0 ? counts.printSent + counts.embroiderySent > beforeCap : true);
+            const effectiveAfterPrintReceived = isSequentialBoth
+              ? counts.printReceived > 0 && counts.embroideryReceived > 0
+                ? Math.min(counts.printReceived, counts.embroideryReceived)
+                : Math.max(counts.printReceived, counts.embroideryReceived)
+              : counts.printReceived + counts.embroideryReceived;
             const stageEntry =
               activeTab === 'before_print'
                 ? counts.cutPieces
                 : activeTab === 'after_print'
-                ? counts.printReceived + counts.embroideryReceived ||
+                ? effectiveAfterPrintReceived ||
                   counts.beforePrintGood ||
                   counts.cutPieces
                 : counts.sewingReceived ||
@@ -1535,12 +1545,22 @@ export const QCView: React.FC = () => {
                         : activeTab === 'after_print'
                         ? counts.afterPrintDefect
                         : counts.afterSewingDefect;
-                    // العدد الذي دخل هذه المرحلة فعلياً لهذه القطعة.
+                    // العدد الذي دخل هذه المرحلة فعلياً لهذه القطعة (دون عد مزدوج عند المرور بطباعة + تطريز معاً).
+                    const beforeCap = counts.beforePrintGood || cut;
+                    const bothPrintAndEmb = counts.printSent > 0 && counts.embroiderySent > 0;
+                    const isSequentialBoth =
+                      bothPrintAndEmb &&
+                      (beforeCap > 0 ? counts.printSent + counts.embroiderySent > beforeCap : true);
+                    const effectiveAfterPrintReceived = isSequentialBoth
+                      ? counts.printReceived > 0 && counts.embroideryReceived > 0
+                        ? Math.min(counts.printReceived, counts.embroideryReceived)
+                        : Math.max(counts.printReceived, counts.embroideryReceived)
+                      : counts.printReceived + counts.embroideryReceived;
                     const stageEntry =
                       activeTab === 'before_print'
                         ? cut
                         : activeTab === 'after_print'
-                        ? counts.printReceived + counts.embroideryReceived ||
+                        ? effectiveAfterPrintReceived ||
                           counts.beforePrintGood ||
                           cut
                         : counts.sewingReceived ||

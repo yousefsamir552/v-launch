@@ -390,8 +390,11 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
   const calculatedPiecesCount =
     currentSpreadTotalLayers * (Number(piecesPerLayer) > 0 ? Number(piecesPerLayer) : 0);
 
+  const submitSpreadLockRef = React.useRef(false);
+
   const handleSubmitSpread = (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitSpreadLockRef.current) return;
     const validLayers = spreadLayers.filter(
       (l) => l.color_name.trim() !== '' && Number(l.layers_count) > 0
     );
@@ -417,31 +420,38 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
       return;
     }
 
-    addCuttingRecord({
-      modelId,
-      // يتم توليد رقم الفرشة تلقائياً على الباك إند داخل قفل الموديل لمنع أي تكرار.
-      spreadNumber: undefined as unknown as number,
-      partType: selectedPart,
-      isSubCut,
-      subCutLabel: subCutLabel.trim(),
-      spreaderName: spreaderName.trim(),
-      cutterName: cutterName.trim(),
-      // لا نحفظ علم isCustomColor (خاص بالواجهة فقط).
-      colorLayers: validLayers.map(
-        ({ color_name, layers_count, layer_weight, shade_degree }) => ({
-          color_name,
-          layers_count,
-          layer_weight,
-          shade_degree
-        })
-      ),
-      layersCount: currentSpreadTotalLayers,
-      piecesPerLayer: Number(piecesPerLayer),
-      layerWeight: Number(layerWeight),
-      piecesCount: calculatedPiecesCount,
-      shadeDegree: shadeDegree.trim(),
-      notes: canWriteNotes ? cuttingNotes.trim() : ''
-    });
+    submitSpreadLockRef.current = true;
+    try {
+      addCuttingRecord({
+        modelId,
+        // يتم توليد رقم الفرشة تلقائياً على الباك إند داخل قفل الموديل لمنع أي تكرار.
+        spreadNumber: undefined as unknown as number,
+        partType: selectedPart,
+        isSubCut,
+        subCutLabel: subCutLabel.trim(),
+        spreaderName: spreaderName.trim(),
+        cutterName: cutterName.trim(),
+        // لا نحفظ علم isCustomColor (خاص بالواجهة فقط).
+        colorLayers: validLayers.map(
+          ({ color_name, layers_count, layer_weight, shade_degree }) => ({
+            color_name,
+            layers_count,
+            layer_weight,
+            shade_degree
+          })
+        ),
+        layersCount: currentSpreadTotalLayers,
+        piecesPerLayer: Number(piecesPerLayer),
+        layerWeight: Number(layerWeight),
+        piecesCount: calculatedPiecesCount,
+        shadeDegree: shadeDegree.trim(),
+        notes: canWriteNotes ? cuttingNotes.trim() : ''
+      });
+    } finally {
+      window.setTimeout(() => {
+        submitSpreadLockRef.current = false;
+      }, 600);
+    }
 
     // Reset for next spread
     setSpreadLayers([

@@ -135,9 +135,12 @@ export const DispatchAssemblyView: React.FC = () => {
     setEvalDraft(createInitialEvaluationDraft(disp.expected_delivery_date));
   };
 
+  const [isReceivingSubmitting, setIsReceivingSubmitting] = useState(false);
+  const submitLockRef = React.useRef(false);
+
   const confirmPartialReceive = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!receivingDispatch) return;
+    if (!receivingDispatch || isReceivingSubmitting) return;
     const remaining = getRemainingPieces(receivingDispatch);
     const qty = Math.floor(Number(receiveQty) || 0);
     if (remaining <= 0) {
@@ -152,29 +155,34 @@ export const DispatchAssemblyView: React.FC = () => {
       alert(`الكمية المتبقية عند المطبعة ${remaining} قطعة فقط — لا يمكن استلام أكثر منها`);
       return;
     }
-    updateDispatchStatus(
-      receivingDispatch.id,
-      'تم الاستلام بالمصنع',
-      qty,
-      allowPrintNotes ? receiveNotes.trim() : undefined
-    );
-    if (evalDraft.enabled && receivingDispatch.shop_name) {
-      const matchedW = workshops.find((w) => w.name === receivingDispatch.shop_name);
-      await submitWorkshopEvaluation({
-        workshopId: matchedW?.id,
-        workshopName: receivingDispatch.shop_name,
-        stage: 'printing',
-        modelId: receivingDispatch.model_id,
-        printDispatchId: receivingDispatch.id,
-        deliveryTimeliness: evalDraft.deliveryTimeliness,
-        workQuality: evalDraft.workQuality,
-        finishingQuality: evalDraft.finishingQuality,
-        notes: evalDraft.notes
-      });
+    setIsReceivingSubmitting(true);
+    try {
+      updateDispatchStatus(
+        receivingDispatch.id,
+        'تم الاستلام بالمصنع',
+        qty,
+        allowPrintNotes ? receiveNotes.trim() : undefined
+      );
+      if (evalDraft.enabled && receivingDispatch.shop_name) {
+        const matchedW = workshops.find((w) => w.name === receivingDispatch.shop_name);
+        await submitWorkshopEvaluation({
+          workshopId: matchedW?.id,
+          workshopName: receivingDispatch.shop_name,
+          stage: 'printing',
+          modelId: receivingDispatch.model_id,
+          printDispatchId: receivingDispatch.id,
+          deliveryTimeliness: evalDraft.deliveryTimeliness,
+          workQuality: evalDraft.workQuality,
+          finishingQuality: evalDraft.finishingQuality,
+          notes: evalDraft.notes
+        });
+      }
+      setReceivingDispatch(null);
+      setReceiveQty(0);
+      setReceiveNotes('');
+    } finally {
+      setIsReceivingSubmitting(false);
     }
-    setReceivingDispatch(null);
-    setReceiveQty(0);
-    setReceiveNotes('');
   };
 
   // ورش المطابع والتطريز فقط (يمكن أن تحمل الورشة أكثر من تخصص).
@@ -207,28 +215,34 @@ export const DispatchAssemblyView: React.FC = () => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modelId || !resolvedShopName) return;
+    if (!modelId || !resolvedShopName || submitLockRef.current) return;
+    submitLockRef.current = true;
+    try {
+      addPrintDispatch({
+        modelId,
+        shopName: resolvedShopName,
+        piecesCount: Number(piecesCount) || 0,
+        printType: DEFAULT_PRINT_TYPE,
+        pieceType: effectivePieceType,
+        pieceLabel: getPartLabel(effectivePieceType),
+        printLocation: printLocation.trim(),
+        printDetails: printDetails.trim(),
+        expectedDeliveryDate,
+        costPerPiece: canEditPrintingPrices() ? Math.max(0, parseFloat(printCost) || 0) : 0,
+        notes: allowPrintNotes ? notes.trim() : ''
+      });
 
-    addPrintDispatch({
-      modelId,
-      shopName: resolvedShopName,
-      piecesCount: Number(piecesCount) || 0,
-      printType: DEFAULT_PRINT_TYPE,
-      pieceType: effectivePieceType,
-      pieceLabel: getPartLabel(effectivePieceType),
-      printLocation: printLocation.trim(),
-      printDetails: printDetails.trim(),
-      expectedDeliveryDate,
-      costPerPiece: canEditPrintingPrices() ? Math.max(0, parseFloat(printCost) || 0) : 0,
-      notes: allowPrintNotes ? notes.trim() : ''
-    });
-
-    setShowModal(false);
-    setShopSelection('');
-    setCustomShopName('');
-    setNotes('');
-    setPrintCost('');
-    setPrintDetails('');
+      setShowModal(false);
+      setShopSelection('');
+      setCustomShopName('');
+      setNotes('');
+      setPrintCost('');
+      setPrintDetails('');
+    } finally {
+      window.setTimeout(() => {
+        submitLockRef.current = false;
+      }, 600);
+    }
   };
 
   const getStatusBadge = (status: DispatchStatus) => {

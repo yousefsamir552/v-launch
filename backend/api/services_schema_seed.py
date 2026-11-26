@@ -1,3 +1,4 @@
+import math
 import os
 from datetime import date, timedelta
 from django.db import transaction
@@ -379,7 +380,7 @@ def resolve_cost_values(cost_per_piece, total_cost=None, pieces_count=None):
 
     if cost > 0:
         total = round(cost * count, 2) if count > 0 else (
-            round(explicit_total, 2) if explicit_total is not None else round(cost, 2)
+            round(explicit_total, 2) if explicit_total is not None else 0.0
         )
     elif explicit_total is not None:
         total = round(explicit_total, 2)
@@ -395,13 +396,19 @@ def apply_packaging_material_transaction(size_rule, operation, amount, notes='',
     and records it in the ledger. Returns the created transaction.
     """
     try:
-        amount = float(amount or 0)
+        amount = float(amount if amount not in (None, '') else 0)
     except (TypeError, ValueError):
-        amount = 0.0
+        raise ValueError('الكمية يجب أن تكون رقماً صالحاً')
+    if not math.isfinite(amount):
+        raise ValueError('الكمية تحتوي على قيمة رقمية غير صالحة')
     if amount < 0:
-        amount = abs(amount)
+        raise ValueError('الكمية لا يمكن أن تكون سالبة')
+    if operation in ('add', 'deduct') and amount <= 0:
+        raise ValueError('الكمية يجب أن تكون أكبر من صفر')
     try:
-        unit_price = max(0.0, float(price_per_unit or 0))
+        unit_price = float(price_per_unit or 0)
+        if not math.isfinite(unit_price) or unit_price < 0:
+            unit_price = 0.0
     except (TypeError, ValueError):
         unit_price = 0.0
 
@@ -409,22 +416,26 @@ def apply_packaging_material_transaction(size_rule, operation, amount, notes='',
         # اقفل صف الرصيد لمنع تضارب الأرصدة عند الصرف المتزامن، واقرأ أحدث قيمة
         # من قاعدة البيانات بدلاً من الاعتماد على نسخة قديمة في الذاكرة.
         locked_rule = PackagingMaterialSizeRule.objects.select_for_update().get(pk=size_rule.pk)
-        current = float(locked_rule.current_stock or 0)
+        current = round(float(locked_rule.current_stock or 0), 3)
         if operation == 'add':
-            new_stock = current + amount
+            new_stock = round(current + amount, 3)
         elif operation == 'deduct':
-            new_stock = max(0.0, current - amount)
+            if amount > current + 1e-6:
+                raise ValueError(
+                    f'الرصيد المتاح لخامة التشغيل ({current:g}) لا يكفي لصرف ({amount:g})'
+                )
+            new_stock = round(max(0.0, current - amount), 3)
         else:
             operation = 'adjust'
-            new_stock = max(0.0, amount)
+            new_stock = round(max(0.0, amount), 3)
 
         locked_rule.current_stock = new_stock
         locked_rule.save(update_fields=['current_stock', 'updated_at'])
         txn = PackagingMaterialTransaction.objects.create(
             size_rule=locked_rule,
             operation=operation,
-            amount=amount,
-            price_per_unit=unit_price,
+            amount=round(amount, 3),
+            price_per_unit=round(unit_price, 2),
             notes=notes or '',
             timestamp=timestamp or '',
         )
@@ -714,7 +725,9 @@ def generate_smart_delivery_notifications():
     notifications = []
 
     # 1. Print Dispatches
-    active_prints = PrintDispatch.objects.exclude(status__in=['تم الاستلام', 'تم الاستلام بالمصنع']).select_related('model')
+    active_prints = PrintDispatch.objects.filter(
+        model__is_deleted=False
+    ).exclude(status__in=['تم الاستلام', 'تم الاستلام بالمصنع']).select_related('model')
     for disp in active_prints:
         if not disp.expected_delivery_date:
             continue
@@ -767,7 +780,9 @@ def generate_smart_delivery_notifications():
             })
 
     # 2. Sewing Dispatches
-    active_sewing = SewingDispatch.objects.exclude(status='تم الاستلام').select_related('model')
+    active_sewing = SewingDispatch.objects.filter(
+        model__is_deleted=False
+    ).exclude(status='تم الاستلام').select_related('model')
     for disp in active_sewing:
         if not disp.expected_delivery_date:
             continue

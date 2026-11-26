@@ -299,8 +299,8 @@ def process_image(raw_bytes):
         )
 
     Image, ImageOps = _pillow()
-    # صور البانرات الكبيرة جداً مسموحة ما دامت ضمن حدود الحجم/الأبعاد أعلاه.
-    Image.MAX_IMAGE_PIXELS = 120_000_000
+    # حد أقصى آمن للبكسلات لحماية الذاكرة (40 ميجابكسل).
+    Image.MAX_IMAGE_PIXELS = 40_000_000
 
     try:
         # قراءة ترويسة الملف فقط (Header-only): ممنوع probe.load() هنا حتى لا

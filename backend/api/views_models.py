@@ -2,6 +2,117 @@ from .views_common import *
 from .views_common import _truthy_permission_keys, _accessory_price_snapshot
 from .services_pipeline import refund_model_consumed_inventory
 
+DESIGN_STAGES = ('مرحلة التصميم', 'تصميم')
+
+
+def _apply_post_cutting_requirement_stock_delta(
+    model,
+    color_obj,
+    delta_qty,
+    part_name,
+    old_qty,
+    new_qty,
+    user_name='مسؤول التصميم',
+):
+    """مزامنة مخزن القماش وسجل الحركات والخط الزمني عند تعديل كمية قماش لموديل تجاوز مرحلة التصميم.
+
+    يجب استدعاؤها داخل ``transaction.atomic()`` بعد قفل ``color_obj`` بـ ``select_for_update()``.
+    - ``delta_qty > 0``: صرف فرق إضافي من المخزن (``deduct``) مع رفض العملية إن لم يكفِ الرصيد.
+    - ``delta_qty < 0``: إرجاع فرق للمخزن (``add``).
+    """
+    delta = round(float(delta_qty or 0), 3)
+    if abs(delta) < 1e-6:
+        return None
+
+    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+    old_stock = round(float(color_obj.quantity or 0), 3)
+    fabric_name = getattr(color_obj.fabric, 'name', '') if color_obj.fabric_id else ''
+    unit_label = getattr(color_obj.fabric, 'unit', 'كجم') if color_obj.fabric_id else 'كجم'
+    part_label = (part_name or 'متطلب قماش').strip()
+    supplier_obj = resolve_supplier_link(
+        None,
+        getattr(color_obj, 'supplier_id_ref', None),
+        getattr(color_obj, 'supplier', None),
+    )
+
+    if delta > 0:
+        if old_stock + 1e-6 < delta:
+            raise ValueError(
+                f'رصيد القماش ({fabric_name} - {color_obj.color_name}) غير كافٍ لتعديل الكمية بعد القص: '
+                f'المتاح {old_stock:g} {unit_label}، والمطلوب خصم فرق {delta:g} {unit_label}.'
+            )
+        new_stock = round(max(0.0, old_stock - delta), 3)
+        color_obj.quantity = new_stock
+        color_obj.save(update_fields=['quantity'])
+        txn_notes = (
+            f"تعديل صرف قماش للموديل {model.model_code} ({part_label}) بعد القص: "
+            f"تم تعديل الكمية من {old_qty:g} إلى {new_qty:g} {unit_label} (صرف فرق +{delta:g})"
+        )
+        txn = FabricTransaction.objects.create(
+            color=color_obj,
+            fabric=color_obj.fabric,
+            operation='deduct',
+            amount=delta,
+            model_code_ref=model.model_code,
+            notes=txn_notes,
+            timestamp=now_str,
+            unit_price_snapshot=color_obj.price_per_unit or 0,
+            supplier=supplier_obj,
+        )
+        tl_title = 'تعديل كمية قماش بعد القص (صرف فرق)'
+    else:
+        refund_amt = round(abs(delta), 3)
+        new_stock = round(old_stock + refund_amt, 3)
+        color_obj.quantity = new_stock
+        color_obj.save(update_fields=['quantity'])
+        txn_notes = (
+            f"تعديل صرف قماش للموديل {model.model_code} ({part_label}) بعد القص: "
+            f"تم تعديل الكمية من {old_qty:g} إلى {new_qty:g} {unit_label} (إرجاع فرق {refund_amt:g})"
+        )
+        txn = FabricTransaction.objects.create(
+            color=color_obj,
+            fabric=color_obj.fabric,
+            operation='add',
+            amount=refund_amt,
+            model_code_ref=model.model_code,
+            notes=txn_notes,
+            timestamp=now_str,
+            unit_price_snapshot=color_obj.price_per_unit or 0,
+            supplier=supplier_obj,
+        )
+        tl_title = 'تعديل كمية قماش بعد القص (إرجاع فرق)'
+
+    ModelTimeline.objects.create(
+        model=model,
+        stage=model.status,
+        title=tl_title,
+        notes=txn_notes,
+        user=user_name or 'مسؤول التصميم',
+        timestamp_str=now_str,
+        details={
+            'phase_type': 'post_cutting_fabric_adjustment',
+            'fabric_name': fabric_name,
+            'color_name': color_obj.color_name,
+            'part_name': part_label,
+            'old_quantity': old_qty,
+            'new_quantity': new_qty,
+            'delta': delta,
+            'old_stock': old_stock,
+            'new_stock': new_stock,
+            'unit': unit_label,
+            'operator_name': user_name or 'مسؤول التصميم',
+        },
+    )
+    return {
+        'txn': txn,
+        'old_stock': old_stock,
+        'new_stock': new_stock,
+        'delta': delta,
+        'color_label': f'{fabric_name} - {color_obj.color_name}',
+        'unit': unit_label,
+    }
+
+
 class ModelItemViewSet(BasePermViewSet):
     queryset = ModelItem.objects.filter(is_deleted=False).prefetch_related(
         'timeline', 'accessories', 'requirements', 'requirements__color'
@@ -104,7 +215,13 @@ class ModelItemViewSet(BasePermViewSet):
         profile = getattr(request, 'user_profile', None)
         can_design_notes = True if not profile else profile.has_perm('can_add_design_notes')
 
-        target_qty = int(data.get('target_cut_quantity') or data.get('targetCutQuantity') or 100)
+        try:
+            raw_target = data.get('target_cut_quantity')
+            if raw_target in (None, ''):
+                raw_target = data.get('targetCutQuantity')
+            target_qty = int(parse_finite_float(raw_target, 'العدد المستهدف للقص', default=100, minimum=0))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         garment_composition = data.get('garment_composition') or data.get('garmentComposition') or DEFAULT_GARMENT_COMPOSITION
         if garment_composition not in COMPOSITION_TO_PARTS:
             garment_composition = DEFAULT_GARMENT_COMPOSITION
@@ -232,14 +349,30 @@ class ModelItemViewSet(BasePermViewSet):
                 AccessoryTransaction.objects.filter(model_code_ref__iexact=old_code).update(
                     model_code_ref=clean_code
                 )
+                PackagingMaterialTransaction.objects.filter(model_code_ref__iexact=old_code).update(
+                    model_code_ref=clean_code
+                )
+                Accessory.objects.filter(custom_model_code__iexact=old_code).update(
+                    custom_model_code=clean_code
+                )
+                PurchaseRequest.objects.filter(model_code_text__iexact=old_code).update(
+                    model_code_text=clean_code
+                )
                 model.model_code = clean_code
 
         for field in [
             'model_type', 'size_category_id', 'main_marker_url', 'print_marker_url',
-            'target_cut_quantity',
         ]:
             if field in data:
                 setattr(model, field, data[field])
+
+        if 'target_cut_quantity' in data:
+            try:
+                model.target_cut_quantity = int(
+                    parse_finite_float(data['target_cut_quantity'], 'العدد المستهدف للقص', default=0, minimum=0)
+                )
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         if 'image' in data:
             model.image = clean_image_value(data.get('image') or '', 'models', 'صورة الموديل')
@@ -254,7 +387,12 @@ class ModelItemViewSet(BasePermViewSet):
             model.garment_parts = list(COMPOSITION_TO_PARTS[composition_value])
 
         if 'actual_cut_count' in data:
-            model.total_cut_pieces = int(data['actual_cut_count'] or 0)
+            try:
+                model.total_cut_pieces = int(
+                    parse_finite_float(data['actual_cut_count'], 'إجمالي المقصوص الفعلي', default=0, minimum=0)
+                )
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         model._skip_timeline_signal = True
         model.save()
         if 'garment_parts' in data or 'garment_composition' in data or 'garmentComposition' in data:
@@ -383,72 +521,117 @@ class ModelItemViewSet(BasePermViewSet):
 
     @action(detail=True, methods=['post'])
     def update_plan(self, request, pk=None):
-        model = self.get_object()
+        target_model = self.get_object()
         data = request.data
         profile = getattr(request, 'user_profile', None)
         can_design_notes = True if not profile else profile.has_perm('can_add_design_notes')
+        user_name = (
+            (data.get('user_name') or '').strip()
+            or (getattr(profile, 'real_name', '') if profile else '')
+            or 'مسؤول التصميم'
+        )
 
         req_quantities = data.get('reqQuantities') or {}
         acc_quantities = data.get('accQuantities') or {}
 
         plan_changes = []
-        with transaction.atomic():
-            for req_id, qty in req_quantities.items():
-                req_obj = resolve_by_id(ModelRequirement, req_id)
-                if req_obj and req_obj.model_id == model.id:
-                    old_q = float(req_obj.planned_quantity or 0)
-                    new_q = max(0.0, float(qty or 0))
-                    if old_q != new_q:
-                        req_obj.planned_quantity = new_q
-                        req_obj.save()
-                        plan_changes.append({
-                            'field': f'req_{req_obj.pk}',
-                            'label': f'كمية قماش ({req_obj.part_name or "متطلب"})',
-                            'old': f'{old_q:g}',
-                            'new': f'{new_q:g}',
-                        })
+        stock_adjusted = False
+        try:
+            with transaction.atomic():
+                model = ModelItem.objects.select_for_update().get(pk=target_model.pk)
+                is_post_cutting = model.status not in DESIGN_STAGES
 
-            for acc_id, qty in acc_quantities.items():
-                acc_obj = resolve_by_id(ModelAccessory, acc_id)
-                if acc_obj and acc_obj.model_id == model.id and not acc_obj.is_issued:
-                    old_q = float(acc_obj.planned_quantity or 0)
-                    new_q = max(0.0, float(qty or 0))
-                    if old_q != new_q:
-                        acc_obj.planned_quantity = new_q
-                        acc_obj.save()
-                        plan_changes.append({
-                            'field': f'acc_{acc_obj.pk}',
-                            'label': f'كمية إكسسوار ({acc_obj.accessory_name or acc_obj.accessory_code})',
-                            'old': f'{old_q:g}',
-                            'new': f'{new_q:g}',
-                        })
+                for req_id, qty in req_quantities.items():
+                    req_obj = resolve_by_id(ModelRequirement, req_id)
+                    if req_obj and req_obj.model_id == model.id:
+                        old_q = round(float(req_obj.planned_quantity or 0), 3)
+                        new_q = round(parse_finite_float(qty, 'كمية القماش', default=0.0, minimum=0.0), 3)
+                        if abs(old_q - new_q) > 1e-6:
+                            if is_post_cutting and req_obj.color_id:
+                                locked_color = FabricColor.objects.select_for_update().select_related('fabric').get(
+                                    pk=req_obj.color_id
+                                )
+                                adj = _apply_post_cutting_requirement_stock_delta(
+                                    model=model,
+                                    color_obj=locked_color,
+                                    delta_qty=new_q - old_q,
+                                    part_name=req_obj.part_name,
+                                    old_qty=old_q,
+                                    new_qty=new_q,
+                                    user_name=user_name,
+                                )
+                                if adj:
+                                    stock_adjusted = True
+                                    plan_changes.append({
+                                        'field': f'stock_{locked_color.pk}',
+                                        'label': f"رصيد المخزن ({adj['color_label']})",
+                                        'old': f"{adj['old_stock']:g} {adj['unit']}",
+                                        'new': f"{adj['new_stock']:g} {adj['unit']}",
+                                    })
+                            req_obj.planned_quantity = new_q
+                            req_obj.save(update_fields=['planned_quantity'])
+                            plan_changes.append({
+                                'field': f'req_{req_obj.pk}',
+                                'label': f'كمية قماش ({req_obj.part_name or "متطلب"})',
+                                'old': f'{old_q:g}',
+                                'new': f'{new_q:g}',
+                            })
 
-            if 'mainMarkerUrl' in data:
-                model.main_marker_url = data['mainMarkerUrl'] or ''
-            if 'printMarkerUrl' in data:
-                model.print_marker_url = data['printMarkerUrl'] or ''
-            if can_design_notes:
-                if 'designNotes' in data:
-                    model.design_notes = data['designNotes'] or ''
-                if 'notesShirt' in data:
-                    model.notes_shirt = data['notesShirt'] or ''
-                if 'notesPants' in data:
-                    model.notes_pants = data['notesPants'] or ''
-                if 'notesJacket' in data:
-                    model.notes_jacket = data['notesJacket'] or ''
-                if 'notes_jacket' in data:
-                    model.notes_jacket = data['notes_jacket'] or ''
-            if 'targetCutQuantity' in data and data['targetCutQuantity'] is not None:
-                model.target_cut_quantity = int(data['targetCutQuantity'])
+                for acc_id, qty in acc_quantities.items():
+                    acc_obj = resolve_by_id(ModelAccessory, acc_id)
+                    if acc_obj and acc_obj.model_id == model.id and not acc_obj.is_issued:
+                        old_q = round(float(acc_obj.planned_quantity or 0), 3)
+                        new_q = round(parse_finite_float(qty, 'كمية الإكسسوار', default=0.0, minimum=0.0), 3)
+                        if abs(old_q - new_q) > 1e-6:
+                            acc_obj.planned_quantity = new_q
+                            acc_obj.save(update_fields=['planned_quantity'])
+                            plan_changes.append({
+                                'field': f'acc_{acc_obj.pk}',
+                                'label': f'كمية إكسسوار ({acc_obj.accessory_name or acc_obj.accessory_code})',
+                                'old': f'{old_q:g}',
+                                'new': f'{new_q:g}',
+                            })
 
-            model._skip_timeline_signal = True
-            model.save()
+                if 'mainMarkerUrl' in data:
+                    model.main_marker_url = data['mainMarkerUrl'] or ''
+                if 'printMarkerUrl' in data:
+                    model.print_marker_url = data['printMarkerUrl'] or ''
+                if can_design_notes:
+                    if 'designNotes' in data:
+                        model.design_notes = data['designNotes'] or ''
+                    if 'notesShirt' in data:
+                        model.notes_shirt = data['notesShirt'] or ''
+                    if 'notesPants' in data:
+                        model.notes_pants = data['notesPants'] or ''
+                    if 'notesJacket' in data:
+                        model.notes_jacket = data['notesJacket'] or ''
+                    if 'notes_jacket' in data:
+                        model.notes_jacket = data['notes_jacket'] or ''
+                if 'targetCutQuantity' in data and data['targetCutQuantity'] is not None:
+                    model.target_cut_quantity = int(
+                        parse_finite_float(data['targetCutQuantity'], 'العدد المستهدف للقص', default=0, minimum=0)
+                    )
 
-            # Sync reserved_quantity (deducted from Available for Design only, NOT from actual total stock)
-            sync_reserved_quantities()
+                model._skip_timeline_signal = True
+                model.save()
+
+                # Sync reserved_quantity (deducted from Available for Design only, NOT from actual total stock)
+                sync_reserved_quantities()
+        except ValueError as exc:
+            return Response({'detail': str(exc), 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         if plan_changes:
-            set_audit_meta(request, extra_changes=plan_changes)
+            if stock_adjusted:
+                set_audit_meta(
+                    request,
+                    section='مخزن القماش',
+                    action_type='transaction',
+                    target_name=model.model_code,
+                    details=f"تعديل كمية قماش بعد القص لموديل {model.model_code} مع تسوية رصيد المخزن تلقائياً",
+                    extra_changes=plan_changes,
+                )
+            else:
+                set_audit_meta(request, extra_changes=plan_changes)
 
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
@@ -700,7 +883,7 @@ class ModelItemViewSet(BasePermViewSet):
                 item = Accessory.objects.select_for_update().get(pk=acc_pk)
                 locked_items[acc_pk] = item
                 available = float(item.current_stock or 0)
-                if available < need:
+                if available + 1e-6 < need:
                     shortages.append(f"{item.name}: المتاح {available:g} والمطلوب {need:g}")
             if shortages:
                 return Response(
@@ -1075,7 +1258,7 @@ class ModelItemViewSet(BasePermViewSet):
 
     @action(detail=True, methods=['post'])
     def finish_cutting(self, request, pk=None):
-        model = self.get_object()
+        target_model = self.get_object()
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         user_name = request.data.get('user_name') or 'مسؤول القص'
         notes = (request.data.get('notes') or '').strip()
@@ -1089,81 +1272,83 @@ class ModelItemViewSet(BasePermViewSet):
         if single_part and not requested_parts:
             requested_parts = [single_part]
 
-        seed_part_stages_from_status(model)
-        current_stages = get_part_stages(model)
-        target_keys = (
-            [normalize_part_key(p) for p in requested_parts]
-            if requested_parts
-            else list(current_stages.keys())
-        )
-        target_keys = [key for key in target_keys if key in current_stages]
-        # فقط القطع التي ما زالت فعلياً في قسم القص يمكن ترحيلها.
-        cutting_keys = [key for key in target_keys if current_stages.get(key) == 'cutting']
-        if not cutting_keys:
-            return Response(
-                {'error': 'تم إنهاء قص هذه القطع وتحويلها للمرحلة التالية مسبقاً ولا يمكن إعادة تحويلها.'},
-                status=status.HTTP_400_BAD_REQUEST,
+        with transaction.atomic():
+            model = ModelItem.objects.select_for_update().get(pk=target_model.pk)
+            seed_part_stages_from_status(model)
+            current_stages = get_part_stages(model)
+            target_keys = (
+                [normalize_part_key(p) for p in requested_parts]
+                if requested_parts
+                else list(current_stages.keys())
             )
-
-        # منع ترحيل أي قطعة بـ 0 قطع مقصوصة عند وجود فرشات مسجلة على الموديل.
-        if model.cutting_records.exists():
-            zero_parts = []
-            for key in cutting_keys:
-                part_cut_total = (
-                    model.cutting_records.filter(part_type=key, is_sub_cut=False)
-                    .aggregate(total=models.Sum('pieces_count'))['total']
-                    or 0
-                )
-                if int(part_cut_total) <= 0:
-                    zero_parts.append(dict(PART_TYPE_CHOICES).get(key, key))
-            if zero_parts:
+            target_keys = [key for key in target_keys if key in current_stages]
+            # فقط القطع التي ما زالت فعلياً في قسم القص يمكن ترحيلها.
+            cutting_keys = [key for key in target_keys if current_stages.get(key) == 'cutting']
+            if not cutting_keys:
                 return Response(
-                    {
-                        'error': (
-                            f"لا يمكن إنهاء قص ({' / '.join(zero_parts)}) لأن عدد القطع المقصوصة يساوي صفر."
-                        )
-                    },
+                    {'error': 'تم إنهاء قص هذه القطع وتحويلها للمرحلة التالية مسبقاً ولا يمكن إعادة تحويلها.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        moved_parts = list(cutting_keys)
-        advance_parts_to_stage(model, 'qc_before_print', cutting_keys)
-        parts_label = ' / '.join(
-            dict(PART_TYPE_CHOICES).get(key, key) for key in moved_parts
-        )
-        derive_pipeline_status(model)
-        model._skip_timeline_signal = True
-        model.save()
+            # منع ترحيل أي قطعة بـ 0 قطع مقصوصة عند وجود فرشات مسجلة على الموديل.
+            if model.cutting_records.exists():
+                zero_parts = []
+                for key in cutting_keys:
+                    part_cut_total = (
+                        model.cutting_records.filter(part_type=key, is_sub_cut=False)
+                        .aggregate(total=models.Sum('pieces_count'))['total']
+                        or 0
+                    )
+                    if int(part_cut_total) <= 0:
+                        zero_parts.append(dict(PART_TYPE_CHOICES).get(key, key))
+                if zero_parts:
+                    return Response(
+                        {
+                            'error': (
+                                f"لا يمكن إنهاء قص ({' / '.join(zero_parts)}) لأن عدد القطع المقصوصة يساوي صفر."
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
-        spreads_qs = model.cutting_records.prefetch_related('color_layers').all()
-        cut_records = CuttingRecordSerializer(spreads_qs, many=True).data
-        total_layers = sum(int(r.get('layers_count') or 0) for r in cut_records)
+            moved_parts = list(cutting_keys)
+            advance_parts_to_stage(model, 'qc_before_print', cutting_keys)
+            parts_label = ' / '.join(
+                dict(PART_TYPE_CHOICES).get(key, key) for key in moved_parts
+            )
+            derive_pipeline_status(model)
+            model._skip_timeline_signal = True
+            model.save()
 
-        tl_notes = f"إجمالي الفرشات: {len(cut_records)} | إجمالي القطع المقصوصة: {model.total_cut_pieces or 0} قطعة | إجمالي الراقات: {total_layers} | القطع المحولة: {parts_label}"
-        if notes:
-            tl_notes += f" | ملاحظات: {notes}"
+            spreads_qs = model.cutting_records.prefetch_related('color_layers').all()
+            cut_records = CuttingRecordSerializer(spreads_qs, many=True).data
+            total_layers = sum(int(r.get('layers_count') or 0) for r in cut_records)
 
-        ModelTimeline.objects.create(
-            model=model,
-            stage='العد قبل الطباعة',
-            title='إنهاء القص والتحويل للعد قبل الطباعة',
-            notes=tl_notes,
-            user=user_name,
-            timestamp_str=now_str,
-            details={
-                'phase_type': 'cutting_finished',
-                'total_cut_pieces': model.total_cut_pieces or 0,
-                'target_cut_quantity': model.target_cut_quantity or 0,
-                'total_layers': total_layers,
-                'spreads_count': len(cut_records),
-                'parts_moved': moved_parts or 'all',
-                'cutter_name': model.cutter_name or user_name,
-                'spreader_name': model.spreader_name or '',
-                'cutting_records': cut_records,
-                'operator_name': user_name,
-                'worker_notes': notes,
-            }
-        )
+            tl_notes = f"إجمالي الفرشات: {len(cut_records)} | إجمالي القطع المقصوصة: {model.total_cut_pieces or 0} قطعة | إجمالي الراقات: {total_layers} | القطع المحولة: {parts_label}"
+            if notes:
+                tl_notes += f" | ملاحظات: {notes}"
+
+            ModelTimeline.objects.create(
+                model=model,
+                stage='العد قبل الطباعة',
+                title='إنهاء القص والتحويل للعد قبل الطباعة',
+                notes=tl_notes,
+                user=user_name,
+                timestamp_str=now_str,
+                details={
+                    'phase_type': 'cutting_finished',
+                    'total_cut_pieces': model.total_cut_pieces or 0,
+                    'target_cut_quantity': model.target_cut_quantity or 0,
+                    'total_layers': total_layers,
+                    'spreads_count': len(cut_records),
+                    'parts_moved': moved_parts or 'all',
+                    'cutter_name': model.cutter_name or user_name,
+                    'spreader_name': model.spreader_name or '',
+                    'cutting_records': cut_records,
+                    'operator_name': user_name,
+                    'worker_notes': notes,
+                }
+            )
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
     @action(detail=True, methods=['post'])
@@ -1205,6 +1390,15 @@ class ModelItemViewSet(BasePermViewSet):
                 {'error': 'اسم الورشة وتاريخ الاستلام المتوقع والقطع المسلمة مطلوبة'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        if client_id:
+            existing_disp = SewingDispatch.objects.filter(client_id=str(client_id)).first()
+            if existing_disp:
+                model.refresh_from_db()
+                return Response({
+                    'model': ModelItemSerializer(model, context={'request': request}).data,
+                    'dispatch': SewingDispatchSerializer(existing_disp, context={'request': request}).data,
+                }, status=status.HTTP_200_OK)
 
         disp = dispatch_model_to_sewing_service(
             get_ext_id(model), workshop_name, pieces_count, expected_date, notes, user, piece_type,
@@ -1392,23 +1586,32 @@ class ModelItemViewSet(BasePermViewSet):
                     for r in saved_records
                 ]
 
+                # Each QC stage advances only the part(s) actually counted. The coarse
+                # model status is then derived from the least advanced part.
+                advanced_parts = sorted({r.part_type for r in saved_records if r.part_type}) or [default_part_type]
+                stage_part_cut_total = 0
+                for pkey in sorted({r.part_type for r in QCRecord.objects.filter(model=model, stage=stage) if r.part_type}) or advanced_parts:
+                    part_cut_attr = {
+                        'shirt': int(model.cut_shirt_pieces or 0),
+                        'pants': int(model.cut_pants_pieces or 0),
+                        'jacket': int(model.cut_jacket_pieces or 0),
+                    }.get(pkey, 0)
+                    stage_part_cut_total += part_cut_attr
+                effective_cut_ref = stage_part_cut_total if stage_part_cut_total > 0 else pieces_cut_ref
+
                 qc_details = {
                     'phase_type': f'qc_{stage}',
                     'record_id': get_ext_id(saved_records[0]) if saved_records else '',
                     'qc_stage': stage,
-                    'pieces_cut': pieces_cut_ref,
+                    'pieces_cut': effective_cut_ref,
                     'counted_pieces': int(counted),
                     'defect_pieces': int(defects),
-                    'deficit': pieces_cut_ref - int(counted),
+                    'deficit': max(0, effective_cut_ref - int(counted)),
                     'matrix_entries': matrix_snapshot,
                     'inspector_name': user,
                     'operator_name': user,
                     'worker_notes': notes,
                 }
-
-                # Each QC stage advances only the part(s) actually counted. The coarse
-                # model status is then derived from the least advanced part.
-                advanced_parts = sorted({r.part_type for r in saved_records if r.part_type}) or [default_part_type]
                 if advance_stage:
                     next_stage = {
                         'before_print': 'printing',
@@ -1549,28 +1752,45 @@ class ModelItemViewSet(BasePermViewSet):
 
     @action(detail=True, methods=['post'])
     def finish_sewing(self, request, pk=None):
-        model = self.get_object()
+        target_model = self.get_object()
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         notes = request.data.get('notes') or ''
         user_name = request.data.get('user') or request.data.get('user_name') or 'مسؤول قسم المكن'
-        advance_parts_to_stage(model, 'qc_after_sewing')
-        derive_pipeline_status(model)
-        model._skip_timeline_signal = True
-        model.save()
-        ModelTimeline.objects.create(
-            model=model,
-            stage="العد بعد المكن",
-            title="إتمام مرحلة الخياطة والمكن",
-            notes=f"تم إنهاء الخياطة وتوجيه الموديل للعد النهائي بعد المكن. {notes}",
-            user=user_name,
-            timestamp_str=now_str,
-            details={
-                'phase_type': 'sewing_finished',
-                'sewing_workshop': model.sewing_workshop or '',
-                'sewing_pieces_count': model.sewing_pieces_count or 0,
-                'operator_name': user_name,
-                'worker_notes': notes,
-            }
+        with transaction.atomic():
+            model = ModelItem.objects.select_for_update().get(pk=target_model.pk)
+            seed_part_stages_from_status(model)
+            stages = get_part_stages(model)
+            sewing_parts = [k for k, v in stages.items() if v == 'sewing']
+            if not sewing_parts:
+                return Response(
+                    {'detail': 'لا توجد قطع في مرحلة المكن حالياً لإنهاء خياطتها.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            advance_parts_to_stage(model, 'qc_after_sewing', sewing_parts)
+            derive_pipeline_status(model)
+            model._skip_timeline_signal = True
+            model.save()
+            ModelTimeline.objects.create(
+                model=model,
+                stage="العد بعد المكن",
+                title="إتمام مرحلة الخياطة والمكن",
+                notes=f"تم إنهاء الخياطة وتوجيه الموديل للعد النهائي بعد المكن. {notes}",
+                user=user_name,
+                timestamp_str=now_str,
+                details={
+                    'phase_type': 'sewing_finished',
+                    'sewing_workshop': model.sewing_workshop or '',
+                    'sewing_pieces_count': model.sewing_pieces_count or 0,
+                    'operator_name': user_name,
+                    'worker_notes': notes,
+                }
+            )
+        set_audit_meta(
+            request,
+            section='المكن والخياطة',
+            action_type='status_change',
+            target_name=model.model_code,
+            details=f"إنهاء مرحلة الخياطة والمكن للموديل {model.model_code} وتحويله للعد بعد المكن",
         )
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
@@ -1619,24 +1839,42 @@ class ModelItemViewSet(BasePermViewSet):
 
     @action(detail=True, methods=['post'])
     def receive_from_print(self, request, pk=None):
-        model = self.get_object()
+        target_model = self.get_object()
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         user_name = request.data.get('user') or 'أمين المخزن'
-        model.status = 'العد بعد الطباعة'
-        model._skip_timeline_signal = True
-        model.save()
-        ModelTimeline.objects.create(
-            model=model,
-            stage="استلام من المطبعة",
-            title="استلام الموديل من المطبعة",
-            notes=f"تم استلام الموديل من مطبعة {model.print_house} وتوجيهه للعد بعد الطباعة",
-            user=user_name,
-            timestamp_str=now_str,
-            details={
-                'phase_type': 'printing_receive',
-                'print_house': model.print_house or '',
-                'operator_name': user_name,
-            }
+        with transaction.atomic():
+            model = ModelItem.objects.select_for_update().get(pk=target_model.pk)
+            seed_part_stages_from_status(model)
+            stages = get_part_stages(model)
+            printing_parts = [k for k, v in stages.items() if v == 'printing']
+            if not printing_parts:
+                return Response(
+                    {'detail': 'لا توجد قطع في مرحلة المطابع والتطريز حالياً لاستلامها.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            advance_parts_to_stage(model, 'qc_after_print', printing_parts)
+            derive_pipeline_status(model)
+            model._skip_timeline_signal = True
+            model.save()
+            ModelTimeline.objects.create(
+                model=model,
+                stage="استلام من المطبعة",
+                title="استلام الموديل من المطبعة",
+                notes=f"تم استلام الموديل من مطبعة {model.print_house} وتوجيهه للعد بعد الطباعة",
+                user=user_name,
+                timestamp_str=now_str,
+                details={
+                    'phase_type': 'printing_receive',
+                    'print_house': model.print_house or '',
+                    'operator_name': user_name,
+                }
+            )
+        set_audit_meta(
+            request,
+            section='المطابع والتطريز',
+            action_type='status_change',
+            target_name=model.model_code,
+            details=f"استلام الموديل {model.model_code} من المطبعة وتوجيهه للعد بعد الطباعة",
         )
         return Response(ModelItemSerializer(model, context={'request': request}).data)
 
@@ -1644,13 +1882,18 @@ class ModelItemViewSet(BasePermViewSet):
     def add_timeline(self, request, pk=None):
         model = self.get_object()
         data = request.data
+        profile = getattr(request, 'user_profile', None)
+        if profile and not is_sudo_account(profile):
+            actor_name = profile.real_name or profile.username
+        else:
+            actor_name = data.get('user_name') or data.get('user') or 'النظام'
         tl = ModelTimeline.objects.create(
             client_id=data.get('id'),
             model=model,
             stage=data.get('stage') or model.status,
             title=data.get('title') or data.get('stage') or '',
             notes=data.get('description') or data.get('notes') or '',
-            user=data.get('user_name') or data.get('user') or 'النظام',
+            user=actor_name,
             timestamp_str=data.get('timestamp') or timezone.now().strftime('%Y-%m-%d %H:%M'),
             details=data.get('details') if isinstance(data.get('details'), dict) else {},
         )
@@ -1692,10 +1935,14 @@ class ModelItemViewSet(BasePermViewSet):
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         step_labels = {
+            'sent_to_photo': 'إرسال للتصوير',
+            'received_from_photo': 'استلام من التصوير',
+            'sent_to_print_cards': 'إرسال الكروت للطباعة',
+            'received_printed_cards': 'استلام الكروت المطبوعة',
             'photo_sent': 'إرسال للتصوير',
             'photo_received': 'استلام من التصوير',
             'cards_sent': 'إرسال الكروت للطباعة',
-            'cards_received': 'استلام الكروت',
+            'cards_received': 'استلام الكروت المطبوعة',
         }
         step_label = step_labels.get(step, step)
         step_changes = [{'field': step, 'label': step_label, 'old': '—', 'new': str(step_date or 'تم التحديث')}]
@@ -1767,6 +2014,9 @@ class ModelItemViewSet(BasePermViewSet):
         record_id = data.get('record_id') or data.get('recordId')
         if not record_id:
             return Response({'detail': 'معرف سجل التشطيب مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        target_rec = resolve_by_id(FinishingRecord, record_id)
+        if not target_rec or target_rec.model_id != model.id:
+            return Response({'detail': 'سجل التشطيب غير موجود ضمن هذا الموديل'}, status=status.HTTP_404_NOT_FOUND)
         try:
             record = receive_finishing_service(
                 record_id,
@@ -1842,6 +2092,9 @@ class ModelItemViewSet(BasePermViewSet):
         record_id = data.get('record_id') or data.get('recordId')
         if not record_id:
             return Response({'detail': 'معرف سجل المكواة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        target_rec = resolve_by_id(AssemblyStageRecord, record_id)
+        if not target_rec or target_rec.model_id != model.id:
+            return Response({'detail': 'سجل المكواة غير موجود ضمن هذا الموديل'}, status=status.HTTP_404_NOT_FOUND)
         try:
             record = receive_ironing_service(
                 record_id,
@@ -1980,6 +2233,9 @@ class ModelItemViewSet(BasePermViewSet):
         record_id = data.get('record_id') or data.get('recordId')
         if not record_id:
             return Response({'detail': 'معرف سجل المرحلة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        target_rec = resolve_by_id(AssemblyStageRecord, record_id)
+        if not target_rec or target_rec.model_id != model.id:
+            return Response({'detail': 'سجل المرحلة غير موجود ضمن هذا الموديل'}, status=status.HTTP_404_NOT_FOUND)
         completed_pieces = data.get('completed_pieces')
         if completed_pieces is None:
             completed_pieces = data.get('completedPieces')
@@ -2039,47 +2295,241 @@ class ModelItemViewSet(BasePermViewSet):
 class ModelRequirementViewSet(BasePermViewSet):
     permission_classes = [HasDynamicSectionPermission]
     required_section = 'design'
-    queryset = ModelRequirement.objects.select_related('model', 'color').all()
+    queryset = ModelRequirement.objects.select_related('model', 'color', 'color__fabric').all()
     serializer_class = ModelRequirementSerializer
+
+    def _actor_name(self, request):
+        profile = getattr(request, 'user_profile', None)
+        data = getattr(request, 'data', {}) or {}
+        return (
+            (data.get('user_name') or '').strip()
+            or (getattr(profile, 'real_name', '') if profile else '')
+            or (getattr(profile, 'username', '') if profile else '')
+            or 'مسؤول التصميم'
+        )
 
     def create(self, request, *args, **kwargs):
         data = request.data
-        model = resolve_by_id(ModelItem, data.get('model_id') or data.get('modelId'))
-        color = resolve_by_id(FabricColor, data.get('color_id') or data.get('colorId'))
-        if not model or not color:
+        target_model = resolve_by_id(ModelItem, data.get('model_id') or data.get('modelId'))
+        target_color = resolve_by_id(FabricColor, data.get('color_id') or data.get('colorId'))
+        if not target_model or not target_color:
             return Response({'detail': 'الموديل أو اللون غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
-        req = ModelRequirement.objects.create(
-            client_id=data.get('id') or data.get('client_id'),
-            model=model,
-            color=color,
-            part_name=(data.get('part_name') or data.get('partName') or '').strip(),
-            planned_quantity=max(0.0, float(data.get('planned_quantity') or data.get('plannedQuantity') or 0)),
-            # التقاط سعر الوحدة الحالي للون وقت ربط المتطلب بالموديل.
-            unit_price_snapshot=color.price_per_unit or 0,
-        )
-        sync_reserved_quantities()
+        try:
+            qty = round(
+                parse_finite_float(
+                    data.get('planned_quantity') if 'planned_quantity' in data else data.get('plannedQuantity'),
+                    'الكمية المطلوبة للقماش',
+                    default=0.0,
+                    minimum=0.0,
+                ),
+                3,
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc), 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        part_name = (data.get('part_name') or data.get('partName') or '').strip()
+        user_name = self._actor_name(request)
+        adj = None
+        try:
+            with transaction.atomic():
+                model = ModelItem.objects.select_for_update().get(pk=target_model.pk)
+                color = FabricColor.objects.select_for_update().select_related('fabric').get(pk=target_color.pk)
+                if model.status not in DESIGN_STAGES and qty > 0:
+                    adj = _apply_post_cutting_requirement_stock_delta(
+                        model=model,
+                        color_obj=color,
+                        delta_qty=qty,
+                        part_name=part_name,
+                        old_qty=0.0,
+                        new_qty=qty,
+                        user_name=user_name,
+                    )
+                req = ModelRequirement.objects.create(
+                    client_id=data.get('id') or data.get('client_id'),
+                    model=model,
+                    color=color,
+                    part_name=part_name,
+                    planned_quantity=qty,
+                    # التقاط سعر الوحدة الحالي للون وقت ربط المتطلب بالموديل.
+                    unit_price_snapshot=color.price_per_unit or 0,
+                )
+                sync_reserved_quantities()
+        except ValueError as exc:
+            return Response({'detail': str(exc), 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if adj:
+            set_audit_meta(
+                request,
+                section='مخزن القماش',
+                action_type='transaction',
+                target_name=model.model_code,
+                details=f"إضافة متطلب قماش بعد القص لموديل {model.model_code} ({part_name or adj['color_label']}): {qty:g} {adj['unit']}",
+                changes=[
+                    {'field': 'planned_quantity', 'label': f'كمية القماش ({part_name or "متطلب"})', 'old': '0', 'new': f'{qty:g}'},
+                    {'field': 'stock', 'label': f"رصيد المخزن ({adj['color_label']})", 'old': f"{adj['old_stock']:g} {adj['unit']}", 'new': f"{adj['new_stock']:g} {adj['unit']}"},
+                ],
+            )
         return Response(ModelRequirementSerializer(req, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
-        req = self.get_object()
+        target_req = self.get_object()
         data = request.data
-        if 'color_id' in data or 'colorId' in data:
-            color = resolve_by_id(FabricColor, data.get('color_id') or data.get('colorId'))
-            if color:
-                req.color = color
-                req.unit_price_snapshot = color.price_per_unit or 0
-        if 'part_name' in data or 'partName' in data:
-            req.part_name = (data.get('part_name') or data.get('partName') or req.part_name).strip()
-        if 'planned_quantity' in data or 'plannedQuantity' in data:
-            req.planned_quantity = max(0.0, float(data.get('planned_quantity') or data.get('plannedQuantity') or 0))
-        req.save()
-        sync_reserved_quantities()
+        user_name = self._actor_name(request)
+        audit_changes = []
+        stock_adjusted = False
+        try:
+            with transaction.atomic():
+                req = ModelRequirement.objects.select_for_update().select_related('model', 'color', 'color__fabric').get(pk=target_req.pk)
+                model = ModelItem.objects.select_for_update().get(pk=req.model_id)
+                old_color_pk = req.color_id
+                old_qty = round(float(req.planned_quantity or 0), 3)
+                old_part = req.part_name or ''
+
+                new_color_obj = req.color
+                if 'color_id' in data or 'colorId' in data:
+                    resolved = resolve_by_id(FabricColor, data.get('color_id') or data.get('colorId'))
+                    if resolved:
+                        new_color_obj = resolved
+                new_part = (
+                    (data.get('part_name') or data.get('partName') or old_part).strip()
+                    if ('part_name' in data or 'partName' in data)
+                    else old_part
+                )
+                if 'planned_quantity' in data or 'plannedQuantity' in data:
+                    raw_q = data.get('planned_quantity') if 'planned_quantity' in data else data.get('plannedQuantity')
+                    new_qty = round(parse_finite_float(raw_q, 'الكمية المطلوبة للقماش', default=0.0, minimum=0.0), 3)
+                else:
+                    new_qty = old_qty
+
+                is_post_cutting = model.status not in DESIGN_STAGES
+                if is_post_cutting:
+                    color_pks = sorted({pk for pk in (old_color_pk, getattr(new_color_obj, 'pk', None)) if pk})
+                    locked_colors = {
+                        c.pk: c
+                        for c in FabricColor.objects.select_for_update().select_related('fabric').filter(pk__in=color_pks).order_by('pk')
+                    }
+                    if new_color_obj.pk != old_color_pk:
+                        if old_color_pk in locked_colors and old_qty > 0:
+                            adj_old = _apply_post_cutting_requirement_stock_delta(
+                                model=model,
+                                color_obj=locked_colors[old_color_pk],
+                                delta_qty=-old_qty,
+                                part_name=old_part,
+                                old_qty=old_qty,
+                                new_qty=0.0,
+                                user_name=user_name,
+                            )
+                            if adj_old:
+                                stock_adjusted = True
+                                audit_changes.append({
+                                    'field': f'stock_{old_color_pk}',
+                                    'label': f"رصيد المخزن ({adj_old['color_label']})",
+                                    'old': f"{adj_old['old_stock']:g} {adj_old['unit']}",
+                                    'new': f"{adj_old['new_stock']:g} {adj_old['unit']}",
+                                })
+                        if new_color_obj.pk in locked_colors and new_qty > 0:
+                            adj_new = _apply_post_cutting_requirement_stock_delta(
+                                model=model,
+                                color_obj=locked_colors[new_color_obj.pk],
+                                delta_qty=new_qty,
+                                part_name=new_part,
+                                old_qty=0.0,
+                                new_qty=new_qty,
+                                user_name=user_name,
+                            )
+                            if adj_new:
+                                stock_adjusted = True
+                                audit_changes.append({
+                                    'field': f'stock_{new_color_obj.pk}',
+                                    'label': f"رصيد المخزن ({adj_new['color_label']})",
+                                    'old': f"{adj_new['old_stock']:g} {adj_new['unit']}",
+                                    'new': f"{adj_new['new_stock']:g} {adj_new['unit']}",
+                                })
+                    elif abs(new_qty - old_qty) > 1e-6 and old_color_pk in locked_colors:
+                        adj = _apply_post_cutting_requirement_stock_delta(
+                            model=model,
+                            color_obj=locked_colors[old_color_pk],
+                            delta_qty=new_qty - old_qty,
+                            part_name=new_part,
+                            old_qty=old_qty,
+                            new_qty=new_qty,
+                            user_name=user_name,
+                        )
+                        if adj:
+                            stock_adjusted = True
+                            audit_changes.append({
+                                'field': f'stock_{old_color_pk}',
+                                'label': f"رصيد المخزن ({adj['color_label']})",
+                                'old': f"{adj['old_stock']:g} {adj['unit']}",
+                                'new': f"{adj['new_stock']:g} {adj['unit']}",
+                            })
+
+                if new_color_obj.pk != old_color_pk:
+                    req.color = new_color_obj
+                    req.unit_price_snapshot = new_color_obj.price_per_unit or 0
+                req.part_name = new_part
+                req.planned_quantity = new_qty
+                req.save()
+                if abs(new_qty - old_qty) > 1e-6:
+                    audit_changes.insert(0, {
+                        'field': 'planned_quantity',
+                        'label': f'كمية القماش ({new_part or "متطلب"})',
+                        'old': f'{old_qty:g}',
+                        'new': f'{new_qty:g}',
+                    })
+                sync_reserved_quantities()
+        except ValueError as exc:
+            return Response({'detail': str(exc), 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if stock_adjusted:
+            set_audit_meta(
+                request,
+                section='مخزن القماش',
+                action_type='transaction',
+                target_name=model.model_code,
+                details=f"تعديل متطلب قماش بعد القص للموديل {model.model_code} ({req.part_name or 'متطلب'}): {old_qty:g} → {req.planned_quantity:g}",
+                changes=audit_changes,
+            )
         return Response(ModelRequirementSerializer(req, context={'request': request}).data)
 
     def destroy(self, request, *args, **kwargs):
-        req = self.get_object()
-        req.delete()
-        sync_reserved_quantities()
+        target_req = self.get_object()
+        user_name = self._actor_name(request)
+        adj = None
+        model_code = ''
+        old_qty = 0.0
+        part_name = ''
+        with transaction.atomic():
+            req = ModelRequirement.objects.select_for_update().select_related('model', 'color', 'color__fabric').get(pk=target_req.pk)
+            model = ModelItem.objects.select_for_update().get(pk=req.model_id)
+            model_code = model.model_code
+            old_qty = round(float(req.planned_quantity or 0), 3)
+            part_name = req.part_name or ''
+            if model.status not in DESIGN_STAGES and req.color_id and old_qty > 0:
+                locked_color = FabricColor.objects.select_for_update().select_related('fabric').get(pk=req.color_id)
+                adj = _apply_post_cutting_requirement_stock_delta(
+                    model=model,
+                    color_obj=locked_color,
+                    delta_qty=-old_qty,
+                    part_name=part_name,
+                    old_qty=old_qty,
+                    new_qty=0.0,
+                    user_name=user_name,
+                )
+            req.delete()
+            sync_reserved_quantities()
+        if adj:
+            set_audit_meta(
+                request,
+                section='مخزن القماش',
+                action_type='transaction',
+                target_name=model_code,
+                details=f"حذف متطلب قماش بعد القص لموديل {model_code} ({part_name or adj['color_label']}) مع إرجاع {old_qty:g} {adj['unit']} للمخزن",
+                changes=[
+                    {'field': 'planned_quantity', 'label': f'كمية القماش ({part_name or "متطلب"})', 'old': f'{old_qty:g}', 'new': '0'},
+                    {'field': 'stock', 'label': f"رصيد المخزن ({adj['color_label']})", 'old': f"{adj['old_stock']:g} {adj['unit']}", 'new': f"{adj['new_stock']:g} {adj['unit']}"},
+                ],
+            )
         return Response({'status': 'deleted'})
 
 
@@ -2094,6 +2544,11 @@ class ModelAccessoryViewSet(BasePermViewSet):
         model = resolve_by_id(ModelItem, data.get('model_id') or data.get('modelId'))
         if not model:
             return Response({'detail': 'الموديل غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            piece_cons = parse_finite_float(data.get('piece_consumption'), 'استهلاك القطعة', default=1.0, minimum=0.0)
+            planned_qty = parse_finite_float(data.get('planned_quantity'), 'الكمية المطلوبة للإكسسوار', default=0.0, minimum=0.0)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         m_acc = ModelAccessory.objects.create(
             client_id=data.get('id') or data.get('client_id'),
             model=model,
@@ -2101,8 +2556,8 @@ class ModelAccessoryViewSet(BasePermViewSet):
             accessory_code=data.get('accessory_code') or '',
             accessory_name=(data.get('accessory_name') or data.get('name') or '').strip(),
             target_type=data.get('target_type') or 'shirt',
-            piece_consumption=float(data.get('piece_consumption') or 1),
-            planned_quantity=max(0.0, float(data.get('planned_quantity') or 0)),
+            piece_consumption=piece_cons,
+            planned_quantity=planned_qty,
             unit=data.get('unit') or 'قطعة',
             image=clean_image_value(data.get('image') or '', 'model-accessories', 'صورة الإكسسوار'),
             # التقاط سعر الوحدة الحالي للإكسسوار وقت الربط بالموديل.
@@ -2122,10 +2577,13 @@ class ModelAccessoryViewSet(BasePermViewSet):
         if 'accessory_id' in data:
             m_acc.accessory_id_ref = data.get('accessory_id') or None
             m_acc.unit_price_snapshot = _accessory_price_snapshot(m_acc.accessory_id_ref)
-        if 'planned_quantity' in data:
-            m_acc.planned_quantity = max(0.0, float(data.get('planned_quantity') or 0))
-        if 'piece_consumption' in data:
-            m_acc.piece_consumption = max(0.0, float(data.get('piece_consumption') or 1))
+        try:
+            if 'planned_quantity' in data:
+                m_acc.planned_quantity = parse_finite_float(data.get('planned_quantity'), 'الكمية المطلوبة للإكسسوار', default=0.0, minimum=0.0)
+            if 'piece_consumption' in data:
+                m_acc.piece_consumption = parse_finite_float(data.get('piece_consumption'), 'استهلاك القطعة', default=1.0, minimum=0.0)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         if 'target_type' in data:
             m_acc.target_type = data.get('target_type') or 'shirt'
         if 'image' in data:

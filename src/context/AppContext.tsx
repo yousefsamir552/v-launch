@@ -445,6 +445,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAssemblyStageRecords([]);
     setWorkshopEvaluations([]);
     setPackagingMaterialRules([]);
+    setPurchaseRequests([]);
     setInternalMessages([]);
     setAuditLogs([]);
     setReadNotificationIds([]);
@@ -638,7 +639,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!content.trim()) {
       return { success: false, message: 'لا يمكن إرسال رسالة فارغة' };
     }
-    const receiver = users.find((u) => u.id === receiverId || u.username === receiverId);
+    const receiverFromUsers = users.find((u) => u.id === receiverId || u.username === receiverId);
+    // السماح للموظف بالرد على مدير أعلى رتبة أرسل له رسالة سابقاً حتى لو لم يظهر المدير في قائمة users.
+    const threadPeer = !receiverFromUsers
+      ? internalMessages.find((m) => m.sender_id === receiverId || m.receiver_id === receiverId)
+      : undefined;
+    const receiver = receiverFromUsers
+      ? { id: receiverFromUsers.id, real_name: receiverFromUsers.real_name }
+      : threadPeer
+        ? {
+            id: receiverId,
+            real_name:
+              threadPeer.sender_id === receiverId ? threadPeer.sender_name : threadPeer.receiver_name
+          }
+        : null;
     if (!receiver) {
       return { success: false, message: 'المستلم المحدد غير موجود' };
     }

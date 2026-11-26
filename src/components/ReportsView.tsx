@@ -813,11 +813,14 @@ export const ReportsView: React.FC = () => {
 
   const printQualityReport = () => {
     if (!qualityReport) return;
+    const filteredList = qualityStageFilter
+      ? qualityReport.models.filter((row) => (row.stage_losses?.[qualityStageFilter] || 0) > 0)
+      : qualityReport.models;
     const stageSummary = (qualityReport.stage_loss_totals || [])
       .filter((item) => item.loss > 0)
       .map((item) => `${escapeHtml(item.label)}: ${fmt(item.loss)}`)
       .join(' • ');
-    const rows = qualityReport.models
+    const rows = filteredList
       .map((row) => {
         const lossText =
           STAGE_LOSS_META.filter((meta) => (row.stage_losses?.[meta.key] || 0) > 0)
@@ -835,8 +838,10 @@ export const ReportsView: React.FC = () => {
         </tr>`;
       })
       .join('');
+    const totalCutFiltered = filteredList.reduce((s, r) => s + Number(r.cut_pieces || 0), 0);
+    const totalCurFiltered = filteredList.reduce((s, r) => s + Number(r.current_pieces || 0), 0);
     openPrintWindow(
-      'تقرير المشاكل والعجز',
+      qualityStageFilter ? `تقرير المشاكل والعجز — ${activeStageLossMeta?.label || qualityStageFilter}` : 'تقرير المشاكل والعجز',
       `<p class="meta" style="margin:0 0 8px">أين ضاعت القطع؟ ${escapeHtml(stageSummary || 'لا يوجد فقد مسجّل')}</p>
       <table>
         <thead><tr>
@@ -846,8 +851,8 @@ export const ReportsView: React.FC = () => {
         <tbody>${rows || '<tr><td colspan="8">لا توجد بيانات</td></tr>'}</tbody>
         <tfoot><tr class="total">
           <td colspan="3">الإجمالي</td>
-          <td class="num">${fmt(qualityReport.summary.total_cut_pieces)}</td>
-          <td class="num">${fmt(qualityReport.summary.total_current_pieces)}</td>
+          <td class="num">${fmt(qualityStageFilter ? totalCutFiltered : qualityReport.summary.total_cut_pieces)}</td>
+          <td class="num">${fmt(qualityStageFilter ? totalCurFiltered : qualityReport.summary.total_current_pieces)}</td>
           <td class="num">${fmt(qualityReport.summary.total_shortage)}</td>
           <td class="num">${pct(qualityReport.summary.total_shortage_percent)}</td>
           <td></td>
@@ -969,7 +974,9 @@ export const ReportsView: React.FC = () => {
   const productionTotals = useMemo(() => {
     const list = productionReport?.departments || [];
     const pieces = list.reduce((sum, dep) => sum + dep.pieces_count, 0);
-    const target = list.reduce((sum, dep) => sum + dep.target, 0);
+    const targetedList = list.filter((dep) => dep.target > 0);
+    const targetedPieces = targetedList.reduce((sum, dep) => sum + dep.pieces_count, 0);
+    const target = targetedList.reduce((sum, dep) => sum + dep.target, 0);
     const best = list.reduce<DepartmentReportCard | null>(
       (winner, dep) => (!winner || dep.pieces_count > winner.pieces_count ? dep : winner),
       null
@@ -979,7 +986,7 @@ export const ReportsView: React.FC = () => {
       target,
       best,
       activeCount: list.filter((dep) => dep.pieces_count > 0).length,
-      progress: target > 0 ? Math.round((pieces / target) * 100) : 0
+      progress: target > 0 ? Math.round((targetedPieces / target) * 100) : 0
     };
   }, [productionReport]);
 

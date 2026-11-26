@@ -80,6 +80,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     };
     let totalPartItems = 0;
     activeModels.forEach((model) => {
+      // استبعاد الموديلات التي لا تزال في مرحلة التصميم من عدّاد قطع القص.
+      if (model.status === 'تصميم' || model.status === 'مرحلة التصميم') return;
       Object.values(getPartStages(model.id)).forEach((stage) => {
         const key = (stage || 'cutting') as PartStage;
         counts[key] = (counts[key] || 0) + 1;
@@ -113,22 +115,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       (!activeModelIds.has(c.model_id) || (c.is_sub_cut ?? c.isSubCut ?? false) ? 0 : c.pieces_count),
     0
   );
-  const totalQcGoodPieces = qcRecords.reduce(
-    (sum, q) => sum + (activeModelIds.has(q.model_id) ? q.good_qty : 0),
-    0
-  );
+  // نأخذ أحدث مرحلة فرز فقط لكل (موديل + قطعة) لتجنب جمع المراحل الثلاث وتضخيم السليم 3 أضعاف.
+  const totalQcGoodPieces = useMemo(() => {
+    const stageRank: Record<string, number> = { before_print: 1, after_print: 2, after_sewing: 3 };
+    const latestByModelPart = new Map<string, { rank: number; good: number }>();
+    qcRecords.forEach((q) => {
+      if (!activeModelIds.has(q.model_id)) return;
+      const key = `${q.model_id}::${q.part_type || 'shirt'}`;
+      const rank = stageRank[q.stage] || 1;
+      const good = Number(q.good_qty ?? q.counted_pieces ?? 0);
+      const prev = latestByModelPart.get(key);
+      if (!prev || rank > prev.rank) {
+        latestByModelPart.set(key, { rank, good });
+      } else if (rank === prev.rank) {
+        prev.good += good;
+      }
+    });
+    let total = 0;
+    latestByModelPart.forEach((entry) => {
+      total += entry.good;
+    });
+    return total;
+  }, [qcRecords, activeModelIds]);
   const totalDispatchedPieces = printDispatches.reduce(
     (sum, d) => sum + (activeModelIds.has(d.model_id) ? d.pieces_count : 0),
     0
   );
 
   const totalPartItems = stageStats.totalPartItems;
-  const designPct = totalModels > 0 ? (inDesignCount / totalModels) * 100 : 0;
-  const cuttingPct = totalPartItems > 0 ? (inCuttingCount / totalPartItems) * 100 : 0;
-  const printingPct = totalPartItems > 0 ? (inPrintingCount / totalPartItems) * 100 : 0;
-  const qcPct = totalPartItems > 0 ? (inQcCount / totalPartItems) * 100 : 0;
-  const sewingPct = totalPartItems > 0 ? (inSewingCount / totalPartItems) * 100 : 0;
-  const finishedPct = totalPartItems > 0 ? (finishedCount / totalPartItems) * 100 : 0;
+  const progressDenominator = totalPartItems + inDesignCount;
+  const designPct = progressDenominator > 0 ? (inDesignCount / progressDenominator) * 100 : 0;
+  const cuttingPct = progressDenominator > 0 ? (inCuttingCount / progressDenominator) * 100 : 0;
+  const printingPct = progressDenominator > 0 ? (inPrintingCount / progressDenominator) * 100 : 0;
+  const qcPct = progressDenominator > 0 ? (inQcCount / progressDenominator) * 100 : 0;
+  const sewingPct = progressDenominator > 0 ? (inSewingCount / progressDenominator) * 100 : 0;
+  const finishedPct = progressDenominator > 0 ? (finishedCount / progressDenominator) * 100 : 0;
 
   const recentModels = [...activeModels]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())

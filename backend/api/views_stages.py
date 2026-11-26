@@ -43,9 +43,20 @@ class CuttingRecordViewSet(BasePermViewSet):
 
         total_layers_from_items = sum(item['layers_count'] for item in parsed_layers)
 
-        layers = max(0, int(data.get('layers_count') or data.get('layersCount') or total_layers_from_items or 0))
+        if parsed_layers:
+            layers = total_layers_from_items
+        else:
+            layers = max(0, int(data.get('layers_count') or data.get('layersCount') or 0))
         pieces_per_layer = max(0, int(data.get('pieces_per_layer') or data.get('piecesPerLayer') or 0))
-        weight = max(0.0, float(data.get('layer_weight') or data.get('layerWeight') or 0))
+        try:
+            weight = parse_finite_float(
+                data.get('layer_weight') if 'layer_weight' in data else data.get('layerWeight'),
+                'وزن الطبقة',
+                default=0.0,
+                minimum=0.0,
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         # Automatically calculate cut pieces = layers * pieces_per_layer (fallback to pieces_count if legacy)
         if pieces_per_layer > 0 and layers > 0:
@@ -68,11 +79,19 @@ class CuttingRecordViewSet(BasePermViewSet):
         if is_sub_cut and not sub_cut_label:
             sub_cut_label = 'قصة ' + {'shirt': 'تيشرت', 'pants': 'بنطلون', 'jacket': 'جاكيت', 'single': 'قطعة'}.get(part_type, 'فرعية')
 
+        req_client_id = data.get('id') or data.get('client_id')
         with transaction.atomic():
             # اقفل سجل الموديل أولاً ثم احسب رقم الفرشة، حتى لا تحصل فرشتان
             # متزامنتان على نفس الرقم (Race Condition). نستخدم أكبر رقم موجود + 1
             # (وليس عدد السجلات) حتى لا يتكرر رقم فرشة بعد حذف إحدى الفرشات.
             model = ModelItem.objects.select_for_update().get(pk=model.pk)
+            if req_client_id:
+                existing_rec = CuttingRecord.objects.filter(client_id=str(req_client_id)).first()
+                if existing_rec:
+                    return Response(
+                        CuttingRecordSerializer(existing_rec, context={'request': request}).data,
+                        status=status.HTTP_200_OK,
+                    )
             last_spread_num = (
                 CuttingRecord.objects.filter(model=model)
                 .order_by('-spread_number')
@@ -82,7 +101,7 @@ class CuttingRecordViewSet(BasePermViewSet):
             # توليد رقم الفرشة تلقائياً على الباك إند داخل قفل الموديل لمنع أي تكرار أو تعارض.
             spread_num = int(last_spread_num) + 1
             rec = CuttingRecord.objects.create(
-                client_id=data.get('id') or data.get('client_id'),
+                client_id=req_client_id,
                 model=model,
                 spread_number=spread_num,
                 part_type=part_type,
@@ -107,7 +126,7 @@ class CuttingRecordViewSet(BasePermViewSet):
                     spread=rec,
                     color_name=item['color_name'],
                     layers_count=item['layers_count'],
-                    layer_weight=weight,
+                    layer_weight=item['layer_weight'] if item['layer_weight'] > 0 else weight,
                     pieces_count=item_pcs,
                     shade_degree=item['shade_degree'],
                     notes=item['notes'],
@@ -597,7 +616,15 @@ class PrintDispatchViewSet(BasePermViewSet):
             raise PermissionDenied('ليس لديك صلاحية تعديل أسعار المطابع')
 
         shop_name = (data.get('shop_name') or data.get('shopName') or data.get('print_house') or '').strip()
-        pieces = max(0, int(data.get('pieces_count') or data.get('piecesCount') or 0))
+        try:
+            pieces = int(parse_finite_float(
+                data.get('pieces_count') if 'pieces_count' in data else data.get('piecesCount'),
+                'عدد القطع المرسلة',
+                default=0,
+                minimum=1,
+            ))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         print_type = (data.get('print_type') or data.get('printType') or 'سلك سكرين مائي').strip()
         piece_type = (data.get('piece_type') or data.get('pieceType') or 'shirt').strip() or 'shirt'
         if piece_type not in PART_TYPE_KEYS:
@@ -605,73 +632,96 @@ class PrintDispatchViewSet(BasePermViewSet):
         piece_label = (data.get('piece_label') or data.get('pieceLabel') or '').strip() or dict(PART_TYPE_CHOICES).get(piece_type, '')
         print_location = (data.get('print_location') or data.get('printLocation') or '').strip()
         print_details = (data.get('print_details') or data.get('printDetails') or '').strip()
-        cost = max(0.0, float(data.get('cost_per_piece') or data.get('costPerPiece') or 0)) if can_edit_cost else 0.0
+        cost = 0.0
+        if can_edit_cost:
+            try:
+                raw_cost = data.get('cost_per_piece') if 'cost_per_piece' in data else data.get('costPerPiece')
+                cost = parse_finite_float(raw_cost, 'سعر الطباعة للقطعة', default=0.0, minimum=0.0)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         exp_date = data.get('expected_delivery_date') or data.get('expectedDeliveryDate') or None
         if exp_date and not isinstance(exp_date, date):
             exp_date = parse_date(str(exp_date)[:10])
         notes = (data.get('notes') or '').strip() if can_printing_notes else ''
         now_str = data.get('dispatched_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
         user_name = data.get('user_name') or 'مسؤول المطابع'
+        req_client_id = data.get('id') or data.get('client_id')
 
-        disp = PrintDispatch.objects.create(
-            client_id=data.get('id') or data.get('client_id'),
-            model=model,
-            print_house=shop_name,
-            workshop=resolve_workshop_link(data, shop_name),
-            piece_type=piece_type,
-            piece_label=piece_label,
-            pieces_count=pieces,
-            print_type=print_type,
-            print_location=print_location,
-            print_details=print_details or None,
-            cost_per_piece=cost,
-            expected_delivery_date=exp_date if exp_date else None,
-            dispatched_at_str=now_str,
-            status='مرسل للمطبعة',
-            notes=notes,
-        )
+        with transaction.atomic():
+            model = ModelItem.objects.select_for_update().get(pk=model.pk)
+            if req_client_id:
+                existing_disp = PrintDispatch.objects.filter(client_id=str(req_client_id)).first()
+                if existing_disp:
+                    return Response(
+                        PrintDispatchSerializer(existing_disp, context={'request': request}).data,
+                        status=status.HTTP_200_OK,
+                    )
+            disp = PrintDispatch.objects.create(
+                client_id=req_client_id,
+                model=model,
+                print_house=shop_name,
+                workshop=resolve_workshop_link(data, shop_name),
+                piece_type=piece_type,
+                piece_label=piece_label,
+                pieces_count=pieces,
+                print_type=print_type,
+                print_location=print_location,
+                print_details=print_details or None,
+                cost_per_piece=cost,
+                expected_delivery_date=exp_date if exp_date else None,
+                dispatched_at_str=now_str,
+                status='مرسل للمطبعة',
+                notes=notes,
+            )
 
-        # Only this part is at the printing stage; the coarse status follows it.
-        advance_parts_to_stage(model, 'printing', [piece_type])
-        derive_pipeline_status(model)
-        model.print_house = shop_name
-        if can_edit_cost:
-            model.print_cost_per_piece = cost
-        if exp_date:
-            model.print_expected_date = exp_date
-        model._skip_timeline_signal = True
-        model.save()
+            # Only this part is at the printing stage; the coarse status follows it.
+            advance_parts_to_stage(model, 'printing', [piece_type])
+            derive_pipeline_status(model)
+            model.print_house = shop_name
+            if can_edit_cost:
+                model.print_cost_per_piece = cost
+            if exp_date:
+                model.print_expected_date = exp_date
+            model._skip_timeline_signal = True
+            model.save()
 
-        tl_notes = f"تم إرسال {pieces} قطعة ({piece_label}) للتشغيل ({print_type}){f' - موعد الاستلام المتوقع: {exp_date}' if exp_date else ''}"
-        if print_location:
-            tl_notes += f" | مكان الطباعة: {print_location}"
-        if notes:
-            tl_notes += f" | ملاحظات: {notes}"
+            tl_notes = f"تم إرسال {pieces} قطعة ({piece_label}) للتشغيل ({print_type}){f' - موعد الاستلام المتوقع: {exp_date}' if exp_date else ''}"
+            if print_location:
+                tl_notes += f" | مكان الطباعة: {print_location}"
+            if notes:
+                tl_notes += f" | ملاحظات: {notes}"
 
-        ModelTimeline.objects.create(
-            model=model,
-            stage='المطابع والتطريز',
-            title=f"إرسال للمطبعة: {shop_name}",
-            notes=tl_notes,
-            user=user_name,
-            timestamp_str=now_str,
-            details={
-                'phase_type': 'printing_dispatch',
-                'record_id': get_ext_id(disp),
-                'shop_name': shop_name,
-                'piece_type': piece_type,
-                'piece_label': piece_label,
-                'print_type': print_type,
-                'print_location': print_location,
-                'print_details': print_details,
-                'pieces_count': pieces,
-                'cost_per_piece': cost,
-                'expected_delivery_date': str(exp_date or ''),
-                'dispatched_at': now_str,
-                'status': 'مرسل للمطبعة',
-                'worker_notes': notes,
-                'operator_name': user_name,
-            }
+            ModelTimeline.objects.create(
+                model=model,
+                stage='المطابع والتطريز',
+                title=f"إرسال للمطبعة: {shop_name}",
+                notes=tl_notes,
+                user=user_name,
+                timestamp_str=now_str,
+                details={
+                    'phase_type': 'printing_dispatch',
+                    'record_id': get_ext_id(disp),
+                    'shop_name': shop_name,
+                    'piece_type': piece_type,
+                    'piece_label': piece_label,
+                    'print_type': print_type,
+                    'print_location': print_location,
+                    'print_details': print_details,
+                    'pieces_count': pieces,
+                    'cost_per_piece': cost,
+                    'expected_delivery_date': str(exp_date or ''),
+                    'dispatched_at': now_str,
+                    'status': 'مرسل للمطبعة',
+                    'worker_notes': notes,
+                    'operator_name': user_name,
+                }
+            )
+        set_audit_meta(
+            request,
+            section='المطابع والتطريز',
+            action_type='create',
+            target_name=f"{model.model_code} - {shop_name}",
+            details=f"إرسال {pieces} قطعة ({piece_label}) للموديل {model.model_code} إلى مطبعة {shop_name}",
         )
         return Response(PrintDispatchSerializer(disp, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
@@ -758,8 +808,14 @@ class PrintDispatchViewSet(BasePermViewSet):
 
             if is_receiving:
                 # لا نُرقّي القطعة إلى «العد بعد الطباعة» إلا عند اكتمال استلام كامل الكمية
-                # حتى لا يُقفل القسم أثناء الاستلام الجزئي على دفعات.
-                if is_complete:
+                # وعدم وجود إرساليات مطابع أخرى معلقة لنفس القطعة.
+                other_pending_same_part = PrintDispatch.objects.filter(
+                    model=m,
+                    piece_type=disp.piece_type or 'shirt',
+                ).exclude(pk=disp.pk).exclude(
+                    status__in=('تم الاستلام', 'تم الاستلام بالمصنع')
+                ).exists()
+                if is_complete and not other_pending_same_part:
                     advance_parts_to_stage(m, 'qc_after_print', [disp.piece_type or 'shirt'])
                     derive_pipeline_status(m)
                     m._skip_timeline_signal = True
@@ -819,25 +875,32 @@ class PrintDispatchViewSet(BasePermViewSet):
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         label = dict(PART_TYPE_CHOICES).get(piece_type, piece_type)
 
-        advance_parts_to_stage(model, 'sewing', [piece_type])
-        derive_pipeline_status(model)
-        model._skip_timeline_signal = True
-        model.save()
+        with transaction.atomic():
+            model = ModelItem.objects.select_for_update().get(pk=model.pk)
+            if model.status in ('مرحلة التصميم', 'تصميم'):
+                return Response(
+                    {'detail': 'لا يمكن تخطي المطابع لموديل لا يزال في مرحلة التصميم'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            advance_parts_to_stage(model, 'sewing', [piece_type])
+            derive_pipeline_status(model)
+            model._skip_timeline_signal = True
+            model.save()
 
-        ModelTimeline.objects.create(
-            model=model,
-            stage='المطابع والتطريز',
-            title=f'تخطي المطابع للقطعة [{label}]',
-            notes=f'تم تخطي مرحلة المطابع والتطريز للقطعة [{label}] وتحويلها مباشرة إلى قسم المكن',
-            user=user_name,
-            timestamp_str=now_str,
-            details={
-                'phase_type': 'printing_skipped',
-                'piece_type': piece_type,
-                'piece_label': label,
-                'operator_name': user_name,
-            }
-        )
+            ModelTimeline.objects.create(
+                model=model,
+                stage='المطابع والتطريز',
+                title=f'تخطي المطابع للقطعة [{label}]',
+                notes=f'تم تخطي مرحلة المطابع والتطريز للقطعة [{label}] وتحويلها مباشرة إلى قسم المكن',
+                user=user_name,
+                timestamp_str=now_str,
+                details={
+                    'phase_type': 'printing_skipped',
+                    'piece_type': piece_type,
+                    'piece_label': label,
+                    'operator_name': user_name,
+                }
+            )
         set_audit_meta(
             request,
             action_type='status_change',
@@ -903,18 +966,24 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
 
     def _as_float(self, value, default=0.0):
         try:
-            return float(value)
+            num = float(value)
+            if not math.isfinite(num):
+                return default
+            return max(0.0, num)
         except (TypeError, ValueError):
             return default
 
     def _apply_size_rows(self, rule, rows, can_edit_prices=False):
-        """Upserts the size-level rows of a rule and drops the removed ones."""
+        """Upserts the size-level rows of a rule and drops the removed ones safely."""
         keep_ids = []
+        now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         for row in rows:
             if not isinstance(row, dict):
                 continue
             size_group_id = str(row.get('size_group_id') or '').strip()
-            size_row = rule.size_rules.filter(size_group_id=size_group_id).first()
+            size_row = rule.size_rules.select_for_update().filter(size_group_id=size_group_id).first()
+            is_new = size_row is None
+            old_stock = round(float(size_row.current_stock or 0), 3) if size_row is not None else 0.0
             if size_row is None:
                 size_row = PackagingMaterialSizeRule(rule=rule, size_group_id=size_group_id)
             size_row.size_group_name = row.get('size_group_name') or size_row.size_group_name or ''
@@ -925,10 +994,23 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
             size_row.min_alert_threshold = self._as_float(row.get('min_alert_threshold'))
             # سعر الوحدة يُكتب فقط لمن يملك صلاحية تعديل أسعار الأسمبلي/الخامات.
             if can_edit_prices and row.get('price_per_unit') is not None:
-                size_row.price_per_unit = max(0.0, self._as_float(row.get('price_per_unit')))
+                size_row.price_per_unit = self._as_float(row.get('price_per_unit'))
+            stock_changed = False
             if row.get('current_stock') is not None:
-                size_row.current_stock = self._as_float(row.get('current_stock'))
+                incoming_stock = round(self._as_float(row.get('current_stock')), 3)
+                if is_new or abs(incoming_stock - old_stock) > 1e-6:
+                    size_row.current_stock = incoming_stock
+                    stock_changed = not is_new
             size_row.save()
+            if stock_changed:
+                PackagingMaterialTransaction.objects.create(
+                    size_rule=size_row,
+                    operation='adjust',
+                    amount=float(size_row.current_stock or 0),
+                    price_per_unit=float(size_row.price_per_unit or 0),
+                    notes=f'تعديل رصيد مباشر من إعدادات القاعدة (من {old_stock:g} إلى {float(size_row.current_stock or 0):g})',
+                    timestamp=now_str,
+                )
             keep_ids.append(size_row.pk)
         # Never drop rows that still hold stock or a movement history; only prune empties.
         rule.size_rules.exclude(pk__in=keep_ids).filter(
@@ -945,50 +1027,51 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
             for row in rows:
                 if isinstance(row, dict) and row.get('price_per_unit') not in (None, '') and not can_edit_prices:
                     raise PermissionDenied('ليس لديك صلاحية تعديل أسعار خامات التشغيل')
-        if instance is not None:
-            rule = instance
-        else:
-            material_key = str(data.get('material_key') or '').strip()[:60]
-            if not material_key:
-                # New category added from the UI without a key → generate a stable one.
-                material_key = f"custom-{secrets.token_hex(5)}"
-            rule = PackagingMaterialRule.objects.filter(material_key=material_key).first()
-            if rule is None:
-                rule = PackagingMaterialRule(material_key=material_key)
-        rule.name = (
-            str(data.get('name') or '').strip()
-            or rule.name
-            or PACKAGING_MATERIAL_LABELS.get(rule.material_key, rule.material_key)
-        )
-        icon = data.get('icon')
-        if icon is not None:
-            rule.icon = str(icon).strip()[:20]
-        unit = data.get('unit')
-        if unit in PACKAGING_MATERIAL_UNIT_KEYS:
-            rule.unit = unit
-        rule_mode = data.get('rule_mode')
-        if rule_mode in PACKAGING_MATERIAL_RULE_MODE_KEYS:
-            rule.rule_mode = rule_mode
-        groups = data.get('applicable_size_groups')
-        if isinstance(groups, list):
-            rule.applicable_size_groups = [str(group) for group in groups]
-        if 'is_active' in data:
-            rule.is_active = bool(data.get('is_active'))
-        rule.save()
+        with transaction.atomic():
+            if instance is not None:
+                rule = PackagingMaterialRule.objects.select_for_update().get(pk=instance.pk)
+            else:
+                material_key = str(data.get('material_key') or '').strip()[:60]
+                if not material_key:
+                    # New category added from the UI without a key → generate a stable one.
+                    material_key = f"custom-{secrets.token_hex(5)}"
+                rule = PackagingMaterialRule.objects.select_for_update().filter(material_key=material_key).first()
+                if rule is None:
+                    rule = PackagingMaterialRule(material_key=material_key)
+            rule.name = (
+                str(data.get('name') or '').strip()
+                or rule.name
+                or PACKAGING_MATERIAL_LABELS.get(rule.material_key, rule.material_key)
+            )
+            icon = data.get('icon')
+            if icon is not None:
+                rule.icon = str(icon).strip()[:20]
+            unit = data.get('unit')
+            if unit in PACKAGING_MATERIAL_UNIT_KEYS:
+                rule.unit = unit
+            rule_mode = data.get('rule_mode')
+            if rule_mode in PACKAGING_MATERIAL_RULE_MODE_KEYS:
+                rule.rule_mode = rule_mode
+            groups = data.get('applicable_size_groups')
+            if isinstance(groups, list):
+                rule.applicable_size_groups = [str(group) for group in groups]
+            if 'is_active' in data:
+                rule.is_active = bool(data.get('is_active'))
+            rule.save()
 
-        rows = data.get('size_rules')
-        if isinstance(rows, list):
-            self._apply_size_rows(rule, rows, can_edit_prices=can_edit_prices)
-            if can_edit_prices:
-                prices = [
-                    self._as_float(row.get('price_per_unit'))
-                    for row in rows if isinstance(row, dict)
-                ]
-                if prices:
-                    log_price_change(
-                        request, 'خامات التشغيل', rule.label,
-                        'سعر وحدة الخامة', max(prices),
-                    )
+            rows = data.get('size_rules')
+            if isinstance(rows, list):
+                self._apply_size_rows(rule, rows, can_edit_prices=can_edit_prices)
+                if can_edit_prices:
+                    prices = [
+                        self._as_float(row.get('price_per_unit'))
+                        for row in rows if isinstance(row, dict)
+                    ]
+                    if prices:
+                        log_price_change(
+                            request, 'خامات التشغيل', rule.label,
+                            'سعر وحدة الخامة', max(prices),
+                        )
 
         return Response(
             PackagingMaterialRuleSerializer(rule, context={'request': request}).data,
@@ -1027,10 +1110,13 @@ class PackagingMaterialRuleViewSet(BasePermViewSet):
             'edit_assembly_prices', 'أسعار خامات التشغيل',
         )
         old_stock = float(size_rule.current_stock or 0)
-        txn = apply_packaging_material_transaction(
-            size_rule, operation, data.get('amount'), data.get('notes') or '',
-            data.get('timestamp') or '', price_per_unit=price_per_unit,
-        )
+        try:
+            txn = apply_packaging_material_transaction(
+                size_rule, operation, data.get('amount'), data.get('notes') or '',
+                data.get('timestamp') or '', price_per_unit=price_per_unit,
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         new_stock = float(size_rule.current_stock or 0)
         op_label = {'add': 'وارد (إضافة)', 'deduct': 'منصرف (خصم)', 'adjust': 'تعديل رصيد'}.get(operation, operation)
         set_audit_meta(
@@ -1081,10 +1167,13 @@ class PackagingMaterialTransactionViewSet(BasePermViewSet):
             'edit_assembly_prices', 'أسعار خامات التشغيل',
         )
         old_stock = float(size_rule.current_stock or 0)
-        txn = apply_packaging_material_transaction(
-            size_rule, operation, data.get('amount'), data.get('notes') or '',
-            data.get('timestamp') or '', price_per_unit=price_per_unit,
-        )
+        try:
+            txn = apply_packaging_material_transaction(
+                size_rule, operation, data.get('amount'), data.get('notes') or '',
+                data.get('timestamp') or '', price_per_unit=price_per_unit,
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         new_stock = float(size_rule.current_stock or 0)
         op_label = {'add': 'وارد (إضافة)', 'deduct': 'منصرف (خصم)', 'adjust': 'تعديل رصيد'}.get(operation, operation)
         set_audit_meta(

@@ -489,10 +489,21 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     updateModelNotesAndTarget(modelId, { garment_composition: comp });
   };
 
+  const isPostCuttingModel =
+    model.status !== 'مرحلة التصميم' && model.status !== 'تصميم';
+
   const handleAddColorSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedColorId) return;
     const qtyNum = Math.max(0, parseFloat(partPlannedQty) || 0);
+    if (isPostCuttingModel && qtyNum > 0) {
+      const ok = window.confirm(
+        `⚠️ خلي بالك الموديل (${model.model_code}) اتقص بالفعل (الحالة الحالية: ${model.status})!\n\n` +
+          `إنت متأكد من إضافة كمية قماش جديدة (${qtyNum})؟\n` +
+          `سيتم خصم الكمية مباشرة من رصيد مخزن القماش وتسجيلها كحركة صرف للموديل في سجل المخزن وسجل المراقبة.`
+      );
+      if (!ok) return;
+    }
     const finalPartName = buildRequirementPartName(reqTargetPart, partName);
     const res = addModelRequirement(modelId, selectedColorId, finalPartName, qtyNum);
     if (res.success) {
@@ -527,6 +538,19 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
 
   const handleSavePlan = (e: React.FormEvent) => {
     e.preventDefault();
+    const fabricQtyChanged = modelReqs.some((r) => {
+      const nextQ = Number(reqQuantities[r.id] ?? r.planned_quantity) || 0;
+      const prevQ = Number(r.planned_quantity) || 0;
+      return Math.abs(nextQ - prevQ) > 1e-6;
+    });
+    if (isPostCuttingModel && fabricQtyChanged) {
+      const ok = window.confirm(
+        `⚠️ خلي بالك الموديل (${model.model_code}) اتقص بالفعل (الحالة الحالية: ${model.status})!\n\n` +
+          `إنت متأكد من تعديل الرقم؟\n` +
+          `التعديل هيأثر مباشرة على رصيد مخزن القماش (خصم فرق الزيادة أو إرجاع فرق النقص) وهيُسجّل كحركة رسمية للموديل في سجل المخزن وسجل المراقبة.`
+      );
+      if (!ok) return;
+    }
     updateModelPlan({
       modelId,
       reqQuantities,
@@ -1331,13 +1355,17 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                         const fab = fabrics.find((f) => f.id === color?.fabric_id);
                         const planned = reqQuantities[req.id] ?? req.planned_quantity;
                         const savedPlanned = req.planned_quantity || 0;
-                        // Dynamically reflect any unsaved edits in the input field on the displayed Available for Design
+                        // Dynamically reflect any unsaved edits in the input field on the displayed Available stock
                         const baseAvail = color
                           ? Number((color.quantity - color.reserved_quantity).toFixed(2))
                           : 0;
-                        const liveAvail = Number(
-                          Math.max(0, baseAvail + savedPlanned - (Number(planned) || 0)).toFixed(2)
-                        );
+                        const liveAvail = isPostCuttingModel
+                          ? Number(
+                              Math.max(0, (color?.quantity || 0) - ((Number(planned) || 0) - savedPlanned)).toFixed(2)
+                            )
+                          : Number(
+                              Math.max(0, baseAvail + savedPlanned - (Number(planned) || 0)).toFixed(2)
+                            );
                         // شارة القطعة التابع لها البند + القصة الفرعية إن وجدت.
                         const partInfo = splitRequirementPartName(req.part_name, normalizePartKey);
 
@@ -1397,9 +1425,23 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                               {canEdit && (
                                 <button
                                   type="button"
-                                  onClick={() => deleteModelRequirement(req.id)}
+                                  onClick={() => {
+                                    if (isPostCuttingModel) {
+                                      const ok = window.confirm(
+                                        `⚠️ خلي بالك الموديل (${model.model_code}) اتقص بالفعل (الحالة الحالية: ${model.status})!\n\n` +
+                                          `إنت متأكد من حذف هذا البند (${req.planned_quantity} ${fab?.unit || 'كجم'})؟\n` +
+                                          `سيتم إرجاع الكمية مباشرة لرصيد مخزن القماش وتسجيلها كحركة إرجاع للموديل في سجل المخزن وسجل المراقبة.`
+                                      );
+                                      if (!ok) return;
+                                    }
+                                    deleteModelRequirement(req.id);
+                                  }}
                                   className="text-rose-500 hover:text-rose-700 cursor-pointer"
-                                  title="حذف وإعادة الكمية للمتاح للتصميم"
+                                  title={
+                                    isPostCuttingModel
+                                      ? 'حذف البند وإرجاع الكمية لرصيد مخزن القماش'
+                                      : 'حذف وإعادة الكمية للمتاح للتصميم'
+                                  }
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>

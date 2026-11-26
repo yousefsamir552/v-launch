@@ -388,10 +388,10 @@ class ImageUploadViewSet(viewsets.ViewSet):
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        except Exception as exc:  # noqa: BLE001 - أي خطأ غير متوقع يعود بترويسات CORS صحيحة
+        except Exception:  # noqa: BLE001 - أي خطأ غير متوقع يعود بترويسات CORS صحيحة
             logger.exception('Unexpected failure while uploading image %s', uploaded.name)
             return Response(
-                {'detail': 'تعذر رفع الصورة: {}'.format(exc)},
+                {'detail': 'حدث خطأ داخلي غير متوقع أثناء رفع الصورة. يرجى المحاولة مرة أخرى.'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         log_action(
@@ -441,7 +441,6 @@ class GlobalSettingsViewSet(viewsets.ViewSet):
             can_edit_fabric_threshold = (
                 can_edit_header
                 or profile.has_perm('fabric_warehouse_edit')
-                or profile.has_perm('fabric_warehouse_view')
             )
             only_threshold = set(data.keys()).issubset({'fabric_alert_threshold'})
             if only_threshold:
@@ -832,7 +831,13 @@ class UserProfileViewSet(BasePermViewSet):
         if 'phone' in data:
             user.phone = data['phone'] or ''
         if 'is_active' in data:
-            user.is_active = bool(data['is_active'])
+            next_active = parse_bool_flag(data['is_active'], default=True)
+            if is_self and not next_active:
+                return Response(
+                    {'detail': 'لا يمكنك تعطيل حسابك الشخصي بنفسك.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user.is_active = next_active
             if not user.is_active:
                 user.auth_token = None
                 user.last_seen = None

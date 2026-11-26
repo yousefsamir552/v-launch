@@ -102,11 +102,9 @@ class HREmployeeViewSet(BasePermViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
         try:
-            salary = float(data.get('monthly_salary') or 0)
-        except (TypeError, ValueError):
-            return Response({'detail': 'المرتب الشهري غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
-        if salary <= 0:
-            return Response({'detail': 'المرتب الشهري يجب أن يكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+            salary = parse_finite_float(data.get('monthly_salary'), 'المرتب الشهري', default=0.0, minimum=0.0, allow_zero=False)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         employee_code = str(data.get('employee_code') or '').strip()
         if employee_code and HREmployee.objects.filter(employee_code=employee_code).exists():
             return Response({'detail': 'كود الموظف / ID البصمة مستخدم بالفعل'}, status=status.HTTP_400_BAD_REQUEST)
@@ -170,11 +168,9 @@ class HREmployeeViewSet(BasePermViewSet):
             obj.job = job
         if data.get('monthly_salary') is not None:
             try:
-                salary = float(data.get('monthly_salary') or 0)
-            except (TypeError, ValueError):
-                return Response({'detail': 'المرتب الشهري غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
-            if salary <= 0:
-                return Response({'detail': 'المرتب الشهري يجب أن يكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+                salary = parse_finite_float(data.get('monthly_salary'), 'المرتب الشهري', default=0.0, minimum=0.0, allow_zero=False)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             obj.monthly_salary = salary
         if data.get('rule_application_mode') is not None:
             mode = data.get('rule_application_mode') or 'auto'
@@ -246,6 +242,11 @@ class HRAttendanceSettingsViewSet(viewsets.ViewSet):
         end_time = parse_time_value(data.get('official_end_time'))
         if end_time:
             obj.official_end_time = end_time
+        if obj.official_start_time and obj.official_end_time and obj.official_start_time == obj.official_end_time:
+            return Response(
+                {'detail': 'وقت بداية ونهاية العمل لا يمكن أن يكونا متطابقين.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if data.get('weekly_off_day'):
             day = str(data.get('weekly_off_day')).strip()
             if day in WEEK_DAY_LABELS:
@@ -319,10 +320,10 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         if hidden:
             return hidden
         try:
-            ded_days = float(data.get('calculated_deduction_days') or 0)
-            ded_hours = float(data.get('calculated_deduction_hours') or 0)
-        except (TypeError, ValueError):
-            return Response({'detail': 'قيم الخصم غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+            ded_days = parse_finite_float(data.get('calculated_deduction_days'), 'خصم الأيام', default=0.0, minimum=0.0)
+            ded_hours = parse_finite_float(data.get('calculated_deduction_hours'), 'خصم الساعات', default=0.0, minimum=0.0)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         status_val = data.get('status') or 'present'
         if status_val not in dict(HR_ATTENDANCE_STATUS_CHOICES):
@@ -398,6 +399,13 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         obj.overtime_days = overtime['overtime_days']
         obj.overtime_hours = overtime['overtime_hours']
         obj.save(update_fields=['overtime_days', 'overtime_hours'])
+        if not manual_deduction:
+            month_start, month_end = month_bounds(obj.date)
+            reapply_employee_month(
+                settings_obj, obj.employee, month_start, month_end,
+                preserve_decisions=True,
+            )
+            obj.refresh_from_db()
         return Response(HRAttendanceRecordSerializer(obj).data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
@@ -437,14 +445,18 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             obj.excuse_note = data.get('excuse_note') or None
         if data.get('calculated_deduction_days') is not None:
             try:
-                obj.calculated_deduction_days = float(data.get('calculated_deduction_days') or 0)
-            except (TypeError, ValueError):
-                return Response({'detail': 'قيم الخصم غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+                obj.calculated_deduction_days = parse_finite_float(
+                    data.get('calculated_deduction_days'), 'خصم الأيام', default=0.0, minimum=0.0
+                )
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         if data.get('calculated_deduction_hours') is not None:
             try:
-                obj.calculated_deduction_hours = float(data.get('calculated_deduction_hours') or 0)
-            except (TypeError, ValueError):
-                return Response({'detail': 'قيم الخصم غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
+                obj.calculated_deduction_hours = parse_finite_float(
+                    data.get('calculated_deduction_hours'), 'خصم الساعات', default=0.0, minimum=0.0
+                )
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         if data.get('review_status') is not None:
             review = data.get('review_status') or 'auto_applied'
             if review not in dict(HR_REVIEW_STATUS_CHOICES):
@@ -531,7 +543,16 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         locked_err = _locked_month_error(obj.date)
         if locked_err:
             return locked_err
-        return super().destroy(request, *args, **kwargs)
+        emp = obj.employee
+        rec_date = obj.date
+        response = super().destroy(request, *args, **kwargs)
+        settings_obj = HRAttendanceSettings.get_solo()
+        month_start, month_end = month_bounds(rec_date)
+        reapply_employee_month(
+            settings_obj, emp, month_start, month_end,
+            preserve_decisions=True,
+        )
+        return response
 
     # ------------------------------------------------------------------
     # شيت البصمة: تحميل القالب / رفع الشيت / الإحصاءات
@@ -630,97 +651,98 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             HRPayrollSnapshot.objects.filter(is_locked=True).values_list('month', flat=True)
         )
 
-        for row in parsed['rows']:
-            row_month = row['date'].strftime('%Y-%m')
-            if row_month in locked_months:
-                errors.append({
-                    'row': row['row'],
-                    'message': f'الشهر {row_month} معتمد ومغلق ولا يمكن استيراد سجلات له',
-                })
-                continue
+        with transaction.atomic():
+            for row in parsed['rows']:
+                row_month = row['date'].strftime('%Y-%m')
+                if row_month in locked_months:
+                    errors.append({
+                        'row': row['row'],
+                        'message': f'الشهر {row_month} معتمد ومغلق ولا يمكن استيراد سجلات له',
+                    })
+                    continue
 
-            code_key = str(row['employee_code'] or '').strip().casefold()
-            name_key = ' '.join(str(row['employee_name'] or '').split()).casefold()
-            employee = by_code.get(code_key) if code_key else None
-            if employee is None and name_key:
-                employee = by_name.get(name_key)
-            if employee is None:
-                errors.append({
-                    'row': row['row'],
-                    'message': f"الموظف غير موجود: {row['employee_code'] or row['employee_name']}",
-                })
-                continue
+                code_key = str(row['employee_code'] or '').strip().casefold()
+                name_key = ' '.join(str(row['employee_name'] or '').split()).casefold()
+                employee = by_code.get(code_key) if code_key else None
+                if employee is None and name_key:
+                    employee = by_name.get(name_key)
+                if employee is None:
+                    errors.append({
+                        'row': row['row'],
+                        'message': f"الموظف غير موجود: {row['employee_code'] or row['employee_name']}",
+                    })
+                    continue
 
-            record = HRAttendanceRecord.objects.filter(
-                employee=employee, date=row['date'],
-            ).first()
-            if record is None:
-                record = HRAttendanceRecord(employee=employee, date=row['date'])
-                previous = None
-                created_count += 1
-                eff_in = row['check_in']
-                eff_out = row['check_out']
-            else:
-                previous = (
-                    record.check_in,
-                    record.check_out,
-                    record.status,
-                    record.review_status,
+                record = HRAttendanceRecord.objects.filter(
+                    employee=employee, date=row['date'],
+                ).first()
+                if record is None:
+                    record = HRAttendanceRecord(employee=employee, date=row['date'])
+                    previous = None
+                    created_count += 1
+                    eff_in = row['check_in']
+                    eff_out = row['check_out']
+                else:
+                    previous = (
+                        record.check_in,
+                        record.check_out,
+                        record.status,
+                        record.review_status,
+                    )
+                    updated_count += 1
+                    # إذا احتوى الصف المرفوع على بصمة واحدة فقط (حضور أو انصراف) ندمجها مع البصمة المقابلة المسجّلة مسبقاً.
+                    eff_in = row['check_in'] or (record.check_in if row['check_out'] else None)
+                    eff_out = row['check_out'] or (record.check_out if row['check_in'] else None)
+
+                computed = compute_attendance(
+                    settings_obj,
+                    employee,
+                    row['date'],
+                    eff_in,
+                    eff_out,
+                    row['status'],
                 )
-                updated_count += 1
-                # إذا احتوى الصف المرفوع على بصمة واحدة فقط (حضور أو انصراف) ندمجها مع البصمة المقابلة المسجّلة مسبقاً.
-                eff_in = row['check_in'] or (record.check_in if row['check_out'] else None)
-                eff_out = row['check_out'] or (record.check_out if row['check_in'] else None)
 
-            computed = compute_attendance(
-                settings_obj,
-                employee,
-                row['date'],
-                eff_in,
-                eff_out,
-                row['status'],
-            )
-
-            # القرار اليدوي (قبول/رفض) يُحفظ ما دامت البصمات لم تتغير.
-            unchanged = previous is not None and previous[:3] == (
-                eff_in, eff_out, computed['status'],
-            )
-            keep_decision = (
-                unchanged
-                and previous[3] in ('approved', 'rejected')
-                and not record.is_excused
-            )
-
-            record.check_in = eff_in
-            record.check_out = eff_out
-            record.status = computed['status']
-            if record.is_excused:
-                record.calculated_deduction_days = 0
-                record.calculated_deduction_hours = 0
-                record.review_status = 'auto_applied'
-            elif not keep_decision:
-                record.calculated_deduction_days = computed['deduction_days']
-                record.calculated_deduction_hours = computed['deduction_hours']
-                record.review_status = computed['review_status']
-            record.save()
-
-            if record.review_status == 'pending_review':
-                review_count += 1
-            affected_employees[employee.pk] = employee
-            affected_employee_months.setdefault(employee.pk, set()).add(
-                (row['date'].year, row['date'].month)
-            )
-
-        # إعادة احتساب الإضافي وخصم يوم الإجازة الأسبوعية لكل موظف ولكل شهر متأثر بالرفع (دعم الشيتات متعددة الشهور).
-        months_processed = set()
-        for emp_pk, employee in affected_employees.items():
-            for year_num, month_num in sorted(affected_employee_months.get(emp_pk, ())):
-                m_key = f'{year_num:04d}-{month_num:02d}'
-                months_processed.add(m_key)
-                month_start, month_end = month_bounds(m_key)
-                reapply_employee_month(
-                    settings_obj, employee, month_start, month_end, preserve_decisions=True
+                # القرار اليدوي (قبول/رفض) يُحفظ ما دامت البصمات لم تتغير.
+                unchanged = previous is not None and previous[:3] == (
+                    eff_in, eff_out, computed['status'],
                 )
+                keep_decision = (
+                    unchanged
+                    and previous[3] in ('approved', 'rejected')
+                    and not record.is_excused
+                )
+
+                record.check_in = eff_in
+                record.check_out = eff_out
+                record.status = computed['status']
+                if record.is_excused:
+                    record.calculated_deduction_days = 0
+                    record.calculated_deduction_hours = 0
+                    record.review_status = 'auto_applied'
+                elif not keep_decision:
+                    record.calculated_deduction_days = computed['deduction_days']
+                    record.calculated_deduction_hours = computed['deduction_hours']
+                    record.review_status = computed['review_status']
+                record.save()
+
+                if record.review_status == 'pending_review':
+                    review_count += 1
+                affected_employees[employee.pk] = employee
+                affected_employee_months.setdefault(employee.pk, set()).add(
+                    (row['date'].year, row['date'].month)
+                )
+
+            # إعادة احتساب الإضافي وخصم يوم الإجازة الأسبوعية لكل موظف ولكل شهر متأثر بالرفع (دعم الشيتات متعددة الشهور).
+            months_processed = set()
+            for emp_pk, employee in affected_employees.items():
+                for year_num, month_num in sorted(affected_employee_months.get(emp_pk, ())):
+                    m_key = f'{year_num:04d}-{month_num:02d}'
+                    months_processed.add(m_key)
+                    month_start, month_end = month_bounds(m_key)
+                    reapply_employee_month(
+                        settings_obj, employee, month_start, month_end, preserve_decisions=True
+                    )
 
         sorted_months = sorted(months_processed)
         month_label = '، '.join(sorted_months) if sorted_months else (
@@ -761,9 +783,9 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         """إحصاءات سريعة لبطاقات أعلى شاشة الحضور والانصراف."""
         month_start, month_end = self._sheet_month(request)
         settings_obj = HRAttendanceSettings.get_solo()
-        weekly_off = settings_obj.weekly_off_day or ''
+        off_weekday = weekly_off_weekday(settings_obj)
 
-        today = date.today()
+        today = timezone.localdate()
         period_end = min(month_end, today)
         if period_end < month_start:
             period_end = month_start
@@ -771,7 +793,7 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         workdays = 0
         cursor = month_start
         while cursor <= period_end:
-            if not weekly_off or cursor.strftime('%A') != weekly_off:
+            if cursor.weekday() != off_weekday:
                 workdays += 1
             cursor += timedelta(days=1)
 
@@ -788,7 +810,14 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         missing = records.filter(status='missing_punch').count()
         pending = records.filter(review_status='pending_review').count()
         excused = records.filter(is_excused=True).count()
-        late_records = records.filter(status='present', calculated_deduction_hours__gt=0).count()
+        late_records = records.filter(
+            status='present'
+        ).filter(
+            Q(calculated_deduction_hours__gt=0)
+            | Q(calculated_deduction_days__gt=0)
+            | Q(late_minutes__gt=0)
+        ).count()
+        compliance_base = max(0, total_records - leave)
 
         totals = records.aggregate(
             days=models.Sum('calculated_deduction_days'),
@@ -837,7 +866,7 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             'excused': excused,
             'pending_review': pending,
             'late_records': late_records,
-            'compliance_percent': round(present / total_records * 100, 1) if total_records else 0.0,
+            'compliance_percent': round(present / compliance_base * 100, 1) if compliance_base else 0.0,
             'average_daily_absence': round(absent / workdays, 2) if workdays else 0.0,
             'deduction_days': round(totals['days'] or 0, 2),
             'deduction_hours': round(totals['hours'] or 0, 2),
@@ -918,11 +947,9 @@ class HRPenaltyViewSet(BasePermViewSet):
         if hidden:
             return hidden
         try:
-            value = float(data.get('value') or 0)
-        except (TypeError, ValueError):
-            return Response({'detail': 'قيمة الجزاء غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
-        if value <= 0:
-            return Response({'detail': 'قيمة الجزاء يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+            value = parse_finite_float(data.get('value'), 'قيمة الجزاء', default=0.0, minimum=0.0, allow_zero=False)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         penalty_type = data.get('penalty_type') or 'days'
         if penalty_type not in ('days', 'hours'):
             penalty_type = 'days'
@@ -930,8 +957,13 @@ class HRPenaltyViewSet(BasePermViewSet):
         locked_err = _locked_month_error(pen_date or date.today())
         if locked_err:
             return locked_err
+        req_client_id = data.get('id') or data.get('client_id') or None
+        if req_client_id:
+            existing = HRPenalty.objects.filter(client_id=str(req_client_id)).first()
+            if existing:
+                return Response(HRPenaltySerializer(existing).data, status=status.HTTP_200_OK)
         obj = HRPenalty.objects.create(
-            client_id=(data.get('id') or data.get('client_id') or None),
+            client_id=req_client_id,
             employee=employee,
             date=pen_date or date.today(),
             penalty_type=penalty_type,
@@ -969,11 +1001,9 @@ class HRPenaltyViewSet(BasePermViewSet):
             obj.penalty_type = penalty_type
         if data.get('value') is not None:
             try:
-                value = float(data.get('value') or 0)
-            except (TypeError, ValueError):
-                return Response({'detail': 'قيمة الجزاء غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
-            if value <= 0:
-                return Response({'detail': 'قيمة الجزاء يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+                value = parse_finite_float(data.get('value'), 'قيمة الجزاء', default=0.0, minimum=0.0, allow_zero=False)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             obj.value = value
         if 'reason' in data:
             obj.reason = data.get('reason') or ''
@@ -1018,17 +1048,20 @@ class HRLoanViewSet(BasePermViewSet):
         if hidden:
             return hidden
         try:
-            amount = float(data.get('amount') or 0)
-        except (TypeError, ValueError):
-            return Response({'detail': 'مبلغ السلفة غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
-        if amount <= 0:
-            return Response({'detail': 'مبلغ السلفة يجب أن يكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+            amount = parse_finite_float(data.get('amount'), 'مبلغ السلفة', default=0.0, minimum=0.0, allow_zero=False)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         loan_date = parse_date(str(data.get('date'))) if data.get('date') else date.today()
         locked_err = _locked_month_error(loan_date or date.today())
         if locked_err:
             return locked_err
+        req_client_id = data.get('id') or data.get('client_id') or None
+        if req_client_id:
+            existing = HRLoan.objects.filter(client_id=str(req_client_id)).first()
+            if existing:
+                return Response(HRLoanSerializer(existing).data, status=status.HTTP_200_OK)
         obj = HRLoan.objects.create(
-            client_id=(data.get('id') or data.get('client_id') or None),
+            client_id=req_client_id,
             employee=employee,
             date=loan_date or date.today(),
             amount=amount,
@@ -1060,11 +1093,9 @@ class HRLoanViewSet(BasePermViewSet):
                 obj.date = loan_date
         if data.get('amount') is not None:
             try:
-                amount = float(data.get('amount') or 0)
-            except (TypeError, ValueError):
-                return Response({'detail': 'مبلغ السلفة غير صحيح'}, status=status.HTTP_400_BAD_REQUEST)
-            if amount <= 0:
-                return Response({'detail': 'مبلغ السلفة يجب أن يكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+                amount = parse_finite_float(data.get('amount'), 'مبلغ السلفة', default=0.0, minimum=0.0, allow_zero=False)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             obj.amount = amount
         if 'notes' in data:
             obj.notes = data.get('notes') or ''
@@ -1085,6 +1116,22 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
     serializer_class = HRPayrollSnapshotSerializer
     permission_classes = [CanManageHR]
     required_hr_section = 'payroll'
+    # ممنوع تعديل أو حذف أو إنشاء اللقطة المالية مباشرة؛ فقط عبر lock / unlock.
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def list(self, request, *args, **kwargs):
+        snaps = self.filter_queryset(self.get_queryset())
+        return Response([self._visible_snapshot_payload(request, snap) for snap in snaps])
+
+    def retrieve(self, request, *args, **kwargs):
+        snap = self.get_object()
+        return Response(self._visible_snapshot_payload(request, snap))
+
+    def create(self, request, *args, **kwargs):
+        return Response(
+            {'detail': 'اعتماد وإغلاق كشف المرتبات يتم عبر الإجراء المخصص /lock/ فقط.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
     def _visible_snapshot_payload(self, request, snap: HRPayrollSnapshot):
         data = HRPayrollSnapshotSerializer(snap).data
@@ -1152,82 +1199,87 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
         for ln in all_loans:
             loans_by_emp.setdefault(ln.employee_id, []).append(ln)
 
-        today = date.today()
+        today = timezone.localdate()
         current_month_key = today.strftime('%Y-%m')
-        up_to_iso = (today - timedelta(days=1)) if month_raw == current_month_key else None
+        # في اليوم الأخير من الشهر (مثل 28 فبراير) يُعامل الشهر كمكتمل (30 يوماً) عند الإغلاق.
+        up_to_iso = (today - timedelta(days=1)) if (month_raw == current_month_key and today < month_end) else None
 
-        rows_json = []
-        for emp in all_employees:
-            emp_att = att_by_emp.get(emp.id, [])
-            emp_pen = pen_by_emp.get(emp.id, [])
-            emp_loans = loans_by_emp.get(emp.id, [])
-            if not emp.is_active and not (
-                any(month_start <= r.date <= month_end for r in emp_att) or emp_pen or emp_loans
-            ):
-                continue
-            rec_by_date = {r.date: r for r in emp_att}
-            calc = _payroll_for_employee_month(
-                emp, emp_att, rec_by_date, emp_pen, emp_loans,
-                month_raw, settings_obj, up_to_iso, off_idx,
+        with transaction.atomic():
+            if HRPayrollSnapshot.objects.select_for_update().filter(month=month_raw, is_locked=True).exists():
+                return Response({'detail': f'شهر {month_raw} معتمد ومغلق بالفعل'}, status=status.HTTP_400_BAD_REQUEST)
+
+            rows_json = []
+            for emp in all_employees:
+                emp_att = att_by_emp.get(emp.id, [])
+                emp_pen = pen_by_emp.get(emp.id, [])
+                emp_loans = loans_by_emp.get(emp.id, [])
+                if not emp.is_active and not (
+                    any(month_start <= r.date <= month_end for r in emp_att) or emp_pen or emp_loans
+                ):
+                    continue
+                rec_by_date = {r.date: r for r in emp_att}
+                calc = _payroll_for_employee_month(
+                    emp, emp_att, rec_by_date, emp_pen, emp_loans,
+                    month_raw, settings_obj, up_to_iso, off_idx,
+                )
+                rows_json.append({
+                    'employee_id': get_ext_id(emp),
+                    'employee_code': emp.employee_code or '',
+                    'employee_name': emp.name,
+                    'job_title': emp.job.title if emp.job else '',
+                    'department': emp.department or '',
+                    'department_label': emp.department_label or '',
+                    'rank_level': int(emp.rank_level),
+                    'is_active': bool(emp.is_active),
+                    'base_salary': calc['base_salary'],
+                    'attended_days': calc['attended_days'],
+                    'paid_sunday_days': calc['paid_sunday_days'],
+                    'worked_weekly_off_days': calc['worked_weekly_off_days'],
+                    'weekly_off_extra_days': calc['weekly_off_extra_days'],
+                    'earned_days': calc['earned_days'],
+                    'earned_base': calc['earned_base'],
+                    'overtime_days': calc['overtime_days'],
+                    'overtime_hours': calc['overtime_hours'],
+                    'overtime_pay': calc['overtime_pay'],
+                    'attendance_days': calc['attendance_days'],
+                    'attendance_hours': calc['attendance_hours'],
+                    'attendance_deduction': calc['attendance_deduction'],
+                    'sunday_deduction_days': calc['sunday_deduction_days'],
+                    'penalty_days': calc['penalty_days'],
+                    'penalty_hours': calc['penalty_hours'],
+                    'penalty_deduction': calc['penalty_deduction'],
+                    'loan_deduction': calc['loan_amount'],
+                    'total_deduction': calc['total_deduction'],
+                    'net_pay': calc['net_pay'],
+                })
+
+            totals_json = {
+                'employees_count': len(rows_json),
+                'base_salary': round(sum(r['base_salary'] for r in rows_json), 2),
+                'earned_base': round(sum(r['earned_base'] for r in rows_json), 2),
+                'overtime_pay': round(sum(r['overtime_pay'] for r in rows_json), 2),
+                'attendance_deduction': round(sum(r['attendance_deduction'] for r in rows_json), 2),
+                'penalty_deduction': round(sum(r['penalty_deduction'] for r in rows_json), 2),
+                'loan_deduction': round(sum(r['loan_deduction'] for r in rows_json), 2),
+                'total_deduction': round(sum(r['total_deduction'] for r in rows_json), 2),
+                'net_pay': round(sum(max(0.0, r['net_pay']) for r in rows_json), 2),
+            }
+
+            profile = resolve_request_user_profile(request)
+            locker_name = (getattr(profile, 'real_name', '') or getattr(profile, 'username', '') or 'النظام') if profile else 'النظام'
+            settings_snap = HRAttendanceSettingsSerializer(settings_obj).data
+
+            snap, _ = HRPayrollSnapshot.objects.update_or_create(
+                month=month_raw,
+                defaults={
+                    'is_locked': True,
+                    'locked_by': locker_name,
+                    'settings_snapshot': settings_snap,
+                    'rows_json': rows_json,
+                    'totals_json': totals_json,
+                    'notes': str(request.data.get('notes') or '').strip(),
+                },
             )
-            rows_json.append({
-                'employee_id': get_ext_id(emp),
-                'employee_code': emp.employee_code or '',
-                'employee_name': emp.name,
-                'job_title': emp.job.title if emp.job else '',
-                'department': emp.department or '',
-                'department_label': emp.department_label or '',
-                'rank_level': int(emp.rank_level),
-                'is_active': bool(emp.is_active),
-                'base_salary': calc['base_salary'],
-                'attended_days': calc['attended_days'],
-                'paid_sunday_days': calc['paid_sunday_days'],
-                'worked_weekly_off_days': calc['worked_weekly_off_days'],
-                'weekly_off_extra_days': calc['weekly_off_extra_days'],
-                'earned_days': calc['earned_days'],
-                'earned_base': calc['earned_base'],
-                'overtime_days': calc['overtime_days'],
-                'overtime_hours': calc['overtime_hours'],
-                'overtime_pay': calc['overtime_pay'],
-                'attendance_days': calc['attendance_days'],
-                'attendance_hours': calc['attendance_hours'],
-                'attendance_deduction': calc['attendance_deduction'],
-                'sunday_deduction_days': calc['sunday_deduction_days'],
-                'penalty_days': calc['penalty_days'],
-                'penalty_hours': calc['penalty_hours'],
-                'penalty_deduction': calc['penalty_deduction'],
-                'loan_deduction': calc['loan_amount'],
-                'total_deduction': calc['total_deduction'],
-                'net_pay': calc['net_pay'],
-            })
-
-        totals_json = {
-            'employees_count': len(rows_json),
-            'base_salary': round(sum(r['base_salary'] for r in rows_json), 2),
-            'earned_base': round(sum(r['earned_base'] for r in rows_json), 2),
-            'overtime_pay': round(sum(r['overtime_pay'] for r in rows_json), 2),
-            'attendance_deduction': round(sum(r['attendance_deduction'] for r in rows_json), 2),
-            'penalty_deduction': round(sum(r['penalty_deduction'] for r in rows_json), 2),
-            'loan_deduction': round(sum(r['loan_deduction'] for r in rows_json), 2),
-            'total_deduction': round(sum(r['total_deduction'] for r in rows_json), 2),
-            'net_pay': round(sum(max(0.0, r['net_pay']) for r in rows_json), 2),
-        }
-
-        profile = resolve_request_user_profile(request)
-        locker_name = (getattr(profile, 'real_name', '') or getattr(profile, 'username', '') or 'النظام') if profile else 'النظام'
-        settings_snap = HRAttendanceSettingsSerializer(settings_obj).data
-
-        snap, _ = HRPayrollSnapshot.objects.update_or_create(
-            month=month_raw,
-            defaults={
-                'is_locked': True,
-                'locked_by': locker_name,
-                'settings_snapshot': settings_snap,
-                'rows_json': rows_json,
-                'totals_json': totals_json,
-                'notes': str(request.data.get('notes') or '').strip(),
-            },
-        )
         set_audit_meta(
             request,
             section='الموارد البشرية',

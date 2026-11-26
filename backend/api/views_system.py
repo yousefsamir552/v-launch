@@ -169,6 +169,8 @@ class InternalMessageViewSet(BasePermViewSet):
         content = (data.get('content') or '').strip()
         if not receiver or not content:
             return Response({'error': 'يجب تحديد المستلم وكتابة نص الرسالة'}, status=status.HTTP_400_BAD_REQUEST)
+        if not is_sudo_profile(sender) and is_sudo_profile(receiver):
+            return Response({'error': 'المستلم المحدد غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
 
         msg = InternalMessage.objects.create(
             client_id=data.get('id') or data.get('client_id'),
@@ -636,6 +638,7 @@ FACTORY_RESET_SECTIONS = {
     'fabric': 'مخزن القماش (الأصناف والألوان وحركات الوارد/الصادر)',
     'accessories': 'مخزن الإكسسوارات (التصنيفات والأصناف والحركات)',
     'packaging_materials': 'خامات التشغيل والتعبئة (الفئات والمقاسات والحركات)',
+    'purchase_requests': 'طلبات الشراء والمشتريات',
     'suppliers_workshops': 'الموردون والورش',
     'hr': 'بيانات الموارد البشرية (الوظائف والموظفين والحضور والجزاءات والسُلف)',
     'users_roles': 'حسابات المستخدمين والأدوار والصلاحيات (مع الإبقاء على sudo فقط)',
@@ -660,7 +663,13 @@ class FactoryResetViewSet(viewsets.ViewSet):
     """
 
     def list(self, request):
-        """يعيد تعريف الأقسام المتاحة للتصفير (للاستخدام في الواجهة)."""
+        """يعيد تعريف الأقسام المتاحة للتصفير (لحساب sudo فقط)."""
+        profile = getattr(request, 'user_profile', None) or resolve_request_user_profile(request)
+        if not is_sudo_profile(profile):
+            return Response(
+                {'detail': 'هذه العملية مخصصة لحساب sudo فقط.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         return Response({
             'sections': [
                 {'key': key, 'label': label}
@@ -726,6 +735,11 @@ class FactoryResetViewSet(viewsets.ViewSet):
                 _count_and_delete(PackagingMaterialTransaction.objects.all(), 'حركات خامات التشغيل', summary)
                 _count_and_delete(PackagingMaterialSizeRule.objects.all(), 'مقاسات خامات التشغيل', summary)
                 _count_and_delete(PackagingMaterialRule.objects.all(), 'فئات خامات التشغيل', summary)
+                SystemSetting.objects.filter(key='packaging_material_seed_v1').delete()
+
+            # 3.5) طلبات الشراء والمشتريات.
+            if 'purchase_requests' in selected:
+                _count_and_delete(PurchaseRequest.objects.all(), 'طلبات الشراء', summary)
 
             # 4) خط الإنتاج بالكامل (الأبناء قبل الآباء).
             if 'production' in selected:
@@ -759,6 +773,11 @@ class FactoryResetViewSet(viewsets.ViewSet):
                 _count_and_delete(AccessoryTransaction.objects.all(), 'حركات الإكسسوارات', summary)
                 _count_and_delete(Accessory.objects.all(), 'أصناف الإكسسوارات', summary)
                 _count_and_delete(AccessoryType.objects.all(), 'تصنيفات الإكسسوارات', summary)
+                SystemSetting.objects.filter(key__in=['favorite_accessory_ids', 'accessory_groups']).delete()
+
+            # إعادة مزامنة الكميات المحجوزة إذا حُذفت الموديلات دون حذف المخازن.
+            if 'production' in selected and ('fabric' not in selected or 'accessories' not in selected):
+                sync_reserved_quantities()
 
             # 7) الموردون والورش.
             if 'suppliers_workshops' in selected:

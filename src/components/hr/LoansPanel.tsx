@@ -270,11 +270,22 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
 
   const selectedEmployeeDue = useMemo(() => {
     const row = loanDueRows.find((item) => item.employee.id === form.employee_id);
-    const base = row?.currentDue || 0;
-    // عند تعديل سلفة قائمة نضيف قيمتها القديمة لأنها محسوبة ضمن السُلف السابقة.
-    const editingAmount = editing ? Number(editing.amount) || 0 : 0;
-    return base + editingAmount;
-  }, [loanDueRows, form.employee_id, editing]);
+    if (!row) return 0;
+    const rawNet =
+      row.salary > 0
+        ? (row.salary / 30) * row.earnedDays -
+          (row.salary / 30) * (row.attendanceDeductionDays + row.penaltyDays) -
+          (row.salary / 30 / shiftHours) * (row.attendanceDeductionHours + row.penaltyHours) -
+          row.previousLoans
+        : 0;
+    // عند تعديل سلفة قائمة لنفس الموظف وفي نفس الشهر نضيف قيمتها القديمة قبل التقييد بصفر.
+    const sameEmpAndMonth =
+      !!editing &&
+      editing.employee_id === form.employee_id &&
+      (editing.date || '').startsWith(duePeriod.monthKey);
+    const editingAmount = sameEmpAndMonth ? Number(editing?.amount) || 0 : 0;
+    return Math.max(0, sameEmpAndMonth ? rawNet + editingAmount : row.currentDue);
+  }, [loanDueRows, form.employee_id, editing, duePeriod.monthKey, shiftHours]);
 
   const printEmptyLoanForm = () => {
     const formBlock = `
@@ -484,7 +495,7 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
   };
 
   const confirmOverLimit = async () => {
-    if (!pendingLoanPayload) return;
+    if (!pendingLoanPayload || isSaving) return;
     const payload = pendingLoanPayload;
     setOverLimit(null);
     setPendingLoanPayload(null);

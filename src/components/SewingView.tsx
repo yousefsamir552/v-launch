@@ -331,33 +331,44 @@ export const SewingView: React.FC = () => {
     setShowDispatchModal(true);
   };
 
+  const submitLockRef = React.useRef(false);
+  const [isReceivingSubmitting, setIsReceivingSubmitting] = useState(false);
+
   const handleSubmitDispatch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitLockRef.current) return;
     if (!selectedModelId || !resolvedWorkshopName || piecesCount <= 0 || !expectedDeliveryDate) {
       alert('يرجى ملء جميع الحقول المطلوبة وتحديد اسم الورشة وتاريخ الاستلام المتوقع');
       return;
     }
 
-    dispatchModelToSewing({
-      modelId: selectedModelId,
-      workshopName: resolvedWorkshopName,
-      piecesCount: piecesCount,
-      expectedDeliveryDate: expectedDeliveryDate,
-      pieceType: dispatchPieceType,
-      pieceLabel: dispatchPieceLabel,
-      // يظهر ويُرسل فقط لمن يملك صلاحية تعديل أسعار المكن.
-      costPerPiece: canEditSewingPrices() ? Math.max(0, parseFloat(sewingCost) || 0) : undefined,
-      notes: allowSewingNotes ? dispatchNotes.trim() : ''
-    });
+    submitLockRef.current = true;
+    try {
+      dispatchModelToSewing({
+        modelId: selectedModelId,
+        workshopName: resolvedWorkshopName,
+        piecesCount: piecesCount,
+        expectedDeliveryDate: expectedDeliveryDate,
+        pieceType: dispatchPieceType,
+        pieceLabel: dispatchPieceLabel,
+        // يظهر ويُرسل فقط لمن يملك صلاحية تعديل أسعار المكن.
+        costPerPiece: canEditSewingPrices() ? Math.max(0, parseFloat(sewingCost) || 0) : undefined,
+        notes: allowSewingNotes ? dispatchNotes.trim() : ''
+      });
 
-    setShowDispatchModal(false);
-    setSelectedModelId('');
-    setWorkshopSelection('');
-    setCustomWorkshopName('');
-    setPiecesCount(0);
-    setExpectedDeliveryDate('');
-    setSewingCost('');
-    setDispatchNotes('');
+      setShowDispatchModal(false);
+      setSelectedModelId('');
+      setWorkshopSelection('');
+      setCustomWorkshopName('');
+      setPiecesCount(0);
+      setExpectedDeliveryDate('');
+      setSewingCost('');
+      setDispatchNotes('');
+    } finally {
+      window.setTimeout(() => {
+        submitLockRef.current = false;
+      }, 600);
+    }
   };
 
   const handleReceive = (dispatch: SewingDispatch) => {
@@ -370,7 +381,7 @@ export const SewingView: React.FC = () => {
 
   const confirmReceiveFromSewing = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!receivingDispatch) return;
+    if (!receivingDispatch || isReceivingSubmitting) return;
     const remaining = getRemainingPieces(receivingDispatch);
     const qty = Math.floor(Number(receiveQty) || 0);
     if (remaining <= 0) {
@@ -385,38 +396,43 @@ export const SewingView: React.FC = () => {
       alert(`الكمية المتبقية بالورشة ${remaining} قطعة فقط — لا يمكن استلام أكثر منها`);
       return;
     }
-    const m = models.find(mod => mod.id === receivingDispatch.model_id);
-    const code = m?.model_code || 'الموديل';
-    const label = receivingDispatch.piece_label || getPartLabel(receivingDispatch.piece_type || 'shirt');
-    const finalNotes = allowSewingNotes ? receiveNotes.trim() : '';
+    setIsReceivingSubmitting(true);
+    try {
+      const m = models.find(mod => mod.id === receivingDispatch.model_id);
+      const code = m?.model_code || 'الموديل';
+      const label = receivingDispatch.piece_label || getPartLabel(receivingDispatch.piece_type || 'shirt');
+      const finalNotes = allowSewingNotes ? receiveNotes.trim() : '';
 
-    receiveModelFromSewing(
-      receivingDispatch.id,
-      receivingDispatch.model_id,
-      finalNotes || undefined,
-      qty
-    );
-    logAction(
-      'قسم المكن',
-      `استلام دفعة (${qty} قطعة) من تشغيلة خياطة [${label}] موديل ${code} بورشة ${receivingDispatch.workshop_name}${finalNotes ? ` — ملاحظات: ${finalNotes}` : ''}`
-    );
-    if (evalDraft.enabled && receivingDispatch.workshop_name) {
-      const matchedW = workshops.find((w) => w.name === receivingDispatch.workshop_name);
-      await submitWorkshopEvaluation({
-        workshopId: matchedW?.id,
-        workshopName: receivingDispatch.workshop_name,
-        stage: 'sewing',
-        modelId: receivingDispatch.model_id,
-        sewingDispatchId: receivingDispatch.id,
-        deliveryTimeliness: evalDraft.deliveryTimeliness,
-        workQuality: evalDraft.workQuality,
-        finishingQuality: evalDraft.finishingQuality,
-        notes: evalDraft.notes
-      });
+      receiveModelFromSewing(
+        receivingDispatch.id,
+        receivingDispatch.model_id,
+        finalNotes || undefined,
+        qty
+      );
+      logAction(
+        'قسم المكن',
+        `استلام دفعة (${qty} قطعة) من تشغيلة خياطة [${label}] موديل ${code} بورشة ${receivingDispatch.workshop_name}${finalNotes ? ` — ملاحظات: ${finalNotes}` : ''}`
+      );
+      if (evalDraft.enabled && receivingDispatch.workshop_name) {
+        const matchedW = workshops.find((w) => w.name === receivingDispatch.workshop_name);
+        await submitWorkshopEvaluation({
+          workshopId: matchedW?.id,
+          workshopName: receivingDispatch.workshop_name,
+          stage: 'sewing',
+          modelId: receivingDispatch.model_id,
+          sewingDispatchId: receivingDispatch.id,
+          deliveryTimeliness: evalDraft.deliveryTimeliness,
+          workQuality: evalDraft.workQuality,
+          finishingQuality: evalDraft.finishingQuality,
+          notes: evalDraft.notes
+        });
+      }
+      setReceivingDispatch(null);
+      setReceiveNotes('');
+      setReceiveQty(0);
+    } finally {
+      setIsReceivingSubmitting(false);
     }
-    setReceivingDispatch(null);
-    setReceiveNotes('');
-    setReceiveQty(0);
   };
 
   /** صرف إكسسوار إضافي لورشة الخياطة (بدل فاقد/تالف أو احتياج زائد). */
@@ -1343,7 +1359,8 @@ export const SewingView: React.FC = () => {
                         Number(acc.piece_consumption || 1) * Math.max(0, piecesCount)
                       );
                       const stock = getAccessoryStock(acc);
-                      const short = required > stock;
+                      const alreadyIssued = Boolean(acc.is_issued);
+                      const short = !alreadyIssued && required > stock;
                       return (
                         <li
                           key={acc.id}
@@ -1357,13 +1374,21 @@ export const SewingView: React.FC = () => {
                             <span className="text-indigo-800">
                               مطلوب: {required.toLocaleString('ar-EG')}
                             </span>
-                            <span className={short ? 'text-red-600' : 'text-emerald-600'}>
-                              بالمخزن: {Number(stock).toLocaleString('ar-EG')}
-                            </span>
-                            {short && (
-                              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
-                                نقص
+                            {alreadyIssued ? (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
+                                تم الصرف مسبقاً
                               </span>
+                            ) : (
+                              <>
+                                <span className={short ? 'text-red-600' : 'text-emerald-600'}>
+                                  بالمخزن: {Number(stock).toLocaleString('ar-EG')}
+                                </span>
+                                {short && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
+                                    نقص
+                                  </span>
+                                )}
+                              </>
                             )}
                           </span>
                         </li>

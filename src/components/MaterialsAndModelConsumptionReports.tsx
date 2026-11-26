@@ -83,9 +83,9 @@ const inputClass =
   'w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100';
 const cardClass = 'rounded-2xl border border-slate-200 bg-white shadow-sm';
 
-/** حركة إرجاع فائض قماش من القص (تُخصم من الاستهلاك). */
+/** حركة إرجاع فائض قماش أو استرداد أو فرق تعديل بعد القص (تُخصم من الاستهلاك). */
 const isFabricReturn = (txn: FabricTransaction): boolean =>
-  txn.operation === 'add' && /إرجاع|مرتجع|فائض/i.test(String(txn.notes || ''));
+  txn.operation === 'add' && /إرجاع|مرتجع|فائض|استرداد/i.test(String(txn.notes || ''));
 
 /** صافي حركة القماش: الصرف بالموجب والإرجاع بالسالب. */
 const netFabricQty = (txn: FabricTransaction): number => {
@@ -95,9 +95,9 @@ const netFabricQty = (txn: FabricTransaction): number => {
   return 0;
 };
 
-/** حركة إرجاع إكسسوار للمخزن (تُخصم من الاستهلاك). */
+/** حركة إرجاع إكسسوار أو استرداد للمخزن (تُخصم من الاستهلاك). */
 const isAccessoryReturn = (notes?: string | null): boolean =>
-  /إرجاع|مرتجع|فائض/i.test(String(notes || ''));
+  /إرجاع|مرتجع|فائض|استرداد/i.test(String(notes || ''));
 
 const detectPart = (value?: string | null): GarmentPart | null => {
   const text = String(value || '').trim().toLowerCase();
@@ -477,7 +477,7 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
               typeBucket.set(typeName, (typeBucket.get(typeName) || 0) + netQty);
             });
 
-            const netConsumed = round2(net);
+            const netConsumed = round2(Math.max(0, net - defects));
             const total = Math.abs(netConsumed);
             const buildBreakdown = (bucket: Map<string, number>): BreakdownItem[] =>
               Array.from(bucket.entries())
@@ -494,10 +494,13 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
               (txn) => Number(txn.unit_price_snapshot) > 0
             )?.unit_price_snapshot;
             const currentColorPrice = Number(color.price_per_unit);
+            // إعطاء الأولوية لسعر اللقطة التاريخية وقت الصرف (لحفظ دقة التكلفة التاريخية) ثم السعر الحالي.
             const price = canViewFabricPrices()
-              ? currentColorPrice > 0
+              ? snapshotPrice !== undefined && Number(snapshotPrice) > 0
+                ? Number(snapshotPrice)
+                : currentColorPrice > 0
                 ? currentColorPrice
-                : snapshotPrice ?? (color.price_per_unit ?? null)
+                : (color.price_per_unit ?? null)
               : null;
 
             return {
@@ -509,7 +512,7 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
               supplierId: String(supplierId || ''),
               supplierName: supplierById.get(String(supplierId || '')) || '—',
               price,
-              totalReceived: round2(Number(color.quantity || 0) + netConsumed),
+              totalReceived: round2(Number(color.quantity || 0) + netConsumed + defects),
               totalConsumed: round2(consumed),
               totalReturned: round2(returned),
               totalDefects: round2(defects),
@@ -580,9 +583,11 @@ export const MaterialsReportSection: React.FC<{ refreshTick?: number }> = ({ ref
         )?.unit_price_snapshot;
         const currentItemPrice = Number(item.price_per_unit);
         const price = canViewAccessoryPrices()
-          ? currentItemPrice > 0
+          ? snapshotPrice !== undefined && Number(snapshotPrice) > 0
+            ? Number(snapshotPrice)
+            : currentItemPrice > 0
             ? currentItemPrice
-            : snapshotPrice ?? (item.price_per_unit ?? null)
+            : (item.price_per_unit ?? null)
           : null;
 
         return {
@@ -1394,6 +1399,8 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
           model.count_after_sewing || model.count_after_print || model.count_before_print || cutTotal
         );
       }
+      const photoOut = Math.max(0, Number(model.photography_outstanding_qty || 0));
+      currentGood = Math.max(0, currentGood - photoOut);
     }
     const shortage = Math.max(0, cutTotal - currentGood);
     const shortagePercent = cutTotal > 0 ? Math.round((shortage / cutTotal) * 1000) / 10 : 0;
@@ -1425,16 +1432,24 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
       ? round2(sews.reduce((sum, dispatch) => sum + Number(dispatch.total_cost || 0), 0))
       : null;
 
+    // نأخذ السليم من أحدث مرحلة فرز متاحة فقط (بدلاً من جمع 3 مراحل وتكرار العدد 3 أضعاف).
+    const latestQcStage = modelQc.some((r) => r.stage === 'after_sewing')
+      ? 'after_sewing'
+      : modelQc.some((r) => r.stage === 'after_print')
+      ? 'after_print'
+      : 'before_print';
     let qcGood = 0;
     let qcDefects = 0;
     let qcCounted = 0;
     const qcStageMap = new Map<string, number>();
     modelQc.forEach((record) => {
-      const good = Number(record.good_qty || 0);
+      const good = Number(record.good_qty ?? record.counted_pieces ?? 0);
       const defect = Number(record.defect_pieces ?? record.defect_qty ?? 0);
-      qcGood += good;
+      if (record.stage === latestQcStage) {
+        qcGood += good;
+      }
       qcDefects += defect;
-      qcCounted += Number(record.counted_pieces ?? good + defect);
+      qcCounted += good + defect;
       const label = QC_STAGE_LABELS[record.stage] || record.stage;
       qcStageMap.set(label, (qcStageMap.get(label) || 0) + defect);
     });
@@ -1578,7 +1593,7 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
       entry.unit = acc.unit || entry.unit;
       entry.planned = round2(entry.planned + Number(acc.planned_quantity || 0));
       entry.perPiece = Number(acc.piece_consumption || 0);
-      if (canViewAccessoryPrices() && Number(acc.unit_price_snapshot) > 0) {
+      if ((entry.price === null || entry.price <= 0) && canViewAccessoryPrices() && Number(acc.unit_price_snapshot) > 0) {
         entry.price = Number(acc.unit_price_snapshot);
       }
     });

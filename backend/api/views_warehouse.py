@@ -9,9 +9,12 @@ class SizeDefViewSet(BasePermViewSet):
 
     def create(self, request, *args, **kwargs):
         data = request.data
+        name = (data.get('name') or '').strip()
+        if not name:
+            return Response({'detail': 'اسم مجموعة المقاسات مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
         obj = SizeDef.objects.create(
             client_id=data.get('id') or data.get('client_id'),
-            name=(data.get('name') or '').strip(),
+            name=name,
             values=(data.get('values') or '').strip(),
         )
         return Response(SizeDefSerializer(obj).data, status=status.HTTP_201_CREATED)
@@ -35,9 +38,12 @@ class SupplierViewSet(BasePermViewSet):
 
     def create(self, request, *args, **kwargs):
         data = request.data
+        name = (data.get('name') or '').strip()
+        if not name:
+            return Response({'detail': 'اسم المورد مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
         obj = Supplier.objects.create(
             client_id=data.get('id') or data.get('client_id'),
-            name=(data.get('name') or '').strip(),
+            name=name,
             phone=(data.get('phone') or '').strip(),
             whatsapp_group_link=(data.get('whatsapp_group_link') or '').strip(),
         )
@@ -77,9 +83,12 @@ class WorkshopViewSet(BasePermViewSet):
 
     def create(self, request, *args, **kwargs):
         data = request.data
+        name = (data.get('name') or '').strip()
+        if not name:
+            return Response({'detail': 'اسم الورشة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
         obj = Workshop.objects.create(
             client_id=data.get('id') or data.get('client_id'),
-            name=(data.get('name') or '').strip(),
+            name=name,
             phone=(data.get('phone') or '').strip(),
             whatsapp_group_link=(data.get('whatsapp_group_link') or '').strip(),
             workshop_type=normalize_workshop_types(data.get('workshop_type')),
@@ -112,15 +121,48 @@ class FabricViewSet(BasePermViewSet):
 
     def create(self, request, *args, **kwargs):
         data = request.data
+        name = (data.get('name') or '').strip()
+        if not name:
+            return Response({'detail': 'اسم الخامة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
         fab = Fabric.objects.create(
             client_id=data.get('id') or data.get('client_id'),
-            name=(data.get('name') or '').strip(),
+            name=name,
             description=data.get('description') or '',
             unit=data.get('unit') or 'كيلو',
             supplier_id_ref=data.get('supplier_id') or '',
             image=clean_image_value(data.get('image') or '', 'fabrics', 'صورة الخامة'),
         )
         return Response(FabricSerializer(fab, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
+    def destroy(self, request, *args, **kwargs):
+        fab = self.get_object()
+        has_reserved = fab.colors.filter(reserved_quantity__gt=0).exists()
+        has_active_reqs = ModelRequirement.objects.filter(
+            color__fabric=fab, model__is_deleted=False
+        ).exists()
+        if has_reserved or has_active_reqs:
+            return Response(
+                {'detail': 'لا يمكن حذف هذه الخامة لوجود كميات محجوزة أو مرتبطة بموديلات نشطة.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        has_history = (
+            FabricTransaction.objects.filter(Q(fabric=fab) | Q(color__fabric=fab)).exists()
+            or ModelRequirement.objects.filter(color__fabric=fab).exists()
+        )
+        fab_name = fab.name
+        if has_history:
+            fab.is_deleted = True
+            fab.save(update_fields=['is_deleted'])
+        else:
+            fab.delete()
+        set_audit_meta(
+            request,
+            section='مخزن القماش',
+            action_type='delete',
+            target_name=fab_name,
+            details=f"حذف خامة القماش: {fab_name}" + (' (أرشفة للحفاظ على سجل الحركات)' if has_history else ''),
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=False, methods=['post'])
     def add_fabric_or_color(self, request):
@@ -143,11 +185,9 @@ class FabricViewSet(BasePermViewSet):
 
         clean_code = (data.get('colorCode') or data.get('color_code') or '').strip().upper()
         try:
-            qty = float(data.get('quantity') or 0)
-        except (TypeError, ValueError):
-            return Response({'detail': 'الكمية غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
-        if qty < 0:
-            return Response({'detail': 'الكمية لا يمكن أن تكون سالبة'}, status=status.HTTP_400_BAD_REQUEST)
+            qty = parse_finite_float(data.get('quantity'), 'الكمية', default=0.0, minimum=0.0)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         profile = getattr(request, 'user_profile', None)
         can_edit_price = is_sudo_account(profile) or (
             profile is not None and (
@@ -156,7 +196,10 @@ class FabricViewSet(BasePermViewSet):
         )
         price_per_unit = 0.0
         if can_edit_price and data.get('pricePerUnit') not in (None, ''):
-            price_per_unit = max(0.0, float(data.get('pricePerUnit') or 0))
+            try:
+                price_per_unit = parse_finite_float(data.get('pricePerUnit'), 'سعر الوحدة', default=0.0, minimum=0.0)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         with transaction.atomic():
@@ -260,17 +303,16 @@ class FabricColorViewSet(BasePermViewSet):
             col = FabricColor.objects.select_for_update().select_related('fabric').get(pk=target.pk)
             old_qty = round(float(col.quantity or 0), 2)
             if 'price_per_unit' in data and can_edit_price and data['price_per_unit'] not in (None, ''):
-                col.price_per_unit = max(0.0, float(data['price_per_unit'] or 0))
+                try:
+                    col.price_per_unit = parse_finite_float(data['price_per_unit'], 'سعر الوحدة', default=0.0, minimum=0.0)
+                except ValueError as exc:
+                    return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             if 'quantity' in data:
                 try:
-                    new_qty = float(data['quantity'] if data['quantity'] not in (None, '') else 0)
-                except (TypeError, ValueError):
-                    return Response({'detail': 'الكمية غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
-                if new_qty < 0:
-                    return Response({'detail': 'الكمية لا يمكن أن تكون سالبة'}, status=status.HTTP_400_BAD_REQUEST)
+                    new_qty = parse_finite_float(data['quantity'], 'الكمية', default=0.0, minimum=0.0)
+                except ValueError as exc:
+                    return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
                 col.quantity = round(new_qty, 2)
-            if 'reserved_quantity' in data:
-                col.reserved_quantity = max(0.0, float(data['reserved_quantity'] or 0))
             if 'color_code' in data and str(data['color_code']).strip():
                 col.color_code = str(data['color_code']).strip()
             if 'color_name' in data:
@@ -298,6 +340,29 @@ class FabricColorViewSet(BasePermViewSet):
             response_data = FabricColorSerializer(col, context={'request': request}).data
         return Response(response_data)
 
+    def destroy(self, request, *args, **kwargs):
+        col = self.get_object()
+        if float(col.reserved_quantity or 0) > 0:
+            return Response(
+                {'detail': 'لا يمكن حذف هذا اللون لوجود كمية محجوزة لموديلات قيد التصميم.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if FabricTransaction.objects.filter(color=col).exists() or ModelRequirement.objects.filter(color=col).exists():
+            return Response(
+                {'detail': 'لا يمكن حذف هذا اللون لوجود سجل حركات مخزنية أو موديلات مرتبطة به.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        label = f"{col.fabric.name} - {col.color_code}" if col.fabric_id else col.color_code
+        col.delete()
+        set_audit_meta(
+            request,
+            section='مخزن القماش',
+            action_type='delete',
+            target_name=label,
+            details=f"حذف لون القماش: {label}",
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=False, methods=['post'])
     def record_transaction(self, request):
         data = request.data
@@ -310,16 +375,23 @@ class FabricColorViewSet(BasePermViewSet):
         if op not in ('add', 'deduct'):
             return Response({'detail': 'نوع العملية غير صالح؛ المسموح add أو deduct فقط'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            amount = float(data.get('amount') or 0)
-        except (TypeError, ValueError):
-            return Response({'detail': 'الكمية غير صحيحة'}, status=status.HTTP_400_BAD_REQUEST)
-        if amount <= 0:
-            return Response({'detail': 'الكمية يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+            amount = parse_finite_float(data.get('amount'), 'الكمية', default=0.0, minimum=0.0, allow_zero=False)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        txn_client_id = data.get('id') or data.get('client_id')
 
         # Lock the row: two concurrent deductions must never spend the same stock twice
         # nor eat into stock reserved for models in Design.
         with transaction.atomic():
             col = FabricColor.objects.select_for_update().select_related('fabric').get(pk=target.pk)
+            if txn_client_id:
+                existing_tr = FabricTransaction.objects.filter(client_id=str(txn_client_id)).first()
+                if existing_tr:
+                    return Response({
+                        'color': FabricColorSerializer(col, context={'request': request}).data,
+                        'transaction': FabricTransactionSerializer(existing_tr, context={'request': request}).data,
+                    })
             old_qty = round(float(col.quantity or 0), 2)
             if op == 'deduct':
                 live_reserved = float(
@@ -443,6 +515,9 @@ class AccessoryViewSet(BasePermViewSet):
 
     def create(self, request, *args, **kwargs):
         data = request.data
+        name = (data.get('name') or '').strip()
+        if not name:
+            return Response({'detail': 'اسم صنف الإكسسوار مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
         usage_type = data.get('usage_type') or 'stock'
         raw_qty = to_decimal(data.get('quantity', data.get('current_stock', 0)), Decimal('0'))
         if raw_qty < 0:
@@ -463,11 +538,12 @@ class AccessoryViewSet(BasePermViewSet):
                 profile.has_perm('edit_accessory_prices') or profile.has_perm('manage_permissions')
             )
         )
-        price = (
-            max(0.0, float(data.get('price_per_unit') or 0))
-            if (can_edit_price and data.get('price_per_unit') not in (None, ''))
-            else 0.0
-        )
+        price = 0.0
+        if can_edit_price and data.get('price_per_unit') not in (None, ''):
+            try:
+                price = parse_finite_float(data.get('price_per_unit'), 'سعر الوحدة', default=0.0, minimum=0.0)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
             acc = Accessory.objects.create(
@@ -475,11 +551,11 @@ class AccessoryViewSet(BasePermViewSet):
                 type_id_ref=data.get('type_id') or 'type-1',
                 type_name=data.get('type_name') or 'عام',
                 code=(data.get('code') or '').strip().upper(),
-                name=(data.get('name') or '').strip(),
+                name=name,
                 image=clean_image_value(data.get('image') or '', 'accessories', 'صورة الصنف'),
                 unit=data.get('unit') or 'قطعة',
                 current_stock=qty,
-                reserved_quantity=float(data.get('reserved_quantity') or 0),
+                reserved_quantity=0.0,
                 price_per_unit=price,
                 supplier_id_ref=data.get('supplier_id') or '',
                 min_threshold=min_thresh,
@@ -554,10 +630,11 @@ class AccessoryViewSet(BasePermViewSet):
                     return Response({'detail': 'الكمية لا يمكن أن تكون سالبة'}, status=status.HTTP_400_BAD_REQUEST)
                 acc.current_stock = new_stk
                 stock_updated = True
-            if 'reserved_quantity' in data:
-                acc.reserved_quantity = max(0.0, float(data['reserved_quantity'] or 0))
             if 'price_per_unit' in data and can_edit_price and data['price_per_unit'] not in (None, ''):
-                acc.price_per_unit = max(0.0, float(data['price_per_unit'] or 0))
+                try:
+                    acc.price_per_unit = parse_finite_float(data['price_per_unit'], 'سعر الوحدة', default=0.0, minimum=0.0)
+                except ValueError as exc:
+                    return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             if 'min_threshold' in data:
                 acc.min_threshold = max(Decimal('0'), to_decimal(data['min_threshold'], Decimal('0')))
             if 'target_quantity' in data:
@@ -597,6 +674,36 @@ class AccessoryViewSet(BasePermViewSet):
             response_data = AccessorySerializer(acc, context={'request': request}).data
         return Response(response_data)
 
+    def destroy(self, request, *args, **kwargs):
+        acc = self.get_object()
+        acc_refs = [str(acc.pk)]
+        if acc.client_id:
+            acc_refs.append(str(acc.client_id))
+        has_active_model_acc = ModelAccessory.objects.filter(
+            model__is_deleted=False,
+            accessory_id_ref__in=acc_refs,
+        ).exists()
+        if float(acc.reserved_quantity or 0) > 0 or has_active_model_acc:
+            return Response(
+                {'detail': 'لا يمكن حذف هذا الإكسسوار لوجود كميات محجوزة أو مرتبطة بموديلات نشطة.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if AccessoryTransaction.objects.filter(accessory=acc).exists():
+            return Response(
+                {'detail': 'لا يمكن حذف هذا الإكسسوار لوجود سجل حركات مخزنية مرتبط به.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        label = f"{acc.name} ({acc.code})" if acc.code else acc.name
+        acc.delete()
+        set_audit_meta(
+            request,
+            section='مخزن الإكسسوارات',
+            action_type='delete',
+            target_name=label,
+            details=f"حذف صنف الإكسسوار: {label}",
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=False, methods=['post'])
     def record_transaction(self, request):
         data = request.data
@@ -613,13 +720,43 @@ class AccessoryViewSet(BasePermViewSet):
         if amount_dec <= 0:
             return Response({'detail': 'الكمية يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Lock the row: concurrent deductions must not oversell the same stock.
+        txn_client_id = data.get('id') or data.get('client_id')
+
+        # Lock the row: concurrent deductions must not oversell stock nor eat reserved stock.
         with transaction.atomic():
             acc = Accessory.objects.select_for_update().get(pk=acc.pk)
+            if txn_client_id:
+                existing_tr = AccessoryTransaction.objects.filter(client_id=str(txn_client_id)).first()
+                if existing_tr:
+                    return Response({
+                        'accessory': AccessorySerializer(acc, context={'request': request}).data,
+                        'transaction': AccessoryTransactionSerializer(existing_tr, context={'request': request}).data,
+                    })
             current_dec = to_decimal(acc.current_stock, Decimal('0'))
             old_stock_num = float(current_dec)
-            if op == 'deduct' and current_dec < amount_dec:
-                return Response({'detail': 'الرصيد المتاح لا يكفي للصرف'}, status=status.HTTP_400_BAD_REQUEST)
+            if op == 'deduct':
+                acc_refs = [str(acc.pk)]
+                if acc.client_id:
+                    acc_refs.append(str(acc.client_id))
+                live_reserved_float = float(
+                    ModelAccessory.objects.filter(
+                        model__is_deleted=False,
+                        is_issued=False,
+                        accessory_id_ref__in=acc_refs,
+                    ).aggregate(total=models.Sum('planned_quantity'))['total'] or 0
+                )
+                reserved_dec = max(
+                    to_decimal(acc.reserved_quantity, Decimal('0')),
+                    to_decimal(live_reserved_float, Decimal('0')),
+                )
+                available_dec = max(Decimal('0'), current_dec - reserved_dec)
+                if current_dec < amount_dec:
+                    return Response({'detail': 'الرصيد المتاح لا يكفي للصرف'}, status=status.HTTP_400_BAD_REQUEST)
+                if amount_dec > available_dec + Decimal('0.000001'):
+                    return Response(
+                        {'detail': f'الكمية المتاحة للصرف ({float(available_dec):g}) لا تكفي؛ يوجد ({float(reserved_dec):g}) محجوزة لموديلات لم تُصرف بعد'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             if op == 'add':
                 acc.current_stock = current_dec + amount_dec
@@ -907,13 +1044,7 @@ class PurchaseRequestViewSet(BasePermViewSet):
 
     @action(detail=True, methods=['post'])
     def mark_purchased(self, request, pk=None):
-        obj = self.get_object()
-        if obj.status == 'purchased':
-            return Response(
-                {'detail': 'تم تسجيل هذا الطلب كمشترا بالفعل'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+        target = self.get_object()
         data = request.data
         raw_price = data.get('purchased_price')
         if raw_price in (None, ''):
@@ -944,14 +1075,21 @@ class PurchaseRequestViewSet(BasePermViewSet):
         if profile is not None:
             purchased_by = (profile.real_name or profile.username or '').strip()
 
-        obj.purchased_price = price
-        obj.supplier = supplier_obj
-        obj.supplier_name = supplier_name
-        obj.purchase_notes = purchase_notes
-        obj.purchased_at = timezone.now()
-        obj.purchased_by = purchased_by
-        obj.status = 'purchased'
-        obj.save()
+        with transaction.atomic():
+            obj = PurchaseRequest.objects.select_for_update().get(pk=target.pk)
+            if obj.status == 'purchased':
+                return Response(
+                    {'detail': 'تم تسجيل هذا الطلب كمشترا بالفعل'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            obj.purchased_price = price
+            obj.supplier = supplier_obj
+            obj.supplier_name = supplier_name
+            obj.purchase_notes = purchase_notes
+            obj.purchased_at = timezone.now()
+            obj.purchased_by = purchased_by
+            obj.status = 'purchased'
+            obj.save()
 
         supplier_display = obj.supplier_name or (obj.supplier.name if obj.supplier_id else '')
         set_audit_meta(

@@ -410,21 +410,29 @@ export const AccessoriesWarehouseView: React.FC = () => {
     setShowTransactionModal(true);
   };
 
+  const submitLockRef = React.useRef(false);
+
   const handleConfirmTransaction = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeItem) return;
+    if (!activeItem || submitLockRef.current) return;
+    submitLockRef.current = true;
+    try {
+      const res = recordAccessoryTransaction({
+        accessoryId: activeItem.id,
+        operation: transForm.operation,
+        amount: Number(transForm.amount),
+        modelCodeRef: transForm.modelCodeRef,
+        notes: transForm.notes
+      });
 
-    const res = recordAccessoryTransaction({
-      accessoryId: activeItem.id,
-      operation: transForm.operation,
-      amount: Number(transForm.amount),
-      modelCodeRef: transForm.modelCodeRef,
-      notes: transForm.notes
-    });
-
-    if (res.success) {
-      setShowTransactionModal(false);
-      setActiveItem(null);
+      if (res.success) {
+        setShowTransactionModal(false);
+        setActiveItem(null);
+      }
+    } finally {
+      window.setTimeout(() => {
+        submitLockRef.current = false;
+      }, 600);
     }
   };
 
@@ -537,99 +545,116 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
   const handleConfirmReorderReceive = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!reorderItem) return;
+    if (!reorderItem || submitLockRef.current) return;
 
     const amount = Number(reorderQty);
     if (amount <= 0) return;
 
-    const res = recordAccessoryTransaction({
-      accessoryId: reorderItem.item.id,
-      operation: 'add',
-      amount,
-      modelCodeRef: reorderItem.item.custom_model_code || 'إعادة توريد',
-      notes: `طلبية توريد - المورد: ${reorderItem.supplier?.name || 'غير محدد'}. ${reorderNotes}`
-    });
+    submitLockRef.current = true;
+    try {
+      const res = recordAccessoryTransaction({
+        accessoryId: reorderItem.item.id,
+        operation: 'add',
+        amount,
+        modelCodeRef: reorderItem.item.custom_model_code || 'إعادة توريد',
+        notes: `طلبية توريد - المورد: ${reorderItem.supplier?.name || 'غير محدد'}. ${reorderNotes}`
+      });
 
-    if (res.success) {
-      setReorderItem(null);
+      if (res.success) {
+        setReorderItem(null);
+      }
+    } finally {
+      window.setTimeout(() => {
+        submitLockRef.current = false;
+      }, 600);
     }
   };
 
   const handleCreateAccessory = (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitLockRef.current) return;
 
     let targetTypeId = addForm.typeId || accessoryTypes[0]?.id || 'type-1';
-    if (addForm.newTypeName.trim()) {
-      targetTypeId = addAccessoryType(addForm.newTypeName.trim());
+    const inlineNewTypeName = addForm.newTypeName.trim();
+    if (inlineNewTypeName) {
+      targetTypeId = addAccessoryType(inlineNewTypeName);
     }
     if (!targetTypeId) return;
 
-    const isCarryover = addForm.usageType === 'carryover';
-    // الرصيد السابق/المرحّل: لا حد تنبيه ولا بيانات موديل مخصص.
-    const minThresh = isCarryover ? 0 : Math.max(0, Number(addForm.minThreshold));
-    const targetQty = isCarryover
-      ? 0
-      : addForm.usageType === 'custom_model'
-      ? Math.max(0, Number(addForm.targetQuantity))
-      : minThresh;
-    const cleanModelCode = isCarryover ? '' : addForm.customModelCode.trim();
-    const linkedModel =
-      addForm.usageType === 'custom_model'
-        ? activeModels.find((m) => m.model_code === cleanModelCode)
-        : undefined;
+    submitLockRef.current = true;
+    try {
+      const isCarryover = addForm.usageType === 'carryover';
+      // الرصيد السابق/المرحّل: لا حد تنبيه ولا بيانات موديل مخصص.
+      const minThresh = isCarryover ? 0 : Math.max(0, Number(addForm.minThreshold));
+      const targetQty = isCarryover
+        ? 0
+        : addForm.usageType === 'custom_model'
+        ? Math.max(0, Number(addForm.targetQuantity))
+        : minThresh;
+      const cleanModelCode = isCarryover ? '' : addForm.customModelCode.trim();
+      const linkedModel =
+        addForm.usageType === 'custom_model'
+          ? activeModels.find((m) => m.model_code === cleanModelCode)
+          : undefined;
 
-    const res = addAccessoryItem({
-      type_id: targetTypeId,
-      code: addForm.code,
-      name: addForm.name,
-      image: addForm.image,
-      unit: addForm.unit,
-      quantity: Number(addForm.quantity),
-      price_per_unit: canEditAccessoryPrices()
-        ? Math.max(0, Number(addForm.pricePerUnit) || 0)
-        : 0,
-      supplier_id: addForm.supplierId,
-      min_threshold: minThresh,
-      usage_type: addForm.usageType,
-      custom_model_code: cleanModelCode,
-      target_quantity: targetQty,
-      delivered_quantity: isCarryover ? 0 : Number(addForm.quantity),
-      // يرتبط الإكسسوار بجدول إكسسوارات الموديل بعد نجاح الإنشاء في الباك إند
-      // (في AppContext) حتى يُلتقط سعر الوحدة وتُحدَّث الكميات المحجوزة بشكل صحيح.
-      ...(addForm.usageType === 'custom_model' &&
-      addForm.linkToModelAccessories &&
-      linkedModel
-        ? {
-            link_model: {
-              modelId: linkedModel.id,
-              target_type: addForm.linkSection,
-              piece_consumption: Math.max(0, Number(addForm.pieceConsumption) || 1),
-              ...(targetQty > 0 ? { planned_quantity: Math.round(targetQty) } : {})
+      const res = addAccessoryItem({
+        type_id: targetTypeId,
+        ...(inlineNewTypeName ? { type_name: inlineNewTypeName } : {}),
+        code: addForm.code,
+        name: addForm.name,
+        image: addForm.image,
+        unit: addForm.unit,
+        quantity: Number(addForm.quantity),
+        price_per_unit: canEditAccessoryPrices()
+          ? Math.max(0, Number(addForm.pricePerUnit) || 0)
+          : 0,
+        supplier_id: addForm.supplierId,
+        min_threshold: minThresh,
+        usage_type: addForm.usageType,
+        custom_model_code: cleanModelCode,
+        target_quantity: targetQty,
+        delivered_quantity: isCarryover ? 0 : Number(addForm.quantity),
+        // يرتبط الإكسسوار بجدول إكسسوارات الموديل بعد نجاح الإنشاء في الباك إند
+        // (في AppContext) حتى يُلتقط سعر الوحدة وتُحدَّث الكميات المحجوزة بشكل صحيح.
+        ...(addForm.usageType === 'custom_model' &&
+        addForm.linkToModelAccessories &&
+        linkedModel
+          ? {
+              link_model: {
+                modelId: linkedModel.id,
+                target_type: addForm.linkSection,
+                piece_consumption: Math.max(0, Number(addForm.pieceConsumption) || 1),
+                ...(targetQty > 0 ? { planned_quantity: Math.round(targetQty) } : {})
+              }
             }
-          }
-        : {})
-    });
-
-    if (res.success) {
-      setShowAddModal(false);
-      setAddForm({
-        typeId: accessoryTypes[0]?.id || '',
-        newTypeName: '',
-        code: '',
-        name: '',
-        image: '',
-        unit: 'قطعة',
-        quantity: 50,
-        supplierId: suppliers[0]?.id || '',
-        minThreshold: 10,
-        usageType: 'stock',
-        customModelCode: '',
-        targetQuantity: 100,
-        pricePerUnit: 0,
-        linkToModelAccessories: true,
-        linkSection: 'shirt',
-        pieceConsumption: 1
+          : {})
       });
+
+      if (res.success) {
+        setShowAddModal(false);
+        setAddForm({
+          typeId: accessoryTypes[0]?.id || '',
+          newTypeName: '',
+          code: '',
+          name: '',
+          image: '',
+          unit: 'قطعة',
+          quantity: 50,
+          supplierId: suppliers[0]?.id || '',
+          minThreshold: 10,
+          usageType: 'stock',
+          customModelCode: '',
+          targetQuantity: 100,
+          pricePerUnit: 0,
+          linkToModelAccessories: true,
+          linkSection: 'shirt',
+          pieceConsumption: 1
+        });
+      }
+    } finally {
+      window.setTimeout(() => {
+        submitLockRef.current = false;
+      }, 600);
     }
   };
 
@@ -1150,7 +1175,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
             (isCustom
               ? !item.withdrawn_for_model &&
                 (item.target_quantity ?? threshold) > (item.delivered_quantity ?? item.quantity)
-              : threshold > 0 && available <= threshold);
+              : threshold > 0 && available < threshold);
 
           return (
             <div

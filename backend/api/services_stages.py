@@ -381,13 +381,18 @@ def receive_model_from_sewing_service(dispatch_id, user_name='مراقب الج�
         dispatch.save()
 
         if is_complete:
-            if dispatch.piece_type == 'shirt':
-                model.sewing_shirt_status = 'تم الاستلام'
-            elif dispatch.piece_type == 'pants':
-                model.sewing_pants_status = 'تم الاستلام'
-            # لا نُرقّي القطعة إلى «العد بعد المكن» إلا عند اكتمال استلام كامل الكمية.
-            advance_parts_to_stage(model, 'qc_after_sewing', [dispatch.piece_type or 'shirt'])
-            derive_pipeline_status(model)
+            other_pending_same_part = SewingDispatch.objects.filter(
+                model=model,
+                piece_type=dispatch.piece_type or 'shirt',
+            ).exclude(id=dispatch.id).exclude(status='تم الاستلام').exists()
+            if not other_pending_same_part:
+                if dispatch.piece_type == 'shirt':
+                    model.sewing_shirt_status = 'تم الاستلام'
+                elif dispatch.piece_type == 'pants':
+                    model.sewing_pants_status = 'تم الاستلام'
+                # لا نُرقّي القطعة إلى «العد بعد المكن» إلا عند اكتمال استلام كل إرساليات هذه القطعة.
+                advance_parts_to_stage(model, 'qc_after_sewing', [dispatch.piece_type or 'shirt'])
+                derive_pipeline_status(model)
 
         other_pending = SewingDispatch.objects.filter(model=model).exclude(id=dispatch.id).exclude(status='تم الاستلام').exists()
         all_done = not other_pending and is_complete
@@ -566,8 +571,8 @@ def _model_part_pieces(model, part):
         if value:
             return value
     return (
-        int(getattr(model, 'count_after_sewing', 0) or 0)
-        or int(getattr(model, 'total_cut_pieces', 0) or 0)
+        int(getattr(model, 'total_cut_pieces', 0) or 0)
+        or int(getattr(model, 'target_cut_quantity', 0) or 0)
         or 0
     )
 
@@ -594,112 +599,120 @@ def start_finishing_service(model, parts=None, entry_date=None, expected_exit_da
     if workshop is None and clean_vendor:
         workshop = Workshop.objects.filter(name__iexact=clean_vendor).first()
 
-    ensure_part_stages(model)
+    with transaction.atomic():
+        model = ModelItem.objects.select_for_update().get(pk=model.pk)
+        ensure_part_stages(model)
 
-    requested = [normalize_part_key(part) for part in (parts or get_model_parts(model))]
-    part_keys = []
-    for part in requested:
-        if part in ('shirt', 'pants', 'jacket') and part not in part_keys:
-            part_keys.append(part)
-    if not part_keys:
-        part_keys = ['shirt']
+        requested = [normalize_part_key(part) for part in (parts or get_model_parts(model))]
+        part_keys = []
+        for part in requested:
+            if part in ('shirt', 'pants', 'jacket') and part not in part_keys:
+                part_keys.append(part)
+        if not part_keys:
+            part_keys = ['shirt']
 
-    # Never pull a part back: parts that already left finishing keep their stage.
-    current_stages = get_part_stages(model)
-    not_ready_for_finishing = [
-        part for part in part_keys
-        if _stage_index(current_stages.get(part, 'cutting')) < _stage_index('qc_after_sewing')
-    ]
-    if not_ready_for_finishing:
-        labels = ' / '.join(PART_LABELS.get(part, part) for part in not_ready_for_finishing)
-        raise ValueError(
-            f"لا يمكن بدء التشطيب قبل وصول القطع ({labels}) إلى مرحلة ما بعد المكن"
+        # Never pull a part back: parts that already left finishing keep their stage.
+        current_stages = get_part_stages(model)
+        not_ready_for_finishing = [
+            part for part in part_keys
+            if _stage_index(current_stages.get(part, 'cutting')) < _stage_index('qc_after_sewing')
+        ]
+        if not_ready_for_finishing:
+            labels = ' / '.join(PART_LABELS.get(part, part) for part in not_ready_for_finishing)
+            raise ValueError(
+                f"لا يمكن بدء التشطيب قبل وصول القطع ({labels}) إلى مرحلة ما بعد المكن"
+            )
+        part_keys = [
+            part for part in part_keys
+            if _stage_index(current_stages.get(part, 'cutting')) <= _stage_index('finishing')
+        ]
+        if not part_keys:
+            raise ValueError('القطع المحددة تجاوزت مرحلة التشطيب بالفعل')
+
+        records = []
+        part_totals = []
+        stages = get_part_stages(model)
+        # عند إدخال إجمالي ثابت بدون سعر قطعة لعدة أجزاء، نوزّعه على الأجزاء بالتساوي بدلاً من تكراره.
+        split_explicit_total = (
+            round(float(total_finish_cost) / len(part_keys), 2)
+            if (unit_cost == 0 and total_finish_cost > 0 and len(part_keys) > 1)
+            else total_cost
         )
-    part_keys = [
-        part for part in part_keys
-        if _stage_index(current_stages.get(part, 'cutting')) <= _stage_index('finishing')
-    ]
-    if not part_keys:
-        raise ValueError('القطع المحددة تجاوزت مرحلة التشطيب بالفعل')
+        for part in part_keys:
+            part_pieces = _model_part_pieces(model, part)
+            part_unit_cost, part_total_cost = resolve_cost_values(
+                cost_per_piece, split_explicit_total, pieces_count=part_pieces
+            )
+            part_totals.append(part_total_cost)
+            record, created = FinishingRecord.objects.get_or_create(
+                model=model,
+                part_type=part,
+                defaults={
+                    'entry_date': entry,
+                    'expected_exit_date': expected,
+                    'vendor_name': clean_vendor,
+                    'workshop': workshop,
+                    'notes': clean_notes or None,
+                    'cost_per_piece': part_unit_cost,
+                    'total_cost': part_total_cost,
+                },
+            )
+            if not created:
+                record.entry_date = record.entry_date or entry
+                if expected:
+                    record.expected_exit_date = expected
+                if clean_notes:
+                    record.notes = clean_notes
+                if clean_vendor:
+                    record.vendor_name = clean_vendor
+                if workshop is not None:
+                    record.workshop = workshop
+                if part_unit_cost or part_total_cost:
+                    record.cost_per_piece = part_unit_cost
+                    record.total_cost = part_total_cost
+                record.save()
+            # Only the requested parts move into finishing; siblings keep their stage.
+            stages[part] = 'finishing'
+            records.append(record)
 
-    records = []
-    part_totals = []
-    stages = get_part_stages(model)
-    for part in part_keys:
-        part_pieces = _model_part_pieces(model, part)
-        part_unit_cost, part_total_cost = resolve_cost_values(
-            cost_per_piece, total_cost, pieces_count=part_pieces
-        )
-        part_totals.append(part_total_cost)
-        record, created = FinishingRecord.objects.get_or_create(
+        # دائماً نحسب الإجمالي من مجموع تكلفة قطع كل الأجزاء على الباك إند (ولا يُصفّر بصفر من الواجهة).
+        if total_cost in (None, '', 0, '0', 0.0) or unit_cost > 0:
+            total_finish_cost = round(sum(part_totals), 2)
+
+        model.part_stages = stages
+        model._skip_timeline_signal = True
+        model.save()
+        sync_model_status_from_part_stages(model)
+
+        labels = ' / '.join(record.piece_label or record.part_type for record in records)
+        tl_notes = f"تم تسجيل دخول [{labels}] إلى قسم التشطيب بتاريخ {entry.isoformat()}"
+        if clean_vendor:
+            tl_notes += f" | الجهة: {clean_vendor}"
+        if expected:
+            tl_notes += f" - الخروج المتوقع: {expected.isoformat()}"
+        if clean_notes:
+            tl_notes += f" | ملاحظات: {clean_notes}"
+
+        ModelTimeline.objects.create(
             model=model,
-            part_type=part,
-            defaults={
-                'entry_date': entry,
-                'expected_exit_date': expected,
+            stage='قسم التشطيب',
+            title=f'دخول التشطيب: {labels}',
+            notes=tl_notes,
+            user=user_name,
+            timestamp_str=now_str,
+            details={
+                'phase_type': 'finishing_start',
+                'record_ids': [record.client_id or str(record.id) for record in records],
+                'parts': part_keys,
+                'entry_date': entry.isoformat(),
+                'expected_exit_date': expected.isoformat() if expected else '',
                 'vendor_name': clean_vendor,
-                'workshop': workshop,
-                'notes': clean_notes or None,
-                'cost_per_piece': part_unit_cost,
-                'total_cost': part_total_cost,
+                'worker_notes': clean_notes,
+                'operator_name': user_name,
+                'cost_per_piece': unit_cost,
+                'total_cost': total_finish_cost,
             },
         )
-        if not created:
-            record.entry_date = record.entry_date or entry
-            if expected:
-                record.expected_exit_date = expected
-            if clean_notes:
-                record.notes = clean_notes
-            if clean_vendor:
-                record.vendor_name = clean_vendor
-            if workshop is not None:
-                record.workshop = workshop
-            if part_unit_cost or part_total_cost:
-                record.cost_per_piece = part_unit_cost
-                record.total_cost = part_total_cost
-            record.save()
-        # Only the requested parts move into finishing; siblings keep their stage.
-        stages[part] = 'finishing'
-        records.append(record)
-
-    # دائماً نحسب الإجمالي من مجموع تكلفة قطع كل الأجزاء على الباك إند (ولا يُصفّر بصفر من الواجهة).
-    if total_cost in (None, '', 0, '0', 0.0) or unit_cost > 0:
-        total_finish_cost = round(sum(part_totals), 2)
-
-    model.part_stages = stages
-    model.status = 'في التشطيب'
-    model._skip_timeline_signal = True
-    model.save()
-
-    labels = ' / '.join(record.piece_label or record.part_type for record in records)
-    tl_notes = f"تم تسجيل دخول [{labels}] إلى قسم التشطيب بتاريخ {entry.isoformat()}"
-    if clean_vendor:
-        tl_notes += f" | الجهة: {clean_vendor}"
-    if expected:
-        tl_notes += f" - الخروج المتوقع: {expected.isoformat()}"
-    if clean_notes:
-        tl_notes += f" | ملاحظات: {clean_notes}"
-
-    ModelTimeline.objects.create(
-        model=model,
-        stage='قسم التشطيب',
-        title=f'دخول التشطيب: {labels}',
-        notes=tl_notes,
-        user=user_name,
-        timestamp_str=now_str,
-        details={
-            'phase_type': 'finishing_start',
-            'record_ids': [record.client_id or str(record.id) for record in records],
-            'parts': part_keys,
-            'entry_date': entry.isoformat(),
-            'expected_exit_date': expected.isoformat() if expected else '',
-            'vendor_name': clean_vendor,
-            'worker_notes': clean_notes,
-            'operator_name': user_name,
-            'cost_per_piece': unit_cost,
-            'total_cost': total_finish_cost,
-        },
-    )
     return records
 
 
@@ -709,53 +722,55 @@ def receive_finishing_service(record_id, actual_exit_date=None, notes=None,
     Receives one garment part from finishing. When all parts of the model are
     received the model is promoted to «في المكواة».
     """
-    record = resolve_by_id(FinishingRecord, record_id)
-    if not record:
+    target = resolve_by_id(FinishingRecord, record_id)
+    if not target:
         raise ValueError('سجل التشطيب غير موجود')
 
     actual = _parse_date_value(actual_exit_date) or date.today()
     clean_notes = (notes or '').strip()
-    record.actual_exit_date = actual
-    if clean_notes:
-        record.notes = _append_receive_note(record.notes, clean_notes)
-    record.save()
+    with transaction.atomic():
+        record = FinishingRecord.objects.select_for_update().select_related('model').get(pk=target.pk)
+        model = ModelItem.objects.select_for_update().get(pk=record.model_id)
+        record.actual_exit_date = actual
+        if clean_notes:
+            record.notes = _append_receive_note(record.notes, clean_notes)
+        record.save()
 
-    model = record.model
-    # Move only this part to ironing; the model status follows the least advanced part.
-    ensure_part_stages(model)
-    sync_model_status_from_part_stages(model)
-    all_received = not FinishingRecord.objects.filter(
-        model=model, actual_exit_date__isnull=True
-    ).exists()
+        # Move only this part to ironing; the model status follows the least advanced part.
+        ensure_part_stages(model)
+        sync_model_status_from_part_stages(model)
+        all_received = not FinishingRecord.objects.filter(
+            model=model, actual_exit_date__isnull=True
+        ).exists()
 
-    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-    label = record.piece_label or PART_LABELS.get(record.part_type, 'قطعة')
-    tl_notes = f"تم استلام [{label}] من التشطيب بتاريخ {actual.isoformat()}"
-    if all_received:
-        tl_notes += ' - اكتملت كل قطع التشطيب وتوجيه الموديل تلقائياً إلى قسم المكواة'
-    if clean_notes:
-        tl_notes += f" | ملاحظات: {clean_notes}"
+        now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+        label = record.piece_label or PART_LABELS.get(record.part_type, 'قطعة')
+        tl_notes = f"تم استلام [{label}] من التشطيب بتاريخ {actual.isoformat()}"
+        if all_received:
+            tl_notes += ' - اكتملت كل قطع التشطيب وتوجيه الموديل تلقائياً إلى قسم المكواة'
+        if clean_notes:
+            tl_notes += f" | ملاحظات: {clean_notes}"
 
-    ModelTimeline.objects.create(
-        model=model,
-        stage='قسم التشطيب',
-        title=f'استلام [{label}] من التشطيب',
-        notes=tl_notes,
-        user=user_name,
-        timestamp_str=now_str,
-        details={
-            'phase_type': 'finishing_receive',
-            'record_id': record.client_id or str(record.id),
-            'part_type': record.part_type,
-            'piece_label': label,
-            'entry_date': record.entry_date.isoformat() if record.entry_date else '',
-            'expected_exit_date': record.expected_exit_date.isoformat() if record.expected_exit_date else '',
-            'actual_exit_date': actual.isoformat(),
-            'all_parts_received': all_received,
-            'worker_notes': clean_notes,
-            'operator_name': user_name,
-        },
-    )
+        ModelTimeline.objects.create(
+            model=model,
+            stage='قسم التشطيب',
+            title=f'استلام [{label}] من التشطيب',
+            notes=tl_notes,
+            user=user_name,
+            timestamp_str=now_str,
+            details={
+                'phase_type': 'finishing_receive',
+                'record_id': record.client_id or str(record.id),
+                'part_type': record.part_type,
+                'piece_label': label,
+                'entry_date': record.entry_date.isoformat() if record.entry_date else '',
+                'expected_exit_date': record.expected_exit_date.isoformat() if record.expected_exit_date else '',
+                'actual_exit_date': actual.isoformat(),
+                'all_parts_received': all_received,
+                'worker_notes': clean_notes,
+                'operator_name': user_name,
+            },
+        )
     return record
 
 
@@ -795,156 +810,165 @@ def start_ironing_service(model, part_type=None, parts=None, entry_date=None,
     if workshop is None and clean_vendor:
         workshop = Workshop.objects.filter(name__iexact=clean_vendor).first()
 
-    ensure_part_stages(model)
-    stages = get_part_stages(model)
+    with transaction.atomic():
+        model = ModelItem.objects.select_for_update().get(pk=model.pk)
+        ensure_part_stages(model)
+        stages = get_part_stages(model)
 
-    requested = []
-    for value in (parts or ([part_type] if part_type else [])):
-        key = normalize_part_key(value)
-        if key in ('shirt', 'pants', 'jacket') and key not in requested:
-            requested.append(key)
-    if not requested:
-        requested = [part for part, stage in stages.items() if stage == 'ironing']
-    if not requested:
-        raise ValueError('لا توجد قطعة في مرحلة المكواة لتسجيل دخولها')
+        requested = []
+        for value in (parts or ([part_type] if part_type else [])):
+            key = normalize_part_key(value)
+            if key in ('shirt', 'pants', 'jacket') and key not in requested:
+                requested.append(key)
+        if not requested:
+            requested = [part for part, stage in stages.items() if stage == 'ironing']
+        if not requested:
+            raise ValueError('لا توجد قطعة في مرحلة المكواة لتسجيل دخولها')
 
-    # Never pull a part back: parts already sent to packaging keep their stage.
-    requested = [
-        part for part in requested
-        if _stage_index(stages.get(part, 'cutting')) <= _stage_index('ironing')
-    ]
-    if not requested:
-        raise ValueError('القطع المحددة تجاوزت مرحلة المكواة بالفعل')
-    not_ready = [part for part in requested if stages.get(part) != 'ironing']
-    if not_ready:
-        labels = ' / '.join(PART_LABELS.get(part, part) for part in not_ready)
-        raise ValueError(f"لا يمكن بدء المكواة قبل استلام ({labels}) من التشطيب")
+        # Never pull a part back: parts already sent to packaging keep their stage.
+        requested = [
+            part for part in requested
+            if _stage_index(stages.get(part, 'cutting')) <= _stage_index('ironing')
+        ]
+        if not requested:
+            raise ValueError('القطع المحددة تجاوزت مرحلة المكواة بالفعل')
+        not_ready = [part for part in requested if stages.get(part) != 'ironing']
+        if not_ready:
+            labels = ' / '.join(PART_LABELS.get(part, part) for part in not_ready)
+            raise ValueError(f"لا يمكن بدء المكواة قبل استلام ({labels}) من التشطيب")
 
-    records = []
-    part_totals = []
-    for part in requested:
-        part_pieces = _model_part_pieces(model, part)
-        part_unit_cost, part_total_cost = resolve_cost_values(
-            cost_per_piece, total_cost, pieces_count=part_pieces
+        records = []
+        part_totals = []
+        split_explicit_total = (
+            round(float(total_iron_cost) / len(requested), 2)
+            if (unit_cost == 0 and total_iron_cost > 0 and len(requested) > 1)
+            else total_cost
         )
-        part_totals.append(part_total_cost)
-        record, created = AssemblyStageRecord.objects.get_or_create(
+        for part in requested:
+            part_pieces = _model_part_pieces(model, part)
+            part_unit_cost, part_total_cost = resolve_cost_values(
+                cost_per_piece, split_explicit_total, pieces_count=part_pieces
+            )
+            part_totals.append(part_total_cost)
+            record, created = AssemblyStageRecord.objects.get_or_create(
+                model=model,
+                stage='ironing',
+                part_type=part,
+                defaults={
+                    'entry_date': entry,
+                    'expected_exit_date': expected,
+                    'vendor_name': clean_vendor,
+                    'workshop': workshop,
+                    'notes': clean_notes or None,
+                    'cost_per_piece': part_unit_cost,
+                    'total_cost': part_total_cost,
+                },
+            )
+            if not created:
+                record.entry_date = record.entry_date or entry
+                if expected:
+                    record.expected_exit_date = expected
+                if clean_vendor:
+                    record.vendor_name = clean_vendor
+                if workshop is not None:
+                    record.workshop = workshop
+                if clean_notes:
+                    record.notes = clean_notes
+                if part_unit_cost or part_total_cost:
+                    record.cost_per_piece = part_unit_cost
+                    record.total_cost = part_total_cost
+                record.save()
+            stages[part] = 'ironing'
+            records.append(record)
+
+        # دائماً نحسب الإجمالي من مجموع تكلفة قطع كل الأجزاء على الباك إند (ولا يُصفّر بصفر من الواجهة).
+        if total_cost in (None, '', 0, '0', 0.0) or unit_cost > 0:
+            total_iron_cost = round(sum(part_totals), 2)
+
+        model.part_stages = stages
+        model._skip_timeline_signal = True
+        model.save()
+        sync_model_status_from_part_stages(model)
+
+        labels = ' / '.join(record.stage_label for record in records)
+        tl_notes = f"تم تسجيل دخول [{labels}] إلى قسم المكواة بتاريخ {entry.isoformat()}"
+        if clean_vendor:
+            tl_notes += f" | الجهة: {clean_vendor}"
+        if expected:
+            tl_notes += f" - الخروج المتوقع: {expected.isoformat()}"
+        if clean_notes:
+            tl_notes += f" | ملاحظات: {clean_notes}"
+
+        ModelTimeline.objects.create(
             model=model,
-            stage='ironing',
-            part_type=part,
-            defaults={
-                'entry_date': entry,
-                'expected_exit_date': expected,
+            stage='قسم المكواة',
+            title=f'دخول المكواة: {labels}',
+            notes=tl_notes,
+            user=user_name,
+            timestamp_str=now_str,
+            details={
+                'phase_type': 'ironing_start',
+                'record_ids': [record.client_id or str(record.id) for record in records],
+                'parts': requested,
+                'entry_date': entry.isoformat(),
+                'expected_exit_date': expected.isoformat() if expected else '',
                 'vendor_name': clean_vendor,
-                'workshop': workshop,
-                'notes': clean_notes or None,
-                'cost_per_piece': part_unit_cost,
-                'total_cost': part_total_cost,
+                'worker_notes': clean_notes,
+                'operator_name': user_name,
+                'cost_per_piece': unit_cost,
+                'total_cost': total_iron_cost,
             },
         )
-        if not created:
-            record.entry_date = record.entry_date or entry
-            if expected:
-                record.expected_exit_date = expected
-            if clean_vendor:
-                record.vendor_name = clean_vendor
-            if workshop is not None:
-                record.workshop = workshop
-            if clean_notes:
-                record.notes = clean_notes
-            if part_unit_cost or part_total_cost:
-                record.cost_per_piece = part_unit_cost
-                record.total_cost = part_total_cost
-            record.save()
-        stages[part] = 'ironing'
-        records.append(record)
-
-    # دائماً نحسب الإجمالي من مجموع تكلفة قطع كل الأجزاء على الباك إند (ولا يُصفّر بصفر من الواجهة).
-    if total_cost in (None, '', 0, '0', 0.0) or unit_cost > 0:
-        total_iron_cost = round(sum(part_totals), 2)
-
-    model.part_stages = stages
-    model._skip_timeline_signal = True
-    model.save()
-    sync_model_status_from_part_stages(model)
-
-    labels = ' / '.join(record.stage_label for record in records)
-    tl_notes = f"تم تسجيل دخول [{labels}] إلى قسم المكواة بتاريخ {entry.isoformat()}"
-    if clean_vendor:
-        tl_notes += f" | الجهة: {clean_vendor}"
-    if expected:
-        tl_notes += f" - الخروج المتوقع: {expected.isoformat()}"
-    if clean_notes:
-        tl_notes += f" | ملاحظات: {clean_notes}"
-
-    ModelTimeline.objects.create(
-        model=model,
-        stage='قسم المكواة',
-        title=f'دخول المكواة: {labels}',
-        notes=tl_notes,
-        user=user_name,
-        timestamp_str=now_str,
-        details={
-            'phase_type': 'ironing_start',
-            'record_ids': [record.client_id or str(record.id) for record in records],
-            'parts': requested,
-            'entry_date': entry.isoformat(),
-            'expected_exit_date': expected.isoformat() if expected else '',
-            'vendor_name': clean_vendor,
-            'worker_notes': clean_notes,
-            'operator_name': user_name,
-            'cost_per_piece': unit_cost,
-            'total_cost': total_iron_cost,
-        },
-    )
     return records
 
 
 def receive_ironing_service(record_id, actual_exit_date=None, notes=None,
                             user_name='مسؤول المكواة'):
     """Completes the ironing of one part and moves that part to packaging."""
-    record = resolve_by_id(AssemblyStageRecord, record_id)
-    if not record or record.stage != 'ironing':
+    target = resolve_by_id(AssemblyStageRecord, record_id)
+    if not target or target.stage != 'ironing':
         raise ValueError('سجل المكواة غير موجود')
 
     actual = _parse_date_value(actual_exit_date) or date.today()
     clean_notes = (notes or '').strip()
-    record.actual_exit_date = actual
-    if clean_notes:
-        record.notes = _append_receive_note(record.notes, clean_notes)
-    record.save()
+    with transaction.atomic():
+        record = AssemblyStageRecord.objects.select_for_update().select_related('model').get(pk=target.pk)
+        model = ModelItem.objects.select_for_update().get(pk=record.model_id)
+        record.actual_exit_date = actual
+        if clean_notes:
+            record.notes = _append_receive_note(record.notes, clean_notes)
+        record.save()
 
-    model = record.model
-    # ensure_part_stages promotes this part to packaging (the record is now
-    # completed); sync then derives status from the least advanced part.
-    ensure_part_stages(model)
-    sync_model_status_from_part_stages(model)
+        # ensure_part_stages promotes this part to packaging (the record is now
+        # completed); sync then derives status from the least advanced part.
+        ensure_part_stages(model)
+        sync_model_status_from_part_stages(model)
 
-    now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-    label = record.stage_label
-    tl_notes = f"تم استلام [{label}] من المكواة بتاريخ {actual.isoformat()}"
-    if clean_notes:
-        tl_notes += f" | ملاحظات: {clean_notes}"
+        now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+        label = record.stage_label
+        tl_notes = f"تم استلام [{label}] من المكواة بتاريخ {actual.isoformat()}"
+        if clean_notes:
+            tl_notes += f" | ملاحظات: {clean_notes}"
 
-    ModelTimeline.objects.create(
-        model=model,
-        stage='قسم المكواة',
-        title=f'استلام [{label}] من المكواة',
-        notes=tl_notes,
-        user=user_name,
-        timestamp_str=now_str,
-        details={
-            'phase_type': 'ironing_receive',
-            'record_id': record.client_id or str(record.id),
-            'part_type': record.part_type,
-            'entry_date': record.entry_date.isoformat() if record.entry_date else '',
-            'expected_exit_date': record.expected_exit_date.isoformat() if record.expected_exit_date else '',
-            'actual_exit_date': actual.isoformat(),
-            'next_stage': 'packaging',
-            'worker_notes': clean_notes,
-            'operator_name': user_name,
-        },
-    )
+        ModelTimeline.objects.create(
+            model=model,
+            stage='قسم المكواة',
+            title=f'استلام [{label}] من المكواة',
+            notes=tl_notes,
+            user=user_name,
+            timestamp_str=now_str,
+            details={
+                'phase_type': 'ironing_receive',
+                'record_id': record.client_id or str(record.id),
+                'part_type': record.part_type,
+                'entry_date': record.entry_date.isoformat() if record.entry_date else '',
+                'expected_exit_date': record.expected_exit_date.isoformat() if record.expected_exit_date else '',
+                'actual_exit_date': actual.isoformat(),
+                'next_stage': 'packaging',
+                'worker_notes': clean_notes,
+                'operator_name': user_name,
+            },
+        )
     return record
 
 
@@ -1385,6 +1409,8 @@ def receive_assembly_stage_service(record_id, actual_exit_date=None, notes=None,
                 record.completed_pieces = parsed_completed
             elif record.completed_pieces is None:
                 record.completed_pieces = int(record.expected_pieces or 0)
+            if float(record.cost_per_piece or 0) > 0 and record.completed_pieces is not None:
+                record.total_cost = round(float(record.cost_per_piece) * int(record.completed_pieces), 2)
         record.save()
 
         # Advance the per-part stages: ironing → that part to packaging,

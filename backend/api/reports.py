@@ -1112,6 +1112,9 @@ def _part_stage_numbers(
     embroidery_received=0,
     sewing_sent=0,
     sewing_received=0,
+    print_open=False,
+    embroidery_open=False,
+    sewing_open=False,
 ):
     """يحسب مدخل/مخرج/فقد كل مرحلة لقطعة واحدة بالاعتماد على أرقامها وحدها.
 
@@ -1152,20 +1155,30 @@ def _part_stage_numbers(
         print_entry = print_sent
         if has_after_print_qc:
             print_exit = after_print_good
+        elif print_open:
+            # تشغيلات طباعة لم تُستلم بالكامل بعد: لا نعدّ القطع المتبقية بالمطبعة كفقد.
+            print_exit = print_sent
         else:
             print_exit = print_received if print_received > 0 else print_sent
     elif embroidery_sent > 0 and print_sent == 0:
         embroidery_entry = embroidery_sent
         if has_after_print_qc:
             embroidery_exit = after_print_good
+        elif embroidery_open:
+            embroidery_exit = embroidery_sent
         else:
             embroidery_exit = embroidery_received if embroidery_received > 0 else embroidery_sent
     elif print_sent > 0 and embroidery_sent > 0:
-        # قطعة مرّت على المسارين: نستخدم ما استُلم فعلياً لكل مسار (نادر).
+        # قطعة مرّت على المسارين (طباعة + تطريز): نحسب فقد الاستلام لكل مسار دون تجاهل عيوب الفرز بعد الطباعة.
         print_entry = print_sent
-        print_exit = print_received if print_received > 0 else print_sent
+        print_exit = print_sent if print_open else (print_received if print_received > 0 else print_sent)
         embroidery_entry = embroidery_sent
-        embroidery_exit = embroidery_received if embroidery_received > 0 else embroidery_sent
+        if has_after_print_qc:
+            embroidery_exit = min(embroidery_entry, after_print_good)
+        elif embroidery_open:
+            embroidery_exit = embroidery_sent
+        else:
+            embroidery_exit = embroidery_received if embroidery_received > 0 else embroidery_sent
     else:
         # لا توجد إرساليات مطابع/تطريز: نعتمد عد ما قبل/بعد الطباعة فقط.
         print_entry = cut_out
@@ -1183,6 +1196,9 @@ def _part_stage_numbers(
     if sewing_sent > 0 or sewing_received > 0:
         if has_after_sewing_qc:
             sewing_exit = after_sewing_good
+        elif sewing_open:
+            # إرساليات مكن لم تُستلم بالكامل بعد (استلام جزئي أو جارية): لا نحتسب المتبقي بالورشة عجزاً.
+            sewing_exit = sewing_sent or sewing_entry
         else:
             sewing_exit = sewing_received if sewing_received > 0 else sewing_sent or sewing_entry
     else:
@@ -1229,7 +1245,7 @@ def _part_stage_numbers(
     return {
         'cut_pieces': cut,
         'good_pieces': final_good,
-        'printed_pieces': print_sent + embroidery_sent,
+        'printed_pieces': max(print_sent, embroidery_sent) if (print_sent > 0 and embroidery_sent > 0) else (print_sent + embroidery_sent),
         'sewn_pieces': sewing_sent,
         'shortage': max(0, cut - final_good),
         'qc_before_print': before_print_good,
@@ -1284,8 +1300,8 @@ def _bulk_part_stage_numbers(model_ids):
 
     cut_map = defaultdict(int)
     qc_map = defaultdict(dict)
-    print_map = defaultdict(lambda: [0, 0, 0, 0])
-    sewing_map = defaultdict(lambda: [0, 0])
+    print_map = defaultdict(lambda: [0, 0, 0, 0, False, False])
+    sewing_map = defaultdict(lambda: [0, 0, False])
 
     for chunk in _chunked(model_ids):
         for row in (
@@ -1311,7 +1327,9 @@ def _bulk_part_stage_numbers(model_ids):
             key = (row['model_id'], _part_key(row['piece_type']))
             sent = int(row['sent'] or 0)
             received = int(row['received'] or 0)
-            if not received and str(row['status'] or '') in RECEIVED_DISPATCH_STATUSES:
+            row_status = str(row['status'] or '')
+            is_open = row_status not in RECEIVED_DISPATCH_STATUSES
+            if not received and not is_open:
                 received = sent
             is_embroidery = (
                 'تطريز' in str(row['print_type'] or '')
@@ -1321,9 +1339,13 @@ def _bulk_part_stage_numbers(model_ids):
             if is_embroidery:
                 bucket[2] += sent
                 bucket[3] += received
+                if is_open:
+                    bucket[5] = True
             else:
                 bucket[0] += sent
                 bucket[1] += received
+                if is_open:
+                    bucket[4] = True
 
         for row in (
             SewingDispatch.objects.filter(model_id__in=chunk)
@@ -1333,20 +1355,24 @@ def _bulk_part_stage_numbers(model_ids):
             key = (row['model_id'], _part_key(row['piece_type']))
             sent = int(row['sent'] or 0)
             received = int(row['received'] or 0)
-            if not received and str(row['status'] or '') in RECEIVED_DISPATCH_STATUSES:
+            row_status = str(row['status'] or '')
+            is_open = row_status not in RECEIVED_DISPATCH_STATUSES
+            if not received and not is_open:
                 received = sent
             sewing_map[key][0] += sent
             sewing_map[key][1] += received
+            if is_open:
+                sewing_map[key][2] = True
 
     for model_id, part in set(cut_map) | set(qc_map) | set(print_map) | set(sewing_map):
         stages = qc_map.get((model_id, part), {})
         before_print_good, before_print_defect = stages.get('before_print', (0, 0))
         after_print_good, after_print_defect = stages.get('after_print', (0, 0))
         after_sewing_good, after_sewing_defect = stages.get('after_sewing', (0, 0))
-        print_sent, print_received, embroidery_sent, embroidery_received = print_map.get(
-            (model_id, part), [0, 0, 0, 0]
+        print_sent, print_received, embroidery_sent, embroidery_received, print_open, embroidery_open = print_map.get(
+            (model_id, part), [0, 0, 0, 0, False, False]
         )
-        sewing_sent, sewing_received = sewing_map.get((model_id, part), [0, 0])
+        sewing_sent, sewing_received, sewing_open = sewing_map.get((model_id, part), [0, 0, False])
         result.setdefault(model_id, {})[part] = _part_stage_numbers(
             cut=cut_map.get((model_id, part), 0),
             before_print_good=before_print_good,
@@ -1361,6 +1387,9 @@ def _bulk_part_stage_numbers(model_ids):
             embroidery_received=embroidery_received,
             sewing_sent=sewing_sent,
             sewing_received=sewing_received,
+            print_open=print_open,
+            embroidery_open=embroidery_open,
+            sewing_open=sewing_open,
         )
     return result
 
@@ -1465,11 +1494,12 @@ def get_quality_shortage_report(search=None, sort='shortage', date_from=None, da
     loss_by_stage = {item['key']: item['loss'] for item in stage_loss_totals}
 
     stage_defect_labels = dict(QCRecord.STAGE_TYPES)
+    filtered_model_ids = [m.id for m in models]
     defect_rows = (
-        QCRecord.objects.filter(model__is_deleted=False).values('stage')
+        QCRecord.objects.filter(model_id__in=filtered_model_ids).values('stage')
         .annotate(defects=Sum('defect_pieces'), counted=Sum('counted_pieces'))
         .order_by('-defects')
-    )
+    ) if filtered_model_ids else []
     defects_by_stage = [
         {
             'stage': row['stage'],
@@ -1486,7 +1516,7 @@ def get_quality_shortage_report(search=None, sort='shortage', date_from=None, da
     )
     total_defects = sum(item['defects'] for item in defects_by_stage)
 
-    total_shortage = max(0, total_cut - total_current)
+    total_shortage = sum(int(row['shortage'] or 0) for row in rows)
     total_shortage_percent = round((total_shortage / total_cut) * 100, 1) if total_cut else 0.0
 
     return {
@@ -1552,6 +1582,7 @@ def _model_stage_waterfall(model):
         or good_total
         or int(model.total_cut_pieces or 0)
     )
+    sets_count = _current_good_pieces(model) or int(model.total_cut_pieces or 0) or int(model.target_cut_quantity or 0)
 
     finishing_records = list(FinishingRecord.objects.filter(model=model))
     ironing_records = list(AssemblyStageRecord.objects.filter(model=model, stage='ironing'))
@@ -1581,7 +1612,7 @@ def _model_stage_waterfall(model):
         }
 
     dest_rec = dest_records[0] if dest_records else None
-    dest_in = int(dest_rec.expected_pieces or 0) if (dest_rec and dest_rec.expected_pieces) else assembly_in
+    dest_in = int(dest_rec.expected_pieces or 0) if (dest_rec and dest_rec.expected_pieces) else sets_count
     dest_out = (
         int(dest_rec.completed_pieces)
         if (dest_rec and dest_rec.completed_pieces is not None)
@@ -1592,7 +1623,7 @@ def _model_stage_waterfall(model):
     model_stages = [
         _model_stage('finishing', 'التشطيب', finishing_records),
         _model_stage('ironing', 'المكواة', ironing_records),
-        _model_stage('packaging', 'التعبئة والتغليف', packaging_only_records),
+        _model_stage('packaging', 'التعبئة والتغليف', packaging_only_records, in_qty=sets_count),
         _model_stage('dest', 'الدَست', dest_records, in_qty=dest_in, out_qty=dest_out, loss=dest_loss),
     ]
 
@@ -1708,7 +1739,7 @@ def get_workshop_evaluations_report(category='all', search=None, date_from=None,
                 continue
             row['total_dispatches'] += 1
             row['model_part_pairs'].add((disp.model_id, _part_key(disp.piece_type)))
-            is_done = disp.status in RECEIVED_DISPATCH_STATUSES or bool(disp.received_date)
+            is_done = disp.status in RECEIVED_DISPATCH_STATUSES
             if is_done:
                 row['completed_dispatches'] += 1
                 if disp.expected_delivery_date and disp.received_date:
@@ -1728,7 +1759,7 @@ def get_workshop_evaluations_report(category='all', search=None, date_from=None,
                 continue
             row['total_dispatches'] += 1
             row['model_part_pairs'].add((disp.model_id, _part_key(disp.piece_type)))
-            is_done = disp.status in RECEIVED_DISPATCH_STATUSES or bool(disp.received_date)
+            is_done = disp.status in RECEIVED_DISPATCH_STATUSES
             if is_done:
                 row['completed_dispatches'] += 1
                 if disp.expected_delivery_date and disp.received_date:
@@ -1813,13 +1844,17 @@ def get_workshop_evaluations_report(category='all', search=None, date_from=None,
         timed = row['timed_dispatches']
         on_time_pct = round((row['on_time_count'] / timed) * 100.0, 1) if timed > 0 else None
 
-        qc_stage = 'after_print' if row['category'] == 'printing' else 'after_sewing'
+        qc_stage = (
+            'after_print' if row['category'] == 'printing'
+            else ('after_sewing' if row['category'] == 'sewing' else None)
+        )
         good_sum = 0
         defect_sum = 0
-        for (mid, part) in row['model_part_pairs']:
-            g, d = qc_totals.get((mid, part, qc_stage), (0, 0))
-            good_sum += g
-            defect_sum += d
+        if qc_stage:
+            for (mid, part) in row['model_part_pairs']:
+                g, d = qc_totals.get((mid, part, qc_stage), (0, 0))
+                good_sum += g
+                defect_sum += d
         checked_total = good_sum + defect_sum
         defect_pct = round((defect_sum / checked_total) * 100.0, 1) if checked_total > 0 else 0.0
 

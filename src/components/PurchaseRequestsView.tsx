@@ -380,20 +380,29 @@ export const PurchaseRequestsView: React.FC = () => {
     );
   };
 
+  const fulfillLockRef = React.useRef(false);
+
   const handleConfirmFulfillSupply = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!fulfillTarget) return;
+    if (!fulfillTarget || fulfillLockRef.current) return;
     const amount = Number(fulfillQty);
     if (!Number.isFinite(amount) || amount <= 0) return;
-    const res = recordAccessoryTransaction({
-      accessoryId: fulfillTarget.item.id,
-      operation: 'add',
-      amount,
-      modelCodeRef: fulfillTarget.item.custom_model_code || 'طلب شراء / توريد',
-      notes: `توريد من شاشة طلبات الشراء - المورد: ${fulfillTarget.supplier?.name || 'غير محدد'}. ${fulfillNotes}`
-    });
-    if (res.success) {
-      setFulfillTarget(null);
+    fulfillLockRef.current = true;
+    try {
+      const res = recordAccessoryTransaction({
+        accessoryId: fulfillTarget.item.id,
+        operation: 'add',
+        amount,
+        modelCodeRef: fulfillTarget.item.custom_model_code || 'طلب شراء / توريد',
+        notes: `توريد من شاشة طلبات الشراء - المورد: ${fulfillTarget.supplier?.name || 'غير محدد'}. ${fulfillNotes}`
+      });
+      if (res.success) {
+        setFulfillTarget(null);
+      }
+    } finally {
+      window.setTimeout(() => {
+        fulfillLockRef.current = false;
+      }, 600);
     }
   };
 

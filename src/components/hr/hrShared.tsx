@@ -186,8 +186,8 @@ export const PENALTY_TYPE_LABELS: Record<HRPenaltyType, string> = {
   hours: 'ساعات'
 };
 
-export const todayISO = () => new Date().toISOString().slice(0, 10);
-export const currentMonth = () => new Date().toISOString().slice(0, 7);
+export const todayISO = () => isoDate(new Date());
+export const currentMonth = () => isoDate(new Date()).slice(0, 7);
 
 /** أسماء أيام الأسبوع بالعربية لعرض سجل الحضور اليومي. */
 export const WEEK_DAY_AR = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
@@ -414,10 +414,10 @@ export const matchLateRule = (
   return null;
 };
 
-/** هل يوجد سجل حضور فعلي (حضور / إجازة بعذر / بصمة حضور)؟ */
+/** هل يوجد سجل حضور فعلي (حضور / أي سجل بعذر مقبول / بصمة حضور)؟ */
 export const isAttendedRecord = (record: HRAttendanceRecord): boolean => {
   if (record.status === 'present') return true;
-  if (record.status === 'leave' && record.is_excused) return true;
+  if (record.is_excused) return true;
   return !!record.check_in;
 };
 
@@ -429,10 +429,11 @@ export interface MonthAccrual {
   sundayDeductionDays: number;
   unexcusedAbsenceDays: number;
   earnedDays: number;
+  earnedDaysRaw: number;
 }
 
 /**
- * استحقاق الموظف داخل شهر وفق القواعد المحاسبية المؤكدة:
+ * استحقاق الموظف داخل شهر وفق القواعد المحاسبية المؤكدة (مطابق 100% للباك إند):
  * 1) للشهر المكتمل: earned_base = max(0, 30 - total_unexcused_absence_days - sunday_deduction_days)
  *    بحيث يخصم يوم الغياب يوماً واحداً بالضبط سواء كان الشهر 28 أو 30 أو 31 يوماً.
  * 2) العمل يوم الإجازة الأسبوعية يمنح أجراً إضافياً فوق سقف الـ 30 يوماً بمضاعف
@@ -454,7 +455,8 @@ export const computeMonthAccrual = (
     weeklyOffExtraDays: 0,
     sundayDeductionDays: 0,
     unexcusedAbsenceDays: 0,
-    earnedDays: 0
+    earnedDays: 0,
+    earnedDaysRaw: 0
   };
   if (!monthKey) return empty;
   const [yearStr, monthStr] = monthKey.split('-');
@@ -472,8 +474,12 @@ export const computeMonthAccrual = (
     .forEach((record) => recordsByDate.set(record.date, record));
 
   const lastDay = new Date(year, monthNumber, 0).getDate();
+  const monthLastIso = isoDate(new Date(year, monthNumber - 1, lastDay));
+  const monthComplete = !upToIso || upToIso >= monthLastIso;
+
   let attendedRegularDays = 0;
   let workedWeeklyOffDays = 0;
+  let workdaysInScope = 0;
   let paidSundayDays = 0;
   let unexcusedAbsenceDays = 0;
   let sundayDeductionDays = 0;
@@ -497,9 +503,12 @@ export const computeMonthAccrual = (
         const ded = weeklyOffDeductionForDate(recordsByDate, iso);
         sundayDeductionDays += ded;
         paidSundayDays += Math.max(0, 1 - ded);
+      } else if (monthComplete) {
+        sundayDeductionDays += 1;
       }
       continue;
     }
+    workdaysInScope += 1;
     if (record && isAttendedRecord(record)) {
       attendedRegularDays += 1;
     } else {
@@ -508,19 +517,23 @@ export const computeMonthAccrual = (
   }
 
   const attendedDays = attendedRegularDays + workedWeeklyOffDays;
-  const monthLastIso = isoDate(new Date(year, monthNumber - 1, lastDay));
-  const monthComplete = !upToIso || upToIso >= monthLastIso;
   const weeklyOffExtraDays = workedWeeklyOffDays * mult;
 
-  let earnedDays = 0;
-  if (attendedRegularDays === 0 && workedWeeklyOffDays === 0 && paidSundayDays === 0) {
-    earnedDays = 0;
+  let earnedDaysRaw = 0;
+  if (attendedRegularDays === 0 && workedWeeklyOffDays === 0) {
+    paidSundayDays = 0;
+    sundayDeductionDays = 0;
+    earnedDaysRaw = 0;
   } else if (monthComplete) {
-    const baseEarned = Math.max(0, 30 - unexcusedAbsenceDays - sundayDeductionDays);
-    earnedDays = baseEarned + weeklyOffExtraDays;
+    const rawBase = Math.max(0, 30 - unexcusedAbsenceDays - sundayDeductionDays);
+    const baseEarned =
+      workdaysInScope > 0 && unexcusedAbsenceDays >= workdaysInScope / 2
+        ? Math.min(rawBase, attendedRegularDays + paidSundayDays)
+        : rawBase;
+    earnedDaysRaw = baseEarned + weeklyOffExtraDays;
   } else {
     const baseEarned = Math.min(30, attendedRegularDays + paidSundayDays);
-    earnedDays = baseEarned + weeklyOffExtraDays;
+    earnedDaysRaw = baseEarned + weeklyOffExtraDays;
   }
 
   return {
@@ -530,7 +543,8 @@ export const computeMonthAccrual = (
     weeklyOffExtraDays: Math.round(weeklyOffExtraDays * 100) / 100,
     sundayDeductionDays: Math.round(sundayDeductionDays * 100) / 100,
     unexcusedAbsenceDays: Math.round(unexcusedAbsenceDays * 100) / 100,
-    earnedDays: Math.round(earnedDays * 100) / 100
+    earnedDays: Math.round(earnedDaysRaw * 100) / 100,
+    earnedDaysRaw
   };
 };
 

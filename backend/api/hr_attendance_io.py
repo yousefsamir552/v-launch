@@ -125,14 +125,21 @@ def parse_sheet_date(value):
     text = str(value).strip()
     if not text:
         return None
+    text = text.replace('\u200f', '').replace('\u200e', '')
+
+    # جرّب الصيغ المحتوية على مسافات أولاً مثل "15 May 2026" أو "15-May-2026" قبل القص عند المسافة.
+    for spaced_fmt in ('%d %B %Y', '%d %b %Y', '%B %d, %Y', '%b %d, %Y', '%d-%b-%Y', '%d-%B-%Y'):
+        try:
+            return datetime.strptime(text, spaced_fmt).date()
+        except ValueError:
+            continue
 
     # إزالة الجزء الزمني إن وجد: "2026-11-09 00:00:00" / "2026-11-09T08:30"
     text = text.split('T')[0].split(' ')[0].strip()
-    text = text.replace('\u200f', '').replace('\u200e', '')
 
     for fmt in (
         '%Y-%m-%d', '%Y/%m/%d', '%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y',
-        '%d.%m.%Y', '%Y.%m.%d', '%m/%d/%Y', '%d %B %Y', '%d %b %Y',
+        '%d.%m.%Y', '%Y.%m.%d', '%m/%d/%Y',
     ):
         try:
             return datetime.strptime(text, fmt).date()
@@ -164,6 +171,11 @@ def parse_sheet_time(value):
         return None
     text = text.replace('\u200f', '').replace('\u200e', '')
 
+    # دعم السلاسل المحتوية على تاريخ + وقت مثل "2026-11-09 08:30:00" أو "2026-11-09T08:30:00".
+    dt_match = re.match(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}[T\s]+(.+)$', text)
+    if dt_match:
+        text = dt_match.group(1).strip()
+
     # أرقام صحيحة من خانة أو خانتين مثل "8" أو "17" تعني الساعة (08:00 / 17:00) وليس منتصف الليل.
     if re.fullmatch(r'\d{1,2}', text):
         hour_int = int(text)
@@ -171,11 +183,13 @@ def parse_sheet_time(value):
             return time(hour_int, 0, 0)
         return None
 
-    # كسور إكسيل (تحتوي على فاصلة عشرية): 0.354166 = 08:30، و 45678.354166 = تاريخ + وقت.
-    if re.fullmatch(r'\d+\.\d+', text):
+    # كسور إكسيل (عشرية أو ترميز علمي مثل 1.5e-5): 0.354166 = 08:30، و 45678.354166 = تاريخ + وقت.
+    if re.fullmatch(r'\d+(?:\.\d+)?(?:[eE][+-]?\d+)?', text) and ('.' in text or 'e' in text.lower()):
         try:
             number = float(text)
         except ValueError:
+            return None
+        if number < 0:
             return None
         fraction = number - int(number) if number >= 1 else number
         if 0 <= fraction < 1:
@@ -186,12 +200,12 @@ def parse_sheet_time(value):
         return None
 
     match = re.match(
-        r'^(\d{1,2})\s*[:：]\s*(\d{1,2})(?:\s*[:：]\s*(\d{1,2}))?\s*([AaPp]\.?[Mm]\.?|ص|م|صباحا|مساء)?\s*$',
+        r'^(\d{1,2})\s*[:：]\s*(\d{1,2})(?:\s*[:：]\s*(\d{1,2}))?\s*([AaPp]\.?[Mm]\.?|ص|م|صباحا|صباحاً|مساء|مساءً)?\s*$',
         text,
     )
     if not match:
         # صيغة مثل "8" أو "17" (ساعة فقط).
-        hour_only = re.fullmatch(r'(\d{1,2})\s*([AaPp]\.?[Mm]\.?|ص|م)?', text)
+        hour_only = re.fullmatch(r'(\d{1,2})\s*([AaPp]\.?[Mm]\.?|ص|م|صباحا|صباحاً|مساء|مساءً)?', text)
         if not hour_only:
             return None
         hour = int(hour_only.group(1))
@@ -204,10 +218,10 @@ def parse_sheet_time(value):
         second = int(match.group(3) or 0)
         meridiem = (match.group(4) or '').replace('.', '').lower()
 
-    if meridiem in ('pm', 'p', 'م', 'مساء'):
+    if meridiem in ('pm', 'p', 'م', 'مساء', 'مساءً'):
         if hour < 12:
             hour += 12
-    elif meridiem in ('am', 'a', 'ص', 'صباحا'):
+    elif meridiem in ('am', 'a', 'ص', 'صباحا', 'صباحاً'):
         if hour == 12:
             hour = 0
 
@@ -253,7 +267,7 @@ def month_bounds(value, today=None):
 
 def build_template_csv(settings, employees, month_start: date, month_end: date) -> str:
     """توليد قالب CSV فارغ (أوقات فارغة) لكل موظف في كل يوم عمل."""
-    weekly_off = getattr(settings, 'weekly_off_day', '') or ''
+    off_weekday = weekly_off_weekday(settings)
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator='\n')
     writer.writerow(TEMPLATE_HEADERS)
@@ -263,7 +277,7 @@ def build_template_csv(settings, employees, month_start: date, month_end: date) 
         name = (employee.name or '').strip()
         current = month_start
         while current <= month_end:
-            if not weekly_off or current.strftime('%A') != weekly_off:
+            if current.weekday() != off_weekday:
                 writer.writerow([code, name, current.isoformat(), '', ''])
             current += timedelta(days=1)
 
@@ -322,6 +336,10 @@ def _read_xlsx(content: bytes):
         raise ValueError('ملف الإكسيل غير صالح أو تالف')
 
     with archive:
+        # حماية ضد هجمات قنابل الضغط (ZIP Bomb): الحد الأقصى للحجم غير المضغوط 25 ميجابايت.
+        total_uncompressed = sum(info.file_size for info in archive.infolist())
+        if total_uncompressed > 25 * 1024 * 1024:
+            raise ValueError('حجم محتوى ملف الإكسيل بعد فك الضغط يتجاوز الحد الآمن المسموح (25 ميجابايت)')
         names = set(archive.namelist())
         shared_strings = []
         if 'xl/sharedStrings.xml' in names:
@@ -494,24 +512,17 @@ def parse_attendance_sheet(filename: str, content: bytes):
             merged_order.append(key)
             continue
 
-        # جمع البصمات المتاحة لهذا اليوم (أقدم بصمة = حضور، أحدث بصمة = انصراف).
-        in_times = [t for t in (existing['check_in'], item['check_in']) if t is not None]
-        out_times = [t for t in (existing['check_out'], item['check_out']) if t is not None]
-        if in_times and out_times:
-            existing['check_in'] = min(in_times)
-            existing['check_out'] = max(out_times)
-        elif len(in_times) >= 2 and not out_times:
-            # بعض أجهزة البصمة تضع الحضور والانصراف كلاهما في عمود "الحضور" بصفين منفصلين.
-            existing['check_in'] = min(in_times)
-            latest = max(in_times)
-            if latest != existing['check_in']:
-                existing['check_out'] = latest
-        elif len(out_times) >= 2 and not in_times:
-            existing['check_in'] = min(out_times)
-            latest = max(out_times)
-            if latest != existing['check_in']:
-                existing['check_out'] = latest
-        else:
+        # جمع كل البصمات المتاحة لهذا اليوم (أقدم بصمة = حضور، أحدث بصمة = انصراف، حتى مع 3+ بصمات).
+        all_times = [
+            t for t in (existing['check_in'], existing['check_out'], item['check_in'], item['check_out'])
+            if t is not None
+        ]
+        if len(all_times) >= 2:
+            earliest = min(all_times)
+            latest = max(all_times)
+            existing['check_in'] = earliest
+            existing['check_out'] = latest if latest != earliest else existing['check_out']
+        elif len(all_times) == 1:
             existing['check_in'] = existing['check_in'] or item['check_in']
             existing['check_out'] = existing['check_out'] or item['check_out']
 
@@ -802,6 +813,7 @@ def compute_overtime(settings, check_out, check_in=None):
         eff_out += 1440
 
     best = None
+    highest_reached = None
     for rule in rules:
         if not isinstance(rule, dict):
             continue
@@ -825,15 +837,19 @@ def compute_overtime(settings, check_out, check_in=None):
 
         if eff_out < eff_from:
             continue
+        if highest_reached is None or eff_from > highest_reached[0]:
+            highest_reached = (eff_from, rule)
         if eff_to is not None and eff_out > eff_to:
             continue
         if best is None or eff_from > best[0]:
             best = (eff_from, rule)
 
-    if not best:
+    # إذا تجاوز وقت الانصراف أعلى شريحة إضافي، تُمنح الشريحة الأعلى بدلاً من ضياع الإضافي (صفر).
+    chosen = best or highest_reached
+    if not chosen:
         return empty
 
-    rule = best[1]
+    rule = chosen[1]
     try:
         value = float(rule.get('reward_value') or 0)
     except (TypeError, ValueError):
@@ -1021,6 +1037,7 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
                     employee=employee,
                     date=cursor,
                     status='leave',
+                    is_excused=True,
                     calculated_deduction_days=0,
                     calculated_deduction_hours=0,
                     overtime_days=0,

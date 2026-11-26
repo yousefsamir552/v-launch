@@ -1,4 +1,5 @@
 import {
+  AssemblyStageRecord,
   DesignModel,
   PackagingMaterialDemand,
   PackagingMaterialRule,
@@ -76,8 +77,35 @@ export const packagingActiveModels = (models: DesignModel[]): DesignModel[] =>
 export const computePackagingDemand = (
   models: DesignModel[],
   rule: PackagingMaterialRule,
-  row: PackagingMaterialSizeRule
+  row: PackagingMaterialSizeRule,
+  assemblyStageRecords?: AssemblyStageRecord[]
 ): PackagingMaterialDemand => {
+  const stock = Number(row.current_stock || 0);
+  const minThreshold = Number(row.min_alert_threshold || 0);
+  const consumptionPerPiece = toPositive(row.consumption_per_piece);
+
+  // القاعدة غير المفعّلة لا تُحتسب لها متطلبات تشغيلية ولا تنبيهات عجز.
+  if (rule.is_active === false) {
+    return {
+      sizeRuleId: row.id,
+      totalPieces: 0,
+      modelCount: 0,
+      required: 0,
+      stock,
+      shortage: 0,
+      consumptionPerPiece,
+      belowMinThreshold: false,
+      hasShortage: false
+    };
+  }
+
+  // استبعاد الموديلات التي تم خصم خامات تغليفها فعلياً عند دخول التعبئة حتى لا يُحتسب احتياجها مرتين.
+  const deductedModelIds = new Set<string>(
+    (assemblyStageRecords || [])
+      .filter((rec) => rec.stage === 'packaging' && rec.materials_deducted)
+      .map((rec) => rec.model_id)
+  );
+
   const applicableGroups = Array.isArray(rule.applicable_size_groups)
     ? rule.applicable_size_groups.filter(Boolean)
     : [];
@@ -88,6 +116,7 @@ export const computePackagingDemand = (
 
   const scopedModels = models.filter((model) => {
     if (!isModelActiveForPackaging(model)) return false;
+    if (deductedModelIds.has(model.id)) return false;
     const modelGroup = model.size_category_id || '';
     // صف مقاس محدد → الموديلات التي تنتمي لنفس فئة المقاس فقط.
     if (row.size_group_id) return modelGroup === row.size_group_id;
@@ -102,11 +131,8 @@ export const computePackagingDemand = (
     (sum, model) => sum + modelPackagingPieces(model),
     0
   );
-  const consumptionPerPiece = toPositive(row.consumption_per_piece);
   const required = Number((totalPieces * consumptionPerPiece).toFixed(3));
-  const stock = Number(row.current_stock || 0);
   const shortage = Math.max(0, Number((required - stock).toFixed(3)));
-  const minThreshold = Number(row.min_alert_threshold || 0);
 
   return {
     sizeRuleId: row.id,
@@ -124,12 +150,13 @@ export const computePackagingDemand = (
 /** خريطة الاحتياج لكل صف خامة (مفتاحها معرّف صف المقاس). */
 export const buildPackagingDemandMap = (
   models: DesignModel[],
-  rules: PackagingMaterialRule[]
+  rules: PackagingMaterialRule[],
+  assemblyStageRecords?: AssemblyStageRecord[]
 ): Record<string, PackagingMaterialDemand> => {
   const map: Record<string, PackagingMaterialDemand> = {};
   rules.forEach((rule) => {
     (rule.size_rules || []).forEach((row) => {
-      map[row.id] = computePackagingDemand(models, rule, row);
+      map[row.id] = computePackagingDemand(models, rule, row, assemblyStageRecords);
     });
   });
   return map;

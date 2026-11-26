@@ -634,7 +634,6 @@ class CuttingRecordSerializer(serializers.ModelSerializer):
             'spreader_name': instance.spreader_name or '',
             'spreaderName': instance.spreader_name or '',
             'cutter_name': instance.cutter_name or '',
-            'spreader_name': instance.spreader_name or '',
             'cutterName': instance.cutter_name or '',
             'color_name': colors_summary or instance.fabric_color or '',
             'colorName': colors_summary or instance.fabric_color or '',
@@ -693,6 +692,7 @@ class PrintDispatchSerializer(serializers.ModelSerializer):
         cost = float(instance.cost_per_piece or 0)
         pcs = int(instance.pieces_count or 0)
         received = int(instance.received_pieces or 0)
+        effective_received = pcs if (received == 0 and pcs > 0 and instance.status in ('تم الاستلام', 'تم الاستلام بالمصنع')) else received
         can_view_costs = viewer_can_view(self.context, 'view_printing_prices', 'view_printing_costs')
         disp_at = instance.dispatched_at_str or (instance.dispatch_date.isoformat() if instance.dispatch_date else '')
         rec_at = instance.received_at_str or (instance.received_date.isoformat() if instance.received_date else None)
@@ -714,7 +714,7 @@ class PrintDispatchSerializer(serializers.ModelSerializer):
             'print_type': instance.print_type or 'سلك سكرين مائي',
             # تكاليف الطباعة تُخفى (None) لمن لا يملك صلاحية عرضها وتُحسب دائماً على المستلم الفعلي.
             'cost_per_piece': cost if can_view_costs else None,
-            'total_cost': round(cost * received, 2) if can_view_costs else None,
+            'total_cost': round(cost * effective_received, 2) if can_view_costs else None,
             'notes': instance.notes or '',
             'status': instance.status,
             'received_at': rec_at,
@@ -735,9 +735,10 @@ class SewingDispatchSerializer(serializers.ModelSerializer):
         can_view_prices = viewer_can_view(self.context, 'view_sewing_prices')
         pcs = int(instance.pieces_count or 0)
         received = int(instance.received_pieces or 0)
+        effective_received = pcs if (received == 0 and pcs > 0 and instance.status in ('تم الاستلام', 'تم الاستلام بالمصنع')) else received
         cost = float(instance.cost_per_piece or 0)
         # القاعدة المحاسبية المؤكدة: تكلفة المكن تُحسب دائماً على القطع المستلمة فعلياً.
-        total = round(cost * received, 2)
+        total = round(cost * effective_received, 2)
         return {
             'id': get_ext_id(instance),
             'model_id': get_ext_id(instance.model),
@@ -826,6 +827,7 @@ class ModelItemSerializer(serializers.ModelSerializer):
             'qc_pants_pieces': int(instance.qc_pants_pieces or 0),
             'qc_jacket_pieces': int(instance.qc_jacket_pieces or 0),
             'cutter_name': instance.cutter_name or '',
+            'spreader_name': instance.spreader_name or '',
             'count_before_print': instance.count_before_print,
             'count_after_print': instance.count_after_print,
             'count_after_sewing': instance.count_after_sewing,
@@ -1123,11 +1125,14 @@ class AuditLogSerializer(serializers.ModelSerializer):
         details_text = instance.details or ''
 
         def _can_see_change(field_name: str) -> bool:
-            if field_name == 'monthly_salary':
+            if field_name in {'monthly_salary', 'net_pay', 'total_net_pay'}:
                 return viewer_can_view(self.context, *SALARY_PERMISSION_KEYS)
-            if field_name == 'amount' and 'موارد' in section_text:
+            if field_name == 'amount' and any(k in section_text for k in ('موارد', 'رواتب', 'سلف', 'سُلف')):
                 return viewer_can_view(self.context, 'hr_loans', 'hr_payroll', 'can_manage_hr')
-            if field_name in {'price', 'price_per_unit', 'unit_price_snapshot', 'cost_per_piece', 'print_cost_per_piece', 'total_cost'}:
+            if field_name in {
+                'price', 'price_per_unit', 'unit_price_snapshot', 'purchased_price',
+                'cost_per_piece', 'print_cost_per_piece', 'total_cost',
+            }:
                 if 'قماش' in section_text or 'أقمشة' in section_text:
                     return viewer_can_view(self.context, 'view_fabric_prices')
                 if 'إكسسوار' in section_text:
@@ -1160,6 +1165,8 @@ class AuditLogSerializer(serializers.ModelSerializer):
         if masked_any:
             import re as _re
             details_text = _re.sub(r'[0-9]+(?:\.[0-9]+)?\s*→\s*[0-9]+(?:\.[0-9]+)?', '🔒 محجوب', details_text)
+            details_text = _re.sub(r'(بسعر|بمبلغ|الصافي:?|التكلفة:?|السعر:?|الإجمالي:?)\s*[0-9,]+(?:\.[0-9]+)?(?:\s*ج\.?م\.?)?', r'\1 🔒 محجوب', details_text)
+            details_text = _re.sub(r'[0-9,]+(?:\.[0-9]+)?\s*ج\.?م\.?', '🔒 محجوب', details_text)
 
         return {
             'id': get_ext_id(instance),

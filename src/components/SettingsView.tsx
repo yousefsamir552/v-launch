@@ -449,6 +449,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
       hint: 'الفئات والمقاسات والحركات'
     },
     {
+      key: 'purchase_requests',
+      label: 'طلبات الشراء والمشتريات',
+      hint: 'طلبات الشراء المعلقة وسجل المشتريات السابقة'
+    },
+    {
       key: 'suppliers_workshops',
       label: 'الموردون والورش',
       hint: 'كل الموردين والورش المسجلة'

@@ -818,51 +818,52 @@ def sync_reserved_quantities():
       warehouse keeper confirms the actual issue (`is_issued = True`). Only then is the
       reservation released and the real `current_stock` deducted.
     """
-    # 1. Sync FabricColor reserved_quantity
-    design_reqs = (
-        ModelRequirement.objects.filter(
-            model__is_deleted=False,
-            model__status__in=DESIGN_STAGES
+    with transaction.atomic():
+        # 1. Sync FabricColor reserved_quantity
+        design_reqs = (
+            ModelRequirement.objects.filter(
+                model__is_deleted=False,
+                model__status__in=DESIGN_STAGES
+            )
+            .values('color_id')
+            .annotate(total_reserved=Sum('planned_quantity'))
         )
-        .values('color_id')
-        .annotate(total_reserved=Sum('planned_quantity'))
-    )
-    reserved_by_color_id = {
-        row['color_id']: round(max(0.0, float(row['total_reserved'] or 0.0)), 2)
-        for row in design_reqs
-    }
+        reserved_by_color_id = {
+            row['color_id']: round(max(0.0, float(row['total_reserved'] or 0.0)), 2)
+            for row in design_reqs
+        }
 
-    for col in FabricColor.objects.all():
-        expected_res = reserved_by_color_id.get(col.id, 0.0)
-        if round(float(col.reserved_quantity or 0.0), 2) != expected_res:
-            col.reserved_quantity = expected_res
-            col.save(update_fields=['reserved_quantity'])
+        for col in FabricColor.objects.all():
+            expected_res = reserved_by_color_id.get(col.id, 0.0)
+            if round(float(col.reserved_quantity or 0.0), 2) != expected_res:
+                col.reserved_quantity = expected_res
+                col.save(update_fields=['reserved_quantity'])
 
-    # 2. Sync Accessory reserved_quantity — يبقى محجوزاً حتى الصرف الفعلي (is_issued=False).
-    design_accs = (
-        ModelAccessory.objects.filter(
-            model__is_deleted=False,
-            is_issued=False,
+        # 2. Sync Accessory reserved_quantity — يبقى محجوزاً حتى الصرف الفعلي (is_issued=False).
+        design_accs = (
+            ModelAccessory.objects.filter(
+                model__is_deleted=False,
+                is_issued=False,
+            )
+            .exclude(accessory_id_ref__isnull=True)
+            .exclude(accessory_id_ref='')
         )
-        .exclude(accessory_id_ref__isnull=True)
-        .exclude(accessory_id_ref='')
-    )
-    reserved_by_acc_ref = {}
-    for m_acc in design_accs:
-        ref = str(m_acc.accessory_id_ref).strip()
-        reserved_by_acc_ref[ref] = round(
-            reserved_by_acc_ref.get(ref, 0.0) + max(0.0, float(m_acc.planned_quantity or 0.0)),
-            2
-        )
+        reserved_by_acc_ref = {}
+        for m_acc in design_accs:
+            ref = str(m_acc.accessory_id_ref).strip()
+            reserved_by_acc_ref[ref] = round(
+                reserved_by_acc_ref.get(ref, 0.0) + max(0.0, float(m_acc.planned_quantity or 0.0)),
+                3
+            )
 
-    for acc in Accessory.objects.all():
-        ext_id = acc.client_id or str(acc.id)
-        expected_acc_res = reserved_by_acc_ref.get(ext_id, 0.0)
-        if str(acc.id) in reserved_by_acc_ref and ext_id != str(acc.id):
-            expected_acc_res = round(expected_acc_res + reserved_by_acc_ref[str(acc.id)], 2)
-        if round(float(acc.reserved_quantity or 0.0), 2) != expected_acc_res:
-            acc.reserved_quantity = expected_acc_res
-            acc.save(update_fields=['reserved_quantity'])
+        for acc in Accessory.objects.all():
+            ext_id = acc.client_id or str(acc.id)
+            expected_acc_res = reserved_by_acc_ref.get(ext_id, 0.0)
+            if str(acc.id) in reserved_by_acc_ref and ext_id != str(acc.id):
+                expected_acc_res = round(expected_acc_res + reserved_by_acc_ref[str(acc.id)], 3)
+            if round(float(acc.reserved_quantity or 0.0), 3) != expected_acc_res:
+                acc.reserved_quantity = expected_acc_res
+                acc.save(update_fields=['reserved_quantity'])
 
 
 def _resolve_refund_supplier(item):
@@ -1017,6 +1018,54 @@ def refund_model_consumed_inventory(model, user_name=''):
                 'unit': item.unit or 'قطعة',
             })
 
+        # 3.5. استرداد خامات التشغيل والتغليف المنصرفة تلقائياً للموديل (Idempotent via deduct - add).
+        packaging_details = []
+        if model_code:
+            pack_net = defaultdict(float)
+            for txn in (
+                PackagingMaterialTransaction.objects
+                .filter(model_code_ref__iexact=model_code)
+                .values('size_rule_id', 'operation', 'amount')
+            ):
+                sr_id = txn['size_rule_id']
+                if sr_id is None:
+                    continue
+                amount = float(txn['amount'] or 0)
+                if txn['operation'] == 'deduct':
+                    pack_net[sr_id] += amount
+                elif txn['operation'] == 'add':
+                    pack_net[sr_id] -= amount
+            for sr_id, raw_net in pack_net.items():
+                net = round(float(raw_net), 3)
+                if net <= 0:
+                    continue
+                try:
+                    sr = PackagingMaterialSizeRule.objects.select_for_update().select_related('rule').get(pk=sr_id)
+                except PackagingMaterialSizeRule.DoesNotExist:
+                    continue
+                sr.current_stock = round(float(sr.current_stock or 0) + net, 3)
+                sr.save(update_fields=['current_stock', 'updated_at'])
+                PackagingMaterialTransaction.objects.create(
+                    size_rule=sr,
+                    operation='add',
+                    amount=net,
+                    price_per_unit=float(sr.price_per_unit or 0),
+                    model_code_ref=model.model_code,
+                    notes=refund_note,
+                    timestamp=now_str,
+                )
+                packaging_details.append({
+                    'size_rule_id': get_ext_id(sr),
+                    'material_name': sr.rule.label if sr.rule_id else '',
+                    'size_group_name': sr.size_group_name or '',
+                    'quantity': net,
+                    'unit': sr.rule.unit if sr.rule_id else '',
+                })
+            if packaging_details:
+                AssemblyStageRecord.objects.filter(
+                    model=model, stage='packaging', materials_deducted=True
+                ).update(materials_deducted=False)
+
         # 4. تصفير حالة الصرف الفعلي لإكسسوارات الموديل إن كانت قد صُرفت فعلاً،
         #    حتى لا تبقى معلّمة كـ«مصروفة» بعد عودة أرصدتها للمخزن.
         reset_count = 0
@@ -1042,6 +1091,9 @@ def refund_model_consumed_inventory(model, user_name=''):
         'accessories_count': len(accessory_details),
         'accessories_total_quantity': round(sum(d['quantity'] for d in accessory_details), 2),
         'accessory_details': accessory_details,
+        'packaging_materials_count': len(packaging_details),
+        'packaging_total_quantity': round(sum(d['quantity'] for d in packaging_details), 3),
+        'packaging_details': packaging_details,
     }
 
 

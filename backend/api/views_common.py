@@ -12,6 +12,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_time
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
+import math
 import re
 import secrets
 import urllib.parse
@@ -670,5 +671,25 @@ def to_decimal(value, default=Decimal('0'), places=3) -> Decimal:
         return default
     quant = Decimal('1').scaleb(-places)
     return dec.quantize(quant)
+
+
+def parse_finite_float(value, field_label='القيمة', default=None, minimum=None, allow_zero=True) -> float:
+    """Parse a finite numeric float, rejecting NaN, Infinity, and out-of-range inputs."""
+    if value in (None, ''):
+        if default is not None:
+            return float(default)
+        raise ValueError(f'{field_label} مطلوبة.')
+    try:
+        num = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f'{field_label} يجب أن تكون رقماً صالحاً.') from exc
+    if not math.isfinite(num):
+        raise ValueError(f'{field_label} تحتوي على قيمة رقمية غير صالحة (NaN/Infinity).')
+    if minimum is not None and num < minimum:
+        raise ValueError(f'{field_label} لا يمكن أن تكون أقل من {minimum:g}.')
+    if not allow_zero and num == 0:
+        raise ValueError(f'{field_label} يجب أن تكون أكبر من صفر.')
+    return num
+
 
 

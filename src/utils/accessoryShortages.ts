@@ -24,7 +24,10 @@ export function computeAccessoryShortages(
     if (item.usage_type === 'carryover') continue;
 
     const supplier = suppliers.find((s) => s.id === item.supplier_id);
-    const available = Number(((Number(item.quantity) || 0) - (Number(item.reserved_quantity) || 0)).toFixed(2));
+    const available = Math.max(
+      0,
+      Number(((Number(item.quantity) || 0) - (Number(item.reserved_quantity) || 0)).toFixed(3))
+    );
 
     if (item.usage_type === 'custom_model') {
       if (item.withdrawn_for_model) continue;

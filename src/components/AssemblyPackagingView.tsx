@@ -602,6 +602,7 @@ const PartFinishingRow: React.FC<{
     createInitialEvaluationDraft(record?.expected_exit_date)
   );
   const [evalModalTarget, setEvalModalTarget] = useState<WorkshopEvaluationTarget | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (!record && !vendor && defaultSewingWorkshop) {
@@ -766,27 +767,34 @@ const PartFinishingRow: React.FC<{
           ) : (
             <button
               type="button"
+              disabled={submitting}
               onClick={async () => {
-                receiveFinishing(record.id, todayStr(), notes);
-                if (evalDraft.enabled && record.vendor_name) {
-                  const matchedWorkshop = workshops.find((w) => w.name === record.vendor_name);
-                  await submitWorkshopEvaluation({
-                    workshopId: matchedWorkshop?.id,
-                    workshopName: record.vendor_name,
-                    stage: 'finishing',
-                    modelId: model.id,
-                    finishingRecordId: record.id,
-                    deliveryTimeliness: evalDraft.deliveryTimeliness,
-                    workQuality: evalDraft.workQuality,
-                    finishingQuality: evalDraft.finishingQuality,
-                    notes: evalDraft.notes
-                  });
+                if (submitting) return;
+                setSubmitting(true);
+                try {
+                  receiveFinishing(record.id, todayStr(), notes);
+                  if (evalDraft.enabled && record.vendor_name) {
+                    const matchedWorkshop = workshops.find((w) => w.name === record.vendor_name);
+                    await submitWorkshopEvaluation({
+                      workshopId: matchedWorkshop?.id,
+                      workshopName: record.vendor_name,
+                      stage: 'finishing',
+                      modelId: model.id,
+                      finishingRecordId: record.id,
+                      deliveryTimeliness: evalDraft.deliveryTimeliness,
+                      workQuality: evalDraft.workQuality,
+                      finishingQuality: evalDraft.finishingQuality,
+                      notes: evalDraft.notes
+                    });
+                  }
+                  setNotes('');
+                } finally {
+                  setSubmitting(false);
                 }
-                setNotes('');
               }}
-              className="w-full py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
+              className="w-full py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              تسجيل استلام {getPartLabel(part)}
+              {submitting ? 'جارٍ تسجيل الاستلام...' : `تسجيل استلام ${getPartLabel(part)}`}
             </button>
           )}
         </div>
@@ -1375,6 +1383,7 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
       ? String(record.completed_pieces)
       : String(expectedCount)
   );
+  const [destSubmitting, setDestSubmitting] = useState(false);
 
   useEffect(() => {
     if (!record && !vendor && defaultSewingWorkshop) {
@@ -1567,30 +1576,39 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  disabled={Boolean(blocked)}
-                  onClick={() => {
-                    startAssemblyStage({
-                      modelId: model.id,
-                      stage: 'dest',
-                      expectedExitDate: expectedExit,
-                      vendorName: vendor,
-                      notes,
-                      costPerPiece: canEditAssemblyPrices()
-                        ? Math.max(0, parseFloat(cost) || 0)
-                        : undefined,
-                      expectedPieces: expectedCount,
-                      completedPieces: parsedCompleted ?? undefined
-                    });
-                    setNotes('');
+                  disabled={Boolean(blocked) || destSubmitting}
+                  onClick={async () => {
+                    if (destSubmitting) return;
+                    setDestSubmitting(true);
+                    try {
+                      await startAssemblyStage({
+                        modelId: model.id,
+                        stage: 'dest',
+                        expectedExitDate: expectedExit,
+                        vendorName: vendor,
+                        notes,
+                        costPerPiece: canEditAssemblyPrices()
+                          ? Math.max(0, parseFloat(cost) || 0)
+                          : undefined,
+                        expectedPieces: expectedCount,
+                        completedPieces: parsedCompleted ?? undefined
+                      });
+                      setNotes('');
+                    } finally {
+                      setDestSubmitting(false);
+                    }
                   }}
                   className="flex-1 py-2 rounded-xl bg-slate-900 text-white text-[10px] font-black hover:bg-slate-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  {record ? 'تحديث بيانات الدَست' : 'بدء قسم الدَست'}
+                  {destSubmitting ? 'جارٍ الحفظ...' : record ? 'تحديث بيانات الدَست' : 'بدء قسم الدَست'}
                 </button>
                 {record && (
                   <button
                     type="button"
+                    disabled={destSubmitting}
                     onClick={() => {
+                      if (destSubmitting) return;
+                      setDestSubmitting(true);
                       receiveAssemblyStage(
                         record.id,
                         todayStr(),
@@ -1598,8 +1616,9 @@ const DestCard: React.FC<{ model: DesignModel; canEdit: boolean }> = ({ model, c
                         parsedCompleted ?? undefined
                       );
                       setNotes('');
+                      window.setTimeout(() => setDestSubmitting(false), 600);
                     }}
-                    className="flex-1 py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition"
+                    className="flex-1 py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black hover:bg-emerald-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     تسجيل استلام
                   </button>

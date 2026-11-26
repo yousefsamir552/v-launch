@@ -16,7 +16,9 @@
 import calendar
 from collections import defaultdict
 from datetime import date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 
+from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
@@ -29,6 +31,9 @@ from .models import (
     HRAttendanceSettings,
     HRPayrollSnapshot,
     RANK_SUDO,
+    DEFAULT_RANK_LEVEL,
+    coerce_rank_level,
+    visible_rank_levels,
 )
 from .permissions import IsAuthenticatedProfile
 from .hr_attendance_io import (
@@ -37,10 +42,23 @@ from .hr_attendance_io import (
     working_hours_per_day,
 )
 from .views import (
+    get_viewer_rank,
     is_sudo_profile,
     rank_scoped_queryset,
     resolve_request_user_profile,
 )
+
+
+def _round_half_up(value, places=2) -> float:
+    """تقريب مالي مطابق لـ Math.round في الواجهة (ROUND_HALF_UP)."""
+    try:
+        dec = Decimal(str(float(value or 0.0)))
+        if not dec.is_finite():
+            return 0.0
+        quant = Decimal('1').scaleb(-places)
+        return float(dec.quantize(quant, rounding=ROUND_HALF_UP))
+    except Exception:
+        return round(float(value or 0.0), places)
 
 
 MONTH_LABELS_AR = [
@@ -109,12 +127,12 @@ def _ext_id(obj):
 # Helpers — attendance rules (mirror of the frontend payroll logic)
 # ---------------------------------------------------------------------------
 def _is_attended(record):
-    """حضور فعلي: حاضر / إجازة بعذر / لها بصمة حضور."""
+    """حضور فعلي: حاضر / أي سجل بعذر مقبول (إجازة أو غياب بعذر) / لها بصمة حضور."""
     if record is None:
         return False
     if record.status == 'present':
         return True
-    if record.status == 'leave' and record.is_excused:
+    if record.is_excused:
         return True
     return bool(record.check_in)
 
@@ -167,6 +185,9 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso,
     except (TypeError, ValueError):
         mult = 1.0
 
+    month_last = date(y, m, last_day)
+    month_complete = up_to_iso is None or up_to_iso >= month_last
+
     for day in range(1, last_day + 1):
         cursor = date(y, m, day)
         record = records_by_date.get(cursor)
@@ -183,6 +204,9 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso,
                 ded = _weekly_off_deduction_for_date(records_by_date, cursor)
                 sunday_deduction_days += ded
                 paid_weekly_off_days += max(0.0, 1.0 - ded)
+            elif month_complete:
+                # أسبوع كامل بلا أي حضور في شهر مكتمل = 6 أيام غياب => خصم يوم الإجازة كاملاً.
+                sunday_deduction_days += 1.0
             continue
         workdays_in_scope += 1
         if record and _is_attended(record):
@@ -191,27 +215,33 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso,
             unexcused_absence_days += 1.0
 
     attended_days = attended_regular_days + worked_weekly_off_days
-    month_last = date(y, m, last_day)
-    month_complete = up_to_iso is None or up_to_iso >= month_last
     weekly_off_extra_days = worked_weekly_off_days * mult
 
-    if attended_regular_days == 0 and worked_weekly_off_days == 0 and paid_weekly_off_days == 0:
-        earned_days = 0.0
+    if attended_regular_days == 0 and worked_weekly_off_days == 0:
+        # بدون أي حضور فعلي خلال الشهر نفسه: الاستحقاق = 0 (يمنع المرتب الوهمي للمستقيلين والشهور المستقبلية).
+        paid_weekly_off_days = 0.0
+        sunday_deduction_days = 0.0
+        earned_days_raw = 0.0
     elif month_complete:
-        base_earned = max(0.0, 30.0 - unexcused_absence_days - sunday_deduction_days)
-        earned_days = base_earned + weekly_off_extra_days
+        raw_base = max(0.0, 30.0 - unexcused_absence_days - sunday_deduction_days)
+        if workdays_in_scope > 0 and unexcused_absence_days >= (workdays_in_scope / 2.0):
+            base_earned = min(raw_base, attended_regular_days + paid_weekly_off_days)
+        else:
+            base_earned = raw_base
+        earned_days_raw = base_earned + weekly_off_extra_days
     else:
         base_earned = min(30.0, attended_regular_days + paid_weekly_off_days)
-        earned_days = base_earned + weekly_off_extra_days
+        earned_days_raw = base_earned + weekly_off_extra_days
 
     return {
-        'attended_days': round(attended_days, 2),
-        'paid_sunday_days': round(paid_weekly_off_days, 2),
-        'worked_weekly_off_days': round(worked_weekly_off_days, 2),
-        'weekly_off_extra_days': round(weekly_off_extra_days, 2),
-        'sunday_deduction_days': round(sunday_deduction_days, 2),
-        'unexcused_absence_days': round(unexcused_absence_days, 2),
-        'earned_days': round(earned_days, 2),
+        'attended_days': _round_half_up(attended_days, 2),
+        'paid_sunday_days': _round_half_up(paid_weekly_off_days, 2),
+        'worked_weekly_off_days': _round_half_up(worked_weekly_off_days, 2),
+        'weekly_off_extra_days': _round_half_up(weekly_off_extra_days, 2),
+        'sunday_deduction_days': _round_half_up(sunday_deduction_days, 2),
+        'unexcused_absence_days': _round_half_up(unexcused_absence_days, 2),
+        'earned_days': _round_half_up(earned_days_raw, 2),
+        '_earned_days_raw': earned_days_raw,
     }
 
 
@@ -224,11 +254,16 @@ def _minutes_from_time(value):
         return None
 
 
-def _late_minutes(check_in, official_start):
+def _late_minutes(check_in, official_start, official_end=None):
     ci = _minutes_from_time(check_in)
     start = _minutes_from_time(official_start)
     if ci is None or start is None:
         return 0.0
+    end = _minutes_from_time(official_end)
+    if end is not None and end <= start:
+        # وردية ليلية تعبر منتصف الليل: البصمة بعد منتصف الليل تُحسب متأخرة عن بداية الوردية المسائية.
+        if ci <= end:
+            ci += 1440
     diff = ci - start
     return float(round(diff)) if diff > 0 else 0.0
 
@@ -305,9 +340,11 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
     shift_hours = working_hours_per_day(settings)
     hour_rate = day_rate / shift_hours
     official_start = getattr(settings, 'official_start_time', None) if settings else None
+    official_end = getattr(settings, 'official_end_time', None) if settings else None
     rules = getattr(settings, 'rules_json', None) if settings else None
+    raw_mult = getattr(settings, 'weekly_off_work_multiplier', None) if settings else None
     try:
-        weekly_off_mult = float(getattr(settings, 'weekly_off_work_multiplier', 1.0) or 1.0)
+        weekly_off_mult = 1.0 if raw_mult is None else max(0.0, float(raw_mult))
     except (TypeError, ValueError):
         weekly_off_mult = 1.0
 
@@ -338,11 +375,11 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
 
         ded_days = float(record.calculated_deduction_days or 0)
         ded_hours = float(record.calculated_deduction_hours or 0)
-        if ded_days == 0 and ded_hours == 0:
-            late = _late_minutes(record.check_in, official_start)
+        if ded_days == 0 and ded_hours == 0 and getattr(employee, 'rule_application_mode', 'auto') != 'manual_review':
+            late = _late_minutes(record.check_in, official_start, official_end)
             rule = _match_late_rule(rules, late)
             rule_value = float(rule.get('deduction_value') or 0) if rule else 0.0
-            if rule and rule_value > 0:
+            if rule and rule_value > 0 and rule.get('apply_mode') != 'manual_review':
                 if rule.get('deduction_type') == 'days':
                     ded_days = rule_value
                 else:
@@ -357,7 +394,7 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
         weekly_off_index,
         weekly_off_work_multiplier=weekly_off_mult,
     )
-    earned_base = accrual['earned_days'] * day_rate
+    earned_base = accrual.get('_earned_days_raw', accrual['earned_days']) * day_rate
 
     penalty_days = 0.0
     penalty_hours = 0.0
@@ -382,27 +419,27 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
     total_deduction = attendance_deduction + penalty_deduction + loan_amount
 
     return {
-        'base_salary': round(salary, 2),
+        'base_salary': _round_half_up(salary, 2),
         'attended_days': accrual['attended_days'],
         'paid_sunday_days': accrual['paid_sunday_days'],
         'worked_weekly_off_days': accrual['worked_weekly_off_days'],
         'weekly_off_extra_days': accrual['weekly_off_extra_days'],
         'sunday_deduction_days': accrual['sunday_deduction_days'],
         'earned_days': accrual['earned_days'],
-        'earned_base': round(earned_base, 2),
-        'overtime_days': round(overtime_days, 2),
-        'overtime_hours': round(overtime_hours, 2),
-        'overtime_pay': round(overtime_pay, 2),
-        'attendance_days': round(attendance_days, 2),
-        'attendance_hours': round(attendance_hours, 2),
-        'penalty_days': round(penalty_days, 2),
-        'penalty_hours': round(penalty_hours, 2),
-        'loan_amount': round(loan_amount, 2),
-        'attendance_deduction': round(attendance_deduction, 2),
-        'penalty_deduction': round(penalty_deduction, 2),
-        'deductions': round(attendance_deduction + penalty_deduction, 2),
-        'total_deduction': round(total_deduction, 2),
-        'net_pay': round(earned_base + overtime_pay - total_deduction, 2),
+        'earned_base': _round_half_up(earned_base, 2),
+        'overtime_days': _round_half_up(overtime_days, 2),
+        'overtime_hours': _round_half_up(overtime_hours, 2),
+        'overtime_pay': _round_half_up(overtime_pay, 2),
+        'attendance_days': _round_half_up(attendance_days, 2),
+        'attendance_hours': _round_half_up(attendance_hours, 2),
+        'penalty_days': _round_half_up(penalty_days, 2),
+        'penalty_hours': _round_half_up(penalty_hours, 2),
+        'loan_amount': _round_half_up(loan_amount, 2),
+        'attendance_deduction': _round_half_up(attendance_deduction, 2),
+        'penalty_deduction': _round_half_up(penalty_deduction, 2),
+        'deductions': _round_half_up(attendance_deduction + penalty_deduction, 2),
+        'total_deduction': _round_half_up(total_deduction, 2),
+        'net_pay': _round_half_up(earned_base + overtime_pay - total_deduction, 2),
     }
 
 
@@ -417,8 +454,8 @@ def _sum_rows(rows):
     }
 
 
-def _department_breakdown(employees, employee_month_rows, month_keys):
-    """تجميع تكلفة العمالة حسب القسم خلال الشهور المطلوبة."""
+def _department_breakdown(employees, employee_month_rows, month_keys, snapshot_rows_by_month=None):
+    """تجميع تكلفة العمالة حسب القسم خلال الشهور المطلوبة (مع احترام اللقطات المجمّدة للموظفين المحذوفين)."""
     groups = {}
     for employee in employees:
         department = employee.department or 'other'
@@ -430,11 +467,26 @@ def _department_breakdown(employees, employee_month_rows, month_keys):
         })
         if employee.is_active:
             group['workers'] += 1
-        per_month = employee_month_rows.get(employee.id, {})
-        for month_key in month_keys:
-            row = per_month.get(month_key)
+
+    snapshot_rows_by_month = snapshot_rows_by_month or {}
+    for month_key in month_keys:
+        if month_key in snapshot_rows_by_month:
+            for snap_row in snapshot_rows_by_month[month_key].values():
+                department = snap_row.get('department') or 'other'
+                label = snap_row.get('department_label') or department or '—'
+                group = groups.setdefault(department, {
+                    'department': department,
+                    'label': label,
+                    'workers': 0,
+                    'rows': [],
+                })
+                group['rows'].append(snap_row)
+            continue
+        for employee in employees:
+            row = employee_month_rows.get(employee.id, {}).get(month_key)
             if row:
-                group['rows'].append(row)
+                department = employee.department or 'other'
+                groups[department]['rows'].append(row)
 
     result = []
     for group in groups.values():
@@ -443,11 +495,11 @@ def _department_breakdown(employees, employee_month_rows, month_keys):
             'department': group['department'],
             'label': group['label'],
             'workers': group['workers'],
-            'earned': round(agg['earned'], 2),
-            'overtime': round(agg['overtime'], 2),
-            'loans': round(agg['loans'], 2),
-            'deductions': round(agg['deductions'], 2),
-            'net': round(agg['net'], 2),
+            'earned': _round_half_up(agg['earned'], 2),
+            'overtime': _round_half_up(agg['overtime'], 2),
+            'loans': _round_half_up(agg['loans'], 2),
+            'deductions': _round_half_up(agg['deductions'], 2),
+            'net': _round_half_up(agg['net'], 2),
         })
 
     total_net = sum(item['net'] for item in result)
@@ -483,7 +535,7 @@ class HRReportsViewSet(viewsets.ViewSet):
         ):
             raise PermissionDenied('لا تملك صلاحية عرض تقارير وتحليلات الموارد البشرية.')
 
-        today = date.today()
+        today = timezone.localdate()
         try:
             year = int(request.query_params.get('year') or today.year)
         except (TypeError, ValueError):
@@ -508,9 +560,9 @@ class HRReportsViewSet(viewsets.ViewSet):
         # نافذة الحضور: كل شهور التقارير مع 6 أيام إضافية لاحتساب أول أحد.
         record_start = min(year_start, range_start) - timedelta(days=6)
         record_end = max(year_end, range_end)
-        # نافذة السُلف: السنة المختارة + آخر ~3 شهور + نطاق التقارير.
+        # نافذة السُلف: السنة المختارة + آخر ~3 شهور + نطاق التقارير + اليوم الحالي.
         loans_start = min(year_start, range_start, today - timedelta(days=92))
-        loans_end = max(year_end, range_end)
+        loans_end = max(year_end, range_end, today)
 
         employees = list(
             rank_scoped_queryset(
@@ -558,11 +610,12 @@ class HRReportsViewSet(viewsets.ViewSet):
         weekly_off_index = weekly_off_weekday(settings)
 
         def up_to_for(month_key):
-            if month_key == default_month:
+            if month_key == default_month and today < _month_end(month_key):
                 return today - timedelta(days=1)
             return None
 
-        # جلب الكشوف المعتمدة والمغلقة للشهور المطلوبة لاستخدام الأرقام المجمّدة.
+        # جلب الكشوف المعتمدة والمغلقة للشهور المطلوبة لاستخدام الأرقام المجمّدة (مع احترام الرتبة).
+        allowed_ranks = visible_rank_levels(get_viewer_rank(request))
         locked_snapshots = {
             snap.month: snap
             for snap in HRPayrollSnapshot.objects.filter(month__in=needed_months, is_locked=True)
@@ -570,18 +623,22 @@ class HRReportsViewSet(viewsets.ViewSet):
         snapshot_rows_by_month = {}
         for snap_month, snap in locked_snapshots.items():
             by_emp = {}
-            for row in (snap.rows_json or []):
-                emp_key = str(row.get('employee_id') or '')
-                if emp_key:
-                    by_emp[emp_key] = {
-                        'earned_base': float(row.get('earned_base') or 0),
-                        'overtime_pay': float(row.get('overtime_pay') or 0),
-                        'loan_amount': float(row.get('loan_deduction', row.get('loan_amount')) or 0),
-                        'attendance_deduction': float(row.get('attendance_deduction') or 0),
-                        'penalty_deduction': float(row.get('penalty_deduction') or 0),
-                        'deductions': float(row.get('attendance_deduction') or 0) + float(row.get('penalty_deduction') or 0),
-                        'net_pay': float(row.get('net_pay') or 0),
-                    }
+            for idx, row in enumerate(snap.rows_json or []):
+                row_rank = coerce_rank_level(row.get('rank_level'), DEFAULT_RANK_LEVEL)
+                if row_rank not in allowed_ranks:
+                    continue
+                emp_key = str(row.get('employee_id') or f'snap-{idx}')
+                by_emp[emp_key] = {
+                    'earned_base': float(row.get('earned_base') or 0),
+                    'overtime_pay': float(row.get('overtime_pay') or 0),
+                    'loan_amount': float(row.get('loan_deduction', row.get('loan_amount')) or 0),
+                    'attendance_deduction': float(row.get('attendance_deduction') or 0),
+                    'penalty_deduction': float(row.get('penalty_deduction') or 0),
+                    'deductions': float(row.get('attendance_deduction') or 0) + float(row.get('penalty_deduction') or 0),
+                    'net_pay': float(row.get('net_pay') or 0),
+                    'department': row.get('department') or 'other',
+                    'department_label': row.get('department_label') or row.get('department') or '—',
+                }
             snapshot_rows_by_month[snap_month] = by_emp
 
         employee_rows = {}
@@ -645,6 +702,7 @@ class HRReportsViewSet(viewsets.ViewSet):
             range_end=range_end,
             employees=employees,
             employee_rows=employee_rows,
+            snapshot_rows_by_month=snapshot_rows_by_month,
             active_workers=active_workers,
             window_records=window_records,
             window_loans=window_loans,
@@ -677,40 +735,48 @@ class HRReportsViewSet(viewsets.ViewSet):
                        range_from_key, range_to_key, range_start, range_end,
                        employees, employee_rows, active_workers,
                        window_records, window_loans, available_years,
+                       snapshot_rows_by_month=None,
                        weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY,
                        can_view_salaries=True):
+        snapshot_rows_by_month = snapshot_rows_by_month or {}
         # --- التقرير السنوي + تفصيل الأقسام لكل شهر ---
         months_payload = []
         monthly_departments = {}
         annual_totals = {'net': 0.0, 'loans': 0.0, 'overtime': 0.0, 'deductions': 0.0}
 
+        def _rows_for_month(m_key):
+            if m_key in snapshot_rows_by_month:
+                return list(snapshot_rows_by_month[m_key].values())
+            return [employee_rows[employee.id][m_key] for employee in employees]
+
         for month_key in year_months:
-            rows = [employee_rows[employee.id][month_key] for employee in employees]
+            rows = _rows_for_month(month_key)
             agg = _sum_rows(rows)
             months_payload.append({
                 'month': month_key,
                 'label': _month_label(month_key),
-                'active_workers': active_workers,
-                'earned_salary': round(agg['earned'], 2),
-                'overtime_bonus': round(agg['overtime'], 2),
-                'loans': round(agg['loans'], 2),
-                'deductions': round(agg['deductions'], 2),
-                'net_paid': round(agg['net'], 2),
+                'active_workers': len(rows) if month_key in snapshot_rows_by_month else active_workers,
+                'earned_salary': _round_half_up(agg['earned'], 2),
+                'overtime_bonus': _round_half_up(agg['overtime'], 2),
+                'loans': _round_half_up(agg['loans'], 2),
+                'deductions': _round_half_up(agg['deductions'], 2),
+                'net_paid': _round_half_up(agg['net'], 2),
             })
             annual_totals['net'] += agg['net']
             annual_totals['loans'] += agg['loans']
             annual_totals['overtime'] += agg['overtime']
             annual_totals['deductions'] += agg['deductions']
             monthly_departments[month_key] = _department_breakdown(
-                employees, employee_rows, [month_key]
+                employees, employee_rows, [month_key], snapshot_rows_by_month=snapshot_rows_by_month
             )
 
+        elapsed_months = max(1, today.month) if year == today.year else 12
         annual_kpis = {
-            'net_salary_total': round(annual_totals['net'], 2),
-            'loans_total': round(annual_totals['loans'], 2),
-            'overtime_bonus_total': round(annual_totals['overtime'], 2),
-            'deductions_total': round(annual_totals['deductions'], 2),
-            'avg_monthly_labor_cost': round(annual_totals['net'] / 12.0, 2),
+            'net_salary_total': _round_half_up(annual_totals['net'], 2),
+            'loans_total': _round_half_up(annual_totals['loans'], 2),
+            'overtime_bonus_total': _round_half_up(annual_totals['overtime'], 2),
+            'deductions_total': _round_half_up(annual_totals['deductions'], 2),
+            'avg_monthly_labor_cost': _round_half_up(annual_totals['net'] / float(elapsed_months), 2),
             'active_workers': active_workers,
         }
 
@@ -718,7 +784,7 @@ class HRReportsViewSet(viewsets.ViewSet):
         comparison = []
         previous_net = None
         for month_key in range_months:
-            rows = [employee_rows[employee.id][month_key] for employee in employees]
+            rows = _rows_for_month(month_key)
             agg = _sum_rows(rows)
             change_pct = None
             if previous_net is not None and previous_net != 0:
@@ -726,15 +792,17 @@ class HRReportsViewSet(viewsets.ViewSet):
             comparison.append({
                 'month': month_key,
                 'label': _month_label(month_key),
-                'net': round(agg['net'], 2),
-                'loans': round(agg['loans'], 2),
-                'deductions': round(agg['deductions'], 2),
-                'overtime': round(agg['overtime'], 2),
+                'net': _round_half_up(agg['net'], 2),
+                'loans': _round_half_up(agg['loans'], 2),
+                'deductions': _round_half_up(agg['deductions'], 2),
+                'overtime': _round_half_up(agg['overtime'], 2),
                 'net_change_pct': change_pct,
             })
             previous_net = agg['net']
 
-        department_breakdown = _department_breakdown(employees, employee_rows, range_months)
+        department_breakdown = _department_breakdown(
+            employees, employee_rows, range_months, snapshot_rows_by_month=snapshot_rows_by_month
+        )
 
         # --- خريطة حرارة السُلف ---
         loans_by_day = {}
@@ -807,7 +875,7 @@ class HRReportsViewSet(viewsets.ViewSet):
                 'comparison': comparison,
                 'department_breakdown': department_breakdown,
                 'discipline': cls._build_discipline(
-                    employees, window_records, range_start, range_end
+                    employees, window_records, range_start, range_end, weekly_off_index=weekly_off_index
                 ),
             },
             'loans_by_day': loans_by_day,
@@ -817,7 +885,8 @@ class HRReportsViewSet(viewsets.ViewSet):
         }
 
     @staticmethod
-    def _build_discipline(employees, window_records, range_start, range_end):
+    def _build_discipline(employees, window_records, range_start, range_end,
+                          weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY):
         """أكثر العمال التزاماً / أكثرهم غياباً وتأخيراً / أكثر قسم غياباً."""
         employees_by_id = {employee.id: employee for employee in employees}
         stats = {}
@@ -827,12 +896,15 @@ class HRReportsViewSet(viewsets.ViewSet):
                 continue
             if not (range_start <= record.date <= range_end):
                 continue
+            # يوم الإجازة الأسبوعية الرسمي بدون بصمة لا يُعدّ غياباً ولا يُحسب ضمن أيام الالتزام.
+            if record.date.weekday() == weekly_off_index and not record.check_in:
+                continue
             entry = stats.setdefault(record.employee_id, {
                 'present': 0, 'absent': 0, 'late': 0.0,
             })
             if _is_attended(record):
                 entry['present'] += 1
-            if record.status == 'absent' or (
+            if (record.status == 'absent' and not record.is_excused) or (
                 record.status == 'leave' and not record.is_excused
             ):
                 entry['absent'] += 1

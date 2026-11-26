@@ -104,8 +104,15 @@ const MaterialStockRow: React.FC<{
 
   const submit = async () => {
     const value = Number(amount);
-    if (!Number.isFinite(value) || value <= 0) {
-      addFlashMessage('أدخل كمية صحيحة أكبر من صفر', 'warning');
+    const invalid =
+      amount.trim() === '' ||
+      !Number.isFinite(value) ||
+      (operation === 'adjust' ? value < 0 : value <= 0);
+    if (invalid) {
+      addFlashMessage(
+        operation === 'adjust' ? 'أدخل رصيداً صحيحاً (0 أو أكبر)' : 'أدخل كمية صحيحة أكبر من صفر',
+        'warning'
+      );
       return;
     }
     setBusy(true);
@@ -336,6 +343,7 @@ const MaterialStockRow: React.FC<{
 export const PackagingMaterialsView: React.FC = () => {
   const {
     models,
+    assemblyStageRecords,
     sizeDefs,
     suppliers,
     packagingMaterialRules,
@@ -397,14 +405,14 @@ export const PackagingMaterialsView: React.FC = () => {
     orderedRules.forEach(({ rule }) => {
       if (!rule) return;
       (rule.size_rules || []).forEach((row) => {
-        const demand = computePackagingDemand(models, rule, row);
+        const demand = computePackagingDemand(models, rule, row, assemblyStageRecords);
         rows += 1;
         if (demand.belowMinThreshold) critical += 1;
         shortage += demand.shortage;
       });
     });
     return { rows, critical, shortage };
-  }, [orderedRules, models]);
+  }, [orderedRules, models, assemblyStageRecords]);
 
   const activeRule = rulesByKey[editingKey];
   const [formName, setFormName] = useState('');
@@ -575,7 +583,10 @@ export const PackagingMaterialsView: React.FC = () => {
     const label = materialLabel(rule, key);
     const icon = materialIcon(rule, key);
     const demandRows = rule
-      ? rows.map((row) => ({ row, demand: computePackagingDemand(models, rule, row) }))
+      ? rows.map((row) => ({
+          row,
+          demand: computePackagingDemand(models, rule, row, assemblyStageRecords)
+        }))
       : [];
     const totalRequired = demandRows.reduce((sum, item) => sum + item.demand.required, 0);
     const totalStock = demandRows.reduce((sum, item) => sum + item.demand.stock, 0);

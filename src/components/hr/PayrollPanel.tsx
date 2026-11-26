@@ -187,14 +187,24 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
     const inMonth = (date?: string) => !!date && date.startsWith(month);
     const today = new Date();
     const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+    const lastDayOfCurrentMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
     const upToIso =
-      month === currentMonthKey
+      month === currentMonthKey && today.getDate() < lastDayOfCurrentMonth
         ? isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1))
         : undefined;
     const officialStart = settings?.official_start_time || '08:30';
+    const r2 = (v: number) => Math.round(v * 100) / 100;
 
     return employees
-      .filter((emp) => emp.is_active !== false)
+      .filter((emp) => {
+        if (emp.is_active !== false) return true;
+        // مطابقة الباك إند: الموظف غير النشط الذي له سجلات حضور أو جزاءات أو سُلف في هذا الشهر يظهر في كشف الشهر.
+        return (
+          records.some((r) => r.employee_id === emp.id && inMonth(r.date)) ||
+          penalties.some((p) => p.employee_id === emp.id && inMonth(p.date)) ||
+          loans.some((l) => l.employee_id === emp.id && inMonth(l.date))
+        );
+      })
       .map((employee) => {
         const baseSalary = Number(employee.monthly_salary) || 0;
         const dayRate = dailyRateFor(baseSalary);
@@ -224,11 +234,11 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           let dedDays = Number(record.calculated_deduction_days) || 0;
           let dedHours = Number(record.calculated_deduction_hours) || 0;
           // احتياطي ديناميكي: لو لم يُخزَّن الخصم (لسجل معتمد أو تلقائي)، طبّق شريحة التأخير من الإعدادات.
-          if (dedDays === 0 && dedHours === 0) {
+          if (dedDays === 0 && dedHours === 0 && employee.rule_application_mode !== 'manual_review') {
             const lateMinutes = lateMinutesFor(record.check_in, officialStart);
             const rule = matchLateRule(settings?.rules_json, lateMinutes);
             const ruleValue = Number(rule?.deduction_value) || 0;
-            if (rule && ruleValue > 0) {
+            if (rule && ruleValue > 0 && rule.apply_mode !== 'manual_review') {
               if (rule.deduction_type === 'days') dedDays = ruleValue;
               else dedHours = ruleValue;
             }
@@ -246,7 +256,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           weeklyOffIndex,
           weeklyOffMultiplier
         );
-        const earnedBase = accrual.earnedDays * dayRate;
+        const earnedBaseRaw = accrual.earnedDaysRaw * dayRate;
 
         const sundayDeductionDays = accrual.sundayDeductionDays;
 
@@ -259,39 +269,39 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           else penaltyHours += Number(penalty.value) || 0;
         });
 
-        const loanDeduction = loans
+        const loanDeductionRaw = loans
           .filter((loan) => loan.employee_id === employee.id && inMonth(loan.date))
           .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
 
-        const attendanceDeduction = attendanceDays * dayRate + attendanceHours * hourRate;
+        const attendanceDeductionRaw = attendanceDays * dayRate + attendanceHours * hourRate;
         const sundayDeduction = 0;
-        const penaltyDeduction = penaltyDays * dayRate + penaltyHours * hourRate;
-        const overtimePay = overtimeDays * dayRate + overtimeHours * hourRate;
-        const totalDeduction = attendanceDeduction + penaltyDeduction + loanDeduction;
+        const penaltyDeductionRaw = penaltyDays * dayRate + penaltyHours * hourRate;
+        const overtimePayRaw = overtimeDays * dayRate + overtimeHours * hourRate;
+        const totalDeductionRaw = attendanceDeductionRaw + penaltyDeductionRaw + loanDeductionRaw;
 
         return {
           employee,
-          baseSalary,
+          baseSalary: r2(baseSalary),
           attendedDays: accrual.attendedDays,
           paidSundayDays: accrual.paidSundayDays,
           workedWeeklyOffDays: accrual.workedWeeklyOffDays,
           weeklyOffExtraDays: accrual.weeklyOffExtraDays,
           earnedDays: accrual.earnedDays,
-          earnedBase,
-          overtimeDays,
-          overtimeHours,
-          overtimePay,
-          attendanceDays,
-          attendanceHours,
-          attendanceDeduction,
+          earnedBase: r2(earnedBaseRaw),
+          overtimeDays: r2(overtimeDays),
+          overtimeHours: r2(overtimeHours),
+          overtimePay: r2(overtimePayRaw),
+          attendanceDays: r2(attendanceDays),
+          attendanceHours: r2(attendanceHours),
+          attendanceDeduction: r2(attendanceDeductionRaw),
           sundayDeductionDays,
           sundayDeduction,
-          penaltyDays,
-          penaltyHours,
-          penaltyDeduction,
-          loanDeduction,
-          totalDeduction,
-          netPay: earnedBase + overtimePay - totalDeduction
+          penaltyDays: r2(penaltyDays),
+          penaltyHours: r2(penaltyHours),
+          penaltyDeduction: r2(penaltyDeductionRaw),
+          loanDeduction: r2(loanDeductionRaw),
+          totalDeduction: r2(totalDeductionRaw),
+          netPay: r2(earnedBaseRaw + overtimePayRaw - totalDeductionRaw)
         };
       });
   }, [employees, records, penalties, loans, month, settings, lockedSnapshot, weeklyOffIndex, shiftHours, weeklyOffMultiplier]);

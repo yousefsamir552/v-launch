@@ -403,11 +403,15 @@ export const WarehouseView: React.FC = () => {
   // Number of distinct fabrics that contain at least one low-stock color
   const lowStockFabricsCount = fabrics.filter((f) =>
     fabricColors.some(
-      (c) => c.fabric_id === f.id && c.quantity - c.reserved_quantity < minThreshold
+      (c) => c.fabric_id === f.id && Number((c.quantity - c.reserved_quantity).toFixed(2)) < minThreshold
     )
   ).length;
 
   const activeColor = fabricColors.find((c) => c.id === activeColorId);
+  const activeColorFabric = activeColor
+    ? fabrics.find((f) => f.id === activeColor.fabric_id)
+    : undefined;
+  const submitLockRef = React.useRef(false);
 
   const handleOpenReorder = (item: {
     color: FabricColor;
@@ -479,49 +483,63 @@ export const WarehouseView: React.FC = () => {
 
   const handleAddSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const res = addFabricOrColor({
-      fabricId: addForm.fabricId || undefined,
-      newFabricName: addForm.newFabricName || undefined,
-      unit: addForm.unit,
-      colorCode: addForm.colorCode,
-      colorName: addForm.colorName,
-      hexCode: addForm.hexCode,
-      quantity: Number(addForm.quantity) || 0,
-      supplierId: addForm.supplierId || undefined
-    });
-
-    if (res.success) {
-      if (res.fabricId) {
-        setSelectedFabricId(res.fabricId);
-      }
-      setShowAddModal(false);
-      setAddForm({
-        fabricId: '',
-        newFabricName: '',
-        unit: 'كيلو',
-        colorCode: '',
-        colorName: '',
-        hexCode: '#3b82f6',
-        quantity: 10,
-        supplierId: ''
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
+    try {
+      const res = addFabricOrColor({
+        fabricId: addForm.fabricId || undefined,
+        newFabricName: addForm.newFabricName || undefined,
+        unit: addForm.unit,
+        colorCode: addForm.colorCode,
+        colorName: addForm.colorName,
+        hexCode: addForm.hexCode,
+        quantity: Number(addForm.quantity) || 0,
+        supplierId: addForm.supplierId || undefined
       });
+
+      if (res.success) {
+        if (res.fabricId) {
+          setSelectedFabricId(res.fabricId);
+        }
+        setShowAddModal(false);
+        setAddForm({
+          fabricId: '',
+          newFabricName: '',
+          unit: 'كيلو',
+          colorCode: '',
+          colorName: '',
+          hexCode: '#3b82f6',
+          quantity: 10,
+          supplierId: ''
+        });
+      }
+    } finally {
+      window.setTimeout(() => {
+        submitLockRef.current = false;
+      }, 600);
     }
   };
 
   const handleTransSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeColorId) return;
+    if (!activeColorId || submitLockRef.current) return;
+    submitLockRef.current = true;
+    try {
+      const res = recordTransaction({
+        colorId: activeColorId,
+        operation: transForm.operation,
+        amount: Number(transForm.amount) || 0,
+        modelCodeRef: transForm.modelCodeRef,
+        notes: transForm.notes
+      });
 
-    const res = recordTransaction({
-      colorId: activeColorId,
-      operation: transForm.operation,
-      amount: Number(transForm.amount) || 0,
-      modelCodeRef: transForm.modelCodeRef,
-      notes: transForm.notes
-    });
-
-    if (res.success) {
-      setShowTransactionModal(false);
+      if (res.success) {
+        setShowTransactionModal(false);
+      }
+    } finally {
+      window.setTimeout(() => {
+        submitLockRef.current = false;
+      }, 600);
     }
   };
 
@@ -576,10 +594,9 @@ export const WarehouseView: React.FC = () => {
     }
   };
 
-  // سجل حركات القماش الكامل غير المقتطع (لجرد القماش الشامل).
+  // سجل حركات القماش الكامل غير المقتطع (لجرد القماش الشامل والطباعة الدقيقة).
   const [fullFabricTransactions, setFullFabricTransactions] = useState<FabricTransaction[] | null>(null);
   useEffect(() => {
-    if (fabricSubView !== 'audit') return;
     let cancelled = false;
     api
       .getFabricTransactions()
@@ -611,9 +628,11 @@ export const WarehouseView: React.FC = () => {
   const buildAuditRowForColor = (fabric: Fabric, color: FabricColor) => {
     const colorTransactions = auditFabricTransactions.filter((t) => t.color_id === color.id);
     const deductTransactions = colorTransactions.filter((t) => t.operation === 'deduct');
-    const returnTransactions = colorTransactions.filter(
-      (t) => t.operation === 'add' && (t.notes || '').includes('إرجاع فائض')
-    );
+    const returnTransactions = colorTransactions.filter((t) => {
+      if (t.operation !== 'add') return false;
+      const n = t.notes || '';
+      return n.includes('إرجاع فائض') || n.includes('استرداد') || n.includes('إرجاع فرق');
+    });
     const defectTransactions = colorTransactions.filter((t) => t.operation === 'defect');
 
     const totalDeducted = roundQty(
@@ -625,10 +644,10 @@ export const WarehouseView: React.FC = () => {
     const totalDefect = roundQty(
       defectTransactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
     );
-    // المستهلك الصافي = إجمالي الصرف − مرتجعات فائض القص
-    const totalConsumed = roundQty(Math.max(0, totalDeducted - totalReturned));
-    // الرصيد الحالي هو المتبقي، وبالتالي إجمالي الوارد = المتبقي + المستهلك الصافي
-    const totalReceived = roundQty(color.quantity + totalConsumed);
+    // المستهلك الصافي = إجمالي الصرف − مرتجعات الفائض/الاسترداد − عيوب القماش
+    const totalConsumed = roundQty(Math.max(0, totalDeducted - totalReturned - totalDefect));
+    // الرصيد الحالي هو المتبقي، وبالتالي إجمالي الوارد = المتبقي + المستهلك الصافي + العيوب
+    const totalReceived = roundQty(color.quantity + totalConsumed + totalDefect);
 
     const colorRequirements = requirements.filter((req) => req.color_id === color.id);
     const requirementModelIds = Array.from(
@@ -2269,7 +2288,7 @@ export const WarehouseView: React.FC = () => {
 
                   <div>
                     <label className="block text-xs font-bold text-slate-600 mb-1">
-                      الكمية ({selectedFabric?.unit || 'كيلو'})
+                      الكمية ({activeColorFabric?.unit || selectedFabric?.unit || 'كيلو'})
                     </label>
                     <input
                       type="number"
@@ -2283,7 +2302,7 @@ export const WarehouseView: React.FC = () => {
                     />
                     {transForm.operation === 'deduct' && (
                       <span className="text-[11px] text-slate-500 mt-1 block">
-                        الرصيد الفعلي الحالي بالمخزن: {activeColor.quantity} {selectedFabric?.unit}
+                        الرصيد الفعلي الحالي بالمخزن: {activeColor.quantity} {activeColorFabric?.unit || selectedFabric?.unit || 'كيلو'}
                       </span>
                     )}
                   </div>
