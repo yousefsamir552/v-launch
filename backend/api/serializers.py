@@ -219,6 +219,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'username': instance.username,
             'real_name': instance.real_name,
             'phone': instance.phone or '',
+            'avatar': instance.avatar or '',
             'role': role_name,
             'role_id': role_ext_id,
             'is_sudo': bool(instance.is_sudo or instance.username.lower() == 'sudo'),

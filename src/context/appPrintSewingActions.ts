@@ -90,6 +90,7 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     totalCost?: number;
     notes?: string;
     clientId?: string;
+    allowOverLimit?: boolean;
   }): Promise<boolean> => {
     const targetModel = models.find((m) => m.id === data.modelId);
     const dispId = data.clientId || makeIdempotentRequestId('disp');
@@ -155,7 +156,8 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
         expected_delivery_date: data.expectedDeliveryDate || null,
         dispatched_at: dispatchedAt,
         notes: cleanNotes,
-        user_name: currentUser?.real_name || 'مسؤول المطابع'
+        user_name: currentUser?.real_name || 'مسؤول المطابع',
+        ...(data.allowOverLimit ? { allow_over_limit: true } : {})
       })
       .then((saved) => {
         setPrintDispatches((prev) => prev.map((d) => (d.id === dispId ? saved : d)));

@@ -285,6 +285,17 @@ export const api = {
       body: JSON.stringify({ username, password })
     }),
   getMe: () => request<{ user: any }>('/auth/me/'),
+  updateMyProfile: (data: {
+    real_name?: string;
+    phone?: string;
+    avatar?: string;
+    current_password?: string;
+    new_password?: string;
+  }) =>
+    request<{ user: any }>('/auth/update_profile/', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
   heartbeat: () => request<{ onlineUsers: any[] }>('/auth/heartbeat/'),
   logout: () => request<{ status: string }>('/auth/logout/', { method: 'POST' }),
 

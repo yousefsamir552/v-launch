@@ -6,7 +6,6 @@ import {
   Palette,
   Scissors,
   Activity,
-  GitCommit,
   Settings,
   LogOut,
   ChevronDown,
@@ -38,6 +37,7 @@ import {
   ClipboardCheck
 } from 'lucide-react';
 import { InternalMessagingModal } from './InternalMessagingModal';
+import { MyProfileModal } from './MyProfileModal';
 import { SNOOZE_OPTIONS } from '../types';
 import { computeAccessoryShortages } from '../utils/accessoryShortages';
 import { useModalBackHandler } from '../utils/mobileBackNav';
@@ -77,6 +77,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
   const [hrOpen, setHrOpen] = useState(true);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [messagesModalOpen, setMessagesModalOpen] = useState(false);
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [comingSoonModal, setComingSoonModal] = useState<string | null>(null);
 
@@ -299,14 +300,6 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
         color: 'text-emerald-600',
         isVisible: readinessSubItems.length > 0,
         children: readinessSubItems
-      },
-      {
-        kind: 'item',
-        id: 'models_tracking',
-        label: 'حركة الموديلات',
-        icon: GitCommit,
-        color: 'text-cyan-600',
-        isVisible: hasPermission('models_tracking') || isSudo
       },
       {
         kind: 'item',
@@ -592,11 +585,27 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
           </div>
 
           {/* User Profile Card at Top */}
-          <div className="flex items-center justify-between gap-2 p-3 rounded-2xl bg-slate-50 border border-slate-200/80">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-9 h-9 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-black shrink-0 shadow-xs">
-                {currentUser?.real_name ? currentUser.real_name[0] : 'U'}
-              </div>
+          <div className="flex items-center justify-between gap-2 p-2 rounded-2xl bg-slate-50 border border-slate-200/80">
+            <button
+              type="button"
+              onClick={() => {
+                setProfileModalOpen(true);
+                setMobileMenuOpen(false);
+              }}
+              title="حسابي الشخصي — تعديل الصورة والبيانات وكلمة المرور"
+              className="flex items-center gap-2.5 min-w-0 flex-1 p-1 rounded-xl hover:bg-slate-200/60 transition cursor-pointer text-start"
+            >
+              {currentUser?.avatar ? (
+                <img
+                  src={currentUser.avatar}
+                  alt={currentUser?.real_name || currentUser?.username || 'avatar'}
+                  className="w-9 h-9 rounded-full object-cover border border-slate-200 shrink-0 shadow-xs bg-white"
+                />
+              ) : (
+                <div className="w-9 h-9 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-black shrink-0 shadow-xs">
+                  {currentUser?.real_name ? currentUser.real_name[0] : 'U'}
+                </div>
+              )}
               <div className="flex flex-col min-w-0 text-start">
                 <span className="text-xs font-black text-slate-900 truncate">
                   {currentUser?.real_name || currentUser?.username}
@@ -605,7 +614,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                   {isSudo ? 'مدير النظام' : currentUser?.role || 'موظف تشغيل'}
                 </span>
               </div>
-            </div>
+            </button>
             <button
               onClick={onLogout}
               title="تسجيل الخروج"
@@ -1036,6 +1045,11 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
       <InternalMessagingModal
         isOpen={messagesModalOpen}
         onClose={() => setMessagesModalOpen(false)}
+      />
+
+      <MyProfileModal
+        isOpen={profileModalOpen}
+        onClose={() => setProfileModalOpen(false)}
       />
     </>
   );

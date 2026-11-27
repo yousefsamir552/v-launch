@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import {
   AlertTriangle,
+  ArrowUpLeft,
   Boxes,
   CheckCircle2,
   ChevronDown,
@@ -32,11 +33,17 @@ import {
 import {
   DEFAULT_GARMENT_COMPOSITION,
   GARMENT_COMPOSITION_LABELS,
+  PART_EMOJI,
   PART_LABELS,
   PART_ORDER,
   getPartLabel,
   partsForComposition
 } from '../types';
+import {
+  getPartStageNavigationTarget,
+  resolveEffectivePartStage,
+  type StageNavigateFn
+} from '../utils/stageNavigation';
 import type {
   AccessoryItem,
   AssemblyStageKey,
@@ -1287,7 +1294,10 @@ const ASSEMBLY_LABELS: Record<AssemblyStageKey, string> = {
   dest: 'الدَست'
 };
 
-export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> = ({ refreshTick = 0 }) => {
+export const ModelConsumptionReportSection: React.FC<{
+  refreshTick?: number;
+  onNavigateToStage?: StageNavigateFn;
+}> = ({ refreshTick = 0, onNavigateToStage }) => {
   const {
     models,
     sizeDefs,
@@ -1302,7 +1312,10 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
     finishingRecords,
     assemblyStageRecords,
     getModelParts,
+    getPartStages,
     getPackagingRequirement,
+    hasPermission,
+    hasAssemblyPackagingAccess,
     canViewFabricPrices,
     canViewAccessoryPrices,
     canViewPrintingPrices,
@@ -2032,6 +2045,68 @@ export const ModelConsumptionReportSection: React.FC<{ refreshTick?: number }> =
                 tone={report.shortage > 0 ? 'text-rose-600' : 'text-emerald-600'}
               />
             </div>
+
+            {/* المرحلة الحالية لكل قطعة + أزرار الانتقال السريع (مقيّدة بالصلاحيات) */}
+            {(() => {
+              const partStages = getPartStages(selectedModel.id);
+              return (
+                <div className="border-t border-slate-100 bg-slate-50/50 px-4 py-3">
+                  <p className="mb-2 text-[11px] font-bold text-slate-600">
+                    مرحلة كل قطعة والانتقال السريع للقسم:
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    {report.parts.map((row) => {
+                      const effectiveStage = resolveEffectivePartStage(
+                        selectedModel,
+                        row.part,
+                        partStages
+                      );
+                      const target = getPartStageNavigationTarget(effectiveStage);
+                      const canJump =
+                        Boolean(onNavigateToStage) &&
+                        (target.permissionSection === 'assembly_packaging'
+                          ? hasAssemblyPackagingAccess()
+                          : hasPermission(target.permissionSection));
+
+                      return (
+                        <div
+                          key={row.part}
+                          className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-2xs"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-slate-800">
+                              {PART_EMOJI[row.part]} {getPartLabel(row.part)}
+                            </p>
+                            <span
+                              className={`mt-1 inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-bold ${target.badgeClass}`}
+                            >
+                              {target.stageLabel}
+                            </span>
+                          </div>
+                          {canJump && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onNavigateToStage?.(
+                                  target.tab,
+                                  target.subTab,
+                                  target.passModelId ? selectedModel.id : undefined
+                                )
+                              }
+                              className={`inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-bold shadow-xs transition cursor-pointer ${target.buttonClass}`}
+                              title={`الانتقال المباشر إلى ${target.sectionLabel}`}
+                            >
+                              <span>{target.sectionLabel}</span>
+                              <ArrowUpLeft className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           <div className={`${cardClass} p-4`}>

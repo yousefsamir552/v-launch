@@ -448,9 +448,34 @@ export const QCView: React.FC = () => {
     });
   };
 
+  const confirmBeforePrintOverCut = (totalGood: number, totalDefect: number): boolean => {
+    if (activeTab !== 'before_print' || !countingModel) return true;
+    const cutPieces =
+      modalCounts?.cutPieces ||
+      Number(countingModel.cut_summary?.[modalPart] ?? 0);
+    if (cutPieces <= 0) return true;
+    const totalEntered = totalGood + totalDefect;
+    if (totalGood > cutPieces) {
+      return window.confirm(
+        `⚠️ تنبيه: العدد المدخل (${totalGood}) أكبر من العدد المقصوص للقطعة (${cutPieces}). هل أنت متأكد من المتابعة وتسجيل هذا العدد؟`
+      );
+    }
+    if (totalEntered > cutPieces) {
+      return window.confirm(
+        `⚠️ تنبيه: إجمالي العدد المدخل (${totalEntered} = ${totalGood} سليم + ${totalDefect} تالف) أكبر من العدد المقصوص للقطعة (${cutPieces}). هل أنت متأكد من المتابعة وتسجيل هذا العدد؟`
+      );
+    }
+    return true;
+  };
+
   const handleSaveMatrixOnly = async () => {
     if (!countingModel) return;
     const entries = buildMatrixEntriesFromState(countingModel);
+    const totalGood = entries.reduce((sum, item) => sum + item.good_qty, 0);
+    const totalDefect = entries.reduce((sum, item) => sum + item.defect_qty, 0);
+    if (!confirmBeforePrintOverCut(totalGood, totalDefect)) {
+      return;
+    }
     saveQCMatrix({
       modelId: countingModel.id,
       stage: activeTab,
@@ -481,6 +506,10 @@ export const QCView: React.FC = () => {
       ) {
         return;
       }
+    }
+
+    if (!confirmBeforePrintOverCut(totalGood, totalDefect)) {
+      return;
     }
 
     recordQCStageCount({

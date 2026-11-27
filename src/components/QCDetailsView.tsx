@@ -388,9 +388,33 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
     });
   };
 
+  const confirmBeforePrintOverCut = (sumGood: number, sumDefect: number): boolean => {
+    if (selectedStage !== 'before_print') return true;
+    const cutPieces =
+      partCounts.cutPieces || Number(model.cut_summary?.[selectedPart] ?? 0);
+    if (cutPieces <= 0) return true;
+    const totalEntered = sumGood + sumDefect;
+    if (sumGood > cutPieces) {
+      return window.confirm(
+        `⚠️ تنبيه: العدد المدخل (${sumGood}) أكبر من العدد المقصوص للقطعة (${cutPieces}). هل أنت متأكد من المتابعة وتسجيل هذا العدد؟`
+      );
+    }
+    if (totalEntered > cutPieces) {
+      return window.confirm(
+        `⚠️ تنبيه: إجمالي العدد المدخل (${totalEntered} = ${sumGood} سليم + ${sumDefect} تالف) أكبر من العدد المقصوص للقطعة (${cutPieces}). هل أنت متأكد من المتابعة وتسجيل هذا العدد؟`
+      );
+    }
+    return true;
+  };
+
   const handleSaveMatrix = async (e: React.FormEvent) => {
     e.preventDefault();
     const entries = buildMatrixEntries();
+    const sumGood = entries.reduce((s, item) => s + item.good_qty, 0);
+    const sumDefect = entries.reduce((s, item) => s + item.defect_qty, 0);
+    if (!confirmBeforePrintOverCut(sumGood, sumDefect)) {
+      return;
+    }
     saveQCMatrix({
       modelId,
       stage: selectedStage,
@@ -412,6 +436,9 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
 
     if (sumGood === 0 && sumDefect === 0) {
       alert('يرجى إدخال أعداد القطع السليمة أو التالفة في جدول المصفوفة قبل الاعتماد!');
+      return;
+    }
+    if (!confirmBeforePrintOverCut(sumGood, sumDefect)) {
       return;
     }
     if (

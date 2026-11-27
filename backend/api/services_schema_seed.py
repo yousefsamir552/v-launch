@@ -301,6 +301,15 @@ def ensure_schema_columns():
                             "UPDATE api_userprofile SET rank_level = 0 "
                             "WHERE is_sudo = true OR LOWER(username) = 'sudo';"
                         )
+
+            # الصورة الشخصية لحسابات المستخدمين — ترقية ذاتية آمنة لقواعد البيانات القائمة.
+            if 'api_userprofile' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_userprofile')]
+                if 'avatar' not in cols:
+                    if connection.vendor == 'postgresql':
+                        cursor.execute("ALTER TABLE api_userprofile ADD COLUMN IF NOT EXISTS avatar TEXT DEFAULT '';")
+                    else:
+                        cursor.execute("ALTER TABLE api_userprofile ADD COLUMN avatar TEXT DEFAULT '';")
         # Only mark as done after a fully successful pass so transient failures retry.
         _SCHEMA_ENSURED = True
     except Exception:

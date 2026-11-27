@@ -227,13 +227,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </button>
           )}
 
-          <button
-            onClick={() => onNavigate('models_tracking')}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-slate-800 border border-slate-700 text-white font-bold text-xs hover:bg-slate-700 transition shadow-xs"
-          >
-            <GitCommit className="w-4 h-4 text-cyan-400" />
-            <span>حركة وتتبع الموديلات</span>
-          </button>
+          {(hasPermission('models_tracking') || hasPermission('reports')) && (
+            <button
+              onClick={() => onNavigate('unified_model_cards')}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-slate-800 border border-slate-700 text-white font-bold text-xs hover:bg-slate-700 transition shadow-xs"
+            >
+              <GitCommit className="w-4 h-4 text-cyan-400" />
+              <span>بطاقة الموديل الشاملة</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -688,13 +690,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             <Clock className="w-5 h-5 text-slate-700" />
             <h3 className="font-extrabold text-lg text-slate-900">🆕 أحدث الموديلات المسجلة</h3>
           </div>
-          <button
-            onClick={() => onNavigate('models_tracking')}
-            className="text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1"
-          >
-            <span>سجل تتبع الموديلات ({totalModels})</span>
-            <ArrowUpRight className="w-3.5 h-3.5" />
-          </button>
+          {(hasPermission('models_tracking') || hasPermission('reports')) && (
+            <button
+              onClick={() => onNavigate('unified_model_cards')}
+              className="text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1"
+            >
+              <span>بطاقات الموديلات الشاملة ({totalModels})</span>
+              <ArrowUpRight className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         <div className="overflow-x-auto">

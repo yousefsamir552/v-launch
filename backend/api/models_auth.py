@@ -480,6 +480,7 @@ class UserProfile(models.Model):
     password_hash = models.CharField(max_length=255, default='', blank=True, verbose_name="كلمة المرور المشفرة")
     real_name = models.CharField(max_length=200, verbose_name="الاسم الحقيقي")
     phone = models.CharField(max_length=50, blank=True, null=True, verbose_name="رقم الهاتف")
+    avatar = models.TextField(blank=True, default='', verbose_name="الصورة الشخصية")
     role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True, related_name="users")
     role_title = models.CharField(max_length=150, blank=True, null=True, verbose_name="مسمى الدور الوظيفي")
     is_sudo = models.BooleanField(default=False, verbose_name="حساب الطوارئ المطلق Sudo")
@@ -653,6 +654,7 @@ class UserProfile(models.Model):
             self.rank_level = DEFAULT_RANK_LEVEL
         if self.role and not self.role_title:
             self.role_title = self.role.name
+        guard_image_field(self, 'avatar', 'الصورة الشخصية')
         super().save(*args, **kwargs)
 
     def __str__(self):

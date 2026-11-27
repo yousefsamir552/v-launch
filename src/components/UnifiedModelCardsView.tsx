@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowUpLeft,
   Camera,
   CheckCircle2,
   ClipboardCheck,
@@ -32,6 +33,11 @@ import { modelPackagingPieces } from '../utils/packagingMaterials';
 import { printUnifiedModelCard } from '../utils/printUnifiedModelCard';
 import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
 import { useModalBackHandler } from '../utils/mobileBackNav';
+import {
+  getPartStageNavigationTarget,
+  resolveEffectivePartStage,
+  type StageNavigateFn
+} from '../utils/stageNavigation';
 
 type UnifiedSortKey =
   | 'newest'
@@ -129,7 +135,9 @@ const isModelCompleted = (status?: string): boolean => {
   return s.includes('مخزن الإنتاج التام') || s.includes('مكتمل');
 };
 
-export const UnifiedModelCardsView: React.FC = () => {
+export const UnifiedModelCardsView: React.FC<{
+  onNavigateToStage?: StageNavigateFn;
+}> = ({ onNavigateToStage }) => {
   const {
     models,
     sizeDefs,
@@ -145,6 +153,9 @@ export const UnifiedModelCardsView: React.FC = () => {
     packagingRequirements,
     getModelColorList,
     getModelSizeList,
+    getPartStages,
+    hasPermission,
+    hasAssemblyPackagingAccess,
     globalSettings
   } = useApp();
 
@@ -717,6 +728,69 @@ export const UnifiedModelCardsView: React.FC = () => {
                       </div>
                     </div>
                   )}
+
+                  {/* المرحلة الحالية لكل قطعة + أزرار الانتقال السريع (مقيّدة بالصلاحيات) */}
+                  {(() => {
+                    const partStages = getPartStages(model.id);
+                    return (
+                      <div className="mt-3 pt-3 border-t border-slate-100">
+                        <p className="text-[11px] font-black text-slate-600 mb-2">
+                          المرحلة الحالية لكل قطعة والانتقال السريع:
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                          {parts.map((part) => {
+                            const effectiveStage = resolveEffectivePartStage(
+                              model,
+                              part,
+                              partStages
+                            );
+                            const target = getPartStageNavigationTarget(effectiveStage);
+                            const canJump =
+                              Boolean(onNavigateToStage) &&
+                              (target.permissionSection === 'assembly_packaging'
+                                ? hasAssemblyPackagingAccess()
+                                : hasPermission(target.permissionSection));
+
+                            return (
+                              <div
+                                key={part}
+                                className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2"
+                              >
+                                <div className="min-w-0">
+                                  <span className="block text-xs font-black text-slate-800">
+                                    {PART_EMOJI[part]} {getPartLabel(part)}
+                                  </span>
+                                  <span
+                                    className={`mt-1 inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-bold ${target.badgeClass}`}
+                                  >
+                                    {target.stageLabel}
+                                  </span>
+                                </div>
+                                {canJump && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedModelId(null);
+                                      onNavigateToStage?.(
+                                        target.tab,
+                                        target.subTab,
+                                        target.passModelId ? model.id : undefined
+                                      );
+                                    }}
+                                    className={`inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-bold shadow-xs transition cursor-pointer ${target.buttonClass}`}
+                                    title={`الانتقال المباشر إلى ${target.sectionLabel}`}
+                                  >
+                                    <span>{target.sectionLabel}</span>
+                                    <ArrowUpLeft className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </section>
 
                 {/* 2. Cutting & Fabric */}

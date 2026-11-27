@@ -124,6 +124,127 @@ class AuthViewSet(viewsets.ViewSet):
             UserProfile.objects.filter(pk=user.pk).update(auth_token=None, last_seen=None)
         return Response({'status': 'logged_out'})
 
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticatedProfile])
+    def update_profile(self, request):
+        """تعديل الملف الشخصي للمستخدم الحالي فقط (الاسم، الهاتف، الصورة الشخصية، كلمة المرور).
+
+        يمنع تعديل الدور أو الرتبة أو الصلاحيات أو حالة الحساب أو is_sudo نهائياً.
+        """
+        ensure_initial_seed()
+        profile = resolve_request_user_profile(request)
+        if not profile:
+            return Response(
+                {'detail': 'الجلسة غير صالحة أو منتهية'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        request.user_profile = profile
+        data = request.data if isinstance(request.data, dict) else {}
+
+        # منع تعديل أي حقل إداري/صلاحيات عبر هذا الإجراء نهائياً.
+        forbidden_keys = (
+            'role', 'role_id', 'role_title', 'rank_level',
+            'permissions', 'custom_permissions', 'delegatable_permissions',
+            'is_sudo', 'is_active', 'username',
+        )
+        attempted_forbidden = [k for k in forbidden_keys if k in data]
+        if attempted_forbidden:
+            return Response(
+                {'detail': 'لا يُسمح بتعديل الصلاحيات أو الدور أو حالة الحساب من نافذة الملف الشخصي'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        changes = []
+
+        if 'real_name' in data:
+            new_real_name = str(data.get('real_name') or '').strip()
+            if not new_real_name:
+                return Response(
+                    {'detail': 'الاسم الكامل مطلوب ولا يمكن تركه فارغاً'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if new_real_name[:200] != (profile.real_name or ''):
+                changes.append({
+                    'field': 'real_name',
+                    'label': 'الاسم الكامل',
+                    'old': profile.real_name or '',
+                    'new': new_real_name[:200],
+                })
+                profile.real_name = new_real_name[:200]
+
+        if 'phone' in data:
+            new_phone = str(data.get('phone') or '').strip()[:50]
+            if new_phone != (profile.phone or ''):
+                changes.append({
+                    'field': 'phone',
+                    'label': 'رقم الهاتف',
+                    'old': profile.phone or '—',
+                    'new': new_phone or '—',
+                })
+                profile.phone = new_phone
+
+        if 'avatar' in data:
+            raw_avatar = data.get('avatar')
+            clean_avatar = (
+                clean_image_value(str(raw_avatar).strip(), 'avatars', 'الصورة الشخصية')
+                if raw_avatar not in (None, '')
+                else ''
+            )
+            if clean_avatar != (profile.avatar or ''):
+                changes.append({
+                    'field': 'avatar',
+                    'label': 'الصورة الشخصية',
+                    'old': 'موجودة' if profile.avatar else '—',
+                    'new': 'محدّثة' if clean_avatar else 'محذوفة',
+                })
+                profile.avatar = clean_avatar
+
+        new_password = data.get('new_password')
+        current_password = data.get('current_password')
+        if new_password is not None and str(new_password) != '':
+            if not current_password:
+                return Response(
+                    {'detail': 'يرجى إدخال كلمة المرور الحالية لتأكيد تغيير كلمة المرور'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not profile.check_password(str(current_password)):
+                return Response(
+                    {'detail': 'كلمة المرور الحالية غير صحيحة'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(str(new_password)) < 4:
+                return Response(
+                    {'detail': 'كلمة المرور الجديدة يجب أن تكون 4 أحرف على الأقل'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            profile.set_password(str(new_password))
+            changes.append({
+                'field': 'password',
+                'label': 'كلمة المرور',
+                'old': '••••••',
+                'new': 'تم التغيير',
+            })
+
+        try:
+            profile.save()
+        except ValidationError as exc:
+            detail = ' '.join(exc.messages) if hasattr(exc, 'messages') else str(exc)
+            return Response({'detail': detail}, status=status.HTTP_400_BAD_REQUEST)
+
+        if changes and not is_sudo_account(profile):
+            log_action(
+                request,
+                section='حسابي الشخصي',
+                action_type='update',
+                target_name=profile.real_name or profile.username,
+                details=f"حدّث المستخدم @{profile.username} بيانات ملفه الشخصي",
+                changes=changes,
+                user=profile,
+            )
+
+        return Response({
+            'user': UserProfileSerializer(profile, context={'request': request}).data
+        })
+
 
 # ---------------------------------------------------------------------------
 # /state/ per-section filtering

@@ -300,6 +300,7 @@ export interface User {
   real_name: string;
   password?: string;
   phone?: string;
+  avatar?: string;
   role: string;
   role_id?: string;
   is_sudo?: boolean;

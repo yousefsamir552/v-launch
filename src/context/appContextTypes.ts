@@ -704,6 +704,7 @@ export interface AppContextType {
     totalCost?: number;
     notes?: string;
     clientId?: string;
+    allowOverLimit?: boolean;
   }) => Promise<boolean>;
   updateDispatchStatus: (
     dispatchId: string,

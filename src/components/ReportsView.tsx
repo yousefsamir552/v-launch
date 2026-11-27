@@ -43,6 +43,7 @@ import {
 import { api } from '../api/client';
 import { useApp } from '../context/AppContext';
 import { MaterialsReportSection, ModelConsumptionReportSection } from './MaterialsAndModelConsumptionReports';
+import type { StageNavigateFn } from '../utils/stageNavigation';
 import { datedFileName, exportCsv } from '../utils/exportExcel';
 import {
   escapeHtml,
@@ -476,7 +477,9 @@ const WaterfallPanel: React.FC<{ data: ModelStageWaterfallResponse }> = ({ data 
 /* Main component                                                      */
 /* ------------------------------------------------------------------ */
 
-export const ReportsView: React.FC = () => {
+export const ReportsView: React.FC<{ onNavigateToStage?: StageNavigateFn }> = ({
+  onNavigateToStage
+}) => {
   const { hasPermission, addFlashMessage, globalSettings, refreshState, logAction } = useApp();
 
   const canViewReports = hasPermission('reports');
@@ -1951,7 +1954,10 @@ export const ReportsView: React.FC = () => {
 
           {activeTab === 'materials' && <MaterialsReportSection refreshTick={materialsRefreshTick} />}
           {activeTab === 'model_consumption' && (
-            <ModelConsumptionReportSection refreshTick={materialsRefreshTick} />
+            <ModelConsumptionReportSection
+              refreshTick={materialsRefreshTick}
+              onNavigateToStage={onNavigateToStage}
+            />
           )}
 
           {activeTab === 'workshop_evaluations' && (

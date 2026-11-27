@@ -653,6 +653,10 @@ class PrintDispatchViewSet(BasePermViewSet):
         notes = (data.get('notes') or '').strip() if can_printing_notes else ''
         now_str = data.get('dispatched_at') or timezone.now().strftime('%Y-%m-%d %H:%M')
         user_name = data.get('user_name') or 'مسؤول المطابع'
+        allow_over_limit = parse_bool_flag(
+            data.get('allow_over_limit') if 'allow_over_limit' in data else data.get('allowOverLimit'),
+            default=False,
+        )
         req_client_id = data.get('id') or data.get('client_id') or data.get('request_id')
 
         with transaction.atomic():
@@ -679,7 +683,7 @@ class PrintDispatchViewSet(BasePermViewSet):
                     {'detail': 'لا يمكن إرسال الموديل للمطبعة قبل تسجيل كميات القص الفعلية.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if pieces > part_cut:
+            if pieces > part_cut and not allow_over_limit:
                 return Response(
                     {'detail': f'عدد القطع المرسلة للمطبعة ({pieces}) يتجاوز الكمية المقصوصة ({part_cut}).'},
                     status=status.HTTP_400_BAD_REQUEST,

@@ -279,6 +279,48 @@ export const DispatchAssemblyView: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!modelId || !resolvedShopName || submitLockRef.current || isDispatchSubmitting) return;
+
+    const requestedQty = Number(piecesCount) || 0;
+    const partCut =
+      Number(selectedModel?.cut_summary?.[effectivePieceType] ?? 0) ||
+      Number(
+        effectivePieceType === 'shirt'
+          ? selectedModel?.cut_shirt_pieces
+          : effectivePieceType === 'pants'
+          ? selectedModel?.cut_pants_pieces
+          : effectivePieceType === 'jacket'
+          ? selectedModel?.cut_jacket_pieces
+          : selectedModel?.total_cut_pieces
+      ) ||
+      Number(selectedModel?.total_cut_pieces ?? 0);
+    const beforePrintGood = qcRecords
+      .filter(
+        (q) =>
+          q.model_id === modelId &&
+          q.stage === 'before_print' &&
+          (q.part_type || q.partType || 'shirt') === effectivePieceType
+      )
+      .reduce((sum, q) => sum + Number(q.good_qty ?? q.counted_pieces ?? 0), 0);
+
+    const exceedsCut = partCut > 0 && requestedQty > partCut;
+    const exceedsBeforePrint = beforePrintGood > 0 && requestedQty > beforePrintGood;
+    let allowOverLimit = false;
+
+    if (exceedsCut || exceedsBeforePrint) {
+      let confirmMsg = '';
+      if (exceedsCut && exceedsBeforePrint && beforePrintGood !== partCut) {
+        confirmMsg = `⚠️ تنبيه: العدد المراد إرساله للمطبعة (${requestedQty}) أكبر من العدد المسجل قبل الطباعة (${beforePrintGood}) والعدد المقصوص للقطعة (${partCut}). هل أنت متأكد من المتابعة وإرسال هذه التشغيلة؟`;
+      } else if (exceedsCut) {
+        confirmMsg = `⚠️ تنبيه: العدد المراد إرساله للمطبعة (${requestedQty}) أكبر من العدد المقصوص للقطعة (${partCut}). هل أنت متأكد من المتابعة وإرسال هذه التشغيلة؟`;
+      } else {
+        confirmMsg = `⚠️ تنبيه: العدد المراد إرساله للمطبعة (${requestedQty}) أكبر من العدد المسجل في العد قبل الطباعة (${beforePrintGood}). هل أنت متأكد من المتابعة وإرسال هذه التشغيلة؟`;
+      }
+      if (!window.confirm(confirmMsg)) {
+        return;
+      }
+      allowOverLimit = true;
+    }
+
     if (!pendingDispatchReqIdRef.current) {
       pendingDispatchReqIdRef.current = makeIdempotentRequestId('disp');
     }
@@ -291,7 +333,7 @@ export const DispatchAssemblyView: React.FC = () => {
         modelId,
         clientId: reqId,
         shopName: resolvedShopName,
-        piecesCount: Number(piecesCount) || 0,
+        piecesCount: requestedQty,
         printType: DEFAULT_PRINT_TYPE,
         pieceType: effectivePieceType,
         pieceLabel: getPartLabel(effectivePieceType),
@@ -299,7 +341,8 @@ export const DispatchAssemblyView: React.FC = () => {
         printDetails: printDetails.trim(),
         expectedDeliveryDate,
         costPerPiece: canEditPrintingPrices() ? Math.max(0, parseFloat(printCost) || 0) : 0,
-        notes: allowPrintNotes ? notes.trim() : ''
+        notes: allowPrintNotes ? notes.trim() : '',
+        allowOverLimit
       });
     } finally {
       submitLockRef.current = false;

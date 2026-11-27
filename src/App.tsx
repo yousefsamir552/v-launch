@@ -23,7 +23,6 @@ import { CuttingView } from './components/CuttingView';
 import { CuttingDetailsView } from './components/CuttingDetailsView';
 import { QCDetailsView } from './components/QCDetailsView';
 import { ProductionControlView } from './components/ProductionControlView';
-import { MasterModelTrackingView } from './components/MasterModelTrackingView';
 import { UnifiedModelCardsView } from './components/UnifiedModelCardsView';
 import { AssemblyPackagingView } from './components/AssemblyPackagingView';
 import { SettingsView } from './components/SettingsView';
@@ -128,6 +127,7 @@ export const App: React.FC = () => {
   };
 
   const canAccessTab = (tab: string): boolean => {
+    if (tab === 'models_tracking') return false;
     if (isSudo) return true;
     if (tab === 'dashboard') return true;
     if (tab in READINESS_TAB_STAGE) {
@@ -151,7 +151,6 @@ export const App: React.FC = () => {
         hasPermission('reports')
       );
     }
-    if (tab === 'models_tracking') return hasPermission('models_tracking');
     if (tab === 'unified_model_cards') {
       return hasPermission('models_tracking') || hasPermission('reports');
     }
@@ -233,6 +232,34 @@ export const App: React.FC = () => {
     }
     setCurrentTab(tab);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleNavigateToStage = (tab: string, subTab?: string, modelId?: string) => {
+    if (tab === 'design') {
+      handleNavigate(modelId ? 'model_details' : 'design', modelId);
+      return;
+    }
+    if (tab === 'cutting') {
+      handleNavigate(modelId ? 'cutting_details' : 'cutting', modelId);
+      return;
+    }
+    if (tab === 'production_control') {
+      if (subTab === 'qc' || subTab === 'printing' || subTab === 'sewing') {
+        handleNavigate(subTab, modelId);
+      } else {
+        handleNavigate('production_control', modelId);
+      }
+      return;
+    }
+    if (tab === 'warehouse') {
+      if (subTab === 'production_warehouse') {
+        handleNavigate('production_warehouse', modelId);
+      } else {
+        handleNavigate('warehouse', modelId);
+      }
+      return;
+    }
+    handleNavigate(tab, modelId);
   };
 
   const handleStepBack = (fallbackTab: string) => {
@@ -323,18 +350,15 @@ export const App: React.FC = () => {
           />
         )}
 
-        {/* Master Model Tracking */}
-        {currentTab === 'models_tracking' && (
-          <MasterModelTrackingView
-            onNavigateToStage={(tab, modelId) => handleNavigate(tab, modelId)}
-          />
+        {/* Unified Detailed Model Cards & Master Sheet */}
+        {currentTab === 'unified_model_cards' && (
+          <UnifiedModelCardsView onNavigateToStage={handleNavigateToStage} />
         )}
 
-        {/* Unified Detailed Model Cards & Master Sheet */}
-        {currentTab === 'unified_model_cards' && <UnifiedModelCardsView />}
-
         {/* Reports & Analytics Section */}
-        {currentTab === 'reports' && <ReportsView />}
+        {currentTab === 'reports' && (
+          <ReportsView onNavigateToStage={handleNavigateToStage} />
+        )}
 
         {/* Human Resources (HR) - الموارد البشرية */}
         {isHrTab(currentTab) &&
