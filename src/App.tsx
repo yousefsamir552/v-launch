@@ -30,6 +30,7 @@ import { AuditLogsView } from './components/AuditLogsView';
 import { ReportsView } from './components/ReportsView';
 import { HRView } from './components/HRView';
 import { LoginModal } from './components/LoginModal';
+import { NavigationCardsView } from './components/NavigationCardsView';
 
 export const App: React.FC = () => {
   const {
@@ -42,10 +43,13 @@ export const App: React.FC = () => {
     canViewAuditLogs,
     canAccessHRSection,
     canAccessReadinessStage,
-    globalSettings
+    globalSettings,
+    uiPreferences
   } = useApp();
 
-  const [currentTab, setCurrentTab] = useState<string>('dashboard');
+  const [currentTab, setCurrentTab] = useState<string>(() =>
+    uiPreferences.nav_mode === 'cards' ? 'nav_cards' : 'dashboard'
+  );
   const [selectedModelId, setSelectedModelId] = useState<string>('');
 
   const isSudo =
@@ -128,6 +132,7 @@ export const App: React.FC = () => {
 
   const canAccessTab = (tab: string): boolean => {
     if (tab === 'models_tracking') return false;
+    if (tab === 'nav_cards') return true;
     if (isSudo) return true;
     if (tab === 'dashboard') return true;
     if (tab in READINESS_TAB_STAGE) {
@@ -203,12 +208,29 @@ export const App: React.FC = () => {
     }
   }, [currentTab, currentUser]);
 
+  // If user switches back from cards mode to sidebar mode while on nav_cards, return to dashboard
+  useEffect(() => {
+    if (currentTab === 'nav_cards' && uiPreferences.nav_mode !== 'cards') {
+      setCurrentTab('dashboard');
+      replaceNavHistory('dashboard', '');
+    }
+  }, [currentTab, uiPreferences.nav_mode]);
+
   if (!currentUser) {
     return (
       <LoginModal
         onSuccess={() => {
-          setCurrentTab('dashboard');
-          initRootNavHistory('dashboard', '');
+          let initialTab = 'dashboard';
+          try {
+            const raw = localStorage.getItem('factory_erp_current_user');
+            if (raw && JSON.parse(raw)?.ui_preferences?.nav_mode === 'cards') {
+              initialTab = 'nav_cards';
+            }
+          } catch {
+            // ignore
+          }
+          setCurrentTab(initialTab);
+          initRootNavHistory(initialTab, '');
           addFlashMessage('تم تسجيل الدخول بنجاح');
         }}
       />
@@ -277,8 +299,14 @@ export const App: React.FC = () => {
     siteLogo.startsWith('data:image/') ||
     siteLogo.startsWith('/');
 
+  const isSlimRail = uiPreferences.nav_mode === 'cards' || uiPreferences.sidebar_collapsed;
+
   return (
-    <div className="min-h-screen w-full overflow-x-hidden bg-[#f8f9fa] text-slate-900 flex flex-col lg:pl-72 antialiased">
+    <div
+      className={`min-h-screen w-full overflow-x-hidden bg-[#f8f9fa] text-slate-900 flex flex-col transition-[padding] duration-200 ${
+        isSlimRail ? 'lg:pl-[68px]' : 'lg:pl-72'
+      } antialiased`}
+    >
       <Navbar
         currentTab={currentTab}
         setCurrentTab={(tab) => handleNavigate(tab)}
@@ -288,6 +316,10 @@ export const App: React.FC = () => {
       <FlashAlerts />
 
       <main className="flex-grow min-w-0 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6">
+        {currentTab === 'nav_cards' && (
+          <NavigationCardsView onNavigate={(tab) => handleNavigate(tab)} />
+        )}
+
         {currentTab === 'dashboard' && (
           <DashboardView onNavigate={(tab, id) => handleNavigate(tab, id)} />
         )}
@@ -410,7 +442,10 @@ export const App: React.FC = () => {
 
         {/* Settings & Audit Logs */}
         {currentTab === 'settings' && (
-          <SettingsView onOpenLogs={() => handleNavigate('logs')} />
+          <SettingsView
+            onOpenLogs={() => handleNavigate('logs')}
+            onOpenNavCards={() => handleNavigate('nav_cards')}
+          />
         )}
 
         {currentTab === 'logs' && (

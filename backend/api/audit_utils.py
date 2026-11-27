@@ -242,6 +242,7 @@ PERMISSION_LABELS = {
     'readiness_packaging': 'جاهزية الموديلات — التغليف',
     'readiness_dest': 'جاهزية الموديلات — الدَست',
     'previous_models_view': 'عرض الموديلات السابقة / المنتهية',
+    'customize_navigation': 'تخصيص شكل التنقل والواجهة',
     'can_reports': 'التقارير',
     'can_settings': 'الإعدادات',
 }
@@ -258,6 +259,7 @@ FIELD_LABELS = {
     'custom_permissions': 'الصلاحيات المخصصة',
     'permissions_json': 'الصلاحيات التفصيلية',
     'delegatable_permissions': 'الصلاحيات القابلة للتفويض',
+    'ui_preferences': 'تفضيلات الواجهة والتنقل',
     'model': 'الموديل',
     'color': 'اللون',
     'fabric': 'القماش',

@@ -173,7 +173,42 @@ export interface RolePermissions {
 
   // Dedicated permission to view previous / completed models inside sections
   previous_models_view?: boolean;
+
+  // Dedicated permission to customize navigation & UI layout (cards mode, accordion, layout)
+  customize_navigation?: boolean;
 }
+
+export type NavigationMode = 'sidebar' | 'cards';
+
+export type CardsLayoutItem =
+  | { kind: 'card'; id: string; tabId: string }
+  | { kind: 'spacer'; id: string }
+  | { kind: 'divider'; id: string; label?: string };
+
+export interface CardsLayoutGroup {
+  id: string;
+  title: string;
+  items: CardsLayoutItem[];
+}
+
+export interface CardsLayoutConfig {
+  version?: number;
+  groups: CardsLayoutGroup[];
+}
+
+export interface UIPreferences {
+  nav_mode: NavigationMode;
+  sidebar_collapsed: boolean;
+  accordion_mode: boolean;
+  cards_layout: CardsLayoutConfig | null;
+}
+
+export const DEFAULT_UI_PREFERENCES: UIPreferences = {
+  nav_mode: 'sidebar',
+  sidebar_collapsed: false,
+  accordion_mode: true,
+  cards_layout: null
+};
 
 /**
  * عنصر داخل مجموعة إكسسوارات جاهزة.
@@ -291,6 +326,9 @@ export interface UserPermissions {
   // Previous / Completed models visibility override
   previous_models_view?: boolean;
 
+  // Navigation & UI customization override
+  customize_navigation?: boolean;
+
   [key: string]: any;
 }
 
@@ -301,6 +339,7 @@ export interface User {
   password?: string;
   phone?: string;
   avatar?: string;
+  ui_preferences?: Partial<UIPreferences>;
   role: string;
   role_id?: string;
   is_sudo?: boolean;

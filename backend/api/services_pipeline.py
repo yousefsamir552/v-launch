@@ -630,6 +630,7 @@ DEFAULT_ROLES_SEED = [
             'can_add_qc_before_print_notes': True, 'can_add_qc_after_print_notes': True,
             'can_add_sewing_notes': True, 'can_add_printing_notes': True,
             'previous_models_view': True,
+            'customize_navigation': True,
         }
     },
     {

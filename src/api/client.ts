@@ -291,6 +291,12 @@ export const api = {
     avatar?: string;
     current_password?: string;
     new_password?: string;
+    ui_preferences?: {
+      nav_mode?: 'sidebar' | 'cards';
+      sidebar_collapsed?: boolean;
+      accordion_mode?: boolean;
+      cards_layout?: any;
+    };
   }) =>
     request<{ user: any }>('/auth/update_profile/', {
       method: 'POST',

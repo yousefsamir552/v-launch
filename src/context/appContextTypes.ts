@@ -65,7 +65,8 @@ import {
   MODEL_STATUS_TO_PART_STAGE,
   deriveStatusFromStages,
   SnoozeHours,
-  SNOOZED_NOTIFICATIONS_STORAGE_KEY
+  SNOOZED_NOTIFICATIONS_STORAGE_KEY,
+  UIPreferences
 } from '../types';
 import { buildPackagingDemandMap } from '../utils/packagingMaterials';
 import { finishedSetsOf, photographyOutstandingOf } from '../utils/completedModels';
@@ -375,6 +376,15 @@ export interface AppContextType {
   canAccessAnyReadiness: () => boolean;
   /** صلاحية مستقلة لعرض الموديلات السابقة / المنتهية في الأقسام. */
   canViewPreviousModels: () => boolean;
+  /** صلاحية مستقلة لتخصيص شكل التنقل والواجهة (وضع الكروت / Accordion / ترتيب الكروت). */
+  canCustomizeNavigation: () => boolean;
+
+  // User Navigation & UI Preferences (تفضيلات التنقل والواجهة لكل مستخدم)
+  uiPreferences: UIPreferences;
+  setSidebarCollapsed: (collapsed: boolean) => void;
+  updateUiPreferences: (
+    patch: Partial<UIPreferences>
+  ) => Promise<{ success: boolean; message?: string; user?: User }>;
 
   // Department Notes Permission Checkers (Task 4)
   canAddDesignNotes: () => boolean;

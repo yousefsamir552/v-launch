@@ -1,5 +1,6 @@
 from .views_common import *
 from .views_common import _truthy_permission_keys, _accessory_price_snapshot
+from .models_auth import normalize_ui_preferences, CUSTOMIZE_NAVIGATION_PERM_KEY
 
 import logging
 
@@ -197,6 +198,75 @@ class AuthViewSet(viewsets.ViewSet):
                     'new': 'محدّثة' if clean_avatar else 'محذوفة',
                 })
                 profile.avatar = clean_avatar
+
+        if 'ui_preferences' in data:
+            incoming_prefs = data.get('ui_preferences')
+            if not isinstance(incoming_prefs, dict):
+                return Response(
+                    {'detail': 'صيغة تفضيلات الواجهة والتنقل غير صالحة'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            current_prefs = normalize_ui_preferences(profile.ui_preferences)
+            restricted_keys = ('nav_mode', 'accordion_mode', 'cards_layout')
+            attempted_restricted = [k for k in restricted_keys if k in incoming_prefs]
+            if attempted_restricted and not (
+                is_sudo_account(profile) or profile.has_perm(CUSTOMIZE_NAVIGATION_PERM_KEY)
+            ):
+                return Response(
+                    {'detail': 'ليس لديك صلاحية تخصيص شكل التنقل والواجهة'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            updated_prefs = dict(current_prefs)
+
+            if 'sidebar_collapsed' in incoming_prefs:
+                updated_prefs['sidebar_collapsed'] = bool(incoming_prefs.get('sidebar_collapsed'))
+
+            if 'nav_mode' in incoming_prefs:
+                new_nav_mode = incoming_prefs.get('nav_mode')
+                if new_nav_mode not in ('sidebar', 'cards'):
+                    return Response(
+                        {'detail': 'وضع التنقل غير صالح (القيم المسموحة: sidebar أو cards)'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if new_nav_mode != current_prefs['nav_mode']:
+                    changes.append({
+                        'field': 'nav_mode',
+                        'label': 'وضع التنقل',
+                        'old': 'كروت التنقل' if current_prefs['nav_mode'] == 'cards' else 'القائمة الجانبية',
+                        'new': 'كروت التنقل' if new_nav_mode == 'cards' else 'القائمة الجانبية',
+                    })
+                updated_prefs['nav_mode'] = new_nav_mode
+
+            if 'accordion_mode' in incoming_prefs:
+                new_accordion = bool(incoming_prefs.get('accordion_mode'))
+                if new_accordion != current_prefs['accordion_mode']:
+                    changes.append({
+                        'field': 'accordion_mode',
+                        'label': 'فتح مجموعة واحدة في القائمة الجانبية',
+                        'old': 'مفعّل' if current_prefs['accordion_mode'] else 'معطّل',
+                        'new': 'مفعّل' if new_accordion else 'معطّل',
+                    })
+                updated_prefs['accordion_mode'] = new_accordion
+
+            if 'cards_layout' in incoming_prefs:
+                new_layout = incoming_prefs.get('cards_layout')
+                if new_layout is not None and not isinstance(new_layout, dict):
+                    return Response(
+                        {'detail': 'تخطيط كروت التنقل يجب أن يكون كائناً صالحاً أو فارغاً (null)'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if new_layout != current_prefs['cards_layout']:
+                    changes.append({
+                        'field': 'cards_layout',
+                        'label': 'تخطيط كروت التنقل',
+                        'old': 'مخصص' if current_prefs['cards_layout'] else 'افتراضي',
+                        'new': 'مخصص' if new_layout else 'افتراضي',
+                    })
+                updated_prefs['cards_layout'] = new_layout
+
+            profile.ui_preferences = normalize_ui_preferences(updated_prefs)
 
         new_password = data.get('new_password')
         current_password = data.get('current_password')

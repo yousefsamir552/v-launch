@@ -391,6 +391,12 @@ export const ADMIN_AND_SETTINGS_PERMISSIONS_LIST: {
     key: 'previous_models_view',
     label: 'عرض الموديلات السابقة / المنتهية',
     description: 'السماح بتفعيل زر "الموديلات السابقة" لرؤية الموديلات التي انتهت من كل قسم (لا تُمنح تلقائياً مع صلاحية القسم)'
+  },
+  {
+    key: 'customize_navigation',
+    label: 'تخصيص شكل التنقل والواجهة',
+    description: 'التبديل بين القائمة الجانبية ووضع كروت التنقل، التحكم بوضع المجموعة الواحدة (Accordion)، وترتيب وتخصيص صفحة الكروت',
+    badge: 'واجهة وتنقل'
   }
 ];
 
@@ -568,7 +574,8 @@ export const DEFAULT_PERMISSIONS: RolePermissions = {
   readiness_ironing: false,
   readiness_packaging: false,
   readiness_dest: false,
-  previous_models_view: false
+  previous_models_view: false,
+  customize_navigation: false
 };
 
 export const RoleManagementSection: React.FC = () => {
@@ -800,6 +807,7 @@ export const RoleManagementSection: React.FC = () => {
         next.readiness_packaging = true;
         next.readiness_dest = true;
         next.previous_models_view = true;
+        next.customize_navigation = true;
       } else if (preset === 'all_view') {
         SYSTEM_SECTIONS.forEach((s) => {
           (next as any)[`${s.key}_view`] = true;
@@ -841,6 +849,7 @@ export const RoleManagementSection: React.FC = () => {
         next.readiness_ironing = true;
         next.readiness_packaging = true;
         next.readiness_dest = true;
+        next.customize_navigation = false;
       } else if (preset === 'warehouse_only') {
         SYSTEM_SECTIONS.forEach((s) => {
           const isWh = s.key.includes('warehouse') || s.key === 'purchase_requests';

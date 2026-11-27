@@ -62,6 +62,39 @@ READINESS_PERM_KEYS = (
 # صلاحية عرض الموديلات السابقة / المنتهية داخل أقسام الإنتاج.
 PREVIOUS_MODELS_PERM_KEY = 'previous_models_view'
 
+# صلاحية تخصيص شكل التنقل والواجهة (وضع الكروت، Accordion، ترتيب الكروت).
+CUSTOMIZE_NAVIGATION_PERM_KEY = 'customize_navigation'
+
+# القيم الافتراضية لتفضيلات الواجهة والتنقل المحفوظة على حساب كل مستخدم.
+DEFAULT_UI_PREFERENCES = {
+    'nav_mode': 'sidebar',        # 'sidebar' | 'cards'
+    'sidebar_collapsed': False,   # طي الشريط الجانبي لخط رفيع
+    'accordion_mode': True,       # الافتراضي: فتح مجموعة واحدة فقط في المرة
+    'cards_layout': None,         # None = الترتيب الافتراضي التلقائي للأقسام
+}
+
+
+def normalize_ui_preferences(raw) -> dict:
+    """إرجاع قاموس تفضيلات التنقل والواجهة موحداً مع القيم الافتراضية الآمنة."""
+    data = raw if isinstance(raw, dict) else {}
+    nav_mode = data.get('nav_mode')
+    if nav_mode not in ('sidebar', 'cards'):
+        nav_mode = DEFAULT_UI_PREFERENCES['nav_mode']
+    sidebar_collapsed = bool(data.get('sidebar_collapsed', DEFAULT_UI_PREFERENCES['sidebar_collapsed']))
+    if 'accordion_mode' in data and data['accordion_mode'] is not None:
+        accordion_mode = bool(data['accordion_mode'])
+    else:
+        accordion_mode = DEFAULT_UI_PREFERENCES['accordion_mode']
+    cards_layout = data.get('cards_layout')
+    if not isinstance(cards_layout, dict):
+        cards_layout = None
+    return {
+        'nav_mode': nav_mode,
+        'sidebar_collapsed': sidebar_collapsed,
+        'accordion_mode': accordion_mode,
+        'cards_layout': cards_layout,
+    }
+
 # صلاحيات قراءة/تعديل المرتب الشهري — مطابقة لواجهة canAccessHRSection('payroll')
 # في الفرونت إند (hr_payroll أو can_manage_hr أو manage_permissions) مع تجاوز sudo.
 SALARY_PERMISSION_KEYS = ('hr_payroll', 'can_manage_hr', 'manage_permissions')
@@ -423,6 +456,8 @@ class Role(models.Model):
             'readiness_dest': False,
             # Dedicated permission for viewing previous / completed models inside sections
             'previous_models_view': False,
+            # Dedicated permission for customizing navigation & UI layout
+            'customize_navigation': False,
         }
         if isinstance(self.permissions_json, dict) and self.permissions_json:
             base.update(self.permissions_json)
@@ -481,6 +516,7 @@ class UserProfile(models.Model):
     real_name = models.CharField(max_length=200, verbose_name="الاسم الحقيقي")
     phone = models.CharField(max_length=50, blank=True, null=True, verbose_name="رقم الهاتف")
     avatar = models.TextField(blank=True, default='', verbose_name="الصورة الشخصية")
+    ui_preferences = models.JSONField(default=dict, blank=True, verbose_name="تفضيلات الواجهة والتنقل")
     role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True, related_name="users")
     role_title = models.CharField(max_length=150, blank=True, null=True, verbose_name="مسمى الدور الوظيفي")
     is_sudo = models.BooleanField(default=False, verbose_name="حساب الطوارئ المطلق Sudo")

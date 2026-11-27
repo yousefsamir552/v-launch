@@ -148,7 +148,8 @@ export const buildPermissionHelpers = (ctx: AppInternalContext) => {
         readiness_ironing: true,
         readiness_packaging: true,
         readiness_dest: true,
-        previous_models_view: true
+        previous_models_view: true,
+        customize_navigation: true
       };
     }
 
@@ -331,6 +332,13 @@ export const buildPermissionHelpers = (ctx: AppInternalContext) => {
   const canEditMessageTemplates = (): boolean =>
     hasSpecificPermission('edit_message_templates') || hasSpecificPermission('manage_permissions');
 
+  // صلاحية تخصيص شكل التنقل والواجهة (وضع الكروت، Accordion، ترتيب الكروت) — متاحة دائماً لـ sudo.
+  const canCustomizeNavigation = (): boolean => {
+    if (!currentUser) return false;
+    if (currentUser.username?.toLowerCase() === 'sudo' || currentUser.is_sudo) return true;
+    return hasSpecificPermission('customize_navigation');
+  };
+
   const canAccessSettings = (): boolean => {
     if (!currentUser) return false;
     if (currentUser.username?.toLowerCase() === 'sudo' || currentUser.is_sudo) return true;
@@ -340,7 +348,8 @@ export const buildPermissionHelpers = (ctx: AppInternalContext) => {
       canManageSuppliers() ||
       canManageSizes() ||
       canViewAuditLogs() ||
-      canViewGlobalSettings()
+      canViewGlobalSettings() ||
+      canCustomizeNavigation()
     );
   };
 
@@ -584,6 +593,7 @@ export const buildPermissionHelpers = (ctx: AppInternalContext) => {
     canAccessReadinessStage,
     canAccessAnyReadiness,
     canViewPreviousModels,
+    canCustomizeNavigation,
     currentUserRank,
     visibleRankLevels,
     visibleRankOptions,

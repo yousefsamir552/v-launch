@@ -17,6 +17,7 @@ from .models import (
     HRAttendanceRecord, HRPenalty, HRLoan, HRPayrollSnapshot,
     RANK_SUDO, RANK_LEVEL_THREE, DEFAULT_RANK_LEVEL,
     coerce_rank_level, rank_visibility_label, SALARY_PERMISSION_KEYS,
+    normalize_ui_preferences,
 )
 from .storage_r2 import normalize_image_field
 
@@ -220,6 +221,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'real_name': instance.real_name,
             'phone': instance.phone or '',
             'avatar': instance.avatar or '',
+            'ui_preferences': normalize_ui_preferences(getattr(instance, 'ui_preferences', None)),
             'role': role_name,
             'role_id': role_ext_id,
             'is_sudo': bool(instance.is_sudo or instance.username.lower() == 'sudo'),

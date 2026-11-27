@@ -23,20 +23,35 @@ import {
   Check,
   X,
   Star,
-  Factory
+  Factory,
+  LayoutGrid,
+  PanelLeft,
+  Palette
 } from 'lucide-react';
-import { User, WorkshopType, WORKSHOP_TYPE_KEYS, WORKSHOP_TYPE_LABELS } from '../types';
+import {
+  NavigationMode,
+  User,
+  WorkshopType,
+  WORKSHOP_TYPE_KEYS,
+  WORKSHOP_TYPE_LABELS
+} from '../types';
 import { EditUserModal } from './EditUserModal';
 import { RoleManagementSection, DEFAULT_PERMISSIONS } from './RoleManagementSection';
 import { AccessoryGroupsManager } from './AccessoryGroupsManager';
 
 interface SettingsViewProps {
   onOpenLogs: () => void;
+  onOpenNavCards?: () => void;
 }
 
-type SettingsTab = 'users' | 'roles' | 'global_settings' | 'sizes_suppliers';
+type SettingsTab =
+  | 'users'
+  | 'roles'
+  | 'global_settings'
+  | 'sizes_suppliers'
+  | 'nav_customization';
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs, onOpenNavCards }) => {
   const {
     roles,
     sizeDefs,
@@ -67,6 +82,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
     canViewGlobalSettings,
     canEditHeaderSettings,
     canEditMessageTemplates,
+    canCustomizeNavigation,
+    uiPreferences,
+    updateUiPreferences,
     currentUser,
     visibleRankOptions,
     visibleRankLevels,
@@ -93,14 +111,47 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
   const hasGlobalSettingsPerm = canViewGlobalSettings();
   const hasSizesOrSuppliersPerm = canManageSizes() || canManageSuppliers();
   const hasAuditLogsPerm = canViewAuditLogs();
+  const hasNavCustomizePerm = canCustomizeNavigation();
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     if (canManageUsers()) return 'users';
     if (canManagePermissions()) return 'roles';
     if (canViewGlobalSettings()) return 'global_settings';
     if (canManageSizes() || canManageSuppliers()) return 'sizes_suppliers';
+    if (canCustomizeNavigation()) return 'nav_customization';
     return 'users';
   });
+
+  // Navigation & UI Customization Form State
+  const [navModeDraft, setNavModeDraft] = useState<NavigationMode>(uiPreferences.nav_mode);
+  const [accordionModeDraft, setAccordionModeDraft] = useState<boolean>(
+    uiPreferences.accordion_mode
+  );
+  const [savingNavPrefs, setSavingNavPrefs] = useState(false);
+
+  useEffect(() => {
+    setNavModeDraft(uiPreferences.nav_mode);
+    setAccordionModeDraft(uiPreferences.accordion_mode);
+  }, [uiPreferences.nav_mode, uiPreferences.accordion_mode]);
+
+  const handleSaveNavigationPreferences = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (savingNavPrefs || !hasNavCustomizePerm) return;
+    setSavingNavPrefs(true);
+    try {
+      const result = await updateUiPreferences({
+        nav_mode: navModeDraft,
+        accordion_mode: accordionModeDraft
+      });
+      if (result.success) {
+        addFlashMessage('تم حفظ وتطبيق تفضيلات التنقل والواجهة بنجاح', 'success');
+      } else {
+        addFlashMessage(result.message || 'تعذر حفظ تفضيلات التنقل والواجهة', 'danger');
+      }
+    } finally {
+      setSavingNavPrefs(false);
+    }
+  };
 
   // Size Form & Edit State
   const [sizeName, setSizeName] = useState('');
@@ -621,6 +672,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
             >
               <Sliders className="w-3.5 h-3.5" />
               <span>المقاسات والموردين والورش</span>
+            </button>
+          )}
+
+          {hasNavCustomizePerm && (
+            <button
+              onClick={() => setActiveTab('nav_customization')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                activeTab === 'nav_customization'
+                  ? 'bg-violet-600 text-white shadow-xs'
+                  : 'text-violet-700 hover:text-violet-900 hover:bg-violet-50 font-bold'
+              }`}
+            >
+              <Palette className="w-3.5 h-3.5" />
+              <span>🎨 تخصيص التنقل والواجهة</span>
             </button>
           )}
 
@@ -1947,6 +2012,213 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenLogs }) => {
           </div>
 
         </div>
+      )}
+
+      {/* Navigation & UI Customization Tab (تخصيص التنقل والواجهة) */}
+      {activeTab === 'nav_customization' && hasNavCustomizePerm && (
+        <form
+          onSubmit={handleSaveNavigationPreferences}
+          className="space-y-6 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs p-5 sm:p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-violet-100 text-violet-700 flex items-center justify-center shrink-0">
+                  <Palette className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    🎨 تخصيص التنقل والواجهة
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    اختر أسلوب التنقل الأنسب لك وسيُحفظ تلقائياً على حسابك الشخصي أينما سجّلت الدخول.
+                  </p>
+                </div>
+              </div>
+              {uiPreferences.nav_mode === 'cards' && onOpenNavCards && (
+                <button
+                  type="button"
+                  onClick={onOpenNavCards}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-xs transition cursor-pointer shrink-0"
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  <span>فتح صفحة كروت التنقل</span>
+                </button>
+              )}
+            </div>
+
+            {/* 1. Navigation Mode Picker */}
+            <div className="space-y-3">
+              <label className="block text-xs font-black text-slate-800">
+                1. اختيار وضع التنقل داخل النظام:
+              </label>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Option A: Classic Sidebar */}
+                <button
+                  type="button"
+                  onClick={() => setNavModeDraft('sidebar')}
+                  className={`relative text-start p-5 rounded-3xl border-2 transition-all cursor-pointer flex flex-col gap-4 ${
+                    navModeDraft === 'sidebar'
+                      ? 'border-violet-600 bg-violet-50/40 shadow-sm ring-2 ring-violet-200'
+                      : 'border-slate-200 bg-white hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        className={`w-10 h-10 rounded-2xl flex items-center justify-center ${
+                          navModeDraft === 'sidebar'
+                            ? 'bg-violet-600 text-white'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        <PanelLeft className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <span className="block text-sm font-black text-slate-900">
+                          القائمة الجانبية الكلاسيكية (Sidebar)
+                        </span>
+                        <span className="block text-[11px] font-semibold text-slate-500 mt-0.5">
+                          الشريط الجانبي القابل للطي مع القوائم المنسدلة
+                        </span>
+                      </div>
+                    </div>
+                    <span
+                      className={`w-6 h-6 rounded-full flex items-center justify-center border shrink-0 ${
+                        navModeDraft === 'sidebar'
+                          ? 'bg-violet-600 border-violet-600 text-white'
+                          : 'bg-white border-slate-300 text-transparent'
+                      }`}
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                    </span>
+                  </div>
+
+                  {/* Mini Visual Wireframe Preview */}
+                  <div className="w-full h-24 rounded-2xl bg-slate-100 border border-slate-200/80 p-2 flex gap-2 overflow-hidden">
+                    <div className="w-16 h-full rounded-xl bg-white border border-slate-200 p-1.5 flex flex-col gap-1.5 shrink-0">
+                      <div className="h-2.5 w-10 rounded-full bg-slate-800" />
+                      <div className="h-2 w-full rounded-full bg-blue-500/80" />
+                      <div className="h-1.5 w-9 rounded-full bg-slate-200" />
+                      <div className="h-1.5 w-11 rounded-full bg-slate-200" />
+                      <div className="h-1.5 w-8 rounded-full bg-slate-200" />
+                    </div>
+                    <div className="flex-1 h-full rounded-xl bg-white/80 border border-slate-200/60 p-2 flex flex-col gap-1.5">
+                      <div className="h-2.5 w-24 rounded-full bg-slate-300" />
+                      <div className="grid grid-cols-3 gap-1.5 flex-1">
+                        <div className="rounded-lg bg-slate-200/70" />
+                        <div className="rounded-lg bg-slate-200/70" />
+                        <div className="rounded-lg bg-slate-200/70" />
+                      </div>
+                    </div>
+                  </div>
+                </button>
+
+                {/* Option B: Cards Launcher */}
+                <button
+                  type="button"
+                  onClick={() => setNavModeDraft('cards')}
+                  className={`relative text-start p-5 rounded-3xl border-2 transition-all cursor-pointer flex flex-col gap-4 ${
+                    navModeDraft === 'cards'
+                      ? 'border-violet-600 bg-violet-50/40 shadow-sm ring-2 ring-violet-200'
+                      : 'border-slate-200 bg-white hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        className={`w-10 h-10 rounded-2xl flex items-center justify-center ${
+                          navModeDraft === 'cards'
+                            ? 'bg-violet-600 text-white'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        <LayoutGrid className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <span className="block text-sm font-black text-slate-900">
+                          وضع كروت التنقل (Cards Launcher)
+                        </span>
+                        <span className="block text-[11px] font-semibold text-slate-500 mt-0.5">
+                          شريط أدوات رفيع + صفحة كروت قابلة للترتيب والتخصيص بالسحب والإفلات
+                        </span>
+                      </div>
+                    </div>
+                    <span
+                      className={`w-6 h-6 rounded-full flex items-center justify-center border shrink-0 ${
+                        navModeDraft === 'cards'
+                          ? 'bg-violet-600 border-violet-600 text-white'
+                          : 'bg-white border-slate-300 text-transparent'
+                      }`}
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                    </span>
+                  </div>
+
+                  {/* Mini Visual Wireframe Preview */}
+                  <div className="w-full h-24 rounded-2xl bg-slate-100 border border-slate-200/80 p-2 flex gap-2 overflow-hidden">
+                    <div className="w-7 h-full rounded-xl bg-white border border-slate-200 py-1.5 flex flex-col items-center gap-1.5 shrink-0">
+                      <div className="w-3.5 h-3.5 rounded-full bg-slate-800" />
+                      <div className="w-3.5 h-3.5 rounded-full bg-blue-500" />
+                      <div className="w-3.5 h-3.5 rounded-md bg-violet-600" />
+                    </div>
+                    <div className="flex-1 h-full rounded-xl bg-white/80 border border-slate-200/60 p-2 grid grid-cols-4 gap-1.5">
+                      <div className="rounded-lg bg-blue-100 border border-blue-200" />
+                      <div className="rounded-lg bg-emerald-100 border border-emerald-200" />
+                      <div className="rounded-lg bg-amber-100 border border-amber-200" />
+                      <div className="rounded-lg bg-purple-100 border border-purple-200" />
+                      <div className="rounded-lg bg-rose-100 border border-rose-200" />
+                      <div className="rounded-lg bg-indigo-100 border border-indigo-200" />
+                      <div className="rounded-lg bg-teal-100 border border-teal-200" />
+                      <div className="rounded-lg bg-slate-200/80 border border-slate-300" />
+                    </div>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* 2. Accordion Mode Switch */}
+            <div className="p-4 sm:p-5 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-4">
+              <div className="space-y-1">
+                <p className="text-xs sm:text-sm font-black text-slate-900">
+                  2. فتح مجموعة واحدة فقط في المرة داخل القائمة الجانبية (Accordion Mode)
+                </p>
+                <p className="text-[11px] font-semibold text-slate-500 leading-relaxed">
+                  عند التفعيل (الافتراضي)، فتح أي مجموعة مثل المخازن أو متابعة الإنتاج أو الموارد البشرية يغلق تلقائياً المجموعات الأخرى لمنع طول القائمة. عند التعطيل يمكنك فتح أكثر من مجموعة معاً.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={accordionModeDraft}
+                onClick={() => setAccordionModeDraft((v) => !v)}
+                className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors cursor-pointer ${
+                  accordionModeDraft ? 'bg-violet-600' : 'bg-slate-300'
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
+                    accordionModeDraft ? '-translate-x-6' : '-translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* 3. Save Button */}
+            <div className="pt-2 flex flex-wrap items-center justify-end gap-3">
+              <button
+                type="submit"
+                disabled={savingNavPrefs}
+                className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-black shadow-md transition disabled:opacity-60 cursor-pointer"
+              >
+                <Save className="w-4 h-4" />
+                <span>
+                  {savingNavPrefs ? 'جارٍ الحفظ والتطبيق...' : 'حفظ وتطبيق التفضيلات'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </form>
       )}
 
       {/* Standalone Edit User Permissions & Password Modal */}

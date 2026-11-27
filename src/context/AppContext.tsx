@@ -62,7 +62,9 @@ import {
   MODEL_STATUS_TO_PART_STAGE,
   deriveStatusFromStages,
   SnoozeHours,
-  SNOOZED_NOTIFICATIONS_STORAGE_KEY
+  SNOOZED_NOTIFICATIONS_STORAGE_KEY,
+  UIPreferences,
+  DEFAULT_UI_PREFERENCES
 } from '../types';
 import { buildPackagingDemandMap } from '../utils/packagingMaterials';
 import { finishedSetsOf, photographyOutstandingOf } from '../utils/completedModels';
@@ -244,6 +246,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       if (user) {
         localStorage.setItem('factory_erp_current_user', JSON.stringify(user));
+        if (typeof user.ui_preferences?.sidebar_collapsed === 'boolean') {
+          localStorage.setItem(
+            `factory_erp_sidebar_collapsed_${user.id}`,
+            String(user.ui_preferences.sidebar_collapsed)
+          );
+          localStorage.setItem(
+            'factory_erp_sidebar_collapsed',
+            String(user.ui_preferences.sidebar_collapsed)
+          );
+        }
       } else {
         localStorage.removeItem('factory_erp_current_user');
         localStorage.removeItem('factory_erp_auth_token');
@@ -252,6 +264,118 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // ignore
     }
   }, []);
+
+  const [sidebarCollapsedLocal, setSidebarCollapsedLocal] = useState<boolean>(() => {
+    try {
+      const storedUser = localStorage.getItem('factory_erp_current_user');
+      if (storedUser) {
+        const parsed = JSON.parse(storedUser);
+        if (typeof parsed?.ui_preferences?.sidebar_collapsed === 'boolean') {
+          return parsed.ui_preferences.sidebar_collapsed;
+        }
+        const perUser = localStorage.getItem(`factory_erp_sidebar_collapsed_${parsed?.id}`);
+        if (perUser === 'true' || perUser === 'false') return perUser === 'true';
+      }
+      return localStorage.getItem('factory_erp_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    if (!currentUser) return;
+    if (typeof currentUser.ui_preferences?.sidebar_collapsed === 'boolean') {
+      setSidebarCollapsedLocal(currentUser.ui_preferences.sidebar_collapsed);
+      return;
+    }
+    try {
+      const perUser = localStorage.getItem(`factory_erp_sidebar_collapsed_${currentUser.id}`);
+      if (perUser === 'true' || perUser === 'false') {
+        setSidebarCollapsedLocal(perUser === 'true');
+      }
+    } catch {
+      // ignore
+    }
+  }, [currentUser?.id, currentUser?.ui_preferences?.sidebar_collapsed]);
+
+  const uiPreferences = useMemo<UIPreferences>(() => {
+    const raw = currentUser?.ui_preferences;
+    return {
+      nav_mode: raw?.nav_mode === 'cards' ? 'cards' : 'sidebar',
+      sidebar_collapsed:
+        typeof raw?.sidebar_collapsed === 'boolean'
+          ? raw.sidebar_collapsed
+          : sidebarCollapsedLocal,
+      accordion_mode:
+        typeof raw?.accordion_mode === 'boolean'
+          ? raw.accordion_mode
+          : DEFAULT_UI_PREFERENCES.accordion_mode,
+      cards_layout:
+        raw?.cards_layout && typeof raw.cards_layout === 'object' ? raw.cards_layout : null
+    };
+  }, [currentUser?.ui_preferences, sidebarCollapsedLocal]);
+
+  const setSidebarCollapsed = useCallback(
+    (collapsed: boolean) => {
+      const nextVal = Boolean(collapsed);
+      setSidebarCollapsedLocal(nextVal);
+      try {
+        localStorage.setItem('factory_erp_sidebar_collapsed', String(nextVal));
+        if (currentUser?.id) {
+          localStorage.setItem(`factory_erp_sidebar_collapsed_${currentUser.id}`, String(nextVal));
+        }
+      } catch {
+        // ignore
+      }
+      if (!currentUser) return;
+      const optimisticUser: User = {
+        ...currentUser,
+        ui_preferences: {
+          ...uiPreferences,
+          sidebar_collapsed: nextVal
+        }
+      };
+      setCurrentUser(optimisticUser);
+      api
+        .updateMyProfile({ ui_preferences: { sidebar_collapsed: nextVal } })
+        .then((res) => {
+          if (res?.user) {
+            setCurrentUser(res.user);
+          }
+        })
+        .catch(() => {
+          // Keep optimistic localStorage value if network hiccups
+        });
+    },
+    [currentUser, uiPreferences, setCurrentUser]
+  );
+
+  const updateUiPreferences = useCallback(
+    async (
+      patch: Partial<UIPreferences>
+    ): Promise<{ success: boolean; message?: string; user?: User }> => {
+      if (!currentUser) {
+        return { success: false, message: 'يرجى تسجيل الدخول أولاً' };
+      }
+      try {
+        const res = await api.updateMyProfile({ ui_preferences: patch });
+        if (res?.user) {
+          setCurrentUser(res.user);
+          if (typeof res.user.ui_preferences?.sidebar_collapsed === 'boolean') {
+            setSidebarCollapsedLocal(res.user.ui_preferences.sidebar_collapsed);
+          }
+          return { success: true, user: res.user };
+        }
+        return { success: false, message: 'لم يتم استلام بيانات الحساب المحدثة' };
+      } catch (err: any) {
+        return {
+          success: false,
+          message: err?.message || 'تعذر حفظ تفضيلات التنقل والواجهة'
+        };
+      }
+    },
+    [currentUser, setCurrentUser]
+  );
 
   const refreshState = useCallback(async () => {
     try {
@@ -889,7 +1013,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const baseCtx: any = { currentUser, setCurrentUser, setCurrentUserState, isLoadingState, setIsLoadingState, globalSettings, setGlobalSettings, roles, setRoles, users, setUsers, onlineUsers, setOnlineUsers, sizeDefs, setSizeDefs, suppliers, setSuppliers, workshops, setWorkshops, fabrics, setFabrics, fabricColorsRaw, setFabricColors, fabricColors, fabricTransactions, setFabricTransactions, models, setModels, requirements, setRequirements, accessories, setAccessories, accessoryTypes, setAccessoryTypes, accessoryItemsRaw, setAccessoryItems, accessoryItems, accessoryTransactions, setAccessoryTransactions, purchaseRequests, setPurchaseRequests, cuttingRecords, setCuttingRecords, qcRecords, setQcRecords, printDispatches, setPrintDispatches, sewingDispatches, setSewingDispatches, packagingRequirements, setPackagingRequirements, finishingRecords, setFinishingRecords, assemblyStageRecords, setAssemblyStageRecords, workshopEvaluations, setWorkshopEvaluations, submitWorkshopEvaluation, packagingMaterialRules, setPackagingMaterialRules, internalMessages, setInternalMessages, auditLogs, setAuditLogs, flashMessages, setFlashMessages, readNotificationIds, setReadNotificationIds, snoozedNotifications, setSnoozedNotifications, designModelIdsSet, removeFlashMessage, addFlashMessage, refreshState, login, logout, logAction, updateGlobalSettings, formatSupplierWhatsappMessage, openWhatsAppOrder, addModelTimelineEvent, sendInternalMessage, markMessageRead, normalizePartKey, getModelParts, getModelColorList, getModelSizeList, getPackagingRequirement, getPartStages, isPackagingReady };
   const permHelpers = buildPermissionHelpers(baseCtx);
-  const { getUserPermissionsObject, hasSpecificPermission, hasPermission, ASSEMBLY_ACCESS_KEYS, hasAssemblyPackagingAccess, canManagePermissions, canManageUsers, canManageSuppliers, canManageSizes, canViewAuditLogs, canViewGlobalSettings, canEditHeaderSettings, canEditMessageTemplates, canAccessSettings, isCurrentUserSudo, canAccessHRSection, canManageHR, canAccessReadinessStage, canAccessAnyReadiness, canViewPreviousModels, currentUserRank, visibleRankLevels, visibleRankOptions, rankLabelFor, isRankVisibleToActor, clampRankToVisible, getEffectiveDelegatablePermissions, canDelegatePermission, getRoleEnabledPermissionKeys, isRoleAssignable, getCreatedDescendants, canAddDesignNotes, canAddCuttingNotes, canAddQCBeforePrintNotes, canAddQCAfterPrintNotes, canAddSewingNotes, canAddPrintingNotes, canViewFabricPrices, canEditFabricPrices, canViewAccessoryPrices, canEditAccessoryPrices, canViewPrintingPrices, canEditPrintingPrices, canViewPrintingCosts, canEditPrintingCosts, canViewSewingPrices, canEditSewingPrices, canViewAssemblyPrices, canEditAssemblyPrices, canSendWhatsApp, canSendMessages } = permHelpers;
+  const { getUserPermissionsObject, hasSpecificPermission, hasPermission, ASSEMBLY_ACCESS_KEYS, hasAssemblyPackagingAccess, canManagePermissions, canManageUsers, canManageSuppliers, canManageSizes, canViewAuditLogs, canViewGlobalSettings, canEditHeaderSettings, canEditMessageTemplates, canAccessSettings, isCurrentUserSudo, canAccessHRSection, canManageHR, canAccessReadinessStage, canAccessAnyReadiness, canViewPreviousModels, canCustomizeNavigation, currentUserRank, visibleRankLevels, visibleRankOptions, rankLabelFor, isRankVisibleToActor, clampRankToVisible, getEffectiveDelegatablePermissions, canDelegatePermission, getRoleEnabledPermissionKeys, isRoleAssignable, getCreatedDescendants, canAddDesignNotes, canAddCuttingNotes, canAddQCBeforePrintNotes, canAddQCAfterPrintNotes, canAddSewingNotes, canAddPrintingNotes, canViewFabricPrices, canEditFabricPrices, canViewAccessoryPrices, canEditAccessoryPrices, canViewPrintingPrices, canEditPrintingPrices, canViewPrintingCosts, canEditPrintingCosts, canViewSewingPrices, canEditSewingPrices, canViewAssemblyPrices, canEditAssemblyPrices, canSendWhatsApp, canSendMessages } = permHelpers;
   // Dynamic Role Management
   const addRole = (data: Omit<CustomRole, 'id'>) => {
     const newRole: CustomRole = {
@@ -1091,6 +1215,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         canAccessReadinessStage,
         canAccessAnyReadiness,
         canViewPreviousModels,
+        canCustomizeNavigation,
+        uiPreferences,
+        setSidebarCollapsed,
+        updateUiPreferences,
         canAddDesignNotes,
         canAddCuttingNotes,
         canAddQCBeforePrintNotes,

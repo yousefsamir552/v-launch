@@ -34,7 +34,10 @@ import {
   PackageOpen,
   Flame,
   PackageCheck,
-  ClipboardCheck
+  ClipboardCheck,
+  LayoutGrid,
+  PanelLeftClose,
+  PanelLeftOpen
 } from 'lucide-react';
 import { InternalMessagingModal } from './InternalMessagingModal';
 import { MyProfileModal } from './MyProfileModal';
@@ -68,18 +71,33 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     addFlashMessage,
     purchaseRequests,
     accessoryItems,
-    suppliers
+    suppliers,
+    uiPreferences,
+    setSidebarCollapsed
   } = useApp();
+
+  const navMode = uiPreferences.nav_mode;
+  const isCardsMode = navMode === 'cards';
+  const sidebarCollapsed = uiPreferences.sidebar_collapsed;
+  const accordionMode = uiPreferences.accordion_mode;
+
   const [productionOpen, setProductionOpen] = useState(true);
   const [warehousesOpen, setWarehousesOpen] = useState(false);
   const [productionControlOpen, setProductionControlOpen] = useState(false);
   const [readinessOpen, setReadinessOpen] = useState(false);
-  const [hrOpen, setHrOpen] = useState(true);
+  const [hrOpen, setHrOpen] = useState(!accordionMode);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [messagesModalOpen, setMessagesModalOpen] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [comingSoonModal, setComingSoonModal] = useState<string | null>(null);
+  const [railTooltip, setRailTooltip] = useState<{ label: string; top: number } | null>(null);
+
+  const showRailTooltip = (e: React.MouseEvent<HTMLElement>, label: string) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setRailTooltip({ label, top: rect.top + rect.height / 2 });
+  };
+  const hideRailTooltip = () => setRailTooltip(null);
 
   useModalBackHandler(mobileMenuOpen, () => setMobileMenuOpen(false));
   useModalBackHandler(notificationsOpen, () => setNotificationsOpen(false));
@@ -320,30 +338,117 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
     ] as ProductionNavEntry[]
   ).filter((entry) => entry.isVisible);
 
+  // Accordion-aware group togglers
+  const toggleProductionGroup = () => {
+    setProductionOpen((prev) => {
+      const next = !prev;
+      if (next && accordionMode) {
+        setHrOpen(false);
+      }
+      return next;
+    });
+  };
+
+  const toggleHrGroup = () => {
+    setHrOpen((prev) => {
+      const next = !prev;
+      if (next && accordionMode) {
+        setProductionOpen(false);
+        setWarehousesOpen(false);
+        setProductionControlOpen(false);
+        setReadinessOpen(false);
+      }
+      return next;
+    });
+  };
+
+  const toggleNestedProductionGroup = (
+    groupId: 'warehouses_group' | 'production_control_group' | 'readiness_group'
+  ) => {
+    if (groupId === 'warehouses_group') {
+      setWarehousesOpen((prev) => {
+        const next = !prev;
+        if (next && accordionMode) {
+          setProductionControlOpen(false);
+          setReadinessOpen(false);
+          setHrOpen(false);
+        }
+        return next;
+      });
+    } else if (groupId === 'production_control_group') {
+      setProductionControlOpen((prev) => {
+        const next = !prev;
+        if (next && accordionMode) {
+          setWarehousesOpen(false);
+          setReadinessOpen(false);
+          setHrOpen(false);
+        }
+        return next;
+      });
+    } else {
+      setReadinessOpen((prev) => {
+        const next = !prev;
+        if (next && accordionMode) {
+          setWarehousesOpen(false);
+          setProductionControlOpen(false);
+          setHrOpen(false);
+        }
+        return next;
+      });
+    }
+  };
+
   // Auto-open the relevant nested sub-dropdown when navigating to one of its child tabs
   useEffect(() => {
-    if (
+    const isWarehouseTab =
       currentTab === 'warehouse' ||
       currentTab === 'accessories_warehouse' ||
       currentTab === 'packaging_materials' ||
       currentTab === 'production_warehouse' ||
-      currentTab === 'purchase_requests'
-    ) {
-      setWarehousesOpen(true);
-    }
-    if (
+      currentTab === 'purchase_requests';
+    const isProdControlTab =
       currentTab === 'qc' ||
       currentTab === 'qc_details' ||
       currentTab === 'printing' ||
       currentTab === 'sewing' ||
-      currentTab === 'production_control'
-    ) {
+      currentTab === 'production_control';
+    const isReadinessTab = currentTab.startsWith('readiness_');
+    const isHrTabCurrent = currentTab.startsWith('hr_');
+
+    if (isWarehouseTab) {
+      setProductionOpen(true);
+      setWarehousesOpen(true);
+      if (accordionMode) {
+        setProductionControlOpen(false);
+        setReadinessOpen(false);
+        setHrOpen(false);
+      }
+    } else if (isProdControlTab) {
+      setProductionOpen(true);
       setProductionControlOpen(true);
-    }
-    if (currentTab.startsWith('readiness_')) {
+      if (accordionMode) {
+        setWarehousesOpen(false);
+        setReadinessOpen(false);
+        setHrOpen(false);
+      }
+    } else if (isReadinessTab) {
+      setProductionOpen(true);
       setReadinessOpen(true);
+      if (accordionMode) {
+        setWarehousesOpen(false);
+        setProductionControlOpen(false);
+        setHrOpen(false);
+      }
+    } else if (isHrTabCurrent) {
+      setHrOpen(true);
+      if (accordionMode) {
+        setProductionOpen(false);
+        setWarehousesOpen(false);
+        setProductionControlOpen(false);
+        setReadinessOpen(false);
+      }
     }
-  }, [currentTab]);
+  }, [currentTab, accordionMode]);
 
   // الموارد البشرية (HR) - 4 عناصر رئيسية فقط.
   // الصفحات المدمجة (موظفين + وظائف)، (حضور + قواعد)، (سلف + جزاءات) تُفتح كشاشة واحدة
@@ -430,94 +535,586 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
   );
   const isAnyHrActive = hrSubItems.some((item) => isTabActive(item.id));
 
+  // Flattened authorized items for the Collapsed Slim Rail (sidebar mode)
+  const slimRailSections = useMemo(() => {
+    const groups: Array<{
+      id: string;
+      items: Array<{
+        id: string;
+        label: string;
+        icon: any;
+        color: string;
+        alertCount?: number;
+        accent?: 'blue' | 'purple' | 'slate';
+      }>;
+    }> = [];
+
+    const mainItems: Array<{
+      id: string;
+      label: string;
+      icon: any;
+      color: string;
+      alertCount?: number;
+      accent?: 'blue' | 'purple' | 'slate';
+    }> = [];
+
+    productionNavEntries.forEach((entry) => {
+      if (entry.kind === 'item') {
+        mainItems.push({
+          id: entry.id,
+          label: entry.label,
+          icon: entry.icon,
+          color: entry.color,
+          accent: 'blue'
+        });
+      } else {
+        entry.children.forEach((child) => {
+          mainItems.push({
+            id: child.id,
+            label:
+              entry.id === 'readiness_group' ? `جاهزية: ${child.label}` : child.label,
+            icon: child.icon,
+            color: child.color,
+            alertCount: child.alertCount,
+            accent: 'blue'
+          });
+        });
+      }
+    });
+
+    if (mainItems.length > 0) {
+      groups.push({ id: 'prod', items: mainItems });
+    }
+
+    if (canManageHR() && hrSubItems.length > 0) {
+      groups.push({
+        id: 'hr',
+        items: hrSubItems.map((it) => ({
+          id: it.id,
+          label: it.label,
+          icon: it.icon,
+          color: it.color,
+          accent: 'purple'
+        }))
+      });
+    }
+
+    if (canAccessSettings()) {
+      groups.push({
+        id: 'settings',
+        items: [
+          {
+            id: 'settings',
+            label: 'الإعدادات',
+            icon: Settings,
+            color: 'text-slate-600',
+            accent: 'slate'
+          }
+        ]
+      });
+    }
+
+    return groups;
+  }, [productionNavEntries, hrSubItems, canManageHR, canAccessSettings]);
+
+  const userInitial = (currentUser?.real_name || currentUser?.username || 'U')
+    .trim()
+    .charAt(0)
+    .toUpperCase();
+
+  const isDesktopSlimRail = isCardsMode || sidebarCollapsed;
+
   return (
     <>
-      {/* Mobile Top Sticky Header (prevents floating button from overlapping page controls) */}
-      <header className="no-print lg:hidden sticky top-0 z-30 w-full bg-white/95 backdrop-blur-xs border-b border-slate-200/80 px-3 py-2.5 flex items-center justify-between gap-2 shadow-2xs">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            type="button"
-            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="p-2 rounded-xl bg-slate-900 text-white shadow-xs cursor-pointer shrink-0"
-            title="القائمة الجانبية"
-            aria-label="القائمة الجانبية"
-          >
-            {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleNavClick('dashboard')}
-            className="flex items-center gap-2 font-black text-sm text-slate-900 min-w-0 cursor-pointer"
-          >
-            {isImageLogo ? (
-              <img
-                src={siteLogo}
-                alt={siteName}
-                className="w-7 h-7 rounded-lg object-contain bg-white border border-slate-200 p-0.5 shrink-0"
-              />
-            ) : (
-              <span className="text-lg shrink-0">{siteLogo || '🏭'}</span>
-            )}
-            <span className="truncate">{siteName}</span>
-          </button>
-        </div>
+      {/* Mobile Top Sticky Header */}
+      {isCardsMode ? (
+        <header className="no-print lg:hidden sticky top-0 z-30 w-full bg-white/95 backdrop-blur-xs border-b border-slate-200/80 px-3 py-2 flex items-center justify-between gap-2 shadow-2xs">
+          <div className="flex items-center gap-2 min-w-0">
+            <button
+              type="button"
+              onClick={() => handleNavClick('nav_cards')}
+              className="flex items-center gap-2 font-black text-sm text-slate-900 min-w-0 cursor-pointer"
+              title={siteName}
+            >
+              {isImageLogo ? (
+                <img
+                  src={siteLogo}
+                  alt={siteName}
+                  className="w-8 h-8 rounded-full object-contain bg-white border border-slate-200 p-0.5 shrink-0"
+                />
+              ) : (
+                <span className="w-8 h-8 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-base shrink-0">
+                  {siteLogo || '🏭'}
+                </span>
+              )}
+              <span className="truncate max-w-[130px]">{siteName}</span>
+            </button>
+          </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => {
-              setMessagesModalOpen(true);
-              setNotificationsOpen(false);
-            }}
-            className={`relative p-2 rounded-full border transition cursor-pointer ${
-              unreadMessagesCount > 0
-                ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
-                : 'bg-slate-100 border-slate-200 text-slate-700'
-            }`}
-            title="المراسلات والمحادثات الداخلية"
-          >
-            <MessageSquare className="w-4 h-4" />
-            {unreadMessagesCount > 0 && (
-              <span className="absolute -top-1 -end-1 min-w-[16px] h-[16px] px-1 bg-indigo-600 text-white rounded-full text-[9px] font-black flex items-center justify-center">
-                {unreadMessagesCount}
-              </span>
-            )}
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => handleNavClick('nav_cards')}
+              className={`p-2 rounded-xl border transition cursor-pointer ${
+                currentTab === 'nav_cards'
+                  ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
+                  : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200/80'
+              }`}
+              title="صفحة كروت التنقل"
+              aria-label="صفحة كروت التنقل"
+            >
+              <LayoutGrid className="w-4 h-4" />
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setNotificationsOpen(!notificationsOpen)}
-            className={`relative p-2 rounded-full border transition cursor-pointer ${
-              unreadNotificationsCount > 0
-                ? 'bg-rose-50 border-rose-200 text-rose-700'
-                : 'bg-slate-100 border-slate-200 text-slate-700'
-            }`}
-            title="التنبيهات والإشعارات"
-          >
-            <Bell className="w-4 h-4" />
-            {unreadNotificationsCount > 0 && (
-              <span className="absolute -top-1 -end-1 min-w-[16px] h-[16px] px-1 bg-rose-600 text-white rounded-full text-[9px] font-black flex items-center justify-center animate-pulse">
-                {unreadNotificationsCount}
-              </span>
-            )}
-          </button>
-        </div>
-      </header>
+            <button
+              type="button"
+              onClick={() => {
+                setMessagesModalOpen(true);
+                setNotificationsOpen(false);
+              }}
+              className={`relative p-2 rounded-full border transition cursor-pointer ${
+                unreadMessagesCount > 0
+                  ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                  : 'bg-slate-100 border-slate-200 text-slate-700'
+              }`}
+              title="الرسائل الداخلية"
+            >
+              <MessageSquare className="w-4 h-4" />
+              {unreadMessagesCount > 0 && (
+                <span className="absolute -top-1 -end-1 min-w-[16px] h-[16px] px-1 bg-indigo-600 text-white rounded-full text-[9px] font-black flex items-center justify-center">
+                  {unreadMessagesCount}
+                </span>
+              )}
+            </button>
 
-      {/* Mobile Backdrop */}
-      {mobileMenuOpen && (
+            <button
+              type="button"
+              onClick={() => setNotificationsOpen(!notificationsOpen)}
+              className={`relative p-2 rounded-full border transition cursor-pointer ${
+                unreadNotificationsCount > 0
+                  ? 'bg-rose-50 border-rose-200 text-rose-700'
+                  : 'bg-slate-100 border-slate-200 text-slate-700'
+              }`}
+              title="التنبيهات"
+            >
+              <Bell className="w-4 h-4" />
+              {unreadNotificationsCount > 0 && (
+                <span className="absolute -top-1 -end-1 min-w-[16px] h-[16px] px-1 bg-rose-600 text-white rounded-full text-[9px] font-black flex items-center justify-center animate-pulse">
+                  {unreadNotificationsCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setProfileModalOpen(true)}
+              className="rounded-full overflow-hidden border border-slate-200 shadow-2xs cursor-pointer shrink-0"
+              title="حسابي الشخصي"
+            >
+              {currentUser?.avatar ? (
+                <img
+                  src={currentUser.avatar}
+                  alt={currentUser?.real_name || 'avatar'}
+                  className="w-8 h-8 object-cover bg-white"
+                />
+              ) : (
+                <div className="w-8 h-8 bg-blue-600 text-white flex items-center justify-center text-xs font-black">
+                  {userInitial}
+                </div>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={onLogout}
+              className="p-2 rounded-full text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+              title="تسجيل الخروج"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+        </header>
+      ) : (
+        <header className="no-print lg:hidden sticky top-0 z-30 w-full bg-white/95 backdrop-blur-xs border-b border-slate-200/80 px-3 py-2.5 flex items-center justify-between gap-2 shadow-2xs">
+          <div className="flex items-center gap-2 min-w-0">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="p-2 rounded-xl bg-slate-900 text-white shadow-xs cursor-pointer shrink-0"
+              title="القائمة الجانبية"
+              aria-label="القائمة الجانبية"
+            >
+              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleNavClick('dashboard')}
+              className="flex items-center gap-2 font-black text-sm text-slate-900 min-w-0 cursor-pointer"
+            >
+              {isImageLogo ? (
+                <img
+                  src={siteLogo}
+                  alt={siteName}
+                  className="w-7 h-7 rounded-lg object-contain bg-white border border-slate-200 p-0.5 shrink-0"
+                />
+              ) : (
+                <span className="text-lg shrink-0">{siteLogo || '🏭'}</span>
+              )}
+              <span className="truncate">{siteName}</span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setMessagesModalOpen(true);
+                setNotificationsOpen(false);
+              }}
+              className={`relative p-2 rounded-full border transition cursor-pointer ${
+                unreadMessagesCount > 0
+                  ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                  : 'bg-slate-100 border-slate-200 text-slate-700'
+              }`}
+              title="المراسلات والمحادثات الداخلية"
+            >
+              <MessageSquare className="w-4 h-4" />
+              {unreadMessagesCount > 0 && (
+                <span className="absolute -top-1 -end-1 min-w-[16px] h-[16px] px-1 bg-indigo-600 text-white rounded-full text-[9px] font-black flex items-center justify-center">
+                  {unreadMessagesCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setNotificationsOpen(!notificationsOpen)}
+              className={`relative p-2 rounded-full border transition cursor-pointer ${
+                unreadNotificationsCount > 0
+                  ? 'bg-rose-50 border-rose-200 text-rose-700'
+                  : 'bg-slate-100 border-slate-200 text-slate-700'
+              }`}
+              title="التنبيهات والإشعارات"
+            >
+              <Bell className="w-4 h-4" />
+              {unreadNotificationsCount > 0 && (
+                <span className="absolute -top-1 -end-1 min-w-[16px] h-[16px] px-1 bg-rose-600 text-white rounded-full text-[9px] font-black flex items-center justify-center animate-pulse">
+                  {unreadNotificationsCount}
+                </span>
+              )}
+            </button>
+          </div>
+        </header>
+      )}
+
+      {/* Mobile Backdrop (Sidebar Mode only) */}
+      {!isCardsMode && mobileMenuOpen && (
         <div
           onClick={() => setMobileMenuOpen(false)}
           className="no-print lg:hidden fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-40"
         />
       )}
 
-      {/* Left Sidebar */}
-      <aside
-        className={`no-print fixed top-0 left-0 bottom-0 z-50 lg:z-40 w-[82vw] max-w-72 lg:w-72 bg-white border-r border-slate-200/80 shadow-xl lg:shadow-xs flex flex-col justify-between transition-transform duration-200 ${
-          mobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-        }`}
-      >
+      {/* ===================================================================== */}
+      {/* MODE 1: CARDS LAUNCHER SLIM RAIL (Desktop fixed vertical rail only)   */}
+      {/* Order: Logo -> Profile Avatar -> Messages -> Notifications -> 4-Grid  */}
+      {/*        ... Logout at bottom                                           */}
+      {/* ===================================================================== */}
+      {isCardsMode && (
+        <aside className="no-print hidden lg:flex fixed top-0 left-0 bottom-0 z-40 w-[68px] bg-white border-r border-slate-200/80 shadow-xs flex-col items-center py-3.5 px-2 gap-3">
+          {/* 1. Factory Logo */}
+          <button
+            type="button"
+            onClick={() => handleNavClick('nav_cards')}
+            onMouseEnter={(e) => showRailTooltip(e, `${siteName} — الرئيسية`)}
+            onMouseLeave={hideRailTooltip}
+            title={siteName}
+            className="w-11 h-11 rounded-2xl bg-slate-50 border border-slate-200/90 hover:border-slate-400 flex items-center justify-center shadow-2xs transition hover:scale-105 cursor-pointer shrink-0 overflow-hidden"
+          >
+            {isImageLogo ? (
+              <img src={siteLogo} alt={siteName} className="w-8 h-8 object-contain" />
+            ) : (
+              <span className="text-xl leading-none">{siteLogo || '🏭'}</span>
+            )}
+          </button>
+
+          {/* 2. My Profile Avatar */}
+          <button
+            type="button"
+            onClick={() => setProfileModalOpen(true)}
+            onMouseEnter={(e) =>
+              showRailTooltip(
+                e,
+                `حسابي الشخصي (${currentUser?.real_name || currentUser?.username || ''})`
+              )
+            }
+            onMouseLeave={hideRailTooltip}
+            title="حسابي الشخصي"
+            className="w-10 h-10 rounded-full border-2 border-slate-200 hover:border-blue-500 overflow-hidden shadow-xs transition hover:scale-105 cursor-pointer shrink-0"
+          >
+            {currentUser?.avatar ? (
+              <img
+                src={currentUser.avatar}
+                alt={currentUser?.real_name || 'avatar'}
+                className="w-full h-full object-cover bg-white"
+              />
+            ) : (
+              <div className="w-full h-full bg-blue-600 text-white flex items-center justify-center text-sm font-black">
+                {userInitial}
+              </div>
+            )}
+          </button>
+
+          <div className="w-7 h-px bg-slate-200/80" />
+
+          {/* 3. Internal Messages */}
+          <button
+            type="button"
+            onClick={() => {
+              setMessagesModalOpen(true);
+              setNotificationsOpen(false);
+            }}
+            onMouseEnter={(e) => showRailTooltip(e, 'الرسائل الداخلية')}
+            onMouseLeave={hideRailTooltip}
+            title="الرسائل الداخلية"
+            className={`relative w-10 h-10 rounded-2xl border flex items-center justify-center transition cursor-pointer shrink-0 ${
+              unreadMessagesCount > 0
+                ? 'bg-indigo-50 border-indigo-300 text-indigo-700 hover:bg-indigo-100'
+                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            <MessageSquare className="w-4 h-4" />
+            {unreadMessagesCount > 0 && (
+              <span className="absolute -top-1 -end-1 min-w-[17px] h-[17px] px-1 bg-indigo-600 text-white rounded-full text-[9px] font-black flex items-center justify-center">
+                {unreadMessagesCount}
+              </span>
+            )}
+          </button>
+
+          {/* 4. Notifications */}
+          <button
+            type="button"
+            onClick={() => setNotificationsOpen((v) => !v)}
+            onMouseEnter={(e) => showRailTooltip(e, 'التنبيهات والإشعارات')}
+            onMouseLeave={hideRailTooltip}
+            title="التنبيهات والإشعارات"
+            className={`relative w-10 h-10 rounded-2xl border flex items-center justify-center transition cursor-pointer shrink-0 ${
+              unreadNotificationsCount > 0
+                ? 'bg-rose-50 border-rose-300 text-rose-700 hover:bg-rose-100'
+                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+            {unreadNotificationsCount > 0 && (
+              <span className="absolute -top-1 -end-1 min-w-[17px] h-[17px] px-1 bg-rose-600 text-white rounded-full text-[9px] font-black flex items-center justify-center animate-pulse">
+                {unreadNotificationsCount}
+              </span>
+            )}
+          </button>
+
+          {/* 5. Four-Squares Launcher Button (LayoutGrid) */}
+          <button
+            type="button"
+            onClick={() => handleNavClick('nav_cards')}
+            onMouseEnter={(e) => showRailTooltip(e, 'صفحة كروت التنقل')}
+            onMouseLeave={hideRailTooltip}
+            title="صفحة كروت التنقل"
+            className={`w-11 h-11 rounded-2xl flex items-center justify-center transition cursor-pointer shrink-0 ${
+              currentTab === 'nav_cards'
+                ? 'bg-slate-900 text-white shadow-md scale-105'
+                : 'bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-600 hover:text-white hover:border-blue-600'
+            }`}
+          >
+            <LayoutGrid className="w-5 h-5" />
+          </button>
+
+          {/* 6. Logout at Bottom */}
+          <div className="mt-auto pt-3 border-t border-slate-200/80 w-full flex justify-center">
+            <button
+              type="button"
+              onClick={onLogout}
+              onMouseEnter={(e) => showRailTooltip(e, 'تسجيل الخروج')}
+              onMouseLeave={hideRailTooltip}
+              title="تسجيل الخروج"
+              className="w-10 h-10 rounded-2xl text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 flex items-center justify-center transition cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+        </aside>
+      )}
+
+      {/* ===================================================================== */}
+      {/* MODE 2A: SIDEBAR COLLAPSED SLIM RAIL (Desktop lg: only when collapsed) */}
+      {/* ===================================================================== */}
+      {!isCardsMode && sidebarCollapsed && (
+        <aside className="no-print hidden lg:flex fixed top-0 left-0 bottom-0 z-40 w-[68px] bg-white border-r border-slate-200/80 shadow-xs flex-col items-center py-3 px-2 gap-2.5">
+          {/* Logo Bubble */}
+          <button
+            type="button"
+            onClick={() => handleNavClick('dashboard')}
+            onMouseEnter={(e) => showRailTooltip(e, siteName)}
+            onMouseLeave={hideRailTooltip}
+            title={siteName}
+            className="w-10 h-10 rounded-full bg-slate-50 border border-slate-200 hover:border-slate-400 flex items-center justify-center shadow-2xs transition hover:scale-105 cursor-pointer shrink-0 overflow-hidden"
+          >
+            {isImageLogo ? (
+              <img src={siteLogo} alt={siteName} className="w-7 h-7 object-contain" />
+            ) : (
+              <span className="text-lg leading-none">{siteLogo || '🏭'}</span>
+            )}
+          </button>
+
+          {/* Profile Avatar Bubble */}
+          <button
+            type="button"
+            onClick={() => setProfileModalOpen(true)}
+            onMouseEnter={(e) =>
+              showRailTooltip(
+                e,
+                `حسابي الشخصي (${currentUser?.real_name || currentUser?.username || ''})`
+              )
+            }
+            onMouseLeave={hideRailTooltip}
+            title="حسابي الشخصي"
+            className="w-9 h-9 rounded-full border-2 border-slate-200 hover:border-blue-500 overflow-hidden shadow-2xs transition hover:scale-105 cursor-pointer shrink-0"
+          >
+            {currentUser?.avatar ? (
+              <img
+                src={currentUser.avatar}
+                alt={currentUser?.real_name || 'avatar'}
+                className="w-full h-full object-cover bg-white"
+              />
+            ) : (
+              <div className="w-full h-full bg-blue-600 text-white flex items-center justify-center text-xs font-black">
+                {userInitial}
+              </div>
+            )}
+          </button>
+
+          {/* Notifications + Messages */}
+          <button
+            type="button"
+            onClick={() => setNotificationsOpen((v) => !v)}
+            onMouseEnter={(e) => showRailTooltip(e, 'التنبيهات والإشعارات')}
+            onMouseLeave={hideRailTooltip}
+            title="التنبيهات والإشعارات"
+            className={`relative w-9 h-9 rounded-xl border flex items-center justify-center transition cursor-pointer shrink-0 ${
+              unreadNotificationsCount > 0
+                ? 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100'
+                : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+            {unreadNotificationsCount > 0 && (
+              <span className="absolute -top-1 -end-1 min-w-[15px] h-[15px] px-0.5 bg-rose-600 text-white rounded-full text-[9px] font-black flex items-center justify-center animate-pulse">
+                {unreadNotificationsCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setMessagesModalOpen(true);
+              setNotificationsOpen(false);
+            }}
+            onMouseEnter={(e) => showRailTooltip(e, 'الرسائل الداخلية')}
+            onMouseLeave={hideRailTooltip}
+            title="الرسائل الداخلية"
+            className={`relative w-9 h-9 rounded-xl border flex items-center justify-center transition cursor-pointer shrink-0 ${
+              unreadMessagesCount > 0
+                ? 'bg-indigo-50 border-indigo-300 text-indigo-700 hover:bg-indigo-100'
+                : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            <MessageSquare className="w-4 h-4" />
+            {unreadMessagesCount > 0 && (
+              <span className="absolute -top-1 -end-1 min-w-[15px] h-[15px] px-0.5 bg-indigo-600 text-white rounded-full text-[9px] font-black flex items-center justify-center">
+                {unreadMessagesCount}
+              </span>
+            )}
+          </button>
+
+          <div className="w-7 h-px bg-slate-200 shrink-0" />
+
+          {/* Authorized Section Icons */}
+          <div className="flex-1 w-full overflow-y-auto overflow-x-hidden flex flex-col items-center gap-1.5 py-0.5">
+            {slimRailSections.map((group, gIdx) => (
+              <React.Fragment key={group.id}>
+                {gIdx > 0 && <div className="w-6 h-px bg-slate-200/80 my-1 shrink-0" />}
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  const active = isTabActive(item.id);
+                  const activeClass =
+                    item.accent === 'purple'
+                      ? 'bg-purple-600 text-white shadow-xs'
+                      : item.accent === 'slate'
+                      ? 'bg-slate-900 text-white shadow-xs'
+                      : 'bg-blue-600 text-white shadow-xs';
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => handleNavClick(item.id)}
+                      onMouseEnter={(e) => showRailTooltip(e, item.label)}
+                      onMouseLeave={hideRailTooltip}
+                      title={item.label}
+                      className={`relative w-10 h-10 rounded-xl flex items-center justify-center transition cursor-pointer shrink-0 ${
+                        active
+                          ? activeClass
+                          : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                      }`}
+                    >
+                      <Icon className={`w-4 h-4 ${active ? 'text-white' : item.color}`} />
+                      {(item.alertCount || 0) > 0 && (
+                        <span className="absolute -top-0.5 -end-0.5 w-2.5 h-2.5 rounded-full bg-amber-500 ring-2 ring-white" />
+                      )}
+                    </button>
+                  );
+                })}
+              </React.Fragment>
+            ))}
+          </div>
+
+          {/* Expand Sidebar + Logout */}
+          <div className="pt-2 border-t border-slate-200/80 w-full flex flex-col items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                hideRailTooltip();
+                setSidebarCollapsed(false);
+              }}
+              onMouseEnter={(e) => showRailTooltip(e, 'فتح الشريط الجانبي')}
+              onMouseLeave={hideRailTooltip}
+              title="فتح الشريط الجانبي"
+              className="w-10 h-10 rounded-xl bg-slate-900 hover:bg-slate-800 text-white flex items-center justify-center shadow-xs transition cursor-pointer"
+            >
+              <PanelLeftOpen className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={onLogout}
+              onMouseEnter={(e) => showRailTooltip(e, 'تسجيل الخروج')}
+              onMouseLeave={hideRailTooltip}
+              title="تسجيل الخروج"
+              className="w-9 h-9 rounded-xl text-rose-600 hover:bg-rose-50 flex items-center justify-center transition cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+        </aside>
+      )}
+
+      {/* ===================================================================== */}
+      {/* MODE 2B: EXPANDED SIDEBAR (Desktop when not collapsed + Mobile drawer)*/}
+      {/* ===================================================================== */}
+      {!isCardsMode && (
+        <aside
+          className={`no-print fixed top-0 left-0 bottom-0 z-50 lg:z-40 w-[82vw] max-w-72 lg:w-72 bg-white border-r border-slate-200/80 shadow-xl lg:shadow-xs flex flex-col justify-between transition-transform duration-200 ${
+            sidebarCollapsed ? 'lg:hidden' : ''
+          } ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}
+        >
         {/* 1. Top Section: User Name & Quick Actions */}
         <div className="p-4 border-b border-slate-200/80 space-y-3">
           {/* Brand Header */}
@@ -581,6 +1178,17 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                   )}
                 </button>
               </div>
+
+              {/* Desktop Collapse Sidebar Button */}
+              <button
+                type="button"
+                onClick={() => setSidebarCollapsed(true)}
+                className="hidden lg:flex p-2 rounded-full border bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-900 hover:text-white hover:border-slate-900 transition cursor-pointer"
+                title="طي الشريط الجانبي"
+                aria-label="طي الشريط الجانبي"
+              >
+                <PanelLeftClose className="w-4 h-4" />
+              </button>
             </div>
           </div>
 
@@ -631,7 +1239,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
           <div className="space-y-1">
             <button
               type="button"
-              onClick={() => setProductionOpen(!productionOpen)}
+              onClick={toggleProductionGroup}
               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-black transition cursor-pointer ${
                 isAnyProductionActive
                   ? 'bg-slate-900 text-white shadow-xs'
@@ -660,15 +1268,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
                         : entry.id === 'production_control_group'
                         ? productionControlOpen
                         : readinessOpen;
-                    const toggleGroup = () => {
-                      if (entry.id === 'warehouses_group') {
-                        setWarehousesOpen((v) => !v);
-                      } else if (entry.id === 'production_control_group') {
-                        setProductionControlOpen((v) => !v);
-                      } else {
-                        setReadinessOpen((v) => !v);
-                      }
-                    };
+                    const toggleGroup = () => toggleNestedProductionGroup(entry.id);
                     const isGroupActive = entry.children.some((c) => isTabActive(c.id));
                     const groupAlertCount = entry.alertCount || 0;
 
@@ -809,7 +1409,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
           <div className="space-y-1">
             <button
               type="button"
-              onClick={() => setHrOpen(!hrOpen)}
+              onClick={toggleHrGroup}
               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-black transition cursor-pointer ${
                 isAnyHrActive
                   ? 'bg-purple-600 text-white shadow-xs'
@@ -868,7 +1468,18 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
             </button>
           </div>
         )}
-      </aside>
+        </aside>
+      )}
+
+      {/* Floating Tooltip for Desktop Slim Rail (never clipped by overflow-y-auto) */}
+      {railTooltip && isDesktopSlimRail && (
+        <div
+          style={{ top: railTooltip.top }}
+          className="no-print hidden lg:flex fixed left-[76px] -translate-y-1/2 z-[60] pointer-events-none px-3 py-1.5 rounded-xl bg-slate-900 text-white text-[11px] font-bold shadow-lg whitespace-nowrap animate-in fade-in duration-100"
+        >
+          {railTooltip.label}
+        </div>
+      )}
 
       {/* Notifications Popover (rendered outside <aside> so it never clips when mobile drawer is closed) */}
       {notificationsOpen && (
@@ -877,7 +1488,11 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onLog
             onClick={() => setNotificationsOpen(false)}
             className="no-print fixed inset-0 z-40"
           />
-          <div className="no-print fixed inset-x-3 sm:inset-x-auto sm:left-4 top-16 sm:w-96 max-w-[calc(100vw-1.5rem)] max-h-[80vh] flex flex-col bg-white rounded-3xl shadow-2xl border border-slate-200 py-3 z-50 animate-in fade-in zoom-in-95 duration-150">
+          <div
+            className={`no-print fixed inset-x-3 sm:inset-x-auto ${
+              isDesktopSlimRail ? 'sm:left-20' : 'sm:left-4'
+            } top-16 sm:w-96 max-w-[calc(100vw-1.5rem)] max-h-[80vh] flex flex-col bg-white rounded-3xl shadow-2xl border border-slate-200 py-3 z-50 animate-in fade-in zoom-in-95 duration-150`}
+          >
             <div className="px-4 pb-2 border-b border-slate-100 flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-2 min-w-0">
                 <Bell className="w-4 h-4 text-rose-600 shrink-0" />
