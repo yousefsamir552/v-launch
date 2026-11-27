@@ -36,6 +36,8 @@ type EmployeeForm = {
   rule_application_mode: HRRuleApplicationMode;
   national_id: string;
   birth_date: string;
+  hire_date: string;
+  termination_date: string;
   phone: string;
   photo: string;
   notes: string;
@@ -51,6 +53,8 @@ const emptyEmployeeForm: EmployeeForm = {
   rule_application_mode: 'auto',
   national_id: '',
   birth_date: '',
+  hire_date: '',
+  termination_date: '',
   phone: '',
   photo: '',
   notes: '',
@@ -151,6 +155,8 @@ export const EmployeesPanel: React.FC<{
       rule_application_mode: employee.rule_application_mode || 'auto',
       national_id: employee.national_id || '',
       birth_date: employee.birth_date || '',
+      hire_date: employee.hire_date || '',
+      termination_date: employee.termination_date || '',
       phone: employee.phone || '',
       photo: employee.photo || '',
       notes: employee.notes || '',
@@ -185,6 +191,11 @@ export const EmployeesPanel: React.FC<{
       return;
     }
 
+    if (form.hire_date && form.termination_date && form.termination_date < form.hire_date) {
+      setFormError('تاريخ ترك العمل لا يمكن أن يسبق تاريخ التعيين');
+      return;
+    }
+
     setIsSaving(true);
     setFormError('');
     const payload: any = {
@@ -194,6 +205,8 @@ export const EmployeesPanel: React.FC<{
       rule_application_mode: form.rule_application_mode,
       national_id: form.national_id.trim(),
       birth_date: form.birth_date || null,
+      hire_date: form.hire_date || null,
+      termination_date: form.termination_date || null,
       phone: form.phone.trim(),
       photo: form.photo.trim(),
       notes: form.notes.trim(),
@@ -558,6 +571,33 @@ export const EmployeesPanel: React.FC<{
                   onChange={(event) => updateForm({ birth_date: event.target.value })}
                   className={`${inputClass} font-mono`}
                 />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className={labelClass}>تاريخ التعيين / بداية العمل (اختياري)</label>
+                <input
+                  type="date"
+                  value={form.hire_date}
+                  onChange={(event) => updateForm({ hire_date: event.target.value })}
+                  className={`${inputClass} font-mono`}
+                />
+                <p className="text-[10px] font-bold text-slate-400 mt-1">
+                  يُستخدم لمحاسبة الموظف الجديد بالأيام الفعلية فقط في شهر تعيينه دون خصم الأيام السابقة.
+                </p>
+              </div>
+              <div>
+                <label className={labelClass}>تاريخ ترك العمل (اختياري)</label>
+                <input
+                  type="date"
+                  value={form.termination_date}
+                  onChange={(event) => updateForm({ termination_date: event.target.value })}
+                  className={`${inputClass} font-mono`}
+                />
+                <p className="text-[10px] font-bold text-slate-400 mt-1">
+                  عند تحديده يُحاسب الموظف بالأيام الفعلية حتى هذا التاريخ فقط.
+                </p>
               </div>
             </div>
 

@@ -16,7 +16,7 @@ import { api } from '../../api/client';
 import {
   HRJobTitle, HREmployee, HRAttendanceSettings, HRAttendanceRule,
   HRAttendanceRecord, HRAttendanceStatus, HRAttendanceStats,
-  HRAttendanceImportResult, HRReviewStatus, HRPenalty, HRPenaltyType,
+  HRAttendanceImportResult, HRReviewStatus, HRAbsenceDecision, HRPenalty, HRPenaltyType,
   HRLoan, HRDepartmentKey, HR_DEPARTMENTS, HR_DEPARTMENT_LABELS,
   HR_WEEK_DAYS, HRWeekDayKey, HRRuleApplicationMode, HRRuleViolationType,
   HRRuleDeductionType, HRRuleApplyMode, HROvertimeRule, HROvertimeRewardType
@@ -24,13 +24,14 @@ import {
 import {
   inputClass, labelClass, formatMoney, VIOLATION_LABELS, DEDUCTION_LABELS,
   APPLY_MODE_LABELS, RULE_APPLICATION_LABELS, Modal, ErrorNote, PlaceholderPanel,
-  ATTENDANCE_STATUS_LABELS, REVIEW_STATUS_LABELS, PENALTY_TYPE_LABELS,
+  ATTENDANCE_STATUS_LABELS, REVIEW_STATUS_LABELS, ABSENCE_DECISION_LABELS, PENALTY_TYPE_LABELS,
   todayISO, currentMonth, WEEK_DAY_AR, WEEK_DAY_KEYS, DEFAULT_WEEKLY_OFF_INDEX,
   weeklyOffIndexFromKey, weeklyOffDayLabel, formatDayLabel, isoDate,
   weekDatesBeforeWeeklyOff, weeklyOffRatioForAbsences, weeklyOffRatioLabel,
   weeklyOffDeductionForDate, sumWeeklyOffDeductionsForEmployeeMonth,
-  dailyRateFor, hourlyRateFor, timeToMinutes, lateMinutesFor, matchLateRule,
-  isAttendedRecord, MonthAccrual, computeMonthAccrual
+  dailyRateFor, hourlyRateFor, workingHoursPerDayFor, timeToMinutes, lateMinutesFor, matchLateRule,
+  effectiveAbsenceDecision, isAttendedRecord, isExcusedUnpaidRecord, recordNeedsSupervisorDecision,
+  MonthAccrual, computeMonthAccrual
 } from './hrShared';
 
 interface AttendanceRecordForm {
@@ -40,6 +41,7 @@ interface AttendanceRecordForm {
   check_out: string;
   status: HRAttendanceStatus;
   is_excused: boolean;
+  absence_decision: HRAbsenceDecision;
   excuse_note: string;
   calculated_deduction_days: string;
   calculated_deduction_hours: string;
@@ -53,6 +55,7 @@ const emptyRecordForm = (employeeId: string): AttendanceRecordForm => ({
   check_out: '17:30',
   status: 'present',
   is_excused: false,
+  absence_decision: '',
   excuse_note: '',
   calculated_deduction_days: '0',
   calculated_deduction_hours: '0',
@@ -118,9 +121,12 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
   const [isDownloading, setIsDownloading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadErrors, setUploadErrors] = useState<{ row: number; message: string }[]>([]);
-  // يوم الإجازة الأسبوعية المعتمد من الإعدادات (الأحد افتراضياً) لعناوين خصم الإجازة.
+  // يوم الإجازة الأسبوعية وإعدادات ساعات الشيفت المعتمدة من السيرفر.
+  const [settings, setSettings] = useState<HRAttendanceSettings | null>(null);
   const [weeklyOffIndex, setWeeklyOffIndex] = useState<number>(DEFAULT_WEEKLY_OFF_INDEX);
   const weeklyOffLabel = weeklyOffDayLabel(weeklyOffIndex);
+  const shiftHoursLabel = Number(workingHoursPerDayFor(settings).toFixed(2));
+  const [onlyNeedsDecision, setOnlyNeedsDecision] = useState(false);
 
   // إدخال بصمة يدوية / تسجيل عذر
   const [timeTarget, setTimeTarget] = useState<HRAttendanceRecord | null>(null);
@@ -140,6 +146,7 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
         api.getHRAttendanceSettings().catch(() => null)
       ]);
       setRecords(Array.isArray(res) ? res : []);
+      setSettings(settingsRes || null);
       setWeeklyOffIndex(weeklyOffIndexFromKey(settingsRes?.weekly_off_day));
     } catch (err: any) {
       addFlashMessage(err?.message || 'فشل تحميل سجل الحضور من السيرفر', 'danger');
@@ -186,27 +193,59 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
   const summary = useMemo(() => {
     let absents = 0;
     let pending = 0;
+    let needsDecision = 0;
     let present = 0;
-    let deductionHours = 0;
-    let deductionDays = 0;
+    let approvedDeductionHours = 0;
+    let approvedDeductionDays = 0;
+    let pendingDeductionHours = 0;
+    let pendingDeductionDays = 0;
     filteredRecords.forEach((record) => {
       if (record.status === 'present') present += 1;
       if (record.status === 'absent') absents += 1;
       if (record.review_status === 'pending_review') pending += 1;
-      deductionHours += Number(record.calculated_deduction_hours) || 0;
-      deductionDays += Number(record.calculated_deduction_days) || 0;
+      if (recordNeedsSupervisorDecision(record)) needsDecision += 1;
+      const d = Number(record.calculated_deduction_days) || 0;
+      const h = Number(record.calculated_deduction_hours) || 0;
+      const recordDay = new Date(`${record.date}T00:00:00`);
+      if (recordDay.getDay() === weeklyOffIndex && !record.check_in) return;
+      if (!isAttendedRecord(record)) {
+        if (isExcusedUnpaidRecord(record) || record.review_status === 'rejected') return;
+        approvedDeductionDays += d > 0 || h > 0 || record.manual_deduction ? d : 1;
+        approvedDeductionHours += h;
+        return;
+      }
+      if (record.is_excused || record.review_status === 'rejected') return;
+      if (record.review_status === 'pending_review') {
+        pendingDeductionDays += d;
+        pendingDeductionHours += h;
+      } else {
+        approvedDeductionDays += d;
+        approvedDeductionHours += h;
+      }
     });
-    return { present, absents, pending, deductionHours, deductionDays };
-  }, [filteredRecords]);
+    return {
+      present,
+      absents,
+      pending,
+      needsDecision,
+      deductionHours: Math.round(approvedDeductionHours * 100) / 100,
+      deductionDays: Math.round(approvedDeductionDays * 100) / 100,
+      pendingDeductionHours: Math.round(pendingDeductionHours * 100) / 100,
+      pendingDeductionDays: Math.round(pendingDeductionDays * 100) / 100
+    };
+  }, [filteredRecords, weeklyOffIndex]);
 
   // نسبة التزام بديلة تُحسب محلياً في حال تعذر جلب إحصاءات السيرفر.
   const localCompliance = filteredRecords.length
     ? Math.round((summary.present / filteredRecords.length) * 100)
     : 0;
 
-  // السجلات المعروضة فعلياً حسب نمط العرض (يومي / حسب الموظف)
+  // السجلات المعروضة فعلياً حسب نمط العرض (يومي / حسب الموظف) + فلتر "يحتاج قرار المشرف"
   const visibleRecords = useMemo(() => {
     let list = filteredRecords;
+    if (onlyNeedsDecision) {
+      list = list.filter(recordNeedsSupervisorDecision);
+    }
     if (viewMode === 'day' && selectedDay) {
       list = list.filter((record) => record.date === selectedDay);
     }
@@ -214,7 +253,7 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
       list = list.filter((record) => record.employee_id === selectedEmployee);
     }
     return list;
-  }, [filteredRecords, viewMode, selectedDay, selectedEmployee]);
+  }, [filteredRecords, onlyNeedsDecision, viewMode, selectedDay, selectedEmployee]);
 
   // تجميع السجلات على الأيام (عرض اليوم الواحد)
   const dayGroups = useMemo(() => {
@@ -328,6 +367,7 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
       check_out: record.check_out || '',
       status: record.status || 'present',
       is_excused: !!record.is_excused,
+      absence_decision: (record.absence_decision || '') as HRAbsenceDecision,
       excuse_note: record.excuse_note || '',
       calculated_deduction_days: String(record.calculated_deduction_days ?? 0),
       calculated_deduction_hours: String(record.calculated_deduction_hours ?? 0),
@@ -356,22 +396,35 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
 
     setIsSaving(true);
     setFormError('');
-    // الخصم اليدوي يُحترم فقط عند تغيير المشرف لقيم الخصم؛ غير ذلك يُعاد الاحتساب تلقائياً.
+    // الخصم اليدوي يُحترم ويُحفظ دائماً عند تغيير المشرف لقيم الخصم (بما في ذلك تصفيرها إلى 0).
     const manualDays = Number(form.calculated_deduction_days) || 0;
     const manualHours = Number(form.calculated_deduction_hours) || 0;
     const originalDays = editing ? Number(editing.calculated_deduction_days) || 0 : 0;
     const originalHours = editing ? Number(editing.calculated_deduction_hours) || 0 : 0;
+    const deductionsChanged =
+      Math.abs(manualDays - originalDays) > 1e-9 ||
+      Math.abs(manualHours - originalHours) > 1e-9;
+    const timingOrStatusChanged =
+      !editing ||
+      (editing.check_in || '') !== (form.check_in || '') ||
+      (editing.check_out || '') !== (form.check_out || '') ||
+      editing.status !== form.status ||
+      (editing.absence_decision || '') !== (form.absence_decision || '');
+    const isAbsenceStatus = form.status === 'absent' || form.status === 'leave';
+    const effectiveIsExcused = isAbsenceStatus
+      ? form.absence_decision === 'excused_unpaid' || form.absence_decision === 'paid_company'
+      : form.is_excused;
     const manualDeduction =
-      !form.is_excused &&
-      (Math.abs(manualDays - originalDays) > 1e-9 ||
-        Math.abs(manualHours - originalHours) > 1e-9);
+      !effectiveIsExcused &&
+      (deductionsChanged || (!!editing?.manual_deduction && !timingOrStatusChanged));
     const payload: any = {
       employee_id: form.employee_id,
       date: form.date,
-      check_in: form.check_in || null,
-      check_out: form.check_out || null,
+      check_in: isAbsenceStatus && form.absence_decision ? null : form.check_in || null,
+      check_out: isAbsenceStatus && form.absence_decision ? null : form.check_out || null,
       status: form.status,
-      is_excused: form.is_excused,
+      is_excused: effectiveIsExcused,
+      absence_decision: isAbsenceStatus ? form.absence_decision : '',
       excuse_note: form.excuse_note.trim(),
       calculated_deduction_days: manualDays,
       calculated_deduction_hours: manualHours,
@@ -437,6 +490,31 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
       await Promise.all([loadRecords(), loadStats()]);
     } catch (err: any) {
       addFlashMessage(err?.message || 'فشل تحديث حالة المراجعة', 'danger');
+    }
+  };
+
+  /** قرار المشرف السريع للغياب (الخيارات الثلاثة الرسمية). */
+  const handleAbsenceDecision = async (
+    record: HRAttendanceRecord,
+    decision: 'unexcused' | 'excused_unpaid' | 'paid_company'
+  ) => {
+    try {
+      await api.updateHRAttendanceRecord(record.id, {
+        status: record.status === 'leave' ? 'leave' : 'absent',
+        absence_decision: decision,
+        is_excused: decision !== 'unexcused',
+        review_status: 'approved'
+      });
+      addFlashMessage(`تم اعتماد قرار الغياب: ${ABSENCE_DECISION_LABELS[decision]}`);
+      logAction(
+        'الموارد البشرية',
+        `قرار غياب (${ABSENCE_DECISION_LABELS[decision]}) للموظف ${
+          record.employee_name || record.employee_code || ''
+        } بتاريخ ${record.date}`
+      );
+      await Promise.all([loadRecords(), loadStats()]);
+    } catch (err: any) {
+      addFlashMessage(err?.message || 'فشل تحديث قرار الغياب', 'danger');
     }
   };
 
@@ -606,11 +684,16 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
     setIsSavingExcuse(true);
     setExcuseError('');
     try {
-      await api.updateHRAttendanceRecord(excuseTarget.id, {
+      const payload: Record<string, unknown> = {
         is_excused: !remove,
         excuse_note: remove ? '' : excuseNote.trim(),
         recalculate: true
-      });
+      };
+      if (excuseTarget.status === 'absent' || excuseTarget.status === 'leave') {
+        payload.absence_decision = remove ? 'unexcused' : 'excused_unpaid';
+        payload.review_status = 'approved';
+      }
+      await api.updateHRAttendanceRecord(excuseTarget.id, payload);
       addFlashMessage(remove ? 'تم إلغاء العذر وإعادة الخصم' : 'تم تسجيل العذر وإلغاء الخصم');
       logAction(
         'الموارد البشرية',
@@ -850,12 +933,13 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
           </select>
         )}
 
-        {(selectedDay || selectedEmployee) && (
+        {(selectedDay || selectedEmployee || onlyNeedsDecision) && (
           <button
             type="button"
             onClick={() => {
               setSelectedDay('');
               setSelectedEmployee('');
+              setOnlyNeedsDecision(false);
             }}
             className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-black text-slate-500 hover:bg-slate-100 transition cursor-pointer"
           >
@@ -863,6 +947,33 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
             إلغاء التصفية
           </button>
         )}
+
+        {/* زر فلتر سريع بارز: يحتاج قرار المشرف */}
+        <button
+          type="button"
+          onClick={() => setOnlyNeedsDecision((prev) => !prev)}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-[11px] font-black transition cursor-pointer ${
+            onlyNeedsDecision
+              ? 'bg-amber-500 border-amber-600 text-white shadow-xs'
+              : summary.needsDecision > 0
+                ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
+                : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100'
+          }`}
+        >
+          <AlertTriangle className="w-3.5 h-3.5" />
+          <span>⚠️ يحتاج قرار المشرف</span>
+          <span
+            className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono font-black ${
+              onlyNeedsDecision
+                ? 'bg-white/20 text-white'
+                : summary.needsDecision > 0
+                  ? 'bg-amber-200 text-amber-900'
+                  : 'bg-slate-200 text-slate-600'
+            }`}
+          >
+            {summary.needsDecision}
+          </span>
+        </button>
       </div>
 
       <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-center gap-2">
@@ -876,16 +987,18 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
         </span>
         <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-[11px] font-black text-amber-700">
           <Clock className="w-3.5 h-3.5" />
-          بانتظار المراجعة: {summary.pending}
-        </span>
-        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 border border-blue-200 text-[11px] font-black text-blue-700">
-          <Timer className="w-3.5 h-3.5" />
-          خصم ساعات: {summary.deductionHours}
+          يحتاج قرار: {summary.needsDecision}
         </span>
         <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 text-[11px] font-black text-indigo-700">
           <Banknote className="w-3.5 h-3.5" />
-          خصم أيام: {summary.deductionDays}
+          خصم معتمد: {summary.deductionDays} يوم / {summary.deductionHours} ساعة
         </span>
+        {(summary.pendingDeductionDays > 0 || summary.pendingDeductionHours > 0) && (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50/70 border border-dashed border-amber-300 text-[11px] font-black text-amber-800">
+            <Timer className="w-3.5 h-3.5" />
+            قيد المراجعة (غير مخصوم): {summary.pendingDeductionDays} يوم / {summary.pendingDeductionHours} ساعة
+          </span>
+        )}
       </div>
 
       {/* ملخص الأيام في العرض اليومي */}
@@ -1019,9 +1132,67 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
                       >
                         {ATTENDANCE_STATUS_LABELS[record.status] || record.status}
                       </span>
-                      {record.is_excused && (
+                      {record.status === 'absent' ||
+                      (record.status === 'leave' &&
+                        new Date(`${record.date}T00:00:00`).getDay() !== weeklyOffIndex) ? (
+                        <div className="mt-1.5 space-y-1">
+                          <span
+                            className={`inline-block px-1.5 py-0.5 rounded-md text-[9px] font-black border ${
+                              !record.absence_decision && !record.is_excused
+                                ? 'bg-amber-50 text-amber-800 border-amber-300'
+                                : effectiveAbsenceDecision(record) === 'paid_company'
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : effectiveAbsenceDecision(record) === 'excused_unpaid'
+                                    ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                    : 'bg-rose-50 text-rose-700 border-rose-200'
+                            }`}
+                          >
+                            {!record.absence_decision && !record.is_excused
+                              ? '⚠️ بانتظار القرار (افتراضي: بدون عذر)'
+                              : ABSENCE_DECISION_LABELS[effectiveAbsenceDecision(record)]}
+                          </span>
+                          <div className="flex flex-wrap items-center justify-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => void handleAbsenceDecision(record, 'unexcused')}
+                              className={`px-1.5 py-0.5 rounded-md text-[9px] font-black border transition cursor-pointer ${
+                                record.absence_decision === 'unexcused'
+                                  ? 'bg-rose-600 text-white border-rose-700'
+                                  : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                              }`}
+                              title="بدون عذر: خصم يومين + يدخل في خصم الإجازة الأسبوعية"
+                            >
+                              🔴 بدون عذر (خصم يومين)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleAbsenceDecision(record, 'excused_unpaid')}
+                              className={`px-1.5 py-0.5 rounded-md text-[9px] font-black border transition cursor-pointer ${
+                                record.absence_decision === 'excused_unpaid'
+                                  ? 'bg-amber-500 text-white border-amber-600'
+                                  : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                              }`}
+                              title="بعذر: خصم اليوم فقط دون جزاء إضافي ودون خصم إجازة أسبوعية"
+                            >
+                              🟡 بعذر (خصم اليوم فقط)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleAbsenceDecision(record, 'paid_company')}
+                              className={`px-1.5 py-0.5 rounded-md text-[9px] font-black border transition cursor-pointer ${
+                                record.absence_decision === 'paid_company'
+                                  ? 'bg-emerald-600 text-white border-emerald-700'
+                                  : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                              }`}
+                              title="على حساب الشركة: مدفوع الأجر بالكامل 100%"
+                            >
+                              🟢 على حساب الشركة (مدفوع)
+                            </button>
+                          </div>
+                        </div>
+                      ) : record.is_excused ? (
                         <p className="mt-1 text-[10px] font-bold text-slate-500">بعذر</p>
-                      )}
+                      ) : null}
                       {record.status === 'missing_punch' && (
                         <button
                           type="button"
@@ -1030,7 +1201,7 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
                           title="نسيان بصمة — إدخال الوقت الناقص يدوياً"
                         >
                           <AlertTriangle className="w-3 h-3" />
-                          نسيان بصمة — إدخال الوقت
+                          نسيان بصمة (حضور مؤقت) — إدخال الوقت
                         </button>
                       )}
                     </td>
@@ -1214,28 +1385,98 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
               </div>
             </div>
 
-            <label className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.is_excused}
-                onChange={(event) => updateForm({ is_excused: event.target.checked })}
-                className="w-4 h-4 accent-purple-600"
-              />
-              <span className="text-[11px] font-black text-slate-700">
-                الغياب بعذر (لا يتم تطبيق خصم الغياب)
-              </span>
-            </label>
-
-            {form.is_excused && (
-              <div>
-                <label className={labelClass}>سبب العذر</label>
-                <input
-                  value={form.excuse_note}
-                  onChange={(event) => updateForm({ excuse_note: event.target.value })}
-                  placeholder="مثال: إجازة مرضية بموافقة الإدارة"
-                  className={inputClass}
-                />
+            {form.status === 'absent' || form.status === 'leave' ? (
+              <div className="space-y-2 p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                <label className={labelClass}>قرار الغياب (اختر أحد الخيارات الثلاثة)</label>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  {(
+                    [
+                      {
+                        key: 'unexcused',
+                        label: '🔴 بدون عذر (خصم يومين)',
+                        hint: '1 يوم غياب + 1 يوم جزاء + خصم الأحد',
+                        activeClass: 'bg-rose-600 text-white border-rose-700',
+                        idleClass: 'bg-white text-rose-700 border-rose-200 hover:bg-rose-50'
+                      },
+                      {
+                        key: 'excused_unpaid',
+                        label: '🟡 بعذر (خصم اليوم فقط)',
+                        hint: 'خصم اليوم بدون جزاء وبدون خصم الأحد',
+                        activeClass: 'bg-amber-500 text-white border-amber-600',
+                        idleClass: 'bg-white text-amber-800 border-amber-200 hover:bg-amber-50'
+                      },
+                      {
+                        key: 'paid_company',
+                        label: '🟢 على حساب الشركة (مدفوع)',
+                        hint: 'مدفوع الأجر بالكامل 100%',
+                        activeClass: 'bg-emerald-600 text-white border-emerald-700',
+                        idleClass: 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50'
+                      }
+                    ] as const
+                  ).map((opt) => {
+                    const selected = form.absence_decision === opt.key;
+                    return (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        onClick={() =>
+                          updateForm({
+                            absence_decision: opt.key,
+                            is_excused: opt.key !== 'unexcused',
+                            review_status: 'approved'
+                          })
+                        }
+                        className={`p-2.5 rounded-xl border text-right transition cursor-pointer ${
+                          selected ? opt.activeClass : opt.idleClass
+                        }`}
+                      >
+                        <p className="text-[11px] font-black">{opt.label}</p>
+                        <p className={`text-[9px] font-bold mt-0.5 ${selected ? 'opacity-90' : 'opacity-70'}`}>
+                          {opt.hint}
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
+                {(form.absence_decision === 'excused_unpaid' ||
+                  form.absence_decision === 'paid_company') && (
+                  <div className="pt-1">
+                    <label className={labelClass}>ملاحظة / سبب العذر أو الاستثناء</label>
+                    <input
+                      value={form.excuse_note}
+                      onChange={(event) => updateForm({ excuse_note: event.target.value })}
+                      placeholder="مثال: إجازة مرضية بموافقة الإدارة"
+                      className={inputClass}
+                    />
+                  </div>
+                )}
               </div>
+            ) : (
+              <>
+                <label className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.is_excused}
+                    onChange={(event) => updateForm({ is_excused: event.target.checked })}
+                    className="w-4 h-4 accent-purple-600"
+                  />
+                  <span className="text-[11px] font-black text-slate-700">
+                    تأخير / انصراف بعذر (إلغاء خصم التأخير على هذا اليوم)
+                  </span>
+                </label>
+
+                {form.is_excused && (
+                  <div>
+                    <label className={labelClass}>سبب العذر</label>
+                    <input
+                      value={form.excuse_note}
+                      onChange={(event) => updateForm({ excuse_note: event.target.value })}
+                      placeholder="مثال: إذن تأخير بموافقة الإدارة"
+                      className={inputClass}
+                    />
+                  </div>
+                )}
+              </>
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -1285,8 +1526,8 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
               <Info className="w-4 h-4 shrink-0" />
               <span>
                 يُعاد احتساب التأخير تلقائياً من قواعد الحضور عند الحفظ. عدّل «خصم (أيام/ساعات)»
-                يدوياً فقط لتجاوز القواعد. القيمة المالية = (أيام × المرتب ÷ 30) + (ساعات × المرتب ÷
-                30 ÷ 8).
+                يدوياً لتجاوز القواعد (بما في ذلك تصفير الخصم إلى 0). القيمة المالية = (أيام × المرتب ÷ 30) + (ساعات × المرتب ÷
+                30 ÷ {shiftHoursLabel} ساعة).
               </span>
             </div>
 

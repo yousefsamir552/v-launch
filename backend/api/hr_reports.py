@@ -3,12 +3,15 @@
 
 كل الأرقام تُحسب هنا (وليس في المتصفح) لتقليل استهلاك النطاق الترددي،
 ولضمان تطابق 100% مع منطق شاشة "المرتبات" في الواجهة:
-    * أجر اليوم = المرتب ÷ 30، وأجر الساعة = أجر اليوم ÷ 8.
-    * خصم التأخير/الانصراف المبكر يُقرأ من calculated_deduction_* (مع fallback
-      لشرائح قواعد الحضور عند عدم تخزينه).
-    * استحقاق الشهر (attendedDays + paidSundayDays، وحد أقصى 30 يوماً).
+    * أجر اليوم = المرتب ÷ 30، وأجر الساعة = أجر اليوم ÷ ساعات الشيفت الرسمية (9 ساعات افتراضياً).
+    * خصم التأخير/الانصراف المبكر يُقرأ من calculated_deduction_* (مع احترام manual_deduction،
+      وfallback لشرائح قواعد الحضور عند عدم تخزينه وعدم وجود خصم يدوي).
+    * الغياب بدون عذر يخصم يومين (1 يوم غياب + 1 يوم جزاء إضافي بحد أدنى)، والغياب بعذر يخصم اليوم فقط،
+      والإجازة على حساب الشركة مدفوعة 100%.
+    * استحقاق الشهر للموظف المنتظم = 30 − (الغياب + خصم الإجازة الأسبوعية) + عمل الإجازة الأسبوعية،
+      وللمعيَّن أو التارك في منتصف الشهر = أيام حضوره الفعلية + الإجازات الأسبوعية داخل نطاق عمله.
     * الجزاءات اليدوية والسُلف حسب تاريخ الشهر.
-    * الصافي = الأجر المكتسب + الإضافي − (خصم الحضور + الجزاءات + السُلف).
+    * الصافي = الأجر المكتسب + الإضافي − (خصم الحضور والغياب الإضافي + الجزاءات + السُلف).
 
 الرؤية مقيّدة برتبة المستخدم الحالي (rank_level) مع استبعاد حساب Sudo نهائياً.
 """
@@ -38,6 +41,13 @@ from .models import (
 from .permissions import IsAuthenticatedProfile
 from .hr_attendance_io import (
     DEFAULT_WEEKLY_OFF_WEEKDAY,
+    absence_extra_penalty_days,
+    effective_absence_decision,
+    eligible_week_dates,
+    is_attended_record,
+    is_excused_unpaid_record,
+    is_unexcused_absence_record,
+    weekly_off_ratio_for_absences,
     weekly_off_weekday,
     working_hours_per_day,
 )
@@ -127,109 +137,137 @@ def _ext_id(obj):
 # Helpers — attendance rules (mirror of the frontend payroll logic)
 # ---------------------------------------------------------------------------
 def _is_attended(record):
-    """حضور فعلي: حاضر / أي سجل بعذر مقبول (إجازة أو غياب بعذر) / لها بصمة حضور."""
-    if record is None:
-        return False
-    if record.status == 'present':
-        return True
-    if record.is_excused:
-        return True
-    return bool(record.check_in)
+    """حضور فعلي/مؤقت: حاضر / بصمة واحدة على الأقل (check_in أو check_out) / إجازة على حساب الشركة."""
+    return is_attended_record(record)
 
 
 def _weekly_off_ratio(absent_count):
-    if absent_count >= 5:
-        return 1.0
-    if absent_count == 4:
-        return 2.0 / 3.0
-    if absent_count in (2, 3):
-        return 1.0 / 3.0
-    return 0.0
+    """نسبة خصم يوم الإجازة الأسبوعية (5 شرائح: 0/1->0, 2->1/3, 3->1/2, 4->2/3, 5+->1)."""
+    return weekly_off_ratio_for_absences(absent_count)
 
 
-def _weekly_off_deduction_for_date(records_by_date, off_date):
-    """نسبة خصم يوم الإجازة الأسبوعية وفق غياب الأيام الستة السابقة له."""
-    week_dates = [off_date - timedelta(days=offset) for offset in range(6, 0, -1)]
-    if not any(day in records_by_date for day in week_dates):
+def _weekly_off_deduction_for_date(records_by_date, off_date, hire_date=None, termination_date=None):
+    """نسبة خصم يوم الإجازة الأسبوعية وفق الغياب بدون عذر في الأيام الستة السابقة ضمن فترة التوظيف."""
+    raw_week_dates = [off_date - timedelta(days=offset) for offset in range(6, 0, -1)]
+    week_dates = eligible_week_dates(raw_week_dates, hire_date=hire_date, termination_date=termination_date)
+    if not week_dates or not any(day in records_by_date for day in week_dates):
         return 0.0
     absent_count = 0
     for day in week_dates:
         record = records_by_date.get(day)
-        if record is None or not _is_attended(record):
+        if is_unexcused_absence_record(record):
             absent_count += 1
     return _weekly_off_ratio(absent_count)
 
 
 def _compute_month_accrual(records_by_date, month_key, up_to_iso,
                            weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY,
-                           weekly_off_work_multiplier=1.0):
+                           weekly_off_work_multiplier=1.0,
+                           hire_date=None,
+                           termination_date=None):
     """
-    استحقاق الشهر وفق القواعد المحاسبية المؤكدة:
-    1) للشهر المكتمل: earned_base_days = max(0, 30 - total_unexcused_absence_days - sunday_deduction_days)
-       ليخصم الغياب يوماً واحداً بالضبط سواء كان الشهر 28 أو 30 أو 31 يوماً.
-    2) العمل يوم الإجازة الأسبوعية يمنح أجراً إضافياً فوق سقف الـ 30 يوماً بمضاعف
-       ديناميكي (weekly_off_work_multiplier: 1.0 / 1.5 / 2.0 ...).
+    استحقاق الشهر وفق قواعد المصنع الرسمية النهائية:
+    - النطاق الفعلي للموظف = [max(month_start, hire_date), min(month_end, termination_date)].
+      أي يوم خارج هذا النطاق يُتجاهل تماماً (لا غياب ولا إجازة أسبوعية ولا خصم أحد).
+    1) الموظف المنتظم طوال الشهر (لا تعيين ولا ترك داخل الشهر) في شهر مكتمل:
+       base_earned = max(0, 30 - total_unpaid_absence_days - sunday_deduction_days)
+       أياً كان عدد أيام الشهر (28 / 29 / 30 / 31).
+    2) المعيَّن في منتصف الشهر (hire_date > month_start) أو التارك قبل نهاية الشهر (termination_date < month_end)
+       أو منتصف الشهر المفتوح (month_complete = False):
+       base_earned = min(30, attended_regular_days + paid_weekly_off_days).
+    3) العمل يوم الإجازة الأسبوعية يُضاف فوق سقف الـ 30 يوماً بمعامل weekly_off_work_multiplier.
     """
     y, m = (int(part) for part in month_key.split('-'))
     last_day = calendar.monthrange(y, m)[1]
+    month_first = date(y, m, 1)
+    month_last = date(y, m, last_day)
+
+    effective_start = max(month_first, hire_date) if hire_date else month_first
+    effective_end = min(month_last, termination_date) if termination_date else month_last
+    is_partial_month = bool(
+        (hire_date and hire_date > month_first)
+        or (termination_date and termination_date < month_last)
+    )
+
+    if effective_start > effective_end:
+        return {
+            'attended_days': 0.0,
+            'paid_sunday_days': 0.0,
+            'worked_weekly_off_days': 0.0,
+            'weekly_off_extra_days': 0.0,
+            'sunday_deduction_days': 0.0,
+            'unexcused_absence_days': 0.0,
+            'excused_unpaid_absence_days': 0.0,
+            'is_partial_month': is_partial_month,
+            'earned_days': 0.0,
+            '_earned_days_raw': 0.0,
+        }
+
     attended_regular_days = 0.0
     worked_weekly_off_days = 0.0
     workdays_in_scope = 0
     paid_weekly_off_days = 0.0
     unexcused_absence_days = 0.0
+    excused_unpaid_absence_days = 0.0
     sunday_deduction_days = 0.0
     try:
         mult = max(0.0, float(weekly_off_work_multiplier))
     except (TypeError, ValueError):
         mult = 1.0
 
-    month_last = date(y, m, last_day)
     month_complete = up_to_iso is None or up_to_iso >= month_last
 
     for day in range(1, last_day + 1):
         cursor = date(y, m, day)
+        if cursor < effective_start or cursor > effective_end:
+            continue
         record = records_by_date.get(cursor)
         has_check_in = bool(record and record.check_in)
-        if up_to_iso and cursor > up_to_iso and not has_check_in:
+        has_any_punch = bool(record and (record.check_in or record.check_out))
+        if up_to_iso and cursor > up_to_iso and not has_any_punch:
             continue
-        # يوم الإجازة الأسبوعية المدفوعة (يأتي من إعدادات الحضور، والأحد افتراضياً).
-        # يُحتسب استحقاق/خصم الإجازة الأسبوعية دائماً وفق غياب الأسبوع السابق،
-        # وإذا عمل الموظف في يوم الإجازة يُضاف له أجر العمل الإضافي (weekly_off_work_multiplier)
-        # فوق سقف الـ 30 يوماً بنفس المعادلة في منتصف الشهر ونهايته بدون أي قفزة مفاجئة.
+
         if cursor.weekday() == weekly_off_index:
-            week_dates = [cursor - timedelta(days=offset) for offset in range(6, 0, -1)]
-            if any(day_key in records_by_date for day_key in week_dates):
-                ded = _weekly_off_deduction_for_date(records_by_date, cursor)
+            raw_week_dates = [cursor - timedelta(days=offset) for offset in range(6, 0, -1)]
+            scoped_week = eligible_week_dates(
+                raw_week_dates, hire_date=hire_date, termination_date=termination_date
+            )
+            if scoped_week and any(day_key in records_by_date for day_key in scoped_week):
+                ded = _weekly_off_deduction_for_date(
+                    records_by_date, cursor, hire_date=hire_date, termination_date=termination_date
+                )
                 sunday_deduction_days += ded
                 paid_weekly_off_days += max(0.0, 1.0 - ded)
-            elif month_complete:
-                # أسبوع كامل بلا أي حضور في شهر مكتمل = 6 أيام غياب => خصم يوم الإجازة كاملاً.
+            elif month_complete and not is_partial_month:
+                # أسبوع كامل بلا أي حضور لموظف منتظم في شهر مكتمل => خصم يوم الإجازة كاملاً.
                 sunday_deduction_days += 1.0
             if has_check_in:
                 worked_weekly_off_days += 1.0
             continue
+
         workdays_in_scope += 1
         if record and _is_attended(record):
             attended_regular_days += 1.0
+        elif record and is_excused_unpaid_record(record):
+            excused_unpaid_absence_days += 1.0
         else:
             unexcused_absence_days += 1.0
 
     attended_days = attended_regular_days + worked_weekly_off_days
     weekly_off_extra_days = worked_weekly_off_days * mult
+    total_unpaid_absence_days = unexcused_absence_days + excused_unpaid_absence_days
 
     if attended_regular_days == 0 and worked_weekly_off_days == 0:
         # بدون أي حضور فعلي خلال الشهر نفسه: الاستحقاق = 0 (يمنع المرتب الوهمي للمستقيلين والشهور المستقبلية).
         paid_weekly_off_days = 0.0
         sunday_deduction_days = 0.0
         earned_days_raw = 0.0
-    elif month_complete:
-        raw_base = max(0.0, 30.0 - unexcused_absence_days - sunday_deduction_days)
-        if workdays_in_scope > 0 and unexcused_absence_days >= (workdays_in_scope / 2.0):
-            base_earned = min(raw_base, attended_regular_days + paid_weekly_off_days)
-        else:
-            base_earned = raw_base
+    elif month_complete and not is_partial_month:
+        # الموظف المنتظم طوال الشهر: نحاسب بالشهر (30 يوماً) ونخصم أيام الغياب وخصم الإجازة الأسبوعية.
+        base_earned = max(0.0, 30.0 - total_unpaid_absence_days - sunday_deduction_days)
         earned_days_raw = base_earned + weekly_off_extra_days
     else:
+        # المعيَّن أو التارك في منتصف الشهر (أو الشهر المفتوح قبل نهايته): نحاسب بالأيام الفعلية.
         base_earned = min(30.0, attended_regular_days + paid_weekly_off_days)
         earned_days_raw = base_earned + weekly_off_extra_days
 
@@ -240,6 +278,8 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso,
         'weekly_off_extra_days': _round_half_up(weekly_off_extra_days, 2),
         'sunday_deduction_days': _round_half_up(sunday_deduction_days, 2),
         'unexcused_absence_days': _round_half_up(unexcused_absence_days, 2),
+        'excused_unpaid_absence_days': _round_half_up(excused_unpaid_absence_days, 2),
+        'is_partial_month': is_partial_month,
         'earned_days': _round_half_up(earned_days_raw, 2),
         '_earned_days_raw': earned_days_raw,
     }
@@ -348,6 +388,10 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
     except (TypeError, ValueError):
         weekly_off_mult = 1.0
 
+    hire_date = getattr(employee, 'hire_date', None)
+    termination_date = getattr(employee, 'termination_date', None)
+    extra_absence_days_default = absence_extra_penalty_days(rules)
+
     attendance_days = 0.0
     attendance_hours = 0.0
     overtime_days = 0.0
@@ -356,16 +400,42 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
     for record in employee_records:
         if not str(record.date).startswith(month_key):
             continue
+        if hire_date and record.date < hire_date:
+            continue
+        if termination_date and record.date > termination_date:
+            continue
         # يوم الإجازة الأسبوعية بدون بصمة حضور = إجازة مدفوعة (لا إضافي/خصم عليه).
         if record.date.weekday() == weekly_off_index and not record.check_in:
             continue
 
-        # الإضافي يُحسب دائماً حتى لو رُفض خصم التأخير (رفض الخصم يلغي الخصم فقط ولا يلغي اليوم).
+        # 1) سجل غير حاضر (غياب بدون عذر أو غياب بعذر): لا يُصرف له إضافي.
+        if not _is_attended(record):
+            if is_excused_unpaid_record(record):
+                # غياب بعذر (خصم اليوم فقط داخل earned_days دون جزاء إضافي).
+                continue
+            # غياب بدون عذر (أو بدون قرار بعد): يُضاف يوم جزاء إضافي (أو القيمة المحددة) فوق يوم الغياب.
+            if record.review_status == 'rejected':
+                continue
+            if getattr(record, 'manual_deduction', False):
+                attendance_days += float(record.calculated_deduction_days or 0)
+                attendance_hours += float(record.calculated_deduction_hours or 0)
+            else:
+                stored_d = float(record.calculated_deduction_days or 0)
+                stored_h = float(record.calculated_deduction_hours or 0)
+                if stored_d > 0 or stored_h > 0:
+                    attendance_days += stored_d
+                    attendance_hours += stored_h
+                else:
+                    attendance_days += extra_absence_days_default
+            continue
+
+        # 2) الإضافي يُحسب لأيام الحضور الفعلية فقط (بعد التأكد من _is_attended)،
+        #    ويستمر احتسابه حتى عند رفض خصم التأخير.
         overtime_days += float(record.overtime_days or 0)
         overtime_hours += float(record.overtime_hours or 0)
 
-        # الغياب غير محسوب أصلاً في الأيام المستحقة، فلا يُخصم مرتين.
-        if not _is_attended(record):
+        # الإجازة المدفوعة على حساب الشركة أو اليوم المعذور لا يُخصم عليه تأخير.
+        if record.status in ('absent', 'leave') and effective_absence_decision(record) == 'paid_company':
             continue
         if record.is_excused:
             continue
@@ -375,7 +445,13 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
 
         ded_days = float(record.calculated_deduction_days or 0)
         ded_hours = float(record.calculated_deduction_hours or 0)
-        if ded_days == 0 and ded_hours == 0 and getattr(employee, 'rule_application_mode', 'auto') != 'manual_review':
+        # احترام التصفير اليدوي (manual_deduction=True): لا نُشغّل الـ Fallback الديناميكي أبداً.
+        if (
+            ded_days == 0
+            and ded_hours == 0
+            and not getattr(record, 'manual_deduction', False)
+            and getattr(employee, 'rule_application_mode', 'auto') != 'manual_review'
+        ):
             late = _late_minutes(record.check_in, official_start, official_end)
             rule = _match_late_rule(rules, late)
             rule_value = float(rule.get('deduction_value') or 0) if rule else 0.0
@@ -393,6 +469,8 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
         up_to_iso,
         weekly_off_index,
         weekly_off_work_multiplier=weekly_off_mult,
+        hire_date=hire_date,
+        termination_date=termination_date,
     )
     earned_base = accrual.get('_earned_days_raw', accrual['earned_days']) * day_rate
 

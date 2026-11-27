@@ -29,10 +29,11 @@ import {
   ATTENDANCE_STATUS_LABELS, REVIEW_STATUS_LABELS, PENALTY_TYPE_LABELS,
   todayISO, currentMonth, WEEK_DAY_AR, WEEK_DAY_KEYS, DEFAULT_WEEKLY_OFF_INDEX,
   weeklyOffIndexFromKey, weeklyOffDayLabel, formatDayLabel, isoDate,
-  weekDatesBeforeWeeklyOff, weeklyOffRatioForAbsences, weeklyOffRatioLabel,
+  weekDatesBeforeWeeklyOff, eligibleWeekDates, weeklyOffRatioForAbsences, weeklyOffRatioLabel,
   weeklyOffDeductionForDate, sumWeeklyOffDeductionsForEmployeeMonth,
   dailyRateFor, hourlyRateFor, workingHoursPerDayFor, timeToMinutes, lateMinutesFor, matchLateRule,
-  isAttendedRecord, MonthAccrual, computeMonthAccrual
+  effectiveAbsenceDecision, isAttendedRecord, isExcusedUnpaidRecord, isUnexcusedAbsenceRecord,
+  absenceExtraPenaltyDaysFor, MonthAccrual, computeMonthAccrual, computeEmployeeMonthPayroll
 } from './hrShared';
 
 interface PayrollRow {
@@ -197,9 +198,6 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       month === currentMonthKey && today.getDate() < lastDayOfCurrentMonth
         ? isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1))
         : undefined;
-    const officialStart = settings?.official_start_time || '08:30';
-    const officialEnd = settings?.official_end_time || '17:30';
-    const r2 = (v: number) => Math.round(v * 100) / 100;
 
     return employees
       .filter((emp) => {
@@ -212,102 +210,42 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
         );
       })
       .map((employee) => {
-        const baseSalary = Number(employee.monthly_salary) || 0;
-        const dayRate = dailyRateFor(baseSalary);
-        const hourRate = hourlyRateFor(baseSalary, shiftHours);
-
-        // خصم التأخير/الانصراف المبكر (على أيام الحضور المعتمدة فقط — المرفوض وبانتظار المراجعة لا يُخصم).
-        let attendanceDays = 0;
-        let attendanceHours = 0;
-        let overtimeDays = 0;
-        let overtimeHours = 0;
-        records.forEach((record) => {
-          if (record.employee_id !== employee.id) return;
-          if (!inMonth(record.date)) return;
-          // يوم الإجازة الأسبوعية بدون بصمة حضور = إجازة مدفوعة (تُحسب ضمن الأيام المستحقة).
-          const recordDay = new Date(`${record.date}T00:00:00`);
-          if (recordDay.getDay() === weeklyOffIndex && !record.check_in) return;
-
-          // الإضافي يُحسب دائماً حتى عند رفض الخصم (رفض الخصم يلغي الغرامة فقط لا اليوم).
-          overtimeDays += Number(record.overtime_days) || 0;
-          overtimeHours += Number(record.overtime_hours) || 0;
-
-          // الغياب غير محسوب ضمن الأيام المستحقة أصلاً، فلا نخصمه مرة ثانية.
-          if (!isAttendedRecord(record)) return;
-          if (record.is_excused) return;
-          if (record.review_status === 'rejected' || record.review_status === 'pending_review') return;
-
-          let dedDays = Number(record.calculated_deduction_days) || 0;
-          let dedHours = Number(record.calculated_deduction_hours) || 0;
-          // احتياطي ديناميكي: لو لم يُخزَّن الخصم (لسجل معتمد أو تلقائي)، طبّق شريحة التأخير من الإعدادات.
-          if (dedDays === 0 && dedHours === 0 && employee.rule_application_mode !== 'manual_review') {
-            const lateMinutes = lateMinutesFor(record.check_in, officialStart, officialEnd);
-            const rule = matchLateRule(settings?.rules_json, lateMinutes);
-            const ruleValue = Number(rule?.deduction_value) || 0;
-            if (rule && ruleValue > 0 && rule.apply_mode !== 'manual_review') {
-              if (rule.deduction_type === 'days') dedDays = ruleValue;
-              else dedHours = ruleValue;
-            }
-          }
-          attendanceDays += dedDays;
-          attendanceHours += dedHours;
-        });
-
-        // الأجر المكتسب وفق القواعد المؤكدة (30 - غياب - خصم إجازة، + عمل يوم الإجازة × المضاعف فوق سقف الـ30).
-        const accrual = computeMonthAccrual(
-          employee.id,
+        const calc = computeEmployeeMonthPayroll({
+          employee,
           records,
-          month,
+          penalties,
+          loans,
+          monthKey: month,
+          settings,
           upToIso,
           weeklyOffIndex,
+          shiftHours,
           weeklyOffMultiplier
-        );
-        const earnedBaseRaw = accrual.earnedDaysRaw * dayRate;
-
-        const sundayDeductionDays = accrual.sundayDeductionDays;
-
-        let penaltyDays = 0;
-        let penaltyHours = 0;
-        penalties.forEach((penalty) => {
-          if (penalty.employee_id !== employee.id) return;
-          if (!inMonth(penalty.date)) return;
-          if (penalty.penalty_type === 'days') penaltyDays += Number(penalty.value) || 0;
-          else penaltyHours += Number(penalty.value) || 0;
         });
-
-        const loanDeductionRaw = loans
-          .filter((loan) => loan.employee_id === employee.id && inMonth(loan.date))
-          .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
-
-        const attendanceDeductionRaw = attendanceDays * dayRate + attendanceHours * hourRate;
-        const sundayDeduction = 0;
-        const penaltyDeductionRaw = penaltyDays * dayRate + penaltyHours * hourRate;
-        const overtimePayRaw = overtimeDays * dayRate + overtimeHours * hourRate;
-        const totalDeductionRaw = attendanceDeductionRaw + penaltyDeductionRaw + loanDeductionRaw;
 
         return {
           employee,
-          baseSalary: r2(baseSalary),
-          attendedDays: accrual.attendedDays,
-          paidSundayDays: accrual.paidSundayDays,
-          workedWeeklyOffDays: accrual.workedWeeklyOffDays,
-          weeklyOffExtraDays: accrual.weeklyOffExtraDays,
-          earnedDays: accrual.earnedDays,
-          earnedBase: r2(earnedBaseRaw),
-          overtimeDays: r2(overtimeDays),
-          overtimeHours: r2(overtimeHours),
-          overtimePay: r2(overtimePayRaw),
-          attendanceDays: r2(attendanceDays),
-          attendanceHours: r2(attendanceHours),
-          attendanceDeduction: r2(attendanceDeductionRaw),
-          sundayDeductionDays,
-          sundayDeduction,
-          penaltyDays: r2(penaltyDays),
-          penaltyHours: r2(penaltyHours),
-          penaltyDeduction: r2(penaltyDeductionRaw),
-          loanDeduction: r2(loanDeductionRaw),
-          totalDeduction: r2(totalDeductionRaw),
-          netPay: r2(earnedBaseRaw + overtimePayRaw - totalDeductionRaw)
+          baseSalary: calc.baseSalary,
+          attendedDays: calc.accrual.attendedDays,
+          paidSundayDays: calc.accrual.paidSundayDays,
+          workedWeeklyOffDays: calc.accrual.workedWeeklyOffDays,
+          weeklyOffExtraDays: calc.accrual.weeklyOffExtraDays,
+          earnedDays: calc.accrual.earnedDays,
+          earnedBase: calc.earnedBase,
+          overtimeDays: calc.overtimeDays,
+          overtimeHours: calc.overtimeHours,
+          overtimePay: calc.overtimePay,
+          attendanceDays: calc.attendanceDays,
+          attendanceHours: calc.attendanceHours,
+          attendanceDeduction: calc.attendanceDeduction,
+          sundayDeductionDays: calc.accrual.sundayDeductionDays,
+          sundayDeduction: 0,
+          penaltyDays: calc.penaltyDays,
+          penaltyHours: calc.penaltyHours,
+          penaltyDeduction: calc.penaltyDeduction,
+          loanDeduction: calc.loanDeduction,
+          totalDeduction: calc.totalDeduction,
+          netPay: calc.netPay
         };
       });
   }, [employees, records, penalties, loans, month, settings, lockedSnapshot, weeklyOffIndex, shiftHours, weeklyOffMultiplier]);
@@ -369,10 +307,26 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
     const year = Number(yearStr);
     const monthNumber = Number(monthStr);
     const daysInMonth = year && monthNumber ? new Date(year, monthNumber, 0).getDate() : 30;
+    const monthFirstIso = year && monthNumber ? isoDate(new Date(year, monthNumber - 1, 1)) : '';
+    const monthLastIso = year && monthNumber ? isoDate(new Date(year, monthNumber - 1, daysInMonth)) : '';
+    const today = new Date();
+    const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+    const lastDayOfCurrentMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+    const upToIso =
+      month === currentMonthKey && today.getDate() < lastDayOfCurrentMonth
+        ? isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1))
+        : undefined;
+    const monthComplete = !upToIso || (!!monthLastIso && upToIso >= monthLastIso);
+    const hireDate = row.employee.hire_date || null;
+    const terminationDate = row.employee.termination_date || null;
+    const isPartialMonth =
+      Boolean(hireDate && monthFirstIso && hireDate > monthFirstIso) ||
+      Boolean(terminationDate && monthLastIso && terminationDate < monthLastIso);
     const dayRate = dailyRateFor(row.baseSalary);
     const hourRate = hourlyRateFor(row.baseSalary, shiftHours);
     const officialStart = effectiveSettings?.official_start_time || '08:30';
     const officialEnd = effectiveSettings?.official_end_time || '17:30';
+    const extraAbsenceDaysDefault = absenceExtraPenaltyDaysFor(effectiveSettings?.rules_json);
     const statusLabels: Record<string, string> = {
       present: 'حاضر',
       absent: 'غائب',
@@ -393,22 +347,43 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       const loansCell = loansTotal > 0 ? formatMoney(loansTotal) : '—';
       const loansReason = dayLoans.map((loan) => loan.notes || 'سلفة').join('، ');
 
+      if ((hireDate && iso < hireDate) || (terminationDate && iso > terminationDate)) {
+        dayRows.push(`<tr class="row-off">
+          <td class="mono">${dateLabel} — ${dayLabel}</td><td>—</td><td>—</td><td>—</td>
+          <td class="mono">${loansCell}</td><td class="mono">—</td>
+          <td class="note">خارج فترة التوظيف${loansReason ? ` — ${escapeHtml(loansReason)}` : ''}</td></tr>`);
+        continue;
+      }
+
+      // حساب نسبة خصم يوم الإجازة الأسبوعية لنفس الأسبوع (مطابق 100% لـ computeMonthAccrual).
+      const scopedWeek = isWeeklyOff
+        ? eligibleWeekDates(weekDatesBeforeWeeklyOff(iso), hireDate, terminationDate)
+        : [];
+      const hasWeekData = isWeeklyOff && scopedWeek.some((dateStr) => recordsByDate.has(dateStr));
+      const weekAbsentCount = isWeeklyOff
+        ? scopedWeek.filter((dateStr) => isUnexcusedAbsenceRecord(recordsByDate.get(dateStr))).length
+        : 0;
+      const weekOffRatio = isWeeklyOff
+        ? hasWeekData
+          ? weeklyOffRatioForAbsences(weekAbsentCount)
+          : monthComplete && !isPartialMonth
+            ? 1
+            : 0
+        : 0;
+
       // يوم الإجازة الأسبوعية إجازة مدفوعة فقط عند غياب بصمة الحضور؛
       // اليوم الذي عُمل فيه يُطبع كيوم عمل إضافي فوق سقف الـ30 يوماً بمضاعف الإعدادات.
       if (isWeeklyOff && !(record && record.check_in)) {
-        const weekDates = weekDatesBeforeWeeklyOff(iso);
-        const hasWeekData = weekDates.some((dateStr) => recordsByDate.has(dateStr));
-        const absentCount = weekDates.filter((dateStr) => {
-          const rec = recordsByDate.get(dateStr);
-          return !rec || !isAttendedRecord(rec);
-        }).length;
-        const ratio = hasWeekData ? weeklyOffRatioForAbsences(absentCount) : 0;
-        const deduction = ratio * dayRate;
+        const deduction = weekOffRatio * dayRate;
         const reason =
-          ratio > 0
-            ? `خصم ${weeklyOffRatioLabel(ratio)} بسبب غياب ${absentCount} أيام بدون عذر`
-            : `إجازة أسبوعية مدفوعة (${weeklyOffLabel})`;
-        dayRows.push(`<tr class="${ratio > 0 ? 'row-absent' : 'row-off'}">
+          weekOffRatio > 0
+            ? hasWeekData
+              ? `خصم ${weeklyOffRatioLabel(weekOffRatio)} بسبب غياب ${weekAbsentCount} أيام بدون عذر`
+              : `خصم يوم الإجازة كاملاً (لا توجد سجلات عمل في الأسبوع)`
+            : hasWeekData
+              ? `إجازة أسبوعية مدفوعة (${weeklyOffLabel})`
+              : `لا توجد سجلات عمل في الأسبوع`;
+        dayRows.push(`<tr class="${weekOffRatio > 0 ? 'row-absent' : 'row-off'}">
           <td class="mono">${dateLabel} — ${dayLabel}</td><td>—</td><td>—</td><td>—</td>
           <td class="mono">${loansCell}</td>
           <td class="mono">${deduction ? formatMoney(-deduction) : '—'}</td>
@@ -424,13 +399,37 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
         continue;
       }
 
+      const attended = isAttendedRecord(record);
+      const excusedUnpaid = isExcusedUnpaidRecord(record);
+      const decision = effectiveAbsenceDecision(record);
       const waivedByReview = record.review_status === 'rejected' || record.review_status === 'pending_review';
       let dedDays = 0;
       let dedHours = 0;
-      if (isAttendedRecord(record) && !record.is_excused && !waivedByReview) {
+      if (!attended) {
+        if (!excusedUnpaid && record.review_status !== 'rejected') {
+          if (record.manual_deduction) {
+            dedDays = Number(record.calculated_deduction_days) || 0;
+            dedHours = Number(record.calculated_deduction_hours) || 0;
+          } else {
+            const sd = Number(record.calculated_deduction_days) || 0;
+            const sh = Number(record.calculated_deduction_hours) || 0;
+            if (sd > 0 || sh > 0) {
+              dedDays = sd;
+              dedHours = sh;
+            } else {
+              dedDays = extraAbsenceDaysDefault;
+            }
+          }
+        }
+      } else if (!record.is_excused && !waivedByReview && !(record.status === 'absent' || record.status === 'leave')) {
         dedDays = Number(record.calculated_deduction_days) || 0;
         dedHours = Number(record.calculated_deduction_hours) || 0;
-        if (dedDays === 0 && dedHours === 0 && row.employee.rule_application_mode !== 'manual_review') {
+        if (
+          dedDays === 0 &&
+          dedHours === 0 &&
+          !record.manual_deduction &&
+          row.employee.rule_application_mode !== 'manual_review'
+        ) {
           const lm = lateMinutesFor(record.check_in, officialStart, officialEnd);
           const rule = matchLateRule(effectiveSettings?.rules_json, lm);
           const rv = Number(rule?.deduction_value) || 0;
@@ -441,23 +440,34 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
         }
       }
       const deduction = dedDays * dayRate + dedHours * hourRate;
-      const overtime =
-        (Number(record.overtime_days) || 0) * dayRate +
-        (Number(record.overtime_hours) || 0) * hourRate;
+      const overtime = attended
+        ? (Number(record.overtime_days) || 0) * dayRate +
+          (Number(record.overtime_hours) || 0) * hourRate
+        : 0;
       const lateMinutes = lateMinutesFor(record.check_in, officialStart, officialEnd);
-      let reason = isWeeklyOff ? `عمل يوم الإجازة الأسبوعية (×${weeklyOffMultiplier})` : 'حضور كامل';
-      if (record.is_excused) reason = `بعذر: ${record.excuse_note || 'بدون خصم'}`;
+      let reason = isWeeklyOff
+        ? weekOffRatio > 0
+          ? `عمل يوم الإجازة (×${weeklyOffMultiplier}) — خصم ${weeklyOffRatioLabel(weekOffRatio)} من الإجازة لغياب ${weekAbsentCount} أيام`
+          : `عمل يوم الإجازة الأسبوعية (×${weeklyOffMultiplier})`
+        : 'حضور كامل';
+      if (record.status === 'absent' || record.status === 'leave') {
+        if (decision === 'paid_company') {
+          reason = `على حساب الشركة (مدفوع)${record.excuse_note ? `: ${record.excuse_note}` : ''}`;
+        } else if (decision === 'excused_unpaid') {
+          reason = `غياب بعذر (خصم اليوم فقط)${record.excuse_note ? `: ${record.excuse_note}` : ''}`;
+        } else {
+          reason = 'غياب بدون عذر (خصم يومين: يوم غياب + يوم جزاء)';
+        }
+      } else if (record.is_excused) reason = `بعذر: ${record.excuse_note || 'بدون خصم'}`;
       else if (record.review_status === 'rejected') reason = 'تم رفض الخصم (بدون خصم)';
       else if (record.review_status === 'pending_review') reason = 'بانتظار المراجعة (غير مخصوم حتى الاعتماد)';
-      else if (record.status === 'absent') reason = 'غياب بدون عذر';
-      else if (record.status === 'missing_punch') reason = 'بصمة ناقصة تحتاج مراجعة';
-      else if (record.status === 'leave') reason = statusLabels[record.status] || 'إجازة';
+      else if (record.status === 'missing_punch') reason = 'بصمة ناقصة (حضور مؤقت — تحتاج مراجعة)';
       else if (lateMinutes > 0 && !isWeeklyOff) reason = `تأخير ${lateMinutes} دقيقة`;
       else if (deduction > 0) reason = 'خصم تأخير / انصراف مبكر';
 
       // أحمر للغياب، أزرق لأيام الإضافي/عمل الإجازة، أصفر للتأخير.
       let rowClass = 'row-ok';
-      if (record.status === 'absent') rowClass = 'row-absent';
+      if (record.status === 'absent' && decision !== 'paid_company') rowClass = 'row-absent';
       else if (overtime > 0 || isWeeklyOff) rowClass = 'row-overtime';
       else if (record.status === 'missing_punch') rowClass = 'row-info';
       else if (record.status === 'leave') rowClass = 'row-off';
@@ -476,6 +486,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
     const overtimeText = `${row.overtimeDays} يوم / ${row.overtimeHours} ساعة`;
     const attendanceText = `${row.attendanceDays.toFixed(2)} يوم / ${row.attendanceHours.toFixed(2)} ساعة`;
     const penaltyText = `${row.penaltyDays.toFixed(2)} يوم / ${row.penaltyHours.toFixed(2)} ساعة`;
+    const regularAttendedDays = Math.max(0, row.attendedDays - row.workedWeeklyOffDays);
     const extraOffText =
       row.workedWeeklyOffDays > 0
         ? ` + عمل إجازة ${row.workedWeeklyOffDays}×${weeklyOffMultiplier} (${row.weeklyOffExtraDays.toFixed(2)} يوم)`
@@ -505,7 +516,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           <td class="label">الأيام المستحقة</td>
           <td class="mono"><strong>${row.earnedDays.toFixed(2)} يوم</strong></td>
           <td class="label">تفصيل الأيام</td>
-          <td class="mono">حضور ${row.attendedDays.toFixed(2)} + ${escapeHtml(weeklyOffLabel)} ${row.paidSundayDays.toFixed(2)}${escapeHtml(extraOffText)}</td>
+          <td class="mono">حضور ${regularAttendedDays.toFixed(2)} + ${escapeHtml(weeklyOffLabel)} ${row.paidSundayDays.toFixed(2)}${escapeHtml(extraOffText)}</td>
         </tr>
         <tr class="screen-only">
           <td class="label">المرتب الشهري</td>
@@ -617,7 +628,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           <td class="mono">${escapeHtml(row.employee.employee_code || '-')}</td>
           <td class="text-right"><strong>${escapeHtml(row.employee.name)}</strong></td>
           <td class="text-right">${escapeHtml(row.employee.job_title || '—')} / ${escapeHtml(workerDepartment(row))}</td>
-          <td class="num"><strong>${row.earnedDays.toFixed(2)}</strong><div class="sub">ح ${row.attendedDays.toFixed(1)} + إ ${row.paidSundayDays.toFixed(1)}</div></td>
+          <td class="num"><strong>${row.earnedDays.toFixed(2)}</strong><div class="sub">ح ${Math.max(0, row.attendedDays - row.workedWeeklyOffDays).toFixed(1)} + إ ${row.paidSundayDays.toFixed(1)}${row.workedWeeklyOffDays > 0 ? ` + ع ${row.workedWeeklyOffDays}×${weeklyOffMultiplier}` : ''}</div></td>
           <td class="num">${formatMoney(row.baseSalary)}</td>
           <td class="num"><strong>${formatMoney(row.earnedBase)}</strong></td>
           <td class="num ok">${formatMoney(row.overtimePay)}</td>
@@ -889,7 +900,11 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
                     <td className="px-4 py-3 text-center font-mono font-black text-slate-800 whitespace-nowrap">
                       <p>{row.earnedDays.toFixed(2)} يوم</p>
                       <p className="text-[10px] text-slate-400">
-                        حضور {row.attendedDays.toFixed(2)} + {weeklyOffLabel} {row.paidSundayDays.toFixed(2)}
+                        حضور {Math.max(0, row.attendedDays - row.workedWeeklyOffDays).toFixed(2)} +{' '}
+                        {weeklyOffLabel} {row.paidSundayDays.toFixed(2)}
+                        {row.workedWeeklyOffDays > 0
+                          ? ` + إجازة ${row.workedWeeklyOffDays}×${weeklyOffMultiplier}`
+                          : ''}
                       </p>
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-black text-slate-800 whitespace-nowrap">
@@ -979,10 +994,9 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       <div className="flex items-start gap-2 px-4 py-3 rounded-2xl bg-blue-50 border border-blue-200 text-blue-800 text-[11px] font-bold">
         <Info className="w-4 h-4 shrink-0" />
         <span>
-          يُحسب الأجر وفق القواعد المؤكدة (30 يوماً − الغياب − خصم {weeklyOffLabel}) مع إضافة العمل يوم{' '}
-          {weeklyOffLabel} فوق سقف الـ30 يوماً بمعامل ×{weeklyOffMultiplier}. تُعفى الخصومات «المرفوضة»
-          و«بانتظار المراجعة» من الصافي مع الإبقاء على يوم الحضور، وراتب اليوم = المرتب ÷ 30 وراتب
-          الساعة = راتب اليوم ÷ {Number(shiftHours.toFixed(2))} ساعة.
+          يُحاسب الموظف المنتظم بالشهر (30 يوماً − الغياب − خصم {weeklyOffLabel})، بينما يُحاسب المعيَّن أو التارك في منتصف الشهر بالأيام الفعلية داخل فترة عمله فقط.
+          الغياب بدون عذر = يومان (يوم غياب + يوم جزاء إضافي)، وبعذر = يوم واحد فقط، وعلى حساب الشركة = مدفوع 100%.
+          العمل يوم {weeklyOffLabel} يُضاف فوق السقف بمعامل ×{weeklyOffMultiplier}، وراتب اليوم = المرتب ÷ 30 وراتب الساعة = راتب اليوم ÷ {Number(shiftHours.toFixed(2))} ساعة.
         </span>
       </div>
 

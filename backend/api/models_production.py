@@ -1050,6 +1050,16 @@ HR_REVIEW_STATUS_CHOICES = [
 
 HR_REVIEW_STATUS_LABELS = dict(HR_REVIEW_STATUS_CHOICES)
 
+# قرار الغياب على سجل الحضور اليومي (ثلاثة خيارات واضحة).
+HR_ABSENCE_DECISION_CHOICES = [
+    ('', 'بانتظار القرار'),
+    ('unexcused', 'بدون عذر (خصم يومين)'),
+    ('excused_unpaid', 'بعذر (خصم اليوم فقط)'),
+    ('paid_company', 'على حساب الشركة (مدفوع)'),
+]
+
+HR_ABSENCE_DECISION_LABELS = dict(HR_ABSENCE_DECISION_CHOICES)
+
 # نوع الجزاء اليدوي (أيام أو ساعات).
 HR_PENALTY_TYPE_CHOICES = [
     ('days', 'أيام'),

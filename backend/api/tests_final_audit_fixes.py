@@ -78,21 +78,25 @@ class HRWeeklyOffAndPayrollSecurityTests(TestCase):
             self.is_excused = is_excused
 
     def test_weekly_off_deduction_tiers(self):
-        # 0 أو 1 -> 0 | 2 أو 3 -> 1/3 | 4 -> 2/3 | 5+ -> 1
+        # الشرائح الخمس الرسمية: 0 أو 1 -> 0 | 2 -> 1/3 | 3 -> 1/2 | 4 -> 2/3 | 5+ -> 1
         self.assertEqual(_weekly_off_ratio(0), 0.0)
         self.assertEqual(_weekly_off_ratio(1), 0.0)
         self.assertAlmostEqual(_weekly_off_ratio(2), 1.0 / 3.0, places=5)
-        self.assertAlmostEqual(_weekly_off_ratio(3), 1.0 / 3.0, places=5)
+        self.assertAlmostEqual(_weekly_off_ratio(3), 0.5, places=5)
         self.assertAlmostEqual(_weekly_off_ratio(4), 2.0 / 3.0, places=5)
         self.assertEqual(_weekly_off_ratio(5), 1.0)
         self.assertEqual(_weekly_off_ratio(6), 1.0)
 
         # مطابقة sunday_deduction_for_week في hr_attendance_io
         week = [date(2026, 11, d) for d in range(2, 8)]  # Mon..Sat before Sun Nov 8
-        # 3 أيام حضور + 3 أيام غياب -> خصم 1/3 (0.33)
+        # 4 حضور + 2 غياب -> خصم 1/3 (0.33)
+        recs_2_abs = {week[i]: self._Rec() for i in range(4)}
+        res2 = sunday_deduction_for_week(recs_2_abs, week)
+        self.assertAlmostEqual(res2['sunday_deduction_days'], 0.33, places=2)
+        # 3 أيام حضور + 3 أيام غياب -> خصم 1/2 (0.50)
         recs_3_abs = {week[i]: self._Rec() for i in range(3)}
         res3 = sunday_deduction_for_week(recs_3_abs, week)
-        self.assertAlmostEqual(res3['sunday_deduction_days'], 0.33, places=2)
+        self.assertAlmostEqual(res3['sunday_deduction_days'], 0.50, places=2)
         # 2 حضور + 4 غياب -> خصم 2/3 (0.67)
         recs_4_abs = {week[i]: self._Rec() for i in range(2)}
         res4 = sunday_deduction_for_week(recs_4_abs, week)

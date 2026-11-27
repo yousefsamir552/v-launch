@@ -319,6 +319,25 @@ def ensure_schema_columns():
                         cursor.execute(
                             "ALTER TABLE api_userprofile ADD COLUMN ui_preferences TEXT NOT NULL DEFAULT '{}';"
                         )
+
+            # حقول الموارد البشرية الجديدة: تاريخ التعيين والترك، قرار الغياب الثلاثي، والخصم اليدوي.
+            if 'api_hremployee' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_hremployee')]
+                if 'hire_date' not in cols:
+                    cursor.execute('ALTER TABLE api_hremployee ADD COLUMN hire_date date NULL;')
+                if 'termination_date' not in cols:
+                    cursor.execute('ALTER TABLE api_hremployee ADD COLUMN termination_date date NULL;')
+
+            if 'api_hrattendancerecord' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_hrattendancerecord')]
+                if 'absence_decision' not in cols:
+                    cursor.execute(
+                        "ALTER TABLE api_hrattendancerecord ADD COLUMN absence_decision varchar(20) NOT NULL DEFAULT '';"
+                    )
+                if 'manual_deduction' not in cols:
+                    cursor.execute(
+                        'ALTER TABLE api_hrattendancerecord ADD COLUMN manual_deduction boolean NOT NULL DEFAULT false;'
+                    )
         # Only mark as done after a fully successful pass so transient failures retry.
         _SCHEMA_ENSURED = True
     except Exception:

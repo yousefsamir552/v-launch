@@ -1568,6 +1568,8 @@ export interface HREmployee {
   rule_application_mode_label?: string;
   national_id?: string;
   birth_date?: string | null;
+  hire_date?: string | null;
+  termination_date?: string | null;
   phone?: string;
   photo?: string;
   notes?: string;
@@ -1600,6 +1602,8 @@ export type HRAttendanceStatus = 'present' | 'absent' | 'leave' | 'missing_punch
 
 export type HRReviewStatus = 'auto_applied' | 'pending_review' | 'approved' | 'rejected';
 
+export type HRAbsenceDecision = '' | 'unexcused' | 'excused_unpaid' | 'paid_company';
+
 export interface HRAttendanceRecord {
   id: string;
   employee_id: string;
@@ -1612,7 +1616,10 @@ export interface HRAttendanceRecord {
   status: HRAttendanceStatus;
   status_label?: string;
   is_excused: boolean;
+  absence_decision?: HRAbsenceDecision;
+  absence_decision_label?: string;
   excuse_note?: string;
+  manual_deduction?: boolean;
   calculated_deduction_days: number;
   calculated_deduction_hours: number;
   late_minutes?: number;
@@ -1642,11 +1649,16 @@ export interface HRAttendanceStats {
   missing_punch: number;
   excused: number;
   pending_review: number;
+  needs_decision?: number;
   late_records: number;
   compliance_percent: number;
   average_daily_absence: number;
   deduction_days: number;
   deduction_hours: number;
+  approved_deduction_days?: number;
+  approved_deduction_hours?: number;
+  pending_deduction_days?: number;
+  pending_deduction_hours?: number;
   worst_department: {
     department: string;
     label: string;

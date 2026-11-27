@@ -24,7 +24,7 @@ import {
   weeklyOffIndexFromKey, weeklyOffDayLabel, formatDayLabel, isoDate,
   weekDatesBeforeWeeklyOff, weeklyOffRatioForAbsences, weeklyOffRatioLabel,
   weeklyOffDeductionForDate, sumWeeklyOffDeductionsForEmployeeMonth,
-  dailyRateFor, hourlyRateFor, timeToMinutes, lateMinutesFor, matchLateRule,
+  dailyRateFor, hourlyRateFor, workingHoursPerDayFor, timeToMinutes, lateMinutesFor, matchLateRule,
   isAttendedRecord, MonthAccrual, computeMonthAccrual
 } from './hrShared';
 
@@ -32,6 +32,9 @@ export const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employee
   const { addFlashMessage, logAction } = useApp();
 
   const [penalties, setPenalties] = useState<HRPenalty[]>([]);
+  const [settings, setSettings] = useState<HRAttendanceSettings | null>(null);
+  const shiftHours = workingHoursPerDayFor(settings);
+  const shiftHoursLabel = Number(shiftHours.toFixed(2));
   const [isLoading, setIsLoading] = useState(true);
   const [month, setMonth] = useState(currentMonth());
   const [employeeFilter, setEmployeeFilter] = useState('');
@@ -55,8 +58,12 @@ export const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employee
   const loadPenalties = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await api.getHRPenalties();
+      const [res, settingsRes] = await Promise.all([
+        api.getHRPenalties(),
+        api.getHRAttendanceSettings().catch(() => null)
+      ]);
       setPenalties(Array.isArray(res) ? res : []);
+      setSettings(settingsRes || null);
     } catch (err: any) {
       addFlashMessage(err?.message || 'فشل تحميل الجزاءات من السيرفر', 'danger');
     } finally {
@@ -168,12 +175,12 @@ export const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employee
       setFormError('قيمة الجزاء يجب أن تكون أكبر من صفر');
       return;
     }
-    const maxAllowed = form.penalty_type === 'days' ? 3 : 8;
+    const maxAllowed = form.penalty_type === 'days' ? 3 : shiftHoursLabel;
     if (value > maxAllowed) {
       setFormError(
         form.penalty_type === 'days'
           ? 'الحد الأقصى لمقدار الجزاء ٣ أيام'
-          : 'الحد الأقصى لمقدار الجزاء ٨ ساعات'
+          : `الحد الأقصى لمقدار الجزاء ${shiftHoursLabel} ساعة (ساعات الشيفت الرسمية)`
       );
       return;
     }
@@ -453,7 +460,7 @@ export const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employee
                 <input
                   type="number"
                   min="0"
-                  max={form.penalty_type === 'days' ? 3 : 8}
+                  max={form.penalty_type === 'days' ? 3 : shiftHoursLabel}
                   step="0.25"
                   value={form.value}
                   onChange={(event) => updateForm({ value: event.target.value })}
@@ -493,7 +500,7 @@ export const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employee
             <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-blue-50 border border-blue-200 text-blue-800 text-[11px] font-bold">
               <Info className="w-4 h-4 shrink-0" />
               <span>
-                يُحسب الجزاء كالتالي: (الأيام × المرتب ÷ 30) + (الساعات × المرتب ÷ 30 ÷ 8)، ويُخصم
+                يُحسب الجزاء كالتالي: (الأيام × المرتب ÷ 30) + (الساعات × المرتب ÷ 30 ÷ {shiftHoursLabel} ساعة)، ويُخصم
                 في مسير مرتبات نفس الشهر.
               </span>
             </div>

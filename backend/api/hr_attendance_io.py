@@ -13,6 +13,7 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, time, timedelta
+from django.utils import timezone
 
 # أعمدة قالب البصمة الرسمي.
 TEMPLATE_HEADERS = [
@@ -644,7 +645,107 @@ def _apply_rule(rules, violation_type: str, minutes: float, totals) -> bool:
     return str(rule.get('apply_mode') or 'auto') == 'manual_review'
 
 
-def compute_attendance(settings, employee, work_date, check_in, check_out, status_override=''):
+def effective_absence_decision(record) -> str:
+    """قرار الغياب الفعلي للسجل مع التوافق الكامل مع السجلات القديمة."""
+    if record is None:
+        return 'unexcused'
+    decision = str(getattr(record, 'absence_decision', '') or '').strip()
+    if decision in ('unexcused', 'excused_unpaid', 'paid_company'):
+        return decision
+    if getattr(record, 'is_excused', False):
+        return 'paid_company'
+    return 'unexcused'
+
+
+def is_attended_record(record) -> bool:
+    """
+    هل يُعد السجل حضوراً مدفوعاً (مؤقتاً أو مؤكداً)؟
+    - حاضر (present)
+    - غياب/إجازة بقرار «على حساب الشركة (مدفوع)» (paid_company)
+    - أي بصمة واحدة (check_in أو check_out)، بما يشمل البصمة الناقصة كحضور مؤقت لحين قرار المشرف.
+    """
+    if record is None:
+        return False
+    status = getattr(record, 'status', '') or ''
+    if status == 'present':
+        return True
+    if status in ('absent', 'leave'):
+        return effective_absence_decision(record) == 'paid_company'
+    if getattr(record, 'check_in', None) or getattr(record, 'check_out', None):
+        return True
+    return bool(getattr(record, 'is_excused', False))
+
+
+def is_excused_unpaid_record(record) -> bool:
+    """غياب بعذر (خصم اليوم فقط دون جزاء إضافي ودون دخول في خصم الإجازة الأسبوعية)."""
+    if record is None or is_attended_record(record):
+        return False
+    status = getattr(record, 'status', '') or ''
+    if status in ('absent', 'leave'):
+        return effective_absence_decision(record) == 'excused_unpaid'
+    return False
+
+
+def is_unexcused_absence_record(record) -> bool:
+    """غياب بدون عذر (يدخل في خصم الإجازة الأسبوعية ويستوجب جزاء الغياب الإضافي)."""
+    if record is None:
+        return True
+    if is_attended_record(record):
+        return False
+    return not is_excused_unpaid_record(record)
+
+
+def absence_extra_penalty_days(rules) -> float:
+    """
+    أيام الجزاء الإضافية للغياب بدون عذر (فوق يوم الغياب نفسه المخصوم من earnedDays).
+    - إذا ضُبطت قاعدة absence بـ N أيام (مثلاً 2 يوم): الجزاء الإضافي = max(1.0, N - 1.0) = 1.0
+      ليصبح إجمالي الخصم = 1 (غياب) + 1 (جزاء) = يومين بالضبط.
+    - الحد الأدنى للجزاء الإضافي على الغياب بدون عذر = 1.0 يوم.
+    """
+    rule = _match_rule(rules, 'absence', 0)
+    if rule and rule.get('deduction_type') == 'days':
+        try:
+            rule_days = float(rule.get('deduction_value') or 0)
+        except (TypeError, ValueError):
+            rule_days = 0.0
+        return round(max(1.0, rule_days - 1.0), 2)
+    return 1.0
+
+
+def weekly_off_ratio_for_absences(absent_count: int) -> float:
+    """
+    نسبة خصم يوم الإجازة الأسبوعية وفق الشرائح الخمس الرسمية:
+      0 أو 1 يوم غياب بدون عذر -> 0
+      2 يوم                     -> 1/3
+      3 أيام                    -> 1/2
+      4 أيام                    -> 2/3
+      5 أو 6 أيام               -> 1.0
+    """
+    if absent_count >= 5:
+        return 1.0
+    if absent_count == 4:
+        return 2.0 / 3.0
+    if absent_count == 3:
+        return 0.5
+    if absent_count == 2:
+        return 1.0 / 3.0
+    return 0.0
+
+
+def eligible_week_dates(week_dates, hire_date=None, termination_date=None):
+    """تصفية أيام الأسبوع الستة لتشمل فقط الأيام الواقعة ضمن فترة عمل الموظف."""
+    result = []
+    for day in week_dates:
+        if hire_date and day < hire_date:
+            continue
+        if termination_date and day > termination_date:
+            continue
+        result.append(day)
+    return result
+
+
+def compute_attendance(settings, employee, work_date, check_in, check_out,
+                       status_override='', absence_decision=''):
     """
     احتساب حالة الحضور والخصومات لموظف في يوم واحد.
 
@@ -670,7 +771,7 @@ def compute_attendance(settings, employee, work_date, check_in, check_out, statu
     early_minutes = 0
     # تُحتسب دقائق التأخير/الانصراف المبكر متى وُجدت بصمة فعلية (حضور أو بصمة ناقصة).
     # ندعم الورديات العابرة لمنتصف الليل (مثل 22:00 → 06:00 أو انصراف إضافي بعد 00:00).
-    if check_in or check_out:
+    if status in ('present', 'missing_punch') and (check_in or check_out):
         check_in_minutes = _clock_minutes(check_in)
         check_out_minutes = _clock_minutes(check_out)
         start_minutes = _clock_minutes(official_start)
@@ -699,12 +800,23 @@ def compute_attendance(settings, employee, work_date, check_in, check_out, statu
     totals = {'days': 0.0, 'hours': 0.0}
     manual_review = getattr(employee, 'rule_application_mode', 'auto') == 'manual_review'
     rules = getattr(settings, 'rules_json', None) or []
+    decision = str(absence_decision or '').strip()
 
-    if status == 'absent':
-        manual_review = _apply_rule(rules, 'absence', 0, totals) or manual_review
-    elif status == 'leave':
-        # الإجازة غير المبررة تُعامل كغياب؛ تسجيل العذر (is_excused) يلغي الخصم لاحقاً.
-        manual_review = _apply_rule(rules, 'absence', 0, totals) or manual_review
+    if status in ('absent', 'leave'):
+        if decision in ('excused_unpaid', 'paid_company'):
+            # غياب بعذر (خصم اليوم فقط) أو على حساب الشركة (مدفوع): لا جزاء إضافي.
+            totals['days'] = 0.0
+            totals['hours'] = 0.0
+            manual_review = False
+        else:
+            # غياب بدون عذر (أو بدون قرار بعد): يوم جزاء إضافي على الأقل فوق يوم الغياب نفسه.
+            totals['days'] += absence_extra_penalty_days(rules)
+            rule = _match_rule(rules, 'absence', 0)
+            if rule and str(rule.get('apply_mode') or 'auto') == 'manual_review':
+                manual_review = True
+            if not decision:
+                # سجل غياب لم يحسم المشرف قراره بعد -> يظهر في "يحتاج قرار المشرف".
+                manual_review = True
     elif status in ('present', 'missing_punch'):
         # تُطبّق قواعد التأخير/الانصراف المبكر على أي يوم له بصمة فعلية.
         if late_minutes > 0:
@@ -712,13 +824,15 @@ def compute_attendance(settings, employee, work_date, check_in, check_out, statu
         if early_minutes > 0:
             manual_review = _apply_rule(rules, 'early_departure', early_minutes, totals) or manual_review
         if status == 'missing_punch':
-            # البصمة الناقصة تحتاج تدخل الموارد البشرية دائماً.
+            # البصمة الناقصة تُحسب حضوراً مؤقتاً وتحتاج قرار المشرف دائماً.
             manual_review = True
 
     deduction_days = round(totals['days'], 2)
     deduction_hours = round(totals['hours'], 2)
 
-    if manual_review and status in ('missing_punch', 'absent'):
+    if status in ('absent', 'leave') and decision in ('unexcused', 'excused_unpaid', 'paid_company'):
+        review_status = 'approved'
+    elif manual_review and status in ('missing_punch', 'absent'):
         review_status = 'pending_review'
     elif manual_review and (deduction_days or deduction_hours):
         review_status = 'pending_review'
@@ -870,42 +984,41 @@ def compute_overtime(settings, check_out, check_in=None):
     }
 
 
-def sunday_deduction_for_week(records_by_date, week_dates):
+def sunday_deduction_for_week(records_by_date, week_dates, hire_date=None, termination_date=None):
     """
     احتساب خصم يوم الإجازة الأسبوعية وفق عدد أيام الغياب بدون عذر
-    خلال أيام العمل الستة السابقة له في نفس الأسبوع:
+    خلال أيام العمل الستة السابقة له ضمن فترة عمل الموظف:
 
       0 أو 1 يوم -> 0 (بدون خصم)
-      2 أو 3 أيام -> ثلث يوم (1/3)
-      4 أيام      -> ثلثي يوم (2/3)
-      5 أيام+     -> يوم كامل (1)
+      2 يوم      -> ثلث يوم (1/3)
+      3 أيام     -> نصف يوم (1/2)
+      4 أيام     -> ثلثي يوم (2/3)
+      5 أو 6 أيام -> يوم كامل (1)
 
     Returns dict(sunday_deduction_days, sunday_deduction_note).
     """
     empty = {'sunday_deduction_days': 0.0, 'sunday_deduction_note': ''}
+    scoped_dates = eligible_week_dates(week_dates, hire_date=hire_date, termination_date=termination_date)
+    if not scoped_dates:
+        return empty
     absent_dates = []
-    for day in week_dates:
+    for day in scoped_dates:
         record = records_by_date.get(day)
-        attended = bool(
-            record
-            and (
-                getattr(record, 'status', '') == 'present'
-                or getattr(record, 'is_excused', False)
-                or record.check_in
-            )
-        )
-        if not attended:
+        if is_unexcused_absence_record(record):
             absent_dates.append(day)
 
     count = len(absent_dates)
-    if count >= 5:
-        ratio, label = 1.0, 'يوم الإجازة كاملاً'
-    elif count == 4:
-        ratio, label = 2.0 / 3.0, 'ثلثي يوم الإجازة'
-    elif count in (2, 3):
-        ratio, label = 1.0 / 3.0, 'ثلث يوم الإجازة'
-    else:
+    ratio = weekly_off_ratio_for_absences(count)
+    if ratio <= 0:
         return empty
+    if count >= 5:
+        label = 'يوم الإجازة كاملاً'
+    elif count == 4:
+        label = 'ثلثي يوم الإجازة'
+    elif count == 3:
+        label = 'نصف يوم الإجازة'
+    else:
+        label = 'ثلث يوم الإجازة'
 
     dates_text = '، '.join(day.isoformat() for day in absent_dates)
     note = f'خصم {label} بسبب غياب بدون عذر في أيام: {dates_text}'
@@ -924,18 +1037,18 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
     """
     إعادة تطبيق قواعد الحضور والإضافي وخصم الإجازة الأسبوعية على كل سجلات موظف في شهر.
 
-    تُستخدم عند رفع الشيت وتعديل سجل والضغط على "إعادة تطبيق القواعد".
+    تُستخدم عند رفع الشيت وتعديل/حذف سجل والضغط على "إعادة تطبيق القواعد".
     عند preserve_decisions=True تُحفظ قرارات المراجعة اليدوية (approved/rejected)
-    كما هي مع تحديث الإضافي وخصم الإجازة الأسبوعية فقط.
+    وكذلك الخصم اليدوي (manual_deduction=True) مع تحديث الإضافي وخصم الإجازة الأسبوعية.
+    تحذف سجل الأحد الشبح المُنشأ تلقائياً إذا لم تعد توجد سجلات عمل في الأسبوع.
     ترجع عدد السجلات التي تغيّرت.
     """
     from .models import HRAttendanceRecord
 
-    # يوم الإجازة الأسبوعية المدفوعة يأتي من إعدادات الحضور (وليس ثابتاً على الأحد).
     weekly_off_index = weekly_off_weekday(settings)
+    hire_date = getattr(employee, 'hire_date', None)
+    termination_date = getattr(employee, 'termination_date', None)
 
-    # نقرأ أسبوعاً قبل بداية الشهر حتى يُحسب خصم أول يوم إجازة في الشهر بشكل صحيح،
-    # لكن نُعيد حساب/إنشاء سجلات الشهر المطلوب فقط.
     lookup_start = month_start - timedelta(days=6)
     all_records = list(
         HRAttendanceRecord.objects.filter(
@@ -945,13 +1058,40 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
         )
     )
     records = [record for record in all_records if month_start <= record.date <= month_end]
-    if not records:
-        return 0
-
     records_by_date = {record.date: record for record in all_records}
     changed = 0
 
     for record in records:
+        is_weekly_off = record.date.weekday() == weekly_off_index
+        worked_weekly_off = is_weekly_off and bool(record.check_in)
+
+        # حذف سجل يوم الإجازة الشبح المُنشأ تلقائياً إذا لم تعد هناك أي سجلات في الأسبوع أو كان خارج فترة التوظيف.
+        is_auto_weekly_off_placeholder = (
+            is_weekly_off
+            and not record.check_in
+            and not record.check_out
+            and record.status == 'leave'
+            and record.is_excused
+            and not (record.excuse_note or '').strip()
+        )
+        if is_auto_weekly_off_placeholder:
+            outside_employment = bool(
+                (hire_date and record.date < hire_date)
+                or (termination_date and record.date > termination_date)
+            )
+            scoped_week = eligible_week_dates(
+                _week_dates_before(record.date),
+                hire_date=hire_date,
+                termination_date=termination_date,
+            )
+            has_week_data = any(day in records_by_date for day in scoped_week)
+            if outside_employment or not has_week_data:
+                records_by_date.pop(record.date, None)
+                record.delete()
+                changed += 1
+                continue
+
+        decision = str(getattr(record, 'absence_decision', '') or '').strip()
         computed = compute_attendance(
             settings,
             employee,
@@ -959,10 +1099,19 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
             record.check_in,
             record.check_out,
             record.status,
+            absence_decision=decision if decision else ('paid_company' if record.is_excused and record.status in ('absent', 'leave') else ''),
         )
-        overtime = compute_overtime(settings, record.check_out, record.check_in)
 
-        if record.is_excused:
+        # احترام الخصم اليدوي وقرارات المراجعة اليدوية عند preserve_decisions=True.
+        if preserve_decisions and getattr(record, 'manual_deduction', False):
+            deduction_days = record.calculated_deduction_days
+            deduction_hours = record.calculated_deduction_hours
+            review_status = record.review_status
+        elif record.status in ('absent', 'leave') and decision in ('excused_unpaid', 'paid_company'):
+            deduction_days = 0.0
+            deduction_hours = 0.0
+            review_status = 'approved'
+        elif record.is_excused and (record.status not in ('absent', 'leave') or decision == ''):
             deduction_days = 0.0
             deduction_hours = 0.0
             review_status = 'auto_applied'
@@ -975,27 +1124,42 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
             deduction_hours = computed['deduction_hours']
             review_status = computed['review_status']
 
-        # يوم الإجازة الأسبوعية إجازة مدفوعة فقط عندما لا توجد بصمة حضور فعلية له.
-        # أما يوم الإجازة الذي سجّل فيه الموظف بصمة حضور فيُعامل كيوم عمل عادي
-        # (تُطبّق عليه قواعد التأخير والإضافي ويُحتسب ضمن أيام الحضور).
-        is_weekly_off = record.date.weekday() == weekly_off_index
-        worked_weekly_off = is_weekly_off and bool(record.check_in)
         if is_weekly_off and not worked_weekly_off:
             deduction_days = 0.0
             deduction_hours = 0.0
             review_status = 'auto_applied'
 
+        new_status = 'leave' if (is_weekly_off and not worked_weekly_off) else computed['status']
+
+        # الإضافي يُحسب فقط لأيام الحضور الفعلية، ولا يُخزّن ليوم الإجازة الأسبوعية بلا بصمة حضور.
+        attended_after = (
+            new_status == 'present'
+            or (new_status not in ('absent', 'leave') and bool(record.check_in or record.check_out))
+            or (new_status in ('absent', 'leave') and effective_absence_decision(record) == 'paid_company')
+        )
+        if (is_weekly_off and not worked_weekly_off) or not attended_after:
+            overtime = {'overtime_days': 0.0, 'overtime_hours': 0.0}
+        else:
+            overtime = compute_overtime(settings, record.check_out, record.check_in)
+
         weekly_off_days = 0.0
         weekly_off_note = ''
         if is_weekly_off:
-            week_dates = _week_dates_before(record.date)
-            if any(day in records_by_date for day in week_dates):
-                result = sunday_deduction_for_week(records_by_date, week_dates)
+            scoped_week = eligible_week_dates(
+                _week_dates_before(record.date),
+                hire_date=hire_date,
+                termination_date=termination_date,
+            )
+            if scoped_week and any(day in records_by_date for day in scoped_week):
+                result = sunday_deduction_for_week(
+                    records_by_date, scoped_week,
+                    hire_date=hire_date, termination_date=termination_date,
+                )
                 weekly_off_days = result['sunday_deduction_days']
                 weekly_off_note = result['sunday_deduction_note']
 
         new_values = {
-            'status': 'leave' if (is_weekly_off and not worked_weekly_off) else computed['status'],
+            'status': new_status,
             'calculated_deduction_days': deduction_days,
             'calculated_deduction_hours': deduction_hours,
             'late_minutes': 0.0 if (is_weekly_off and not worked_weekly_off) else float(computed['late_minutes'] or 0),
@@ -1021,30 +1185,43 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
             record.save()
             changed += 1
 
-    # إنشاء سجل ليوم الإجازة الأسبوعية (إجازة مدفوعة) لكل أسبوع به بيانات عمل،
-    # حتى يظهر خصم الإجازة الأسبوعية صراحةً أمام تاريخه في السجل.
-    today = date.today()
+    # إنشاء سجل ليوم الإجازة الأسبوعية (إجازة مدفوعة) لكل أسبوع به بيانات عمل ضمن فترة توظيف الموظف.
+    today = timezone.localdate()
     limit = min(month_end, today)
     cursor = month_start
     while cursor <= limit:
         if cursor.weekday() == weekly_off_index and cursor not in records_by_date:
-            week_dates = _week_dates_before(cursor)
-            if any(day in records_by_date for day in week_dates):
-                result = sunday_deduction_for_week(records_by_date, week_dates)
-                HRAttendanceRecord.objects.create(
-                    employee=employee,
-                    date=cursor,
-                    status='leave',
-                    is_excused=True,
-                    calculated_deduction_days=0,
-                    calculated_deduction_hours=0,
-                    overtime_days=0,
-                    overtime_hours=0,
-                    sunday_deduction_days=result['sunday_deduction_days'],
-                    sunday_deduction_note=result['sunday_deduction_note'],
-                    review_status='auto_applied',
+            in_employment = (
+                (not hire_date or cursor >= hire_date)
+                and (not termination_date or cursor <= termination_date)
+            )
+            if in_employment:
+                scoped_week = eligible_week_dates(
+                    _week_dates_before(cursor),
+                    hire_date=hire_date,
+                    termination_date=termination_date,
                 )
-                changed += 1
+                if scoped_week and any(day in records_by_date for day in scoped_week):
+                    result = sunday_deduction_for_week(
+                        records_by_date, scoped_week,
+                        hire_date=hire_date, termination_date=termination_date,
+                    )
+                    created_off = HRAttendanceRecord.objects.create(
+                        employee=employee,
+                        date=cursor,
+                        status='leave',
+                        is_excused=True,
+                        absence_decision='paid_company',
+                        calculated_deduction_days=0,
+                        calculated_deduction_hours=0,
+                        overtime_days=0,
+                        overtime_hours=0,
+                        sunday_deduction_days=result['sunday_deduction_days'],
+                        sunday_deduction_note=result['sunday_deduction_note'],
+                        review_status='auto_applied',
+                    )
+                    records_by_date[cursor] = created_off
+                    changed += 1
         cursor += timedelta(days=1)
 
     return changed

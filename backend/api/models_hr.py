@@ -60,6 +60,8 @@ class HREmployee(models.Model):
     )
     national_id = models.CharField(max_length=50, blank=True, null=True, verbose_name="الرقم القومي")
     birth_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الميلاد")
+    hire_date = models.DateField(blank=True, null=True, verbose_name="تاريخ التعيين / بداية العمل")
+    termination_date = models.DateField(blank=True, null=True, verbose_name="تاريخ ترك العمل (اختياري)")
     phone = models.CharField(max_length=50, blank=True, null=True, verbose_name="الهاتف")
     photo = models.TextField(blank=True, null=True, verbose_name="صورة الموظف (Base64 أو URL)")
     notes = models.TextField(blank=True, null=True, verbose_name="ملاحظات")
@@ -158,12 +160,12 @@ class HRAttendanceSettings(models.Model):
                     {
                         'id': 'hr-rule-absence',
                         'violation_type': 'absence',
-                        'label': 'غياب يوم كامل',
+                        'label': 'غياب يوم بدون عذر (خصم يومين)',
                         'from_minutes': 0,
                         'to_minutes': 0,
                         'until_time': '',
                         'deduction_type': 'days',
-                        'deduction_value': 1,
+                        'deduction_value': 2,
                         'apply_mode': 'manual_review',
                     },
                 ],
@@ -226,7 +228,15 @@ class HRAttendanceRecord(models.Model):
         verbose_name="الحالة",
     )
     is_excused = models.BooleanField(default=False, verbose_name="بعذر")
+    absence_decision = models.CharField(
+        max_length=20,
+        choices=HR_ABSENCE_DECISION_CHOICES,
+        default='',
+        blank=True,
+        verbose_name="قرار الغياب",
+    )
     excuse_note = models.TextField(blank=True, null=True, verbose_name="ملاحظة العذر")
+    manual_deduction = models.BooleanField(default=False, verbose_name="خصم يدوي")
     calculated_deduction_days = models.FloatField(default=0.0, verbose_name="الخصم المحتسب (أيام)")
     calculated_deduction_hours = models.FloatField(default=0.0, verbose_name="الخصم المحتسب (ساعات)")
     late_minutes = models.FloatField(default=0.0, verbose_name="دقائق التأخير (محتسبة)")

@@ -45,6 +45,7 @@ import {
   HRAttendanceStats,
   HRAttendanceImportResult,
   HRReviewStatus,
+  HRAbsenceDecision,
   HRPenalty,
   HRPenaltyType,
   HRLoan,
@@ -180,6 +181,14 @@ export const REVIEW_STATUS_LABELS: Record<HRReviewStatus, string> = {
   rejected: 'مرفوض'
 };
 
+/** خيارات قرار الغياب الثلاثة. */
+export const ABSENCE_DECISION_LABELS: Record<HRAbsenceDecision, string> = {
+  '': 'بانتظار القرار',
+  unexcused: 'بدون عذر (خصم يومين)',
+  excused_unpaid: 'بعذر (خصم اليوم فقط)',
+  paid_company: 'على حساب الشركة (مدفوع)'
+};
+
 /** أنواع الجزاءات اليدوية. */
 export const PENALTY_TYPE_LABELS: Record<HRPenaltyType, string> = {
   days: 'أيام',
@@ -242,11 +251,27 @@ export const weekDatesBeforeWeeklyOff = (offDayIso: string): string[] => {
   return dates;
 };
 
-/** نسبة خصم يوم الإجازة الأسبوعية وفق عدد أيام الغياب بدون عذر في الأسبوع. */
+/** تصفية أيام الأسبوع الستة لتشمل فقط الأيام الواقعة ضمن فترة عمل الموظف. */
+export const eligibleWeekDates = (
+  weekDates: string[],
+  hireDate?: string | null,
+  terminationDate?: string | null
+): string[] =>
+  weekDates.filter((day) => {
+    if (hireDate && day < hireDate) return false;
+    if (terminationDate && day > terminationDate) return false;
+    return true;
+  });
+
+/**
+ * نسبة خصم يوم الإجازة الأسبوعية وفق الشرائح الخمس الرسمية للغياب بدون عذر:
+ * 0 أو 1 -> 0 | 2 -> 1/3 | 3 -> 1/2 | 4 -> 2/3 | 5 أو 6 -> 1
+ */
 export const weeklyOffRatioForAbsences = (count: number): number => {
   if (count >= 5) return 1;
   if (count === 4) return 2 / 3;
-  if (count === 2 || count === 3) return 1 / 3;
+  if (count === 3) return 0.5;
+  if (count === 2) return 1 / 3;
   return 0;
 };
 
@@ -254,22 +279,29 @@ export const weeklyOffRatioForAbsences = (count: number): number => {
 export const weeklyOffRatioLabel = (days: number): string => {
   if (days >= 1) return 'يوم كامل';
   if (days >= 2 / 3 - 0.001) return 'ثلثي يوم';
+  if (days >= 0.5 - 0.001) return 'نصف يوم';
   if (days >= 1 / 3 - 0.001) return 'ثلث يوم';
   return '';
 };
 
-/** حساب خصم يوم إجازة أسبوعية واحد من سجلات أيام العمل في الأسبوع. */
+/** حساب خصم يوم إجازة أسبوعية واحد من سجلات أيام العمل في الأسبوع ضمن فترة عمل الموظف. */
 export const weeklyOffDeductionForDate = (
   recordsByDate: Map<string, HRAttendanceRecord>,
-  offDayIso: string
+  offDayIso: string,
+  hireDate?: string | null,
+  terminationDate?: string | null
 ): number => {
-  const weekDates = weekDatesBeforeWeeklyOff(offDayIso);
+  const weekDates = eligibleWeekDates(
+    weekDatesBeforeWeeklyOff(offDayIso),
+    hireDate,
+    terminationDate
+  );
   if (weekDates.length === 0) return 0;
   // لا نحسب خصماً لأسبوع لا توجد فيه أي بيانات لهذا الموظف.
   if (!weekDates.some((day) => recordsByDate.has(day))) return 0;
   const absentCount = weekDates.filter((day) => {
     const record = recordsByDate.get(day);
-    return !record || !isAttendedRecord(record);
+    return isUnexcusedAbsenceRecord(record);
   }).length;
   return weeklyOffRatioForAbsences(absentCount);
 };
@@ -417,11 +449,66 @@ export const matchLateRule = (
   return null;
 };
 
-/** هل يوجد سجل حضور فعلي (حضور / أي سجل بعذر مقبول / بصمة حضور)؟ */
-export const isAttendedRecord = (record: HRAttendanceRecord): boolean => {
+/** قرار الغياب الفعلي للسجل مع التوافق الكامل مع السجلات القديمة. */
+export const effectiveAbsenceDecision = (
+  record?: HRAttendanceRecord | null
+): 'unexcused' | 'excused_unpaid' | 'paid_company' => {
+  if (!record) return 'unexcused';
+  const raw = (record.absence_decision || '').trim();
+  if (raw === 'unexcused' || raw === 'excused_unpaid' || raw === 'paid_company') {
+    return raw;
+  }
+  if (record.is_excused) return 'paid_company';
+  return 'unexcused';
+};
+
+/**
+ * هل يُعد السجل حضوراً مدفوعاً (مؤقتاً أو مؤكداً)؟
+ * - حاضر (present)
+ * - غياب/إجازة بقرار «على حساب الشركة (مدفوع)» (paid_company)
+ * - أي بصمة واحدة على الأقل (check_in أو check_out) بما يشمل البصمة الناقصة كحضور مؤقت.
+ */
+export const isAttendedRecord = (record?: HRAttendanceRecord | null): boolean => {
+  if (!record) return false;
   if (record.status === 'present') return true;
-  if (record.is_excused) return true;
-  return !!record.check_in;
+  if (record.status === 'absent' || record.status === 'leave') {
+    return effectiveAbsenceDecision(record) === 'paid_company';
+  }
+  if (record.check_in || record.check_out) return true;
+  return !!record.is_excused;
+};
+
+/** غياب بعذر (خصم اليوم فقط دون جزاء إضافي ودون دخول في خصم الإجازة الأسبوعية). */
+export const isExcusedUnpaidRecord = (record?: HRAttendanceRecord | null): boolean => {
+  if (!record || isAttendedRecord(record)) return false;
+  if (record.status === 'absent' || record.status === 'leave') {
+    return effectiveAbsenceDecision(record) === 'excused_unpaid';
+  }
+  return false;
+};
+
+/** غياب بدون عذر (يخصم يومين ويدخل في عدّاد خصم الإجازة الأسبوعية). */
+export const isUnexcusedAbsenceRecord = (record?: HRAttendanceRecord | null): boolean => {
+  if (!record) return true;
+  if (isAttendedRecord(record)) return false;
+  return !isExcusedUnpaidRecord(record);
+};
+
+/** هل السجل يحتاج قرار المشرف (مراجعة معلقة / بصمة ناقصة / غياب بدون قرار حاسم)؟ */
+export const recordNeedsSupervisorDecision = (record: HRAttendanceRecord): boolean => {
+  if (record.review_status === 'pending_review') return true;
+  if (record.status === 'absent' && !record.absence_decision && !record.is_excused) return true;
+  return false;
+};
+
+/** أيام الجزاء الإضافية للغياب بدون عذر فوق يوم الغياب نفسه (الحد الأدنى = 1 يوم). */
+export const absenceExtraPenaltyDaysFor = (rules?: HRAttendanceRule[]): number => {
+  const absenceRule = (rules || []).find((rule) => rule.violation_type === 'absence');
+  if (absenceRule && absenceRule.deduction_type === 'days') {
+    const val = Number(absenceRule.deduction_value) || 0;
+    return Math.round(Math.max(1, val - 1) * 100) / 100;
+  }
+  return 1;
 };
 
 export interface MonthAccrual {
@@ -431,17 +518,21 @@ export interface MonthAccrual {
   weeklyOffExtraDays: number;
   sundayDeductionDays: number;
   unexcusedAbsenceDays: number;
+  excusedUnpaidAbsenceDays: number;
+  isPartialMonth: boolean;
   earnedDays: number;
   earnedDaysRaw: number;
 }
 
 /**
- * استحقاق الموظف داخل شهر وفق القواعد المحاسبية المؤكدة (مطابق 100% للباك إند):
- * 1) للشهر المكتمل: earned_base = max(0, 30 - total_unexcused_absence_days - sunday_deduction_days)
- *    بحيث يخصم يوم الغياب يوماً واحداً بالضبط سواء كان الشهر 28 أو 30 أو 31 يوماً.
- * 2) العمل يوم الإجازة الأسبوعية يمنح أجراً إضافياً فوق سقف الـ 30 يوماً بمضاعف
- *    ديناميكي (weeklyOffWorkMultiplier: 1.0 / 1.5 / 2.0 ...).
- * 3) السجلات ذات review_status='rejected' لا تُستبعد أبداً من الحضور (رفض الخصم يلغي الخصم فقط).
+ * استحقاق الموظف داخل شهر وفق قواعد المصنع الرسمية النهائية (مطابق 100% للباك إند):
+ * - النطاق الفعلي للموظف = [max(monthStart, hireDate), min(monthEnd, terminationDate)].
+ * 1) الموظف المنتظم طوال الشهر في شهر مكتمل:
+ *    earnedBase = max(0, 30 - totalUnpaidAbsenceDays - sundayDeductionDays) أياً كان طول الشهر (28/29/30/31).
+ * 2) المعيَّن في منتصف الشهر (hireDate > monthStart) أو التارك قبل نهاية الشهر (terminationDate < monthEnd)
+ *    أو الشهر المفتوح قبل نهايته:
+ *    earnedBase = min(30, attendedRegularDays + paidSundayDays).
+ * 3) العمل يوم الإجازة الأسبوعية يُضاف فوق سقف الـ 30 يوماً بمعامل weeklyOffWorkMultiplier.
  */
 export const computeMonthAccrual = (
   employeeId: string,
@@ -449,7 +540,9 @@ export const computeMonthAccrual = (
   monthKey: string,
   upToIso?: string,
   weeklyOffIndex: number = DEFAULT_WEEKLY_OFF_INDEX,
-  weeklyOffWorkMultiplier: number = 1.0
+  weeklyOffWorkMultiplier: number = 1.0,
+  hireDate?: string | null,
+  terminationDate?: string | null
 ): MonthAccrual => {
   const empty: MonthAccrual = {
     attendedDays: 0,
@@ -458,6 +551,8 @@ export const computeMonthAccrual = (
     weeklyOffExtraDays: 0,
     sundayDeductionDays: 0,
     unexcusedAbsenceDays: 0,
+    excusedUnpaidAbsenceDays: 0,
+    isPartialMonth: false,
     earnedDays: 0,
     earnedDaysRaw: 0
   };
@@ -467,52 +562,68 @@ export const computeMonthAccrual = (
   const monthNumber = Number(monthStr);
   if (!year || !monthNumber) return empty;
 
-  const mult = Number.isFinite(weeklyOffWorkMultiplier) && weeklyOffWorkMultiplier >= 0
-    ? weeklyOffWorkMultiplier
-    : 1.0;
+  const mult =
+    Number.isFinite(weeklyOffWorkMultiplier) && weeklyOffWorkMultiplier >= 0
+      ? weeklyOffWorkMultiplier
+      : 1.0;
+
+  const lastDay = new Date(year, monthNumber, 0).getDate();
+  const monthFirstIso = isoDate(new Date(year, monthNumber - 1, 1));
+  const monthLastIso = isoDate(new Date(year, monthNumber - 1, lastDay));
+  const normHire = hireDate || null;
+  const normTerm = terminationDate || null;
+  const effectiveStart = normHire && normHire > monthFirstIso ? normHire : monthFirstIso;
+  const effectiveEnd = normTerm && normTerm < monthLastIso ? normTerm : monthLastIso;
+  const isPartialMonth =
+    Boolean(normHire && normHire > monthFirstIso) ||
+    Boolean(normTerm && normTerm < monthLastIso);
+
+  if (effectiveStart > effectiveEnd) {
+    return { ...empty, isPartialMonth };
+  }
 
   const recordsByDate = new Map<string, HRAttendanceRecord>();
   records
     .filter((record) => record.employee_id === employeeId)
     .forEach((record) => recordsByDate.set(record.date, record));
 
-  const lastDay = new Date(year, monthNumber, 0).getDate();
-  const monthLastIso = isoDate(new Date(year, monthNumber - 1, lastDay));
   const monthComplete = !upToIso || upToIso >= monthLastIso;
 
   let attendedRegularDays = 0;
   let workedWeeklyOffDays = 0;
-  let workdaysInScope = 0;
   let paidSundayDays = 0;
   let unexcusedAbsenceDays = 0;
+  let excusedUnpaidAbsenceDays = 0;
   let sundayDeductionDays = 0;
 
   for (let day = 1; day <= lastDay; day += 1) {
     const cursor = new Date(year, monthNumber - 1, day);
     const iso = isoDate(cursor);
+    if (iso < effectiveStart || iso > effectiveEnd) continue;
     const record = recordsByDate.get(iso);
     const hasCheckIn = !!record?.check_in;
-    // اليوم الحالي (بعد نقطة التوقف = أمس) يُحتسب إذا وُجدت له بصمة حضور فعلية.
-    if (upToIso && iso > upToIso && !hasCheckIn) continue;
+    const hasAnyPunch = !!(record?.check_in || record?.check_out);
+    // اليوم الحالي (بعد نقطة التوقف = أمس) يُحتسب إذا وُجدت له أي بصمة فعلية.
+    if (upToIso && iso > upToIso && !hasAnyPunch) continue;
     if (cursor.getDay() === weeklyOffIndex) {
-      const weekDates = weekDatesBeforeWeeklyOff(iso);
-      const hasWeekData = weekDates.some((dateStr) => recordsByDate.has(dateStr));
+      const scopedWeek = eligibleWeekDates(weekDatesBeforeWeeklyOff(iso), normHire, normTerm);
+      const hasWeekData = scopedWeek.some((dateStr) => recordsByDate.has(dateStr));
       if (hasWeekData) {
-        const ded = weeklyOffDeductionForDate(recordsByDate, iso);
+        const ded = weeklyOffDeductionForDate(recordsByDate, iso, normHire, normTerm);
         sundayDeductionDays += ded;
         paidSundayDays += Math.max(0, 1 - ded);
-      } else if (monthComplete) {
+      } else if (monthComplete && !isPartialMonth) {
         sundayDeductionDays += 1;
       }
-      // العمل يوم الإجازة الأسبوعية يمنح أجراً إضافياً فوق سقف الـ 30 يوماً بنفس المعادلة في منتصف ونهاية الشهر.
       if (hasCheckIn) {
         workedWeeklyOffDays += 1;
       }
       continue;
     }
-    workdaysInScope += 1;
     if (record && isAttendedRecord(record)) {
       attendedRegularDays += 1;
+    } else if (record && isExcusedUnpaidRecord(record)) {
+      excusedUnpaidAbsenceDays += 1;
     } else {
       unexcusedAbsenceDays += 1;
     }
@@ -520,18 +631,15 @@ export const computeMonthAccrual = (
 
   const attendedDays = attendedRegularDays + workedWeeklyOffDays;
   const weeklyOffExtraDays = workedWeeklyOffDays * mult;
+  const totalUnpaidAbsenceDays = unexcusedAbsenceDays + excusedUnpaidAbsenceDays;
 
   let earnedDaysRaw = 0;
   if (attendedRegularDays === 0 && workedWeeklyOffDays === 0) {
     paidSundayDays = 0;
     sundayDeductionDays = 0;
     earnedDaysRaw = 0;
-  } else if (monthComplete) {
-    const rawBase = Math.max(0, 30 - unexcusedAbsenceDays - sundayDeductionDays);
-    const baseEarned =
-      workdaysInScope > 0 && unexcusedAbsenceDays >= workdaysInScope / 2
-        ? Math.min(rawBase, attendedRegularDays + paidSundayDays)
-        : rawBase;
+  } else if (monthComplete && !isPartialMonth) {
+    const baseEarned = Math.max(0, 30 - totalUnpaidAbsenceDays - sundayDeductionDays);
     earnedDaysRaw = baseEarned + weeklyOffExtraDays;
   } else {
     const baseEarned = Math.min(30, attendedRegularDays + paidSundayDays);
@@ -545,8 +653,209 @@ export const computeMonthAccrual = (
     weeklyOffExtraDays: Math.round(weeklyOffExtraDays * 100) / 100,
     sundayDeductionDays: Math.round(sundayDeductionDays * 100) / 100,
     unexcusedAbsenceDays: Math.round(unexcusedAbsenceDays * 100) / 100,
+    excusedUnpaidAbsenceDays: Math.round(excusedUnpaidAbsenceDays * 100) / 100,
+    isPartialMonth,
     earnedDays: Math.round(earnedDaysRaw * 100) / 100,
     earnedDaysRaw
+  };
+};
+
+export interface EmployeeMonthPayrollResult {
+  accrual: MonthAccrual;
+  baseSalary: number;
+  earnedBase: number;
+  earnedBaseRaw: number;
+  overtimeDays: number;
+  overtimeHours: number;
+  overtimePay: number;
+  overtimePayRaw: number;
+  attendanceDays: number;
+  attendanceHours: number;
+  attendanceDeduction: number;
+  attendanceDeductionRaw: number;
+  penaltyDays: number;
+  penaltyHours: number;
+  penaltyDeduction: number;
+  penaltyDeductionRaw: number;
+  loanDeduction: number;
+  loanDeductionRaw: number;
+  totalDeduction: number;
+  totalDeductionRaw: number;
+  netPay: number;
+  netPayRaw: number;
+}
+
+/**
+ * المعادلة الموحدة لحساب مرتب/مستحق موظف في شهر — مستخدمة بنفس الكود في
+ * PayrollPanel.tsx و LoansPanel.tsx ومطابقة 100% لـ backend/api/hr_reports.py.
+ */
+export const computeEmployeeMonthPayroll = (params: {
+  employee: HREmployee;
+  records: HRAttendanceRecord[];
+  penalties: HRPenalty[];
+  loans: HRLoan[];
+  monthKey: string;
+  settings?: HRAttendanceSettings | null;
+  upToIso?: string;
+  /** عند التمرير (مثل شاشة السُلف)، تُقيَّد السُلف والجزاءات وسجلات الشهر بتواريخ <= maxEventDateIso. */
+  maxEventDateIso?: string;
+  weeklyOffIndex?: number;
+  shiftHours?: number;
+  weeklyOffMultiplier?: number;
+}): EmployeeMonthPayrollResult => {
+  const {
+    employee,
+    records,
+    penalties,
+    loans,
+    monthKey,
+    settings,
+    upToIso,
+    maxEventDateIso
+  } = params;
+  const weeklyOffIndex =
+    params.weeklyOffIndex ?? weeklyOffIndexFromKey(settings?.weekly_off_day);
+  const shiftHours = params.shiftHours ?? workingHoursPerDayFor(settings);
+  const rawMult = params.weeklyOffMultiplier ?? Number(settings?.weekly_off_work_multiplier ?? 1.0);
+  const weeklyOffMultiplier = Number.isFinite(rawMult) && rawMult >= 0 ? rawMult : 1.0;
+
+  const baseSalary = Number(employee.monthly_salary) || 0;
+  const dayRate = dailyRateFor(baseSalary);
+  const hourRate = hourlyRateFor(baseSalary, shiftHours);
+  const officialStart = settings?.official_start_time || '08:30';
+  const officialEnd = settings?.official_end_time || '17:30';
+  const extraAbsenceDaysDefault = absenceExtraPenaltyDaysFor(settings?.rules_json);
+  const hireDate = employee.hire_date || null;
+  const terminationDate = employee.termination_date || null;
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+
+  const inScopeDate = (d?: string) => {
+    if (!d || !d.startsWith(monthKey)) return false;
+    if (maxEventDateIso && d > maxEventDateIso) return false;
+    return true;
+  };
+
+  let attendanceDays = 0;
+  let attendanceHours = 0;
+  let overtimeDays = 0;
+  let overtimeHours = 0;
+
+  records.forEach((record) => {
+    if (record.employee_id !== employee.id) return;
+    if (!inScopeDate(record.date)) return;
+    if (hireDate && record.date < hireDate) return;
+    if (terminationDate && record.date > terminationDate) return;
+    const recordDay = new Date(`${record.date}T00:00:00`);
+    if (recordDay.getDay() === weeklyOffIndex && !record.check_in) return;
+
+    // 1) سجل غير حاضر (غياب بعذر أو بدون عذر): لا يُصرف له إضافي.
+    if (!isAttendedRecord(record)) {
+      if (isExcusedUnpaidRecord(record)) return;
+      if (record.review_status === 'rejected') return;
+      if (record.manual_deduction) {
+        attendanceDays += Number(record.calculated_deduction_days) || 0;
+        attendanceHours += Number(record.calculated_deduction_hours) || 0;
+      } else {
+        const storedD = Number(record.calculated_deduction_days) || 0;
+        const storedH = Number(record.calculated_deduction_hours) || 0;
+        if (storedD > 0 || storedH > 0) {
+          attendanceDays += storedD;
+          attendanceHours += storedH;
+        } else {
+          attendanceDays += extraAbsenceDaysDefault;
+        }
+      }
+      return;
+    }
+
+    // 2) الإضافي يُحسب لأيام الحضور الفعلية فقط (حتى عند رفض خصم التأخير).
+    overtimeDays += Number(record.overtime_days) || 0;
+    overtimeHours += Number(record.overtime_hours) || 0;
+
+    if (
+      (record.status === 'absent' || record.status === 'leave') &&
+      effectiveAbsenceDecision(record) === 'paid_company'
+    ) {
+      return;
+    }
+    if (record.is_excused) return;
+    if (record.review_status === 'rejected' || record.review_status === 'pending_review') return;
+
+    let dedDays = Number(record.calculated_deduction_days) || 0;
+    let dedHours = Number(record.calculated_deduction_hours) || 0;
+    // احترام التصفير اليدوي (manual_deduction=true): لا نُشغّل الـ Fallback الديناميكي أبداً.
+    if (
+      dedDays === 0 &&
+      dedHours === 0 &&
+      !record.manual_deduction &&
+      employee.rule_application_mode !== 'manual_review'
+    ) {
+      const lateMinutes = lateMinutesFor(record.check_in, officialStart, officialEnd);
+      const rule = matchLateRule(settings?.rules_json, lateMinutes);
+      const ruleValue = Number(rule?.deduction_value) || 0;
+      if (rule && ruleValue > 0 && rule.apply_mode !== 'manual_review') {
+        if (rule.deduction_type === 'days') dedDays = ruleValue;
+        else dedHours = ruleValue;
+      }
+    }
+    attendanceDays += dedDays;
+    attendanceHours += dedHours;
+  });
+
+  const accrual = computeMonthAccrual(
+    employee.id,
+    records,
+    monthKey,
+    upToIso,
+    weeklyOffIndex,
+    weeklyOffMultiplier,
+    hireDate,
+    terminationDate
+  );
+
+  let penaltyDays = 0;
+  let penaltyHours = 0;
+  penalties.forEach((penalty) => {
+    if (penalty.employee_id !== employee.id) return;
+    if (!inScopeDate(penalty.date)) return;
+    if (penalty.penalty_type === 'days') penaltyDays += Number(penalty.value) || 0;
+    else penaltyHours += Number(penalty.value) || 0;
+  });
+
+  const loanDeductionRaw = loans
+    .filter((loan) => loan.employee_id === employee.id && inScopeDate(loan.date))
+    .reduce((sum, loan) => sum + (Number(loan.amount) || 0), 0);
+
+  const earnedBaseRaw = accrual.earnedDaysRaw * dayRate;
+  const overtimePayRaw = overtimeDays * dayRate + overtimeHours * hourRate;
+  const attendanceDeductionRaw = attendanceDays * dayRate + attendanceHours * hourRate;
+  const penaltyDeductionRaw = penaltyDays * dayRate + penaltyHours * hourRate;
+  const totalDeductionRaw = attendanceDeductionRaw + penaltyDeductionRaw + loanDeductionRaw;
+  const netPayRaw = earnedBaseRaw + overtimePayRaw - totalDeductionRaw;
+
+  return {
+    accrual,
+    baseSalary: r2(baseSalary),
+    earnedBase: r2(earnedBaseRaw),
+    earnedBaseRaw,
+    overtimeDays: r2(overtimeDays),
+    overtimeHours: r2(overtimeHours),
+    overtimePay: r2(overtimePayRaw),
+    overtimePayRaw,
+    attendanceDays: r2(attendanceDays),
+    attendanceHours: r2(attendanceHours),
+    attendanceDeduction: r2(attendanceDeductionRaw),
+    attendanceDeductionRaw,
+    penaltyDays: r2(penaltyDays),
+    penaltyHours: r2(penaltyHours),
+    penaltyDeduction: r2(penaltyDeductionRaw),
+    penaltyDeductionRaw,
+    loanDeduction: r2(loanDeductionRaw),
+    loanDeductionRaw,
+    totalDeduction: r2(totalDeductionRaw),
+    totalDeductionRaw,
+    netPay: r2(netPayRaw),
+    netPayRaw
   };
 };
 

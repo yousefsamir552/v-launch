@@ -1248,6 +1248,8 @@ class HREmployeeSerializer(serializers.ModelSerializer):
                 if viewer_can_view(self.context, 'hr_employees', 'hr_payroll', 'can_manage_hr', 'manage_permissions')
                 else None
             ),
+            'hire_date': to_date_str(instance.hire_date) or None,
+            'termination_date': to_date_str(instance.termination_date) or None,
             'phone': instance.phone or '',
             'photo': instance.photo or '',
             'notes': instance.notes or '',
@@ -1302,7 +1304,10 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
             'status': instance.status,
             'status_label': instance.get_status_display(),
             'is_excused': bool(instance.is_excused),
+            'absence_decision': instance.absence_decision or '',
+            'absence_decision_label': instance.get_absence_decision_display(),
             'excuse_note': instance.excuse_note or '',
+            'manual_deduction': bool(instance.manual_deduction),
             'calculated_deduction_days': float(instance.calculated_deduction_days or 0),
             'calculated_deduction_hours': float(instance.calculated_deduction_hours or 0),
             'late_minutes': float(instance.late_minutes or 0),

@@ -1,5 +1,27 @@
 from .views_common import *
 from .views_common import _truthy_permission_keys, _accessory_price_snapshot
+from .hr_attendance_io import (
+    absence_extra_penalty_days,
+    effective_absence_decision,
+    is_attended_record,
+    is_excused_unpaid_record,
+)
+
+
+def _reapply_affected_months(settings_obj, employee, target_date):
+    """إعادة تطبيق القواعد لشهر التاريخ المستهدف + الشهر التالي إذا كان التاريخ ضمن آخر 6 أيام من الشهر."""
+    if not employee or not target_date:
+        return
+    month_start, month_end = month_bounds(target_date)
+    reapply_employee_month(
+        settings_obj, employee, month_start, month_end, preserve_decisions=True
+    )
+    if (month_end - target_date).days < 6:
+        next_day = month_end + timedelta(days=1)
+        next_start, next_end = month_bounds(next_day)
+        reapply_employee_month(
+            settings_obj, employee, next_start, next_end, preserve_decisions=True
+        )
 
 
 def _month_key_for(target_date) -> str:
@@ -134,6 +156,17 @@ class HREmployeeViewSet(BasePermViewSet):
         birth_date = data.get('birth_date')
         if birth_date:
             obj.birth_date = parse_date(str(birth_date))
+        hire_date = data.get('hire_date')
+        if hire_date:
+            obj.hire_date = parse_date(str(hire_date))
+        termination_date = data.get('termination_date')
+        if termination_date:
+            obj.termination_date = parse_date(str(termination_date))
+        if obj.hire_date and obj.termination_date and obj.termination_date < obj.hire_date:
+            return Response(
+                {'detail': 'تاريخ ترك العمل لا يمكن أن يسبق تاريخ التعيين'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         obj.save()
         return Response(
             HREmployeeSerializer(obj, context={'request': request}).data,
@@ -195,6 +228,17 @@ class HREmployeeViewSet(BasePermViewSet):
         if 'birth_date' in data:
             bd = data.get('birth_date')
             obj.birth_date = parse_date(str(bd)) if bd else None
+        if 'hire_date' in data:
+            hd = data.get('hire_date')
+            obj.hire_date = parse_date(str(hd)) if hd else None
+        if 'termination_date' in data:
+            td = data.get('termination_date')
+            obj.termination_date = parse_date(str(td)) if td else None
+        if obj.hire_date and obj.termination_date and obj.termination_date < obj.hire_date:
+            return Response(
+                {'detail': 'تاريخ ترك العمل لا يمكن أن يسبق تاريخ التعيين'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if data.get('rank_level') not in (None, ''):
             new_rank, rank_error = resolve_rank_for_grant(request, data.get('rank_level'))
             if rank_error:
@@ -333,9 +377,19 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         if review_val not in dict(HR_REVIEW_STATUS_CHOICES):
             review_val = 'auto_applied'
 
+        absence_decision = str(data.get('absence_decision') or '').strip()
+        if absence_decision not in dict(HR_ABSENCE_DECISION_CHOICES):
+            absence_decision = ''
+
         is_excused = bool(data.get('is_excused', False))
-        if is_excused:
-            # السجل المعذور لا يُطبق عليه خصم.
+        if status_val in ('absent', 'leave') and absence_decision:
+            if absence_decision == 'unexcused':
+                is_excused = False
+            elif absence_decision in ('excused_unpaid', 'paid_company'):
+                is_excused = True
+                ded_days = 0.0
+                ded_hours = 0.0
+        elif is_excused:
             ded_days = 0.0
             ded_hours = 0.0
 
@@ -350,6 +404,9 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             )
         check_in_val = parse_time_value(data.get('check_in'))
         check_out_val = parse_time_value(data.get('check_out'))
+        if status_val in ('absent', 'leave') and absence_decision:
+            check_in_val = None
+            check_out_val = None
         # الاحتساب تلقائي دائماً، ويُحترم الخصم اليدوي فقط عند manual_deduction=true.
         manual_deduction = bool(data.get('manual_deduction'))
         settings_obj = HRAttendanceSettings.get_solo()
@@ -360,21 +417,27 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             check_in_val,
             check_out_val,
             status_val,
+            absence_decision=absence_decision if absence_decision else ('paid_company' if is_excused and status_val in ('absent', 'leave') else ''),
         )
         late_minutes_val = float(computed['late_minutes'] or 0)
         early_minutes_val = float(computed['early_minutes'] or 0)
-        if is_excused:
+        if status_val in ('absent', 'leave') and absence_decision in ('excused_unpaid', 'paid_company'):
+            ded_days = 0.0
+            ded_hours = 0.0
+            review_val = 'approved'
+        elif is_excused and not manual_deduction:
             ded_days = 0.0
             ded_hours = 0.0
             review_val = 'auto_applied'
         elif not manual_deduction:
             ded_days = computed['deduction_days']
             ded_hours = computed['deduction_hours']
-            if data.get('review_status') is None:
+            if data.get('review_status') is None or (status_val in ('absent', 'leave') and absence_decision):
                 review_val = computed['review_status']
         # يوم الإجازة الأسبوعية (من إعدادات الحضور) إجازة مدفوعة فقط عند غياب بصمة الحضور.
         # اليوم الذي سُجّلت له بصمة حضور يُعامل كيوم عمل عادي (خصم تأخير + إضافي).
-        if (rec_date or date.today()).weekday() == weekly_off_weekday(settings_obj) and not check_in_val:
+        is_weekly_off_no_punch = (rec_date or date.today()).weekday() == weekly_off_weekday(settings_obj) and not check_in_val
+        if is_weekly_off_no_punch:
             ded_days = 0.0
             ded_hours = 0.0
             late_minutes_val = 0.0
@@ -388,28 +451,31 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             check_out=check_out_val,
             status=status_val,
             is_excused=is_excused,
+            absence_decision=absence_decision,
             excuse_note=data.get('excuse_note') or None,
+            manual_deduction=manual_deduction,
             calculated_deduction_days=ded_days,
             calculated_deduction_hours=ded_hours,
             late_minutes=late_minutes_val,
             early_minutes=early_minutes_val,
             review_status=review_val,
         )
-        overtime = compute_overtime(settings_obj, obj.check_out, obj.check_in)
-        obj.overtime_days = overtime['overtime_days']
-        obj.overtime_hours = overtime['overtime_hours']
+        if is_weekly_off_no_punch or not is_attended_record(obj):
+            obj.overtime_days = 0.0
+            obj.overtime_hours = 0.0
+        else:
+            overtime = compute_overtime(settings_obj, obj.check_out, obj.check_in)
+            obj.overtime_days = overtime['overtime_days']
+            obj.overtime_hours = overtime['overtime_hours']
         obj.save(update_fields=['overtime_days', 'overtime_hours'])
-        if not manual_deduction:
-            month_start, month_end = month_bounds(obj.date)
-            reapply_employee_month(
-                settings_obj, obj.employee, month_start, month_end,
-                preserve_decisions=True,
-            )
-            obj.refresh_from_db()
+        _reapply_affected_months(settings_obj, obj.employee, obj.date)
+        obj.refresh_from_db()
         return Response(HRAttendanceRecordSerializer(obj).data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
         obj = self.get_object()
+        old_employee = obj.employee
+        old_date = obj.date
         locked_err = _locked_month_error(obj.date)
         if locked_err:
             return locked_err
@@ -441,6 +507,15 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             obj.status = status_val
         if 'is_excused' in data:
             obj.is_excused = bool(data.get('is_excused'))
+        if 'absence_decision' in data:
+            decision_val = str(data.get('absence_decision') or '').strip()
+            if decision_val not in dict(HR_ABSENCE_DECISION_CHOICES):
+                decision_val = ''
+            obj.absence_decision = decision_val
+            if decision_val == 'unexcused':
+                obj.is_excused = False
+            elif decision_val in ('excused_unpaid', 'paid_company'):
+                obj.is_excused = True
         if 'excuse_note' in data:
             obj.excuse_note = data.get('excuse_note') or None
         if data.get('calculated_deduction_days') is not None:
@@ -463,6 +538,13 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
                 review = 'auto_applied'
             obj.review_status = review
 
+        # إذا اختار المشرف تحويل السجل إلى غياب مع قرار غياب صريح، نُصفّر البصمات الناقصة.
+        if obj.status == 'absent' and 'absence_decision' in data and obj.absence_decision:
+            if 'check_in' not in data:
+                obj.check_in = None
+            if 'check_out' not in data:
+                obj.check_out = None
+
         # اشتقاق حالة الحضور تلقائياً عند تعديل البصمات بدون إرسال الحالة.
         if data.get('status') is None and ('check_in' in data or 'check_out' in data):
             if obj.check_in and obj.check_out:
@@ -472,14 +554,27 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             elif obj.status in ('present', 'missing_punch'):
                 obj.status = 'absent'
 
+        # إعادة تصفير absence_decision إذا تحوّل السجل إلى حضور أو بصمة ناقصة.
+        if obj.status in ('present', 'missing_punch'):
+            obj.absence_decision = ''
+
         explicit_deductions = (
             data.get('calculated_deduction_days') is not None
             or data.get('calculated_deduction_hours') is not None
         )
 
         settings_obj = HRAttendanceSettings.get_solo()
-        # الاحتساب تلقائي دائماً، ويُحترم الخصم اليدوي فقط عند manual_deduction=true.
+        # الاحتساب تلقائي، ويُحترم الخصم اليدوي ويُحفظ في DB عند manual_deduction=true.
         manual_deduction = bool(data.get('manual_deduction'))
+        recalculate_req = bool(data.get('recalculate'))
+        if 'manual_deduction' in data:
+            obj.manual_deduction = manual_deduction
+        elif recalculate_req or 'absence_decision' in data:
+            obj.manual_deduction = False
+
+        decision_for_compute = obj.absence_decision or (
+            'paid_company' if obj.is_excused and obj.status in ('absent', 'leave') else ''
+        )
         computed = compute_attendance(
             settings_obj,
             obj.employee,
@@ -487,19 +582,27 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             obj.check_in,
             obj.check_out,
             obj.status,
+            absence_decision=decision_for_compute,
         )
-        overtime = compute_overtime(settings_obj, obj.check_out, obj.check_in)
-        obj.overtime_days = overtime['overtime_days']
-        obj.overtime_hours = overtime['overtime_hours']
         obj.late_minutes = float(computed['late_minutes'] or 0)
         obj.early_minutes = float(computed['early_minutes'] or 0)
 
-        if manual_deduction:
+        if obj.manual_deduction:
             if obj.is_excused and not explicit_deductions:
                 obj.calculated_deduction_days = 0
                 obj.calculated_deduction_hours = 0
                 if data.get('review_status') is None:
                     obj.review_status = 'auto_applied'
+        elif obj.status in ('absent', 'leave') and obj.absence_decision in ('excused_unpaid', 'paid_company'):
+            obj.calculated_deduction_days = 0
+            obj.calculated_deduction_hours = 0
+            if data.get('review_status') is None:
+                obj.review_status = 'approved'
+        elif obj.status in ('absent', 'leave') and obj.absence_decision == 'unexcused':
+            obj.calculated_deduction_days = computed['deduction_days']
+            obj.calculated_deduction_hours = computed['deduction_hours']
+            if data.get('review_status') is None:
+                obj.review_status = 'approved'
         elif obj.is_excused:
             # تسجيل العذر يلغي الخصم المحتسب تلقائياً.
             obj.calculated_deduction_days = 0
@@ -510,8 +613,7 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             # رفض الخصم يلغي الخصم فقط (0) دون إلغاء يوم الحضور أو الإضافي.
             obj.calculated_deduction_days = 0
             obj.calculated_deduction_hours = 0
-        elif obj.review_status != 'approved':
-            # قرار مراجعة معتمد (قبول) لا يُستبدل بالاحتساب التلقائي.
+        elif obj.review_status != 'approved' or recalculate_req:
             obj.calculated_deduction_days = computed['deduction_days']
             obj.calculated_deduction_hours = computed['deduction_hours']
             if data.get('review_status') is None:
@@ -519,7 +621,8 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
 
         # يوم الإجازة الأسبوعية (من إعدادات الحضور) إجازة مدفوعة فقط عند غياب بصمة الحضور.
         # اليوم الذي سُجّلت له بصمة حضور يُعامل كيوم عمل عادي (خصم تأخير + إضافي).
-        if obj.date.weekday() == weekly_off_weekday(settings_obj) and not obj.check_in:
+        is_weekly_off_no_punch = obj.date.weekday() == weekly_off_weekday(settings_obj) and not obj.check_in
+        if is_weekly_off_no_punch:
             obj.calculated_deduction_days = 0
             obj.calculated_deduction_hours = 0
             obj.late_minutes = 0
@@ -527,15 +630,20 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             if data.get('review_status') is None:
                 obj.review_status = 'auto_applied'
 
+        if is_weekly_off_no_punch or not is_attended_record(obj):
+            obj.overtime_days = 0.0
+            obj.overtime_hours = 0.0
+        else:
+            overtime = compute_overtime(settings_obj, obj.check_out, obj.check_in)
+            obj.overtime_days = overtime['overtime_days']
+            obj.overtime_hours = overtime['overtime_hours']
+
         obj.save()
-        if not manual_deduction:
-            # إعادة حساب خصم يوم الإجازة الأسبوعية بعد تحديث السجل (يعتمد على سجلات الأسبوع).
-            month_start, month_end = month_bounds(obj.date)
-            reapply_employee_month(
-                settings_obj, obj.employee, month_start, month_end,
-                preserve_decisions=True,
-            )
-            obj.refresh_from_db()
+        # إعادة حساب خصم الإجازة الأسبوعية دائماً (شاملاً الشهر التالي لآخر 6 أيام + الشهر/الموظف القديم لو تغير).
+        _reapply_affected_months(settings_obj, obj.employee, obj.date)
+        if old_employee.pk != obj.employee.pk or (old_date.year, old_date.month) != (obj.date.year, obj.date.month):
+            _reapply_affected_months(settings_obj, old_employee, old_date)
+        obj.refresh_from_db()
         return Response(HRAttendanceRecordSerializer(obj).data)
 
     def destroy(self, request, *args, **kwargs):
@@ -547,11 +655,7 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         rec_date = obj.date
         response = super().destroy(request, *args, **kwargs)
         settings_obj = HRAttendanceSettings.get_solo()
-        month_start, month_end = month_bounds(rec_date)
-        reapply_employee_month(
-            settings_obj, emp, month_start, month_end,
-            preserve_decisions=True,
-        )
+        _reapply_affected_months(settings_obj, emp, rec_date)
         return response
 
     # ------------------------------------------------------------------
@@ -703,24 +807,28 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
                     row['status'],
                 )
 
-                # القرار اليدوي (قبول/رفض) يُحفظ ما دامت البصمات لم تتغير.
+                # القرار اليدوي (قبول/رفض/خصم يدوي) يُحفظ ما دامت البصمات لم تتغير.
                 unchanged = previous is not None and previous[:3] == (
                     eff_in, eff_out, computed['status'],
                 )
                 keep_decision = (
                     unchanged
-                    and previous[3] in ('approved', 'rejected')
+                    and (previous[3] in ('approved', 'rejected') or bool(record.manual_deduction))
                     and not record.is_excused
                 )
 
                 record.check_in = eff_in
                 record.check_out = eff_out
                 record.status = computed['status']
+                if record.status in ('present', 'missing_punch'):
+                    record.absence_decision = ''
                 if record.is_excused:
                     record.calculated_deduction_days = 0
                     record.calculated_deduction_hours = 0
-                    record.review_status = 'auto_applied'
+                    if not record.absence_decision:
+                        record.review_status = 'auto_applied'
                 elif not keep_decision:
+                    record.manual_deduction = False
                     record.calculated_deduction_days = computed['deduction_days']
                     record.calculated_deduction_hours = computed['deduction_hours']
                     record.review_status = computed['review_status']
@@ -732,8 +840,13 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
                 affected_employee_months.setdefault(employee.pk, set()).add(
                     (row['date'].year, row['date'].month)
                 )
+                # إذا كان الصف ضمن آخر 6 أيام من الشهر، نُدرج الشهر التالي أيضاً لتحديث أول أحد فيه.
+                _m_start, _m_end = month_bounds(row['date'])
+                if (_m_end - row['date']).days < 6:
+                    _next_day = _m_end + timedelta(days=1)
+                    affected_employee_months[employee.pk].add((_next_day.year, _next_day.month))
 
-            # إعادة احتساب الإضافي وخصم يوم الإجازة الأسبوعية لكل موظف ولكل شهر متأثر بالرفع (دعم الشيتات متعددة الشهور).
+            # إعادة احتساب الإضافي وخصم يوم الإجازة الأسبوعية لكل موظف ولكل شهر متأثر بالرفع (شاملاً عبور الشهور).
             months_processed = set()
             for emp_pk, employee in affected_employees.items():
                 for year_num, month_num in sorted(affected_employee_months.get(emp_pk, ())):
@@ -819,10 +932,43 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
         ).count()
         compliance_base = max(0, total_records - leave)
 
-        totals = records.aggregate(
-            days=models.Sum('calculated_deduction_days'),
-            hours=models.Sum('calculated_deduction_hours'),
-        )
+        # فصل الخصومات المعتمدة/المطبقة فعلياً في المرتبات عن الخصومات قيد المراجعة.
+        approved_ded_days = 0.0
+        approved_ded_hours = 0.0
+        pending_ded_days = 0.0
+        pending_ded_hours = 0.0
+        needs_decision = 0
+        extra_abs_default = absence_extra_penalty_days(getattr(settings_obj, 'rules_json', None) or [])
+        for rec in records:
+            is_undecided_absent = (
+                rec.status == 'absent'
+                and not (rec.absence_decision or '').strip()
+                and not rec.is_excused
+            )
+            if rec.review_status == 'pending_review' or is_undecided_absent:
+                needs_decision += 1
+            if rec.date.weekday() == off_weekday and not rec.check_in:
+                continue
+            if not is_attended_record(rec):
+                if is_excused_unpaid_record(rec) or rec.review_status == 'rejected':
+                    continue
+                if rec.manual_deduction:
+                    approved_ded_days += float(rec.calculated_deduction_days or 0)
+                    approved_ded_hours += float(rec.calculated_deduction_hours or 0)
+                else:
+                    sd = float(rec.calculated_deduction_days or 0)
+                    sh = float(rec.calculated_deduction_hours or 0)
+                    approved_ded_days += sd if (sd > 0 or sh > 0) else extra_abs_default
+                    approved_ded_hours += sh
+                continue
+            if rec.is_excused or rec.review_status == 'rejected':
+                continue
+            if rec.review_status == 'pending_review':
+                pending_ded_days += float(rec.calculated_deduction_days or 0)
+                pending_ded_hours += float(rec.calculated_deduction_hours or 0)
+            else:
+                approved_ded_days += float(rec.calculated_deduction_days or 0)
+                approved_ded_hours += float(rec.calculated_deduction_hours or 0)
 
         by_department = {}
         for entry in records.values('employee__job__department').annotate(
@@ -865,11 +1011,16 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             'missing_punch': missing,
             'excused': excused,
             'pending_review': pending,
+            'needs_decision': needs_decision,
             'late_records': late_records,
             'compliance_percent': round(present / compliance_base * 100, 1) if compliance_base else 0.0,
             'average_daily_absence': round(absent / workdays, 2) if workdays else 0.0,
-            'deduction_days': round(totals['days'] or 0, 2),
-            'deduction_hours': round(totals['hours'] or 0, 2),
+            'deduction_days': round(approved_ded_days, 2),
+            'deduction_hours': round(approved_ded_hours, 2),
+            'approved_deduction_days': round(approved_ded_days, 2),
+            'approved_deduction_hours': round(approved_ded_hours, 2),
+            'pending_deduction_days': round(pending_ded_days, 2),
+            'pending_deduction_hours': round(pending_ded_hours, 2),
             'worst_department': worst_department,
         })
 
