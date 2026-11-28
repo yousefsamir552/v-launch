@@ -259,13 +259,14 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
       )}
 
       {/* شريط التوقيعات */}
-      <div className="grid grid-cols-3 gap-2 mt-3 break-inside-avoid">
+      <div className="grid grid-cols-3 gap-2.5 mt-3 break-inside-avoid">
         {['مسؤول التسليم والتشغيل', 'توقيع مستلم ورشة المكن', 'اعتماد مشرف الإنتاج'].map((label) => (
           <div
             key={label}
-            className="border border-slate-500 rounded-md px-2 py-2 text-center bg-white"
+            className="border border-slate-500 rounded-md px-2 py-2.5 text-center bg-white min-h-[82px] flex flex-col justify-between"
           >
-            <div className="text-[11px] font-black text-slate-800 mb-4">{label}</div>
+            <div className="text-[11px] font-black text-slate-800">{label}</div>
+            <div className="flex-1 min-h-[48px]" />
             <div className="border-t border-dashed border-slate-400 w-4/5 mx-auto" />
           </div>
         ))}

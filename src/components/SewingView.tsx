@@ -93,6 +93,7 @@ export const SewingView: React.FC = () => {
     openWhatsAppOrder,
     logAction,
     globalSettings,
+    currentUser,
     canViewPreviousModels,
     canAddSewingNotes,
     canViewSewingPrices,
@@ -158,18 +159,27 @@ export const SewingView: React.FC = () => {
       modelType: model.model_type,
       targetQuantity: model.target_cut_quantity,
       issuedTo: modelAccs.find((a) => a.issued_to)?.issued_to || '',
-      issuedBy: firstIssued?.issued_by || '',
+      printedBy: currentUser?.real_name || currentUser?.username || '',
       date: firstIssued?.issued_at || undefined,
-      lines: modelAccs.map((a) => ({
-        accessory_name: a.accessory_name,
-        accessory_code: a.accessory_code,
-        target_type: a.target_type,
-        quantity: a.is_issued
-          ? Number(a.issued_quantity ?? a.planned_quantity ?? 0)
-          : Number(a.planned_quantity || 0),
-        unit: a.unit,
-        is_issued: a.is_issued
-      }))
+      lines: modelAccs.map((a) => {
+        const matchedItem = accessoryItems.find(
+          (it) =>
+            (a.accessory_id && it.id === a.accessory_id) ||
+            (a.accessory_code && it.code === a.accessory_code) ||
+            it.name === a.accessory_name
+        );
+        return {
+          accessory_name: a.accessory_name,
+          accessory_code: a.accessory_code,
+          image: a.image || matchedItem?.image || '',
+          target_type: a.target_type,
+          quantity: a.is_issued
+            ? Number(a.issued_quantity ?? a.planned_quantity ?? 0)
+            : Number(a.planned_quantity || 0),
+          unit: a.unit,
+          is_issued: a.is_issued
+        };
+      })
     });
   };
 

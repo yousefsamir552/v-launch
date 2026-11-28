@@ -264,7 +264,10 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
           <tr><td class="label">سبب السلفة</td><td></td></tr>
           <tr><td class="label">طريقة السداد</td><td></td></tr>
         </table>
-        <div class="sign"><span>توقيع الموظف: ................</span><span>اعتماد الإدارة: ................</span></div>
+        <div class="sign">
+          <div class="sign-box"><span>توقيع الموظف</span><span class="sign-line"></span></div>
+          <div class="sign-box"><span>اعتماد الإدارة</span><span class="sign-line"></span></div>
+        </div>
       </div>`;
 
     const opened = openUnifiedPrintWindow({
@@ -287,7 +290,9 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
         .form-block table { font-size: 9.5px; margin-bottom: 0; }
         .form-block td { padding: 5px 6px; height: 26px; background: #fff !important; }
         .form-block td.label { background: #f1f5f9 !important; font-weight: 800; width: 38%; text-align: right; }
-        .form-block .sign { margin-top: 8mm; display: flex; justify-content: space-between; font-size: 8.8px; gap: 6px; font-weight: 700; }
+        .form-block .sign { margin-top: 5mm; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 8.8px; font-weight: 800; }
+        .form-block .sign-box { border: 1px solid #64748b; border-radius: 5px; padding: 5px 6px 8px; min-height: 78px; display: flex; flex-direction: column; justify-content: space-between; text-align: center; background: #fff; }
+        .form-block .sign-line { border-top: 1px dashed #64748b; width: 85%; margin: 0 auto; }
       `,
       onPopupBlocked: () => addFlashMessage('فضلاً اسمح بالنوافذ المنبثقة للطباعة', 'danger')
     });

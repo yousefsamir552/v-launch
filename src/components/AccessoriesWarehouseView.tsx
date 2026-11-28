@@ -409,18 +409,26 @@ export const AccessoriesWarehouseView: React.FC = () => {
       modelType: group.model.model_type,
       targetQuantity: group.model.target_cut_quantity,
       issuedTo: form.issuedTo || (issuedMode ? firstLine?.issued_to || '' : ''),
-      issuedBy:
-        (issuedMode ? firstLine?.issued_by || '' : '') || currentUser?.real_name || '',
+      printedBy: currentUser?.real_name || currentUser?.username || '',
       date: issuedMode ? firstLine?.issued_at || undefined : undefined,
-      lines: group.lines.map((line) => ({
-        accessory_name: line.accessory_name,
-        accessory_code: line.accessory_code,
-        target_type: line.target_type,
-        quantity: issuedMode
-          ? Number(line.issued_quantity ?? line.planned_quantity ?? 0)
-          : resolvePermitQuantity(group.model.id, line),
-        unit: line.unit
-      })),
+      lines: group.lines.map((line) => {
+        const matchedItem = accessoryItems.find(
+          (it) =>
+            (line.accessory_id && it.id === line.accessory_id) ||
+            (line.accessory_code && it.code === line.accessory_code) ||
+            it.name === line.accessory_name
+        );
+        return {
+          accessory_name: line.accessory_name,
+          accessory_code: line.accessory_code,
+          image: line.image || matchedItem?.image || '',
+          target_type: line.target_type,
+          quantity: issuedMode
+            ? Number(line.issued_quantity ?? line.planned_quantity ?? 0)
+            : resolvePermitQuantity(group.model.id, line),
+          unit: line.unit
+        };
+      }),
       notes: form.notes
     });
   };

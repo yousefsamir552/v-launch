@@ -242,6 +242,7 @@ export const renderSignatureBar = (labels: string[], compact = false): string =>
     .map(
       (label) => `<div class="print-sig-box">
         <div class="print-sig-label">${escapeHtml(label)}</div>
+        <div class="print-sig-space"></div>
         <div class="print-sig-line"></div>
       </div>`
     )
@@ -583,31 +584,43 @@ const buildBasePrintCss = (mode: PrintPageMode, orientation: PrintOrientation): 
     /* Unified Signature Footer */
     .print-signatures {
       display: grid;
-      gap: 8px;
-      margin-top: 10px;
+      gap: 10px;
+      margin-top: 12px;
       break-inside: avoid;
       page-break-inside: avoid;
     }
     .print-signatures.is-compact {
-      margin-top: 7px;
-      gap: 6px;
+      margin-top: 10px;
+      gap: 8px;
     }
     .print-sig-box {
-      border: 1px solid #64748b;
-      border-radius: 5px;
-      padding: 5px 6px 6px;
+      border: 1.2px solid #475569;
+      border-radius: 6px;
+      padding: 8px 8px 10px;
+      min-height: 88px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
       text-align: center;
       background: #ffffff;
     }
+    .print-signatures.is-compact .print-sig-box {
+      min-height: 82px;
+      padding: 7px 8px 9px;
+    }
     .print-sig-label {
-      font-size: 9.5px;
+      font-size: 10px;
       font-weight: 800;
       color: #0f172a;
-      margin-bottom: 16px;
+      margin-bottom: 0;
     }
     .print-signatures.is-compact .print-sig-label {
-      font-size: 9px;
-      margin-bottom: 12px;
+      font-size: 9.5px;
+      margin-bottom: 0;
+    }
+    .print-sig-space {
+      flex: 1 1 auto;
+      min-height: 52px;
     }
     .print-sig-line {
       border-top: 1px dashed #64748b;

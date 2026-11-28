@@ -30,7 +30,7 @@ import {
   getPartLabel
 } from '../types';
 import { finishedSetsOf, photographyOutstandingOf, stageRank } from '../utils/completedModels';
-import { qcPartStageCounts } from '../utils/qcStageCounts';
+import { QCPartStageCounts, qcPartStageCounts } from '../utils/qcStageCounts';
 import { ZoomableImage } from './ZoomableImage';
 import { exportCsv, datedFileName, CsvValue } from '../utils/exportExcel';
 import {
@@ -181,11 +181,86 @@ function genderLabel(g: GenderBucket): string {
   return 'أخرى';
 }
 
+interface PartReadinessDetail {
+  part: GarmentPart;
+  qty: number;
+  stage: PartStage;
+  isInCurrentBucket: boolean;
+  isInPrintShop: boolean;
+  isInSewingWorkshop: boolean;
+  isInFinishing: boolean;
+  actualCut: number;
+  counts: QCPartStageCounts;
+  hasBeforePrintQc: boolean;
+  hasAfterPrintQc: boolean;
+}
+
+function describeOtherPartLocation(detail: PartReadinessDetail): string {
+  if (detail.isInPrintShop) return 'في المطابع';
+  if (detail.isInSewingWorkshop) return 'داخل المكن';
+  if (detail.isInFinishing) return 'في التشطيب';
+  switch (detail.stage) {
+    case 'cutting':
+      return 'في القص';
+    case 'qc_before_print':
+      return 'في العد قبل الطباعة';
+    case 'printing':
+      return 'في المطابع';
+    case 'qc_after_print':
+      return 'في العد بعد الطباعة';
+    case 'sewing':
+      return 'جاهز للمكن';
+    case 'qc_after_sewing':
+      return 'في العد بعد المكن';
+    case 'finishing':
+      return 'في التشطيب';
+    case 'ironing':
+      return 'في المكواة';
+    case 'packaging':
+      return 'في التعبئة والتغليف';
+    case 'dest':
+      return 'في الدَست';
+    case 'completed':
+      return 'مكتمل الإنتاج';
+    default:
+      return 'في القص';
+  }
+}
+
+function activePartStatusLabel(stage: ReadinessStageKey, bucket: ReadinessBucket): string {
+  if (bucket === 'ready') return 'جاهز للدخول';
+  if (bucket === 'in_progress') {
+    if (stage === 'print') return 'في المطبعة';
+    if (stage === 'sewing') return 'داخل المكن';
+    return 'قيد التشغيل';
+  }
+  if (stage === 'print') return 'تمت الطباعة';
+  if (stage === 'sewing') return 'تم المكن';
+  return 'تم الانتهاء';
+}
+
+function allPartsSummaryLabel(
+  stage: ReadinessStageKey,
+  bucket: ReadinessBucket,
+  partsCount: number
+): string {
+  const isPair = partsCount === 2;
+  if (bucket === 'ready') return isPair ? 'الاثنان جاهزان' : 'جميع القطع جاهزة';
+  if (bucket === 'in_progress') {
+    if (stage === 'print') return isPair ? 'الاثنان في المطبعة' : 'جميع القطع في المطبعة';
+    if (stage === 'sewing') return isPair ? 'الاثنان داخل المكن' : 'جميع القطع داخل المكن';
+    return isPair ? 'الاثنان قيد التشغيل' : 'جميع القطع قيد التشغيل';
+  }
+  if (stage === 'print') return isPair ? 'الاثنان منتهيان من الطباعة' : 'جميع القطع منتهية من الطباعة';
+  return isPair ? 'الاثنان منتهيان' : 'جميع القطع منتهية';
+}
+
 interface ReadinessCardItem {
   model: DesignModel;
   parts: GarmentPart[];
   relevantParts: GarmentPart[];
   partQuantities: Array<{ part: GarmentPart; qty: number; stateNote?: string }>;
+  partDetails: PartReadinessDetail[];
   totalPieces: number;
   setsCount: number;
   colors: string[];
@@ -215,6 +290,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
   const {
     models,
     sizeDefs,
+    cuttingRecords,
     qcRecords,
     printDispatches,
     sewingDispatches,
@@ -307,6 +383,20 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
     const sizeDefById = new Map<string, string>();
     sizeDefs.forEach((s) => sizeDefById.set(s.id, s.name));
 
+    const cuttingByModel = new Map<string, typeof cuttingRecords>();
+    cuttingRecords.forEach((r) => {
+      const list = cuttingByModel.get(r.model_id) || [];
+      list.push(r);
+      cuttingByModel.set(r.model_id, list);
+    });
+
+    const qcByModel = new Map<string, typeof qcRecords>();
+    qcRecords.forEach((r) => {
+      const list = qcByModel.get(r.model_id) || [];
+      list.push(r);
+      qcByModel.set(r.model_id, list);
+    });
+
     const buildCard = (
       model: DesignModel,
       parts: GarmentPart[],
@@ -323,8 +413,27 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
       parts.forEach((p) => getModelColorList(model.id, p).forEach((c) => colorSet.add(c)));
       const colors = Array.from(colorSet);
 
+      const stages = getPartStages(model.id);
+      const modelOpenPrintParts = new Set(
+        (openPrintByModel.get(model.id) || []).map((d) =>
+          normalizePartKey(d.piece_type || d.piece_label || 'shirt')
+        )
+      );
+      const modelOpenSewingParts = new Set(
+        (openSewingByModel.get(model.id) || []).map((d) =>
+          normalizePartKey(d.piece_type || d.piece_label || 'shirt')
+        )
+      );
+      const modelOpenFinishingParts = new Set(
+        (openFinishingByModel.get(model.id) || []).map((r) =>
+          normalizePartKey(r.part_type || r.piece_label || 'shirt')
+        )
+      );
+      const modelCutRecs = cuttingByModel.get(model.id) || [];
+      const modelQcRecs = qcByModel.get(model.id) || [];
+
       let totalDefects = 0;
-      const partQuantities = parts.map((part) => {
+      const partDetails: PartReadinessDetail[] = parts.map((part) => {
         const counts = qcPartStageCounts({
           model,
           part,
@@ -338,26 +447,66 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
           Number(counts.afterPrintDefect || 0) +
           Number(counts.afterSewingDefect || 0);
 
+        const partQcRecs = modelQcRecs.filter(
+          (r) => normalizePartKey(r.part_type || r.partType || 'shirt') === part
+        );
+        const hasBeforePrintQc = partQcRecs.some((r) => r.stage === 'before_print');
+        const hasAfterPrintQc = partQcRecs.some((r) => r.stage === 'after_print');
+
+        const legacyPartCut =
+          part === 'shirt'
+            ? Number(model.cut_shirt_pieces || 0)
+            : part === 'pants'
+            ? Number(model.cut_pants_pieces || 0)
+            : part === 'jacket'
+            ? Number(model.cut_jacket_pieces || 0)
+            : 0;
+        const cutRecordsSum = modelCutRecs
+          .filter(
+            (r) => !r.is_sub_cut && normalizePartKey(r.part_type || r.part || 'shirt') === part
+          )
+          .reduce((sum, r) => sum + Number(r.pieces_count || r.cut_pieces || 0), 0);
+        const qcCutRef = partQcRecs.reduce(
+          (max, r) => Math.max(max, Number(r.pieces_cut || r.cut_pieces_ref || 0)),
+          0
+        );
+        const actualCut = counts.cutPieces || legacyPartCut || cutRecordsSum || qcCutRef || 0;
+
         let qty = 0;
         if (stage === 'print') {
-          qty = counts.beforePrintGood || counts.cutPieces || 0;
+          qty = counts.beforePrintGood || actualCut || 0;
         } else if (stage === 'sewing') {
           qty =
             Number(model.sewing_available?.[part] || 0) ||
             counts.afterPrintGood ||
             counts.beforePrintGood ||
-            counts.cutPieces ||
+            actualCut ||
             0;
         } else {
           qty =
             counts.afterSewingGood ||
             counts.sewingReceived ||
             counts.afterPrintGood ||
-            counts.cutPieces ||
+            actualCut ||
             0;
         }
-        return { part, qty };
+
+        return {
+          part,
+          qty,
+          stage: (stages[part] || 'cutting') as PartStage,
+          isInCurrentBucket: relevantParts.includes(part),
+          isInPrintShop: modelOpenPrintParts.has(part),
+          isInSewingWorkshop: modelOpenSewingParts.has(part),
+          isInFinishing: modelOpenFinishingParts.has(part),
+          actualCut,
+          counts,
+          hasBeforePrintQc,
+          hasAfterPrintQc
+        };
       });
+
+      const partQuantities = partDetails.map(({ part, qty }) => ({ part, qty }));
 
       const setsCount =
         stage === 'packaging' || stage === 'dest'
@@ -409,6 +558,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
         parts,
         relevantParts,
         partQuantities,
+        partDetails,
         totalPieces,
         setsCount,
         colors,
@@ -602,6 +752,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
   }, [
     models,
     sizeDefs,
+    cuttingRecords,
     qcRecords,
     printDispatches,
     sewingDispatches,
@@ -693,9 +844,9 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
   const canOpenUnifiedCard = hasPermission('models_tracking') || hasPermission('reports');
 
   const bucketLabel =
-    bucket === 'ready'
+    effectiveBucket === 'ready'
       ? 'جاهزة للدخول'
-      : bucket === 'in_progress'
+      : effectiveBucket === 'in_progress'
       ? 'قيد التشغيل حالياً'
       : 'تم الانتهاء منها';
 
@@ -782,42 +933,208 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
       `${cfg.label} - ${bucketLabel}`
     );
 
+    const isSewingInProgress = stage === 'sewing' && effectiveBucket === 'in_progress';
+    const isSewingReady = stage === 'sewing' && effectiveBucket === 'ready';
+    const isPrintCompleted = stage === 'print' && effectiveBucket === 'completed';
+
+    const showDefectsCol = !isSewingInProgress;
+    const showVendorNotesCol = !(isSewingReady || isPrintCompleted);
+
+    const activeLabel = activePartStatusLabel(stage, effectiveBucket);
+    const badgeToneClass =
+      effectiveBucket === 'in_progress'
+        ? ' is-progress'
+        : effectiveBucket === 'completed'
+        ? ' is-done'
+        : '';
+
+    const renderSmartPartsHtml = (it: ReadinessCardItem): string => {
+      const details = it.partDetails;
+      if (details.length === 0) return '<span class="muted">—</span>';
+
+      const allInCurrent = details.length >= 2 && details.every((d) => d.isInCurrentBucket);
+      if (allInCurrent) {
+        const summaryBadge = `<div class="part-all-badge${badgeToneClass}">${escapeHtml(
+          allPartsSummaryLabel(stage, effectiveBucket, details.length)
+        )}</div>`;
+        const lines = details
+          .map((d) => {
+            const label = escapeHtml(getPartLabel(d.part));
+            const qtyTxt = d.qty.toLocaleString('ar-EG');
+            const extraStage = isPrintCompleted
+              ? ` <span class="part-tag-other">${escapeHtml(describeOtherPartLocation(d))}</span>`
+              : '';
+            return `<div class="part-line part-active"><strong>${label}:</strong> <span class="num">${qtyTxt}</span>${extraStage}</div>`;
+          })
+          .join('');
+        return `${summaryBadge}${lines}`;
+      }
+
+      const ordered = [
+        ...details.filter((d) => d.isInCurrentBucket),
+        ...details.filter((d) => !d.isInCurrentBucket)
+      ];
+
+      return ordered
+        .map((d) => {
+          const label = escapeHtml(getPartLabel(d.part));
+          if (d.isInCurrentBucket) {
+            return `<div class="part-line part-active"><strong>${label}:</strong> <span class="num">${d.qty.toLocaleString(
+              'ar-EG'
+            )}</span> <span class="part-tag-active${badgeToneClass}">(${escapeHtml(
+              activeLabel
+            )})</span></div>`;
+          }
+          return `<div class="part-line part-other"><strong>${label}:</strong> <span class="part-tag-other">${escapeHtml(
+            describeOtherPartLocation(d)
+          )}</span></div>`;
+        })
+        .join('');
+    };
+
+    const renderDefectsCellHtml = (it: ReadinessCardItem): string => {
+      if (isSewingReady) {
+        const targetDetails = it.partDetails.filter((d) => d.isInCurrentBucket);
+        const list = targetDetails.length > 0 ? targetDetails : it.partDetails;
+        const lines: string[] = [];
+        let anyCounted = false;
+        let anyShortage = false;
+        let anyUncounted = false;
+
+        list.forEach((d) => {
+          const lastGood = d.hasAfterPrintQc
+            ? d.counts.afterPrintGood
+            : d.hasBeforePrintQc
+            ? d.counts.beforePrintGood
+            : null;
+          if (d.actualCut > 0 && lastGood !== null) {
+            anyCounted = true;
+            const shortage = Math.max(0, d.actualCut - lastGood);
+            if (shortage > 0) {
+              anyShortage = true;
+              lines.push(
+                `<div class="bad">${escapeHtml(getPartLabel(d.part))}: -${shortage.toLocaleString(
+                  'ar-EG'
+                )} ق</div>`
+              );
+            } else {
+              lines.push(
+                `<div class="ok">${escapeHtml(getPartLabel(d.part))}: لا يوجد عجز</div>`
+              );
+            }
+          } else {
+            anyUncounted = true;
+            lines.push(
+              `<div class="muted">${escapeHtml(getPartLabel(d.part))}: لم يُعدّ بعد</div>`
+            );
+          }
+        });
+
+        if (!anyCounted) {
+          return '<span class="muted">لم يُعدّ بعد</span>';
+        }
+        if (!anyShortage && !anyUncounted) {
+          return '<span class="ok">لا يوجد عجز</span>';
+        }
+        return lines.join('');
+      }
+
+      if (isPrintCompleted) {
+        const anyAfterPrint = it.partDetails.some((d) => d.hasAfterPrintQc);
+        if (!anyAfterPrint) {
+          return '<span class="warn">لم يُعدّ بعد</span>';
+        }
+        const lines: string[] = [];
+        let anyShortage = false;
+        let anyMissingAfterPrint = false;
+
+        it.partDetails.forEach((d) => {
+          if (!d.hasAfterPrintQc) {
+            anyMissingAfterPrint = true;
+            lines.push(
+              `<div class="warn">${escapeHtml(getPartLabel(d.part))}: لم يُعدّ بعد</div>`
+            );
+            return;
+          }
+          const baseline =
+            d.hasBeforePrintQc && d.counts.beforePrintGood > 0
+              ? d.counts.beforePrintGood
+              : d.actualCut;
+          const shortage =
+            baseline > 0
+              ? Math.max(0, baseline - d.counts.afterPrintGood)
+              : d.counts.afterPrintDefect;
+          if (shortage > 0) {
+            anyShortage = true;
+            lines.push(
+              `<div class="bad">عجز ${escapeHtml(getPartLabel(d.part))}: ${shortage.toLocaleString(
+                'ar-EG'
+              )} ق</div>`
+            );
+          } else {
+            lines.push(
+              `<div class="ok">${escapeHtml(getPartLabel(d.part))}: لا يوجد عجز</div>`
+            );
+          }
+        });
+
+        if (!anyShortage && !anyMissingAfterPrint) {
+          return '<span class="ok">لا يوجد عجز</span>';
+        }
+        return lines.join('');
+      }
+
+      if (!it.hasIssue) return '<span class="muted">—</span>';
+      const issueBits: string[] = [];
+      if (it.totalDefects > 0) {
+        issueBits.push(`${it.totalDefects.toLocaleString('ar-EG')} تالف`);
+      }
+      if (it.destShortage > 0) {
+        issueBits.push(`${it.destShortage.toLocaleString('ar-EG')} عجز`);
+      }
+      if (it.photoShortage > 0) {
+        issueBits.push(`${it.photoShortage.toLocaleString('ar-EG')} تصوير`);
+      }
+      return `<span class="bad">${issueBits.join(' • ') || '—'}</span>`;
+    };
+
+    const totalCols = 9 + (showDefectsCol ? 1 : 0) + (showVendorNotesCol ? 1 : 0);
+    const hasBothTailCols = showDefectsCol && showVendorNotesCol;
+
     const rowsHtml = filteredItems
       .map((it, idx) => {
         const imgSrc = safeImageSrc(it.model.image);
-        const partsHtml = it.partQuantities
-          .map((pq) => `${escapeHtml(getPartLabel(pq.part))}: <strong>${pq.qty.toLocaleString('ar-EG')}</strong>`)
-          .join(' • ');
+        const partsHtml = renderSmartPartsHtml(it);
         const photoTxt =
           it.photoStatus === 'done'
             ? '<span class="ok">تم التصوير</span>'
             : it.photoStatus === 'sent'
             ? `<span class="warn">قيد التصوير${it.photoSentQty ? ` (${it.photoSentQty})` : ''}</span>`
             : '<span class="muted">لم يتصور</span>';
-        const cardTxt =
-          it.cardStatus === 'done'
-            ? '<span class="ok">تم الكارت</span>'
-            : it.cardStatus === 'sent'
-            ? '<span class="warn">قيد الطباعة</span>'
-            : '<span class="muted">بدون كارت</span>';
+
+        const defectsTd = showDefectsCol
+          ? `<td class="num">${renderDefectsCellHtml(it)}</td>`
+          : '';
+        const vendorNotesTd = showVendorNotesCol
+          ? `<td class="text-right">${escapeHtml(it.activeVendors.join('، ') || it.notesSummary || '—')}</td>`
+          : '';
 
         return `<tr>
           <td class="num muted">${idx + 1}</td>
-          <td>${
+          <td class="rd-img-cell">${
             imgSrc
               ? `<img src="${escapeHtml(imgSrc)}" alt="${escapeHtml(it.model.model_code)}" class="rd-thumb" onerror="this.style.display='none'" />`
-              : '<span class="muted">—</span>'
+              : '<div class="rd-thumb-empty">بدون صورة</div>'
           }</td>
-          <td class="text-right"><strong>${escapeHtml(it.model.model_code)}</strong><div style="font-size:8px;color:#64748b">${escapeHtml(it.model.model_type || '')}</div></td>
+          <td class="text-right"><strong>${escapeHtml(it.model.model_code)}</strong><div style="font-size:8.5px;color:#64748b">${escapeHtml(it.model.model_type || '')}</div></td>
           <td>${escapeHtml(genderLabel(it.gender))}</td>
           <td>${escapeHtml(it.sizeCategoryName)}</td>
           <td class="text-right">${partsHtml}</td>
           <td class="num"><strong>${it.totalPieces.toLocaleString('ar-EG')}</strong></td>
-          <td class="text-right">${escapeHtml(it.colors.join('، ') || '—')}</td>
           <td>${escapeHtml(it.sizes.join(' - ') || '—')}</td>
-          <td>${photoTxt}<br/>${cardTxt}</td>
-          <td class="num ${it.hasIssue ? 'bad' : 'muted'}">${it.totalDefects > 0 ? `${it.totalDefects} تالف` : ''}${it.destShortage > 0 ? ` ${it.destShortage} عجز` : ''}${!it.hasIssue ? '—' : ''}</td>
-          <td class="text-right">${escapeHtml(it.activeVendors.join('، ') || it.notesSummary || '—')}</td>
+          <td>${photoTxt}</td>
+          ${defectsTd}
+          ${vendorNotesTd}
         </tr>`;
       })
       .join('');
@@ -829,24 +1146,23 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
         <div class="p-kpi"><span class="p-kpi-label">بناتي</span><span class="p-kpi-val">${kpis.girls.toLocaleString('ar-EG')}</span></div>
         <div class="p-kpi"><span class="p-kpi-label">إجمالي القطع / الأطقم</span><span class="p-kpi-val ok">${kpis.totalPieces.toLocaleString('ar-EG')}</span></div>
       </div>
-      <table>
+      <table class="rd-table">
         <thead>
           <tr>
             <th style="width:3%">#</th>
-            <th style="width:5%">الصورة</th>
-            <th class="text-right" style="width:10%">الموديل</th>
-            <th style="width:6%">الجنس</th>
-            <th style="width:9%">فئة المقاس</th>
-            <th class="text-right" style="width:16%">توزيع القطع</th>
-            <th style="width:7%">الإجمالي</th>
-            <th class="text-right" style="width:12%">الألوان</th>
-            <th style="width:9%">المقاسات</th>
-            <th style="width:9%">التصوير والكارت</th>
-            <th style="width:6%">عيوب/عجز</th>
-            <th class="text-right" style="width:8%">جهة / ملاحظات</th>
+            <th style="width:13%">الصورة</th>
+            <th class="text-right" style="width:${hasBothTailCols ? '10%' : '11%'}">الموديل</th>
+            <th style="width:${hasBothTailCols ? '5%' : '6%'}">الجنس</th>
+            <th style="width:${hasBothTailCols ? '7%' : '8%'}">فئة المقاس</th>
+            <th class="text-right" style="width:${hasBothTailCols ? '21%' : '24%'}">توزيع القطع</th>
+            <th style="width:${hasBothTailCols ? '6%' : '7%'}">الإجمالي</th>
+            <th style="width:8%">المقاسات</th>
+            <th style="width:${hasBothTailCols ? '7%' : '8%'}">التصوير</th>
+            ${showDefectsCol ? `<th style="width:${hasBothTailCols ? '10%' : '12%'}">عيوب / عجز</th>` : ''}
+            ${showVendorNotesCol ? `<th class="text-right" style="width:${hasBothTailCols ? '10%' : '12%'}">جهة / ملاحظات</th>` : ''}
           </tr>
         </thead>
-        <tbody>${rowsHtml || '<tr><td colspan="12" class="muted">لا توجد موديلات مطابقة للفلتر الحالي.</td></tr>'}</tbody>
+        <tbody>${rowsHtml || `<tr><td colspan="${totalCols}" class="muted">لا توجد موديلات مطابقة للفلتر الحالي.</td></tr>`}</tbody>
       </table>
       ${renderSignatureBar(['مسؤول المتابعة', 'مشرف القسم', 'مدير الإنتاج'], true)}
     `;
@@ -867,7 +1183,97 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
       },
       bodyHtml,
       extraCss: `
-        .rd-thumb { width: 26px; height: 26px; object-fit: contain; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; display: block; margin: 0 auto; }
+        table.rd-table { table-layout: fixed; }
+        table.rd-table td.rd-img-cell { padding: 4px !important; text-align: center; vertical-align: middle; }
+        .rd-thumb {
+          width: 118px;
+          height: 118px;
+          object-fit: contain;
+          border: 1px solid #cbd5e1;
+          border-radius: 6px;
+          background: #ffffff;
+          display: block;
+          margin: 0 auto;
+        }
+        .rd-thumb-empty {
+          width: 118px;
+          height: 118px;
+          margin: 0 auto;
+          border: 1px dashed #cbd5e1;
+          border-radius: 6px;
+          background: #f8fafc;
+          color: #94a3b8;
+          font-size: 9px;
+          font-weight: 700;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .part-all-badge {
+          display: inline-block;
+          font-size: 9px;
+          font-weight: 800;
+          padding: 1.5px 6px;
+          border-radius: 4px;
+          background: #ecfdf5;
+          color: #047857;
+          border: 1px solid #a7f3d0;
+          margin-bottom: 4px;
+        }
+        .part-all-badge.is-progress {
+          background: #fffbeb;
+          color: #b45309;
+          border-color: #fde68a;
+        }
+        .part-all-badge.is-done {
+          background: #eff6ff;
+          color: #1d4ed8;
+          border-color: #bfdbfe;
+        }
+        .part-line {
+          margin: 2px 0;
+          line-height: 1.45;
+          font-size: 9.5px;
+        }
+        .part-line.part-active {
+          color: #0f172a;
+          font-weight: 700;
+        }
+        .part-line.part-other {
+          color: #475569;
+          font-weight: 600;
+        }
+        .part-tag-active {
+          display: inline-block;
+          font-size: 8.5px;
+          font-weight: 800;
+          color: #047857;
+          background: #ecfdf5;
+          border: 1px solid #a7f3d0;
+          border-radius: 3px;
+          padding: 0 4px;
+          margin-right: 3px;
+        }
+        .part-tag-active.is-progress {
+          color: #b45309;
+          background: #fffbeb;
+          border-color: #fde68a;
+        }
+        .part-tag-active.is-done {
+          color: #1d4ed8;
+          background: #eff6ff;
+          border-color: #bfdbfe;
+        }
+        .part-tag-other {
+          display: inline-block;
+          font-size: 8.5px;
+          font-weight: 700;
+          color: #475569;
+          background: #f1f5f9;
+          border: 1px solid #cbd5e1;
+          border-radius: 3px;
+          padding: 0 5px;
+        }
       `,
       popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة كشف الجاهزية.'
     });

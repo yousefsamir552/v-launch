@@ -164,7 +164,7 @@ const computeCellHeightPx = (
   landscape: boolean
 ): number => {
   const safeRows = Math.max(1, totalRows);
-  const availablePx = landscape ? 420 : 670;
+  const availablePx = landscape ? 380 : 625;
   const overheadPerPart = 54;
   const usable = Math.max(160, availablePx - partsCount * overheadPerPart);
   const ideal = Math.floor(usable / safeRows);

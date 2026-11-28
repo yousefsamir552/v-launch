@@ -108,6 +108,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
     accessoryTypes,
     accessoryItems,
     globalSettings,
+    currentUser,
     getModelSizeList,
     addModelRequirement,
     deleteModelRequirement,
@@ -145,18 +146,27 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
       modelType: model.model_type,
       targetQuantity: model.target_cut_quantity,
       issuedTo: modelAccs.find((a) => a.issued_to)?.issued_to || '',
-      issuedBy: firstIssued?.issued_by || '',
+      printedBy: currentUser?.real_name || currentUser?.username || '',
       date: firstIssued?.issued_at || undefined,
-      lines: modelAccs.map((acc) => ({
-        accessory_name: acc.accessory_name,
-        accessory_code: acc.accessory_code,
-        target_type: acc.target_type,
-        quantity: acc.is_issued
-          ? Number(acc.issued_quantity ?? acc.planned_quantity ?? 0)
-          : Number(acc.planned_quantity || 0),
-        unit: acc.unit,
-        is_issued: acc.is_issued
-      }))
+      lines: modelAccs.map((acc) => {
+        const matchedItem = accessoryItems.find(
+          (it) =>
+            (acc.accessory_id && it.id === acc.accessory_id) ||
+            (acc.accessory_code && it.code === acc.accessory_code) ||
+            it.name === acc.accessory_name
+        );
+        return {
+          accessory_name: acc.accessory_name,
+          accessory_code: acc.accessory_code,
+          image: acc.image || matchedItem?.image || '',
+          target_type: acc.target_type,
+          quantity: acc.is_issued
+            ? Number(acc.issued_quantity ?? acc.planned_quantity ?? 0)
+            : Number(acc.planned_quantity || 0),
+          unit: acc.unit,
+          is_issued: acc.is_issued
+        };
+      })
     });
   };
 

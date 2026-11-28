@@ -1927,12 +1927,14 @@ export const QCView: React.FC = () => {
                 </tbody>
               </table>
 
-              <div className="mt-8 pt-6 border-t border-slate-300 flex justify-between items-center text-xs text-slate-600 font-bold px-4">
-                <div>
-                  توقيع مسؤول الفرز والكنترول: .......................................
+              <div className="mt-6 pt-4 border-t border-slate-300 grid grid-cols-2 gap-4 text-xs text-slate-700 font-bold px-2">
+                <div className="border border-slate-400 rounded-lg p-3 min-h-[82px] flex flex-col justify-between text-center bg-white">
+                  <div>توقيع مسؤول الفرز والكنترول</div>
+                  <div className="border-t border-dashed border-slate-400 w-4/5 mx-auto" />
                 </div>
-                <div>
-                  توقيع مدير الإنتاج: .......................................
+                <div className="border border-slate-400 rounded-lg p-3 min-h-[82px] flex flex-col justify-between text-center bg-white">
+                  <div>توقيع مدير الإنتاج</div>
+                  <div className="border-t border-dashed border-slate-400 w-4/5 mx-auto" />
                 </div>
               </div>
             </div>
