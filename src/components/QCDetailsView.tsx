@@ -735,7 +735,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
             model.sewing_available?.[selectedPart] ??
               model.cut_summary?.[selectedPart] ??
               0
-          ).toLocaleString('ar-EG')} قطعة
+          ).toLocaleString('en-US')} قطعة
         </span>
       </div>
 
@@ -827,7 +827,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
                     المقصوص الفعلي ({getPartLabel(selectedPart)}):
                   </span>
                   <strong className="text-sm font-black text-slate-900">
-                    {partCounts.cutPieces.toLocaleString('ar-EG')}
+                    {partCounts.cutPieces.toLocaleString('en-US')}
                   </strong>
                 </div>
 
@@ -835,7 +835,7 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
                   <div>
                     <span className="block text-slate-500">التالف قبل الطباعة:</span>
                     <strong className="text-sm font-black text-rose-700">
-                      {partCounts.beforePrintDefect.toLocaleString('ar-EG')}
+                      {partCounts.beforePrintDefect.toLocaleString('en-US')}
                     </strong>
                   </div>
                 )}
@@ -845,20 +845,20 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
                     <div>
                       <span className="block text-slate-500">السليم قبل الطباعة:</span>
                       <strong className="text-sm font-black text-blue-700">
-                        {partCounts.beforePrintGood.toLocaleString('ar-EG')}
+                        {partCounts.beforePrintGood.toLocaleString('en-US')}
                       </strong>
                     </div>
                     <div>
                       <span className="block text-slate-500">الداخل من الطباعة/التطريز:</span>
                       <strong className="text-sm font-black text-indigo-700">
-                        {effectiveAfterPrintReceived.toLocaleString('ar-EG')}
+                        {effectiveAfterPrintReceived.toLocaleString('en-US')}
                       </strong>
                       <span className="block text-[10px] text-slate-400">
-                        مرسل: {effectiveAfterPrintSent.toLocaleString('ar-EG')}
+                        مرسل: {effectiveAfterPrintSent.toLocaleString('en-US')}
                         {partCounts.printSent > 0 && partCounts.embroiderySent > 0
-                          ? ` • طباعة: ${partCounts.printReceived.toLocaleString('ar-EG')}/${partCounts.printSent.toLocaleString('ar-EG')} • تطريز: ${partCounts.embroideryReceived.toLocaleString('ar-EG')}/${partCounts.embroiderySent.toLocaleString('ar-EG')}`
+                          ? ` • طباعة: ${partCounts.printReceived.toLocaleString('en-US')}/${partCounts.printSent.toLocaleString('en-US')} • تطريز: ${partCounts.embroideryReceived.toLocaleString('en-US')}/${partCounts.embroiderySent.toLocaleString('en-US')}`
                           : partCounts.embroiderySent > 0
-                          ? ` • تطريز: ${partCounts.embroideryReceived.toLocaleString('ar-EG')}/${partCounts.embroiderySent.toLocaleString('ar-EG')}`
+                          ? ` • تطريز: ${partCounts.embroideryReceived.toLocaleString('en-US')}/${partCounts.embroiderySent.toLocaleString('en-US')}`
                           : ''}
                       </span>
                     </div>
@@ -870,13 +870,13 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
                     <div>
                       <span className="block text-slate-500">المسلّم للمكن:</span>
                       <strong className="text-sm font-black text-amber-700">
-                        {partCounts.sewingSent.toLocaleString('ar-EG')}
+                        {partCounts.sewingSent.toLocaleString('en-US')}
                       </strong>
                     </div>
                     <div>
                       <span className="block text-slate-500">الداخل من المكن:</span>
                       <strong className="text-sm font-black text-emerald-700">
-                        {partCounts.sewingReceived.toLocaleString('ar-EG')}
+                        {partCounts.sewingReceived.toLocaleString('en-US')}
                       </strong>
                     </div>
                   </>
@@ -885,13 +885,13 @@ export const QCDetailsView: React.FC<QCDetailsViewProps> = ({
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5">
                   <span className="block font-bold text-emerald-700">المسجل هنا (سليم):</span>
                   <strong className="text-base font-black text-emerald-900">
-                    {totalGood.toLocaleString('ar-EG')}
+                    {totalGood.toLocaleString('en-US')}
                   </strong>
                 </div>
                 <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5">
                   <span className="block font-bold text-rose-700">فرق هذه المرحلة:</span>
                   <strong className="text-base font-black text-rose-900">
-                    {stageDiff.toLocaleString('ar-EG')}
+                    {stageDiff.toLocaleString('en-US')}
                   </strong>
                 </div>
               </div>

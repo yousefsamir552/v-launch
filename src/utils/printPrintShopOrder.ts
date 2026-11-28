@@ -38,7 +38,7 @@ export interface PrintShopOrderOptions {
 }
 
 const fmtInt = (value: number): string =>
-  Math.round(Number.isFinite(value) ? value : 0).toLocaleString('ar-EG');
+  Math.round(Number.isFinite(value) ? value : 0).toLocaleString('en-US');
 
 const renderLargeImage = (options: PrintShopOrderOptions): string => {
   const imageSrc = safeImageSrc(options.imageUrl);

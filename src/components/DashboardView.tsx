@@ -373,7 +373,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           </div>
           <h3 className="text-slate-500 text-sm font-semibold mb-1">المتصلون الآن بالموقع</h3>
           <p className="text-4xl font-extrabold text-emerald-600 tracking-tight">{onlineUsers.length}</p>
-          <span className="text-xs text-slate-400 mt-2 block">حسابات فاتحة للموقع خلال آخر ٥ دقائق</span>
+          <span className="text-xs text-slate-400 mt-2 block">حسابات فاتحة للموقع خلال آخر 5 دقائق</span>
 
           <div className="mt-4 pt-4 border-t border-slate-100 text-right space-y-2 max-h-44 overflow-y-auto">
             {onlineUsers.length > 0 ? (
@@ -419,19 +419,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold">
               <Scissors className="w-3.5 h-3.5" />
               <span>مقصوص:</span>
-              <span className="font-mono">{totalCutPieces.toLocaleString('ar-EG')}</span>
+              <span className="font-mono">{totalCutPieces.toLocaleString('en-US')}</span>
               <span>ق</span>
             </span>
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-50 border border-purple-200 text-purple-800 text-xs font-bold">
               <CheckCircle2 className="w-3.5 h-3.5" />
               <span>جودة:</span>
-              <span className="font-mono">{totalQcGoodPieces.toLocaleString('ar-EG')}</span>
+              <span className="font-mono">{totalQcGoodPieces.toLocaleString('en-US')}</span>
               <span>ق</span>
             </span>
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs font-bold">
               <Printer className="w-3.5 h-3.5" />
               <span>مطابع:</span>
-              <span className="font-mono">{totalDispatchedPieces.toLocaleString('ar-EG')}</span>
+              <span className="font-mono">{totalDispatchedPieces.toLocaleString('en-US')}</span>
               <span>ق</span>
             </span>
           </div>
@@ -625,13 +625,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           </div>
           <div className="flex flex-wrap items-center gap-2 text-[11px] font-black">
             <span className="px-3 py-1 rounded-full bg-slate-900 text-white">
-              إجمالي الأطقم: {totalSets.toLocaleString('ar-EG')}
+              إجمالي الأطقم: {totalSets.toLocaleString('en-US')}
             </span>
             <span className="px-3 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
-              قطع قيد التشغيل: {totalPartItems.toLocaleString('ar-EG')}
+              قطع قيد التشغيل: {totalPartItems.toLocaleString('en-US')}
             </span>
             <span className="px-3 py-1 rounded-full bg-orange-50 text-orange-800 border border-orange-200">
-              في الأسمبلي والأمبالاج: {inAssemblyCount.toLocaleString('ar-EG')}
+              في الأسمبلي والأمبالاج: {inAssemblyCount.toLocaleString('en-US')}
             </span>
           </div>
         </div>
@@ -657,7 +657,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                       {model.model_code}
                     </button>
                     <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-700">
-                      أطقم: {modelSets(model).toLocaleString('ar-EG')}
+                      أطقم: {modelSets(model).toLocaleString('en-US')}
                     </span>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-1">
@@ -736,7 +736,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                       </span>
                     </td>
                     <td className="px-6 py-4 text-center font-bold text-slate-800">
-                      {(m.target_cut_quantity || 0).toLocaleString('ar-EG')} ق
+                      {(m.target_cut_quantity || 0).toLocaleString('en-US')} ق
                     </td>
                     <td className="px-6 py-4 text-center">
                       <button

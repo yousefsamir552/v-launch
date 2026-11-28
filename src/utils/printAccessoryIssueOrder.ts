@@ -51,7 +51,7 @@ const PART_LABELS: Record<string, string> = {
 };
 
 const fmtNum = (value: number): string =>
-  (Number.isFinite(value) ? value : 0).toLocaleString('ar-EG');
+  (Number.isFinite(value) ? value : 0).toLocaleString('en-US');
 
 export const printAccessoryIssueOrder = (options: AccessoryIssueOrderOptions): void => {
   logClientPrintAction(
@@ -60,7 +60,7 @@ export const printAccessoryIssueOrder = (options: AccessoryIssueOrderOptions): v
     options.modelCode
   );
   const lines = Array.isArray(options.lines) ? options.lines : [];
-  const today = options.date || new Date().toLocaleDateString('ar-EG');
+  const today = options.date || new Date().toLocaleDateString('ar-EG-u-nu-latn');
   const totalQty = lines.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
   const modelLabel = String(options.modelCode || '').trim() || '—';
   const printedBy = String(options.printedBy || '').trim() || getCurrentPrintUserName();

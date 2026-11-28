@@ -610,12 +610,12 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
           >
             {getPartLabel(part)}
             <span className="ms-1.5 text-[10px] opacity-90">
-              ({Number(model.cut_summary?.[part] ?? 0).toLocaleString('ar-EG')} من {Number(model.target_cut_quantity || 0).toLocaleString('ar-EG')})
+              ({Number(model.cut_summary?.[part] ?? 0).toLocaleString('en-US')} من {Number(model.target_cut_quantity || 0).toLocaleString('en-US')})
             </span>
           </button>
         ))}
         <span className="ms-auto text-[11px] font-bold text-rose-700">
-          إجمالي هذه القطعة: {totalPiecesProduced.toLocaleString('ar-EG')} قطعة
+          إجمالي هذه القطعة: {totalPiecesProduced.toLocaleString('en-US')} قطعة
         </span>
       </div>
 
@@ -794,7 +794,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
               </div>
             </div>
             <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-black">
-              {returnableReqs.length.toLocaleString('ar-EG')} بند قابل للإرجاع
+              {returnableReqs.length.toLocaleString('en-US')} بند قابل للإرجاع
             </span>
           </div>
 
@@ -805,7 +805,7 @@ export const CuttingDetailsView: React.FC<CuttingDetailsViewProps> = ({
               const { issued, consumed, net, unit, draft, isValid } = surplusBreakdownFor(req);
               const isBusy = returningSurplusReqId === req.id;
               const fmtQty = (value: number) =>
-                value.toLocaleString('ar-EG', { maximumFractionDigits: 2 });
+                value.toLocaleString('en-US', { maximumFractionDigits: 2 });
               return (
                 <div
                   key={req.id}

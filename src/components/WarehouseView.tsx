@@ -1201,8 +1201,8 @@ export const WarehouseView: React.FC = () => {
           <td>${escapeHtml(fab?.unit || 'كيلو')}</td>
           ${
             showPrices
-              ? `<td class="num">${Number(color.price_per_unit || 0).toLocaleString('ar-EG')} ج.م</td>
-                 <td class="num"><strong>${Math.round(totalVal).toLocaleString('ar-EG')} ج.م</strong></td>`
+              ? `<td class="num">${Number(color.price_per_unit || 0).toLocaleString('en-US')} ج.م</td>
+                 <td class="num"><strong>${Math.round(totalVal).toLocaleString('en-US')} ج.م</strong></td>`
               : ''
           }
         </tr>`;
@@ -1211,8 +1211,8 @@ export const WarehouseView: React.FC = () => {
 
     const bodyHtml = `
       <div class="p-kpis">
-        <div class="p-kpi"><span class="p-kpi-label">عدد أصناف الأقمشة</span><span class="p-kpi-val">${fabrics.length.toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">إجمالي الألوان</span><span class="p-kpi-val">${fabricColors.length.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">عدد أصناف الأقمشة</span><span class="p-kpi-val">${fabrics.length.toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الألوان</span><span class="p-kpi-val">${fabricColors.length.toLocaleString('en-US')}</span></div>
         <div class="p-kpi"><span class="p-kpi-label">إجمالي الوارد</span><span class="p-kpi-val ok">${auditTotals.totalReceived}</span></div>
         <div class="p-kpi"><span class="p-kpi-label">إجمالي المستهلك</span><span class="p-kpi-val bad">${auditTotals.totalConsumed}</span></div>
         <div class="p-kpi"><span class="p-kpi-label">عيوب القماش</span><span class="p-kpi-val warn">${auditTotals.totalDefect}</span></div>
@@ -1250,7 +1250,7 @@ export const WarehouseView: React.FC = () => {
             <td class="num">${totalReservedQty.toFixed(1)}</td>
             <td class="num">${auditTotals.totalAvailable}</td>
             <td>—</td>
-            ${showPrices ? `<td>—</td><td class="num">${Math.round(totalEstValue).toLocaleString('ar-EG')} ج.م</td>` : ''}
+            ${showPrices ? `<td>—</td><td class="num">${Math.round(totalEstValue).toLocaleString('en-US')} ج.م</td>` : ''}
           </tr>
         </tfoot>
       </table>
@@ -1267,7 +1267,7 @@ export const WarehouseView: React.FC = () => {
         logo: globalSettings?.logo,
         title: 'تقرير جرد مخزن الأقمشة والخامات',
         subtitle: 'كشف جرد تفصيلي لجميع الخامات والألوان (الوارد، المستهلك، العيوب، المحجوز، والمتاح)',
-        metaItems: [`إجمالي الألوان: ${fabricColors.length.toLocaleString('ar-EG')}`]
+        metaItems: [`إجمالي الألوان: ${fabricColors.length.toLocaleString('en-US')}`]
       },
       bodyHtml,
       extraCss: `
@@ -1359,7 +1359,7 @@ export const WarehouseView: React.FC = () => {
         logo: globalSettings?.logo,
         title: 'تقرير جرد القماش والاستهلاك التفصيلي',
         subtitle: 'الوارد مقابل المستهلك والمتبقي وتوزيع الاستهلاك على المقاسات والموديلات',
-        metaItems: [`عدد الخامات: ${fabricAuditGroups.length.toLocaleString('ar-EG')}`]
+        metaItems: [`عدد الخامات: ${fabricAuditGroups.length.toLocaleString('en-US')}`]
       },
       bodyHtml,
       extraCss: `
@@ -3382,7 +3382,7 @@ export const WarehouseView: React.FC = () => {
                     <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 flex items-center justify-between text-xs">
                       <span className="font-bold text-amber-900">إجمالي التكلفة التقديرية للطلبية:</span>
                       <span className="font-extrabold text-amber-950 text-sm font-mono">
-                        {(Number(reorderQty) * (reorderModalItem.color.price_per_unit || 0)).toLocaleString('ar-EG')} ج.م
+                        {(Number(reorderQty) * (reorderModalItem.color.price_per_unit || 0)).toLocaleString('en-US')} ج.م
                       </span>
                     </div>
                   )}

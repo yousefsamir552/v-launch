@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { toLatinDigits } from '../utils/latinDigits';
 import { useApp } from '../context/AppContext';
 import { Boxes, Printer, X, Package, AlertTriangle, Search } from 'lucide-react';
 import {
@@ -56,7 +57,7 @@ export const ProductionWarehouseView: React.FC = () => {
   // Finished production models — فقط الموديلات التي وصلت فعلاً لمخزن الإنتاج التام
   // (بعد اكتمال التشطيب ← المكواة ← التعبئة والتغليف ← الدَست).
   const finishedModels = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const list = models.filter(
       (m) =>
         !m.is_deleted &&
@@ -94,11 +95,11 @@ export const ProductionWarehouseView: React.FC = () => {
           }</td>
           <td class="text-right"><strong>${escapeHtml(m.model_code)}</strong></td>
           <td>${escapeHtml(m.model_type || '—')}</td>
-          <td class="num">${Number(m.target_cut_quantity || 0).toLocaleString('ar-EG')}</td>
-          <td class="num ok"><strong>${actual.toLocaleString('ar-EG')} طقم</strong>${
+          <td class="num">${Number(m.target_cut_quantity || 0).toLocaleString('en-US')}</td>
+          <td class="num ok"><strong>${actual.toLocaleString('en-US')} طقم</strong>${
             holdQty > 0 ? ` <span class="warn">(تصوير: ${holdQty})</span>` : ''
           }</td>
-          <td class="num">${new Date(m.created_at).toLocaleDateString('ar-EG')}</td>
+          <td class="num">${new Date(m.created_at).toLocaleDateString('ar-EG-u-nu-latn')}</td>
           <td><strong>${escapeHtml(m.status)}</strong></td>
         </tr>`;
       })
@@ -106,9 +107,9 @@ export const ProductionWarehouseView: React.FC = () => {
 
     const bodyHtml = `
       <div class="p-kpis">
-        <div class="p-kpi"><span class="p-kpi-label">عدد الموديلات الجاهزة</span><span class="p-kpi-val">${finishedModels.length.toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">إجمالي الكمية المستهدفة</span><span class="p-kpi-val">${totalTarget.toLocaleString('ar-EG')} طقم</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">إجمالي الأطقم التامة الجاهزة</span><span class="p-kpi-val ok">${totalFinishedSets.toLocaleString('ar-EG')} طقم</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">عدد الموديلات الجاهزة</span><span class="p-kpi-val">${finishedModels.length.toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الكمية المستهدفة</span><span class="p-kpi-val">${totalTarget.toLocaleString('en-US')} طقم</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الأطقم التامة الجاهزة</span><span class="p-kpi-val ok">${totalFinishedSets.toLocaleString('en-US')} طقم</span></div>
       </div>
 
       <table>
@@ -128,8 +129,8 @@ export const ProductionWarehouseView: React.FC = () => {
         <tfoot>
           <tr class="total">
             <td colspan="4" class="text-right">الإجمالي</td>
-            <td class="num">${totalTarget.toLocaleString('ar-EG')}</td>
-            <td class="num ok">${totalFinishedSets.toLocaleString('ar-EG')} طقم</td>
+            <td class="num">${totalTarget.toLocaleString('en-US')}</td>
+            <td class="num ok">${totalFinishedSets.toLocaleString('en-US')} طقم</td>
             <td colspan="2"></td>
           </tr>
         </tfoot>
@@ -147,7 +148,7 @@ export const ProductionWarehouseView: React.FC = () => {
         logo: globalSettings?.logo,
         title: 'كشف جرد مخزن الإنتاج التام الجاهز للشحن',
         subtitle: 'حصر المنتجات النهائية المكتملة بعد التشطيب والمكواة والتعبئة والدَست',
-        metaItems: [`إجمالي الأطقم الجاهزة: ${totalFinishedSets.toLocaleString('ar-EG')} طقم`]
+        metaItems: [`إجمالي الأطقم الجاهزة: ${totalFinishedSets.toLocaleString('en-US')} طقم`]
       },
       bodyHtml,
       extraCss: `
@@ -270,7 +271,7 @@ export const ProductionWarehouseView: React.FC = () => {
                         </span>
                       </td>
                       <td className="px-6 py-4 text-center text-slate-500 font-mono">
-                        {new Date(m.created_at).toLocaleDateString('ar-EG')}
+                        {new Date(m.created_at).toLocaleDateString('ar-EG-u-nu-latn')}
                       </td>
                       <td className="px-6 py-4 text-center">
                         <span className="inline-block px-3 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">

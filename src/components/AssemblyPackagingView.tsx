@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { toLatinDigits } from '../utils/latinDigits';
 import { useApp } from '../context/AppContext';
 import {
   Boxes,
@@ -1699,7 +1700,7 @@ export const AssemblyPackagingView: React.FC = () => {
   }, [models, finishingRecords, assemblyStageRecords, packagingRequirements]);
 
   const visibleModels = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
+    const term = toLatinDigits(searchTerm).trim().toLowerCase();
     if (!term) return eligibleModels;
     return eligibleModels.filter(
       (model) =>

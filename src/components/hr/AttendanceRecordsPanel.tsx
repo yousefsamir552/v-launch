@@ -599,10 +599,10 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
       : `تقرير حضور شهر ${month}`;
     const bodyHtml = `
       <div class="p-kpis">
-        <div class="p-kpi"><span class="p-kpi-label">عدد السجلات</span><span class="p-kpi-val">${list.length.toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">حضور</span><span class="p-kpi-val ok">${summary.present.toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">غياب</span><span class="p-kpi-val bad">${summary.absents.toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">بانتظار المراجعة</span><span class="p-kpi-val warn">${summary.pending.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">عدد السجلات</span><span class="p-kpi-val">${list.length.toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">حضور</span><span class="p-kpi-val ok">${summary.present.toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">غياب</span><span class="p-kpi-val bad">${summary.absents.toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">بانتظار المراجعة</span><span class="p-kpi-val warn">${summary.pending.toLocaleString('en-US')}</span></div>
       </div>
       <table>
         <thead>

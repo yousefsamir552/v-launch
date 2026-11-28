@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { toLatinDigits } from '../utils/latinDigits';
 import { useApp } from '../context/AppContext';
 import { makeIdempotentRequestId } from '../context/appContextTypes';
 import {
@@ -115,7 +116,7 @@ export const DispatchAssemblyView: React.FC = () => {
   };
 
   const filteredReadyPartCards = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const list = readyPartCards.filter(({ model, part }) => {
       if (!q) return true;
       return (
@@ -135,7 +136,7 @@ export const DispatchAssemblyView: React.FC = () => {
   }, [readyPartCards, searchTerm, sortBy, qcRecords]);
 
   const filteredEndedPartCards = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const list = endedPartCards.filter(({ model, part }) => {
       if (!q) return true;
       return (
@@ -155,7 +156,7 @@ export const DispatchAssemblyView: React.FC = () => {
   }, [endedPartCards, searchTerm, sortBy, qcRecords]);
 
   const visibleDispatches = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const list = printDispatches.filter((disp) => {
       const isDone = disp.status === 'تم الاستلام بالمصنع';
       if (effectiveShowCompleted ? !isDone : isDone) return false;
@@ -475,7 +476,7 @@ export const DispatchAssemblyView: React.FC = () => {
                       <p className="text-[11px] text-slate-500 mt-1">
                         سليم للطباعة:{' '}
                         <strong className="text-teal-800">
-                          {Number(partGoodQty || 0).toLocaleString('ar-EG')}
+                          {Number(partGoodQty || 0).toLocaleString('en-US')}
                         </strong>
                       </p>
                     </div>
@@ -638,16 +639,16 @@ export const DispatchAssemblyView: React.FC = () => {
                       </td>
                       <td className="px-6 py-4 font-bold text-slate-800">{disp.shop_name}</td>
                       <td className="px-6 py-4 text-center font-black text-slate-900 text-sm">
-                        <div>{Number(disp.pieces_count || 0).toLocaleString('ar-EG')}</div>
+                        <div>{Number(disp.pieces_count || 0).toLocaleString('en-US')}</div>
                         {isReceivedStatus ? (
                           <div className="mt-1 text-[10px] font-bold text-emerald-700">
                             {receivedPieces > 0
-                              ? `مستلم: ${receivedPieces.toLocaleString('ar-EG')}`
+                              ? `مستلم: ${receivedPieces.toLocaleString('en-US')}`
                               : 'بانتظار العد بالفرز'}
                           </div>
                         ) : receivedPieces > 0 ? (
                           <div className="mt-1 text-[10px] font-bold text-amber-700">
-                            مستلم {receivedPieces.toLocaleString('ar-EG')} • متبقي {remainingPieces.toLocaleString('ar-EG')}
+                            مستلم {receivedPieces.toLocaleString('en-US')} • متبقي {remainingPieces.toLocaleString('en-US')}
                           </div>
                         ) : null}
                       </td>
@@ -676,7 +677,7 @@ export const DispatchAssemblyView: React.FC = () => {
                             {disp.cost_per_piece ? `${disp.cost_per_piece} ج.م` : '-'}
                           </td>
                           <td className="px-6 py-4 text-center font-mono font-black text-teal-800">
-                            {disp.total_cost ? `${disp.total_cost.toLocaleString('ar-EG')} ج.م` : '-'}
+                            {disp.total_cost ? `${disp.total_cost.toLocaleString('en-US')} ج.م` : '-'}
                           </td>
                         </>
                       )}
@@ -1111,7 +1112,7 @@ export const DispatchAssemblyView: React.FC = () => {
                 <div className="rounded-2xl bg-slate-50 border border-slate-200 p-3">
                   <span className="block text-[10px] font-bold text-slate-500 mb-0.5">العدد المرسل</span>
                   <span className="text-xs font-black text-slate-800">
-                    {Number(receivingDispatch.pieces_count || 0).toLocaleString('ar-EG')} قطعة
+                    {Number(receivingDispatch.pieces_count || 0).toLocaleString('en-US')} قطعة
                   </span>
                 </div>
                 <div className="rounded-2xl bg-slate-50 border border-slate-200 p-3">
@@ -1126,7 +1127,7 @@ export const DispatchAssemblyView: React.FC = () => {
                     وقت الاستلام الآن
                   </span>
                   <span className="text-xs font-mono font-black text-emerald-800">
-                    {new Date().toLocaleString('ar-EG', {
+                    {new Date().toLocaleString('ar-EG-u-nu-latn', {
                       year: 'numeric',
                       month: '2-digit',
                       day: '2-digit',

@@ -6,6 +6,7 @@ import { currentStageLabel, stageBeyond } from '../utils/completedModels';
 import { ZoomableImage } from './ZoomableImage';
 import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
 import { DesignModel } from '../types';
+import { toLatinDigits } from '../utils/latinDigits';
 
 interface CuttingViewProps {
   onOpenCuttingDetails: (modelId: string) => void;
@@ -43,7 +44,7 @@ export const CuttingView: React.FC<CuttingViewProps> = ({ onOpenCuttingDetails }
 
   // تظهر في قسم القص فقط الموديلات التي لديها قطعة واحدة على الأقل ما زالت في القص.
   const cuttingModels = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const list = models.filter(
       (m) =>
         !m.is_deleted &&
@@ -60,7 +61,7 @@ export const CuttingView: React.FC<CuttingViewProps> = ({ onOpenCuttingDetails }
 
   // الموديلات التي تجاوزت *جميع* قطعها مرحلة القص (منتهية من هذا القسم).
   const endedModels = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const list = models.filter(
       (m) =>
         !m.is_deleted &&

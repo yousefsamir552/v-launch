@@ -700,7 +700,7 @@ export const ModelDetailsView: React.FC<ModelDetailsViewProps> = ({
                 <strong className="text-slate-800">
                   {GARMENT_COMPOSITION_LABELS[model.garment_composition || DEFAULT_GARMENT_COMPOSITION]}
                 </strong>{' '}
-                | تاريخ الإنشاء: {new Date(model.created_at).toLocaleDateString('ar-EG')}
+                | تاريخ الإنشاء: {new Date(model.created_at).toLocaleDateString('ar-EG-u-nu-latn')}
               </p>
               {(() => {
                 const sizes = getModelSizeList(model.id);

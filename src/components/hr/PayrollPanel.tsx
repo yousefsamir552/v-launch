@@ -644,7 +644,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
 
     const bodyHtml = `
       <div class="p-kpis">
-        <div class="p-kpi"><span class="p-kpi-label">عدد الموظفين</span><span class="p-kpi-val">${rows.length.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">عدد الموظفين</span><span class="p-kpi-val">${rows.length.toLocaleString('en-US')}</span></div>
         <div class="p-kpi"><span class="p-kpi-label">إجمالي الأجور المكتسبة</span><span class="p-kpi-val">${formatMoney(totals.earnedBase)}</span></div>
         <div class="p-kpi"><span class="p-kpi-label">إجمالي الإضافي</span><span class="p-kpi-val ok">${formatMoney(totals.overtimePay)}</span></div>
         <div class="p-kpi"><span class="p-kpi-label">إجمالي الخصومات والسُلف</span><span class="p-kpi-val bad">${formatMoney(totals.totalDeduction)}</span></div>
@@ -698,7 +698,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
         logo: globalSettings.logo,
         title: `كشف المرتبات الجماعي — شهر ${month}`,
         subtitle: lockedSnapshot ? 'كشف معتمد ومغلق نهائياً' : 'كشف مرتبات الشهر التفصيلي لجميع العاملين',
-        metaItems: [`عدد العمال: ${rows.length.toLocaleString('ar-EG')}`]
+        metaItems: [`عدد العمال: ${rows.length.toLocaleString('en-US')}`]
       },
       bodyHtml,
       extraCss: `

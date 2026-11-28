@@ -30,12 +30,12 @@ export interface CuttingOrderOptions {
 }
 
 const fmtInt = (value: number): string =>
-  Math.round(Number.isFinite(value) ? value : 0).toLocaleString('ar-EG');
+  Math.round(Number.isFinite(value) ? value : 0).toLocaleString('en-US');
 
 export const printCuttingOrder = (options: CuttingOrderOptions): void => {
   logClientPrintAction('القص', `طباعة أوردر قص رسمي للموديل ${options.modelCode}`, options.modelCode);
   const sizes = Array.isArray(options.sizes) ? options.sizes.filter(Boolean) : [];
-  const today = new Date().toLocaleDateString('ar-EG');
+  const today = new Date().toLocaleDateString('ar-EG-u-nu-latn');
   const blankRows = Math.max(6, Math.min(26, options.blankRows ?? 14));
   const rowHeightPx = blankRows <= 12 ? 32 : blankRows <= 16 ? 27 : 22;
 

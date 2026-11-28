@@ -133,7 +133,7 @@ export const buildDesignActions = (ctx: AppInternalContext) => {
           title: 'إنشاء الموديل الجديد',
           description: `تم إنشاء الموديل بالعدد المستهدف للقص: ${targetCutQty} قطعة${allowedDesignNotes ? ` | ملاحظات التصميم: ${allowedDesignNotes}` : ''}`,
           user_name: userName,
-          timestamp: new Date().toLocaleString('ar-EG', { hour12: false }),
+          timestamp: new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false }),
           details: {
             phase_type: 'design',
             model_code: cleanCode,

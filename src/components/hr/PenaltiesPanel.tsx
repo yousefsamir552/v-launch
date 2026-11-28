@@ -179,7 +179,7 @@ export const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employee
     if (value > maxAllowed) {
       setFormError(
         form.penalty_type === 'days'
-          ? 'الحد الأقصى لمقدار الجزاء ٣ أيام'
+          ? 'الحد الأقصى لمقدار الجزاء 3 أيام'
           : `الحد الأقصى لمقدار الجزاء ${shiftHoursLabel} ساعة (ساعات الشيفت الرسمية)`
       );
       return;
@@ -231,7 +231,7 @@ export const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employee
     }
   };
 
-  // خيارات ثابتة لمقدار الجزاء (الحد الأقصى ٣ أيام أو ٨ ساعات)
+  // خيارات ثابتة لمقدار الجزاء (الحد الأقصى 3 أيام أو 8 ساعات)
   const penaltyPresets =
     form.penalty_type === 'days'
       ? [
@@ -239,13 +239,13 @@ export const PenaltiesPanel: React.FC<{ employees: HREmployee[] }> = ({ employee
           { value: '0.5', label: 'نصف يوم' },
           { value: '1', label: 'يوم' },
           { value: '2', label: 'يومان' },
-          { value: '3', label: '٣ أيام' }
+          { value: '3', label: '3 أيام' }
         ]
       : [
           { value: '1', label: 'ساعة' },
           { value: '2', label: 'ساعتان' },
-          { value: '3', label: '٣ ساعات' },
-          { value: '4', label: '٤ ساعات' }
+          { value: '3', label: '3 ساعات' },
+          { value: '4', label: '4 ساعات' }
         ];
 
   return (

@@ -1,4 +1,5 @@
 import { api } from '../api/client';
+import { toLatinDigits } from './latinDigits';
 
 /**
  * محرك الطباعة الموحد (Unified A4 Print Engine):
@@ -91,17 +92,19 @@ export const getCurrentPrintUserName = (fallback = 'النظام'): string => {
   }
 };
 
-/** يُنسّق تاريخ ووقت الطباعة بشكل موحد وواضح بالعربية. */
+/** يُنسّق تاريخ ووقت الطباعة بشكل موحد وواضح بأرقام إنجليزية. */
 export const formatPrintDateTime = (date: Date = new Date()): string => {
   try {
-    return date.toLocaleString('ar-EG', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    });
+    return toLatinDigits(
+      date.toLocaleString('ar-EG-u-nu-latn', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      })
+    );
   } catch {
     return date.toISOString().slice(0, 16).replace('T', ' ');
   }

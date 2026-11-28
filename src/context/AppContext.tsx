@@ -611,7 +611,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         targetName: options?.targetName || '',
         details,
         ip_address: '',
-        timestamp: new Date().toLocaleString('ar-EG', { hour12: false })
+        timestamp: new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false })
       };
       setAuditLogs((prev) => [newLog, ...prev.slice(0, 200)]);
 
@@ -727,7 +727,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newEvent: ModelTimelineEvent = {
       ...event,
       id: 'tl-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
-      timestamp: new Date().toLocaleString('ar-EG', { hour12: false })
+      timestamp: new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false })
     };
     setModels((prev) =>
       prev.map((m) => {
@@ -788,7 +788,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       receiver_id: receiver.id,
       receiver_name: receiver.real_name,
       content: content.trim(),
-      created_at: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+      created_at: new Date().toLocaleTimeString('ar-EG-u-nu-latn', { hour: '2-digit', minute: '2-digit' }),
       is_read: false
     };
 

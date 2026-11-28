@@ -37,12 +37,12 @@ export interface AssemblyProductionSheetOptions {
 
 const fmtInt = (val: unknown): string => {
   const num = Number(val || 0);
-  return Math.round(Number.isFinite(num) ? num : 0).toLocaleString('ar-EG');
+  return Math.round(Number.isFinite(num) ? num : 0).toLocaleString('en-US');
 };
 
 const fmtQty = (val: unknown): string => {
   const num = Number(val || 0);
-  return (Number.isFinite(num) ? Number(num.toFixed(3)) : 0).toLocaleString('ar-EG', {
+  return (Number.isFinite(num) ? Number(num.toFixed(3)) : 0).toLocaleString('en-US', {
     maximumFractionDigits: 3
   });
 };

@@ -206,7 +206,7 @@ export const printManualCountSheet = (options: ManualCountSheetOptions): void =>
     useLandscape
   );
   const thumbPx = useLandscape ? 92 : 114;
-  const today = new Date().toLocaleDateString('ar-EG');
+  const today = new Date().toLocaleDateString('ar-EG-u-nu-latn');
 
   const partSections = normalizedParts
     .map((part) => {
@@ -352,7 +352,7 @@ export const printQCWorkerMatrixSheet = (options: QCWorkerMatrixSheetOptions): v
   const totalColorsCount = parts.reduce((sum, p) => sum + (p.colors?.length || 0), 0);
   const useLandscape = sizes.length > 5 || (parts.length > 1 && totalColorsCount > 6);
   const thumbPx = useLandscape ? 88 : 110;
-  const today = new Date().toLocaleDateString('ar-EG');
+  const today = new Date().toLocaleDateString('ar-EG-u-nu-latn');
 
   const partTablesHtml = parts
     .map((part) => {
@@ -384,9 +384,9 @@ export const printQCWorkerMatrixSheet = (options: QCWorkerMatrixSheetOptions): v
               return `<tr>
                 <td class="text-right"><strong>${escapeHtml(col)}</strong></td>
                 ${sizeCells}
-                <td class="num ok">${rGood > 0 ? rGood.toLocaleString('ar-EG') : '—'}</td>
+                <td class="num ok">${rGood > 0 ? rGood.toLocaleString('en-US') : '—'}</td>
                 <td class="num ${rDef > 0 ? 'bad' : 'muted'}">${
-                  rDef > 0 ? rDef.toLocaleString('ar-EG') : '—'
+                  rDef > 0 ? rDef.toLocaleString('en-US') : '—'
                 }</td>
               </tr>`;
             })
@@ -394,7 +394,7 @@ export const printQCWorkerMatrixSheet = (options: QCWorkerMatrixSheetOptions): v
         : `<tr><td colspan="${sizes.length + 3}" class="muted">لا توجد ألوان مسجلة لهذه القطعة</td></tr>`;
 
       return `<div class="part-wrap">
-        <div class="p-sec">القطعة: ${escapeHtml(getPartLabel(part.key))} — الإجمالي (سليم: ${partGoodTotal.toLocaleString('ar-EG')} | هالك: ${partDefTotal.toLocaleString('ar-EG')})</div>
+        <div class="p-sec">القطعة: ${escapeHtml(getPartLabel(part.key))} — الإجمالي (سليم: ${partGoodTotal.toLocaleString('en-US')} | هالك: ${partDefTotal.toLocaleString('en-US')})</div>
         <table class="qc-sheet-table">
           <thead>
             <tr>
@@ -410,8 +410,8 @@ export const printQCWorkerMatrixSheet = (options: QCWorkerMatrixSheetOptions): v
           <tfoot>
             <tr class="total">
               <td class="text-right" colspan="${sizes.length + 1}">إجمالي ${escapeHtml(getPartLabel(part.key))}</td>
-              <td class="num ok">${partGoodTotal.toLocaleString('ar-EG')}</td>
-              <td class="num ${partDefTotal > 0 ? 'bad' : ''}">${partDefTotal.toLocaleString('ar-EG')}</td>
+              <td class="num ok">${partGoodTotal.toLocaleString('en-US')}</td>
+              <td class="num ${partDefTotal > 0 ? 'bad' : ''}">${partDefTotal.toLocaleString('en-US')}</td>
             </tr>
           </tfoot>
         </table>

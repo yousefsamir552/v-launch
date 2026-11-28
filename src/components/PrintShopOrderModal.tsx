@@ -238,7 +238,7 @@ export const PrintShopOrderModal: React.FC<PrintShopOrderModalProps> = ({
                 <Field label="مكان الطباعة" value={dispatch.print_location || '—'} />
                 <Field
                   label="عدد القطع المسلمة"
-                  value={`${Number(dispatch.pieces_count || 0).toLocaleString('ar-EG')} قطعة`}
+                  value={`${Number(dispatch.pieces_count || 0).toLocaleString('en-US')} قطعة`}
                 />
                 <Field label="تاريخ التسليم للمطبعة" value={dispatch.dispatched_at || '—'} />
                 <Field

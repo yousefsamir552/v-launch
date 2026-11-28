@@ -49,12 +49,12 @@ export interface UnifiedModelCardPrintOptions {
 
 const fmtInt = (val: unknown): string => {
   const n = Number(val || 0);
-  return Math.round(Number.isFinite(n) ? n : 0).toLocaleString('ar-EG');
+  return Math.round(Number.isFinite(n) ? n : 0).toLocaleString('en-US');
 };
 
 const fmtNum = (val: unknown): string => {
   const n = Number(val || 0);
-  return (Number.isFinite(n) ? Number(n.toFixed(2)) : 0).toLocaleString('ar-EG', {
+  return (Number.isFinite(n) ? Number(n.toFixed(2)) : 0).toLocaleString('en-US', {
     maximumFractionDigits: 2
   });
 };
@@ -139,17 +139,17 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
     ? printDispatches
         .map((d) => {
           const sent = Number(d.pieces_count || 0);
-          const rec =
-            d.status === 'تم الاستلام بالمصنع'
-              ? Number(d.received_pieces ?? sent)
-              : Number(d.received_pieces || 0);
-          const shortage = Math.max(0, sent - rec);
+          const isFinalReceived = d.status === 'تم الاستلام بالمصنع';
+          const rec = isFinalReceived
+            ? Number(d.received_pieces ?? sent)
+            : Number(d.received_pieces || 0);
+          const shortage = isFinalReceived ? Math.max(0, sent - rec) : null;
           return `<tr>
             <td><strong>${escapeHtml(d.piece_label || getPartLabel(d.piece_type || 'shirt'))}</strong></td>
             <td>${escapeHtml(d.shop_name || '—')}</td>
             <td class="num">${fmtInt(sent)}</td>
             <td class="num">${fmtInt(rec)}</td>
-            <td class="num ${shortage > 0 ? 'bad' : 'ok'}">${fmtInt(shortage)}</td>
+            <td class="num ${shortage === null ? 'muted' : shortage > 0 ? 'bad' : 'ok'}">${shortage === null ? '—' : fmtInt(shortage)}</td>
             <td class="num">${fmtDate(d.dispatched_at)}</td>
             <td class="num">${fmtDate(d.received_at || d.expected_delivery_date)}</td>
             <td>${escapeHtml(d.status)}</td>
@@ -163,17 +163,17 @@ export const printUnifiedModelCard = (opts: UnifiedModelCardPrintOptions): void 
     ? sewingDispatches
         .map((d) => {
           const sent = Number(d.pieces_count || 0);
-          const rec =
-            d.status === 'تم الاستلام'
-              ? Number(d.received_pieces ?? sent)
-              : Number(d.received_pieces || 0);
-          const shortage = Math.max(0, sent - rec);
+          const isFinalReceived = d.status === 'تم الاستلام';
+          const rec = isFinalReceived
+            ? Number(d.received_pieces ?? sent)
+            : Number(d.received_pieces || 0);
+          const shortage = isFinalReceived ? Math.max(0, sent - rec) : null;
           return `<tr>
             <td><strong>${escapeHtml(d.piece_label || getPartLabel(d.piece_type || 'shirt'))}</strong></td>
             <td>${escapeHtml(d.workshop_name || '—')}</td>
             <td class="num">${fmtInt(sent)}</td>
             <td class="num">${fmtInt(rec)}</td>
-            <td class="num ${shortage > 0 ? 'bad' : 'ok'}">${fmtInt(shortage)}</td>
+            <td class="num ${shortage === null ? 'muted' : shortage > 0 ? 'bad' : 'ok'}">${shortage === null ? '—' : fmtInt(shortage)}</td>
             <td class="num">${fmtDate(d.dispatched_at)}</td>
             <td class="num">${fmtDate(d.received_at || d.expected_delivery_date)}</td>
             <td>${escapeHtml(d.status)}</td>

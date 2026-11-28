@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { toLatinDigits } from '../utils/latinDigits';
 import { useApp } from '../context/AppContext';
 import {
   CheckCircle,
@@ -174,7 +175,7 @@ export const QCView: React.FC = () => {
     });
 
   const currentTabCards = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const list = getPartCardsForStage(activeTab).filter(({ model, part }) => {
       if (!q) return true;
       const ws = resolveQCStageWorkshopSummary({
@@ -214,7 +215,7 @@ export const QCView: React.FC = () => {
   };
 
   const endedTabCards = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const list = getEndedPartCards(activeTab).filter(({ model, part }) => {
       if (!q) return true;
       const ws = resolveQCStageWorkshopSummary({
@@ -639,9 +640,9 @@ export const QCView: React.FC = () => {
         const deficitHtml =
           actual > 0
             ? deficit > 0
-              ? `<span class="bad">${deficit.toLocaleString('ar-EG')} (عجز)</span>`
+              ? `<span class="bad">${deficit.toLocaleString('en-US')} (عجز)</span>`
               : deficit < 0
-              ? `<span class="warn">${Math.abs(deficit).toLocaleString('ar-EG')} (زيادة)</span>`
+              ? `<span class="warn">${Math.abs(deficit).toLocaleString('en-US')} (زيادة)</span>`
               : '<span class="ok">مطابق (0)</span>'
             : '—';
         const note = model.design_notes || model.notes_shirt || model.notes_pants || '—';
@@ -652,10 +653,10 @@ export const QCView: React.FC = () => {
           <td><strong>${escapeHtml(getPartLabel(part))}</strong></td>
           <td>${escapeHtml(model.model_type || '—')}</td>
           <td>${escapeHtml(model.cutter_name || '—')}</td>
-          <td class="num">${stageEntry.toLocaleString('ar-EG')}</td>
-          <td class="num"><strong>${cut.toLocaleString('ar-EG')}</strong></td>
-          <td class="num ok">${actual > 0 ? actual.toLocaleString('ar-EG') : 'قيد العد'}</td>
-          <td class="num ${stageDefects > 0 ? 'bad' : 'muted'}">${stageDefects.toLocaleString('ar-EG')}</td>
+          <td class="num">${stageEntry.toLocaleString('en-US')}</td>
+          <td class="num"><strong>${cut.toLocaleString('en-US')}</strong></td>
+          <td class="num ok">${actual > 0 ? actual.toLocaleString('en-US') : 'قيد العد'}</td>
+          <td class="num ${stageDefects > 0 ? 'bad' : 'muted'}">${stageDefects.toLocaleString('en-US')}</td>
           <td class="num">${deficitHtml}</td>
           <td class="text-right">${escapeHtml(note)}</td>
         </tr>`;
@@ -695,7 +696,7 @@ export const QCView: React.FC = () => {
         logo: globalSettings?.logo,
         title: `تقرير تدقيق ومطابقة مرحلة الفرز: ${bannerStage}`,
         subtitle: 'كشف تفصيلي (الداخل للمرحلة، المقصوص، السليم، التالف، والعجز)',
-        metaItems: [`عدد قطع الفرز: ${currentTabCards.length.toLocaleString('ar-EG')}`]
+        metaItems: [`عدد قطع الفرز: ${currentTabCards.length.toLocaleString('en-US')}`]
       },
       bodyHtml,
       extraCss: QC_STAGE_BANNER_CSS,
@@ -1043,7 +1044,7 @@ export const QCView: React.FC = () => {
                       <div className="flex justify-between items-center text-slate-600">
                         <span>المقصوص لهذه القطعة:</span>
                         <strong className="text-purple-700 font-extrabold">
-                          {counts.cutPieces.toLocaleString('ar-EG')} ق
+                          {counts.cutPieces.toLocaleString('en-US')} ق
                         </strong>
                       </div>
 
@@ -1051,7 +1052,7 @@ export const QCView: React.FC = () => {
                         <div className="flex justify-between items-center text-slate-600">
                           <span>المستهدف (الموديل):</span>
                           <strong className="text-slate-900">
-                            {counts.targetPieces.toLocaleString('ar-EG')} ق
+                            {counts.targetPieces.toLocaleString('en-US')} ق
                           </strong>
                         </div>
                       )}
@@ -1061,13 +1062,13 @@ export const QCView: React.FC = () => {
                           <div className="flex justify-between items-center text-slate-600">
                             <span>السليم قبل الطباعة:</span>
                             <strong className="text-blue-700 font-bold">
-                              {counts.beforePrintGood.toLocaleString('ar-EG')} ق
+                              {counts.beforePrintGood.toLocaleString('en-US')} ق
                             </strong>
                           </div>
                           <div className="flex justify-between items-center text-slate-600">
                             <span>الداخل من الطباعة/التطريز:</span>
                             <strong className="text-indigo-700 font-bold">
-                              {(counts.printReceived + counts.embroideryReceived).toLocaleString('ar-EG')} ق
+                              {(counts.printReceived + counts.embroideryReceived).toLocaleString('en-US')} ق
                             </strong>
                           </div>
                         </>
@@ -1078,13 +1079,13 @@ export const QCView: React.FC = () => {
                           <div className="flex justify-between items-center text-slate-600">
                             <span>المسلّم للمكن:</span>
                             <strong className="text-amber-700 font-bold">
-                              {counts.sewingSent.toLocaleString('ar-EG')} ق
+                              {counts.sewingSent.toLocaleString('en-US')} ق
                             </strong>
                           </div>
                           <div className="flex justify-between items-center text-slate-600">
                             <span>الداخل من المكن:</span>
                             <strong className="text-emerald-700 font-bold">
-                              {counts.sewingReceived.toLocaleString('ar-EG')} ق
+                              {counts.sewingReceived.toLocaleString('en-US')} ق
                             </strong>
                           </div>
                         </>
@@ -1107,7 +1108,7 @@ export const QCView: React.FC = () => {
                         >
                           <span>{stageLoss > 0 ? 'فاقد هذه المرحلة:' : 'مطابق تماماً (لا فاقد):'}</span>
                           <strong className="font-black">
-                            {stageLoss.toLocaleString('ar-EG')} ق
+                            {stageLoss.toLocaleString('en-US')} ق
                           </strong>
                         </div>
                       )}
@@ -1303,7 +1304,7 @@ export const QCView: React.FC = () => {
                 ))}
                 <span className="text-[11px] font-bold text-purple-600 ms-auto">
                   العدد المتاح للقطعة:{' '}
-                  {Number(countingModel?.sewing_available?.[modalPart] ?? countingModel?.cut_summary?.[modalPart] ?? 0).toLocaleString('ar-EG')} قطعة
+                  {Number(countingModel?.sewing_available?.[modalPart] ?? countingModel?.cut_summary?.[modalPart] ?? 0).toLocaleString('en-US')} قطعة
                 </span>
               </div>
             )}
@@ -1348,7 +1349,7 @@ export const QCView: React.FC = () => {
                     المقصوص الفعلي ({getPartLabel(modalPart)}):
                   </span>
                   <strong className="text-slate-900 text-sm font-black">
-                    {(modalCounts?.cutPieces || 0).toLocaleString('ar-EG')} قطعة
+                    {(modalCounts?.cutPieces || 0).toLocaleString('en-US')} قطعة
                   </strong>
                 </div>
 
@@ -1356,7 +1357,7 @@ export const QCView: React.FC = () => {
                   <div>
                     <span className="text-slate-500 block">المستهدف (الموديل):</span>
                     <strong className="text-slate-800 text-sm font-black">
-                      {(countingModel.target_cut_quantity || 0).toLocaleString('ar-EG')} قطعة
+                      {(countingModel.target_cut_quantity || 0).toLocaleString('en-US')} قطعة
                     </strong>
                   </div>
                 )}
@@ -1368,7 +1369,7 @@ export const QCView: React.FC = () => {
                         السليم قبل الطباعة ({getPartLabel(modalPart)}):
                       </span>
                       <strong className="text-blue-700 text-sm font-black">
-                        {(modalCounts?.beforePrintGood || 0).toLocaleString('ar-EG')} قطعة
+                        {(modalCounts?.beforePrintGood || 0).toLocaleString('en-US')} قطعة
                       </strong>
                     </div>
                     <div>
@@ -1377,14 +1378,14 @@ export const QCView: React.FC = () => {
                         {(
                           (modalCounts?.printReceived || 0) +
                           (modalCounts?.embroideryReceived || 0)
-                        ).toLocaleString('ar-EG')}{' '}
+                        ).toLocaleString('en-US')}{' '}
                         قطعة
                       </strong>
                       <span className="block text-[10px] text-slate-400">
                         مرسل: {(
                           (modalCounts?.printSent || 0) +
                           (modalCounts?.embroiderySent || 0)
-                        ).toLocaleString('ar-EG')}
+                        ).toLocaleString('en-US')}
                       </span>
                     </div>
                   </>
@@ -1395,13 +1396,13 @@ export const QCView: React.FC = () => {
                     <div>
                       <span className="text-slate-500 block">المسلّم للمكن:</span>
                       <strong className="text-amber-700 text-sm font-black">
-                        {(modalCounts?.sewingSent || 0).toLocaleString('ar-EG')} قطعة
+                        {(modalCounts?.sewingSent || 0).toLocaleString('en-US')} قطعة
                       </strong>
                     </div>
                     <div>
                       <span className="text-slate-500 block">الداخل من المكن:</span>
                       <strong className="text-emerald-700 text-sm font-black">
-                        {(modalCounts?.sewingReceived || 0).toLocaleString('ar-EG')} قطعة
+                        {(modalCounts?.sewingReceived || 0).toLocaleString('en-US')} قطعة
                       </strong>
                     </div>
                   </>
@@ -1410,13 +1411,13 @@ export const QCView: React.FC = () => {
                 <div className="bg-emerald-50/90 border border-emerald-200 rounded-xl px-3 py-1.5">
                   <span className="text-emerald-700 font-bold block">إجمالي السليم بالجدول:</span>
                   <strong className="text-emerald-900 text-base font-black">
-                    {modalTotalGood.toLocaleString('ar-EG')} قطعة
+                    {modalTotalGood.toLocaleString('en-US')} قطعة
                   </strong>
                 </div>
                 <div className="bg-rose-50/90 border border-rose-200 rounded-xl px-3 py-1.5">
                   <span className="text-rose-700 font-bold block">إجمالي التالف (الهالك):</span>
                   <strong className="text-rose-900 text-base font-black">
-                    {modalTotalDefect.toLocaleString('ar-EG')} قطعة
+                    {modalTotalDefect.toLocaleString('en-US')} قطعة
                   </strong>
                 </div>
               </div>
@@ -1620,7 +1621,7 @@ export const QCView: React.FC = () => {
                         : '✅ إجمالي السليم بالجدول مطابق للمقصوص تماماً:'}
                     </span>
                     <strong className="text-sm font-black">
-                      {Math.abs(deficit).toLocaleString('ar-EG')} قطعة{' '}
+                      {Math.abs(deficit).toLocaleString('en-US')} قطعة{' '}
                       {deficit > 0 ? 'عجز / هالك' : deficit < 0 ? 'زيادة' : ''}
                     </strong>
                   </div>
@@ -1796,7 +1797,7 @@ export const QCView: React.FC = () => {
                   تقرير تدقيق ومطابقة مرحلة الفرز: {getStageTitle(activeTab)}
                 </h2>
                 <div className="text-xs text-slate-500 mt-1 flex justify-center gap-6">
-                  <span>تاريخ التقرير: {new Date().toLocaleDateString('ar-EG')}</span>
+                  <span>تاريخ التقرير: {new Date().toLocaleDateString('ar-EG-u-nu-latn')}</span>
                   <span>عدد قطع الفرز: {currentTabCards.length}</span>
                 </div>
               </div>
@@ -1883,28 +1884,28 @@ export const QCView: React.FC = () => {
                           {model.cutter_name || '-'}
                         </td>
                         <td className="py-2 px-3 text-center text-slate-600">
-                          {stageEntry.toLocaleString('ar-EG')}
+                          {stageEntry.toLocaleString('en-US')}
                         </td>
                         <td className="py-2 px-3 text-center font-bold text-slate-900">
-                          {cut.toLocaleString('ar-EG')}
+                          {cut.toLocaleString('en-US')}
                         </td>
                         <td className="py-2 px-3 text-center font-extrabold text-emerald-700">
-                          {actual > 0 ? actual.toLocaleString('ar-EG') : 'قيد العد'}
+                          {actual > 0 ? actual.toLocaleString('en-US') : 'قيد العد'}
                         </td>
                         <td className="py-2 px-3 text-center font-bold text-rose-600">
                           {stageDefects > 0
-                            ? stageDefects.toLocaleString('ar-EG')
+                            ? stageDefects.toLocaleString('en-US')
                             : '0'}
                         </td>
                         <td className="py-2 px-3 text-center">
                           {actual > 0 ? (
                             deficit > 0 ? (
                               <span className="font-black text-red-600">
-                                {deficit.toLocaleString('ar-EG')} (عجز)
+                                {deficit.toLocaleString('en-US')} (عجز)
                               </span>
                             ) : deficit < 0 ? (
                               <span className="font-bold text-blue-600">
-                                {Math.abs(deficit).toLocaleString('ar-EG')} (زيادة)
+                                {Math.abs(deficit).toLocaleString('en-US')} (زيادة)
                               </span>
                             ) : (
                               <span className="font-bold text-emerald-600">

@@ -94,7 +94,7 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
   }): Promise<boolean> => {
     const targetModel = models.find((m) => m.id === data.modelId);
     const dispId = data.clientId || makeIdempotentRequestId('disp');
-    const dispatchedAt = new Date().toLocaleString('ar-EG', { hour12: false });
+    const dispatchedAt = new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false });
     const cleanNotes = canAddPrintingNotes() || canAddQCBeforePrintNotes() ? (data.notes?.trim() || '') : '';
     const pieceType = data.pieceType || 'shirt';
     const pieceLabel = (data.pieceLabel || '').trim() || getPartLabel(pieceType);
@@ -221,7 +221,7 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
         ? 'تم الاستلام بالمصنع'
         : 'استلام جزئي'
       : status;
-    const nowStr = new Date().toLocaleString('ar-EG', { hour12: false });
+    const nowStr = new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false });
 
     setPrintDispatches((prev) =>
       prev.map((d) => {
@@ -368,7 +368,7 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
       piece_label: resolvedLabel,
       workshop_name: data.workshopName.trim(),
       pieces_count: Math.max(0, data.piecesCount),
-      dispatched_at: new Date().toLocaleString('ar-EG', { hour12: false }),
+      dispatched_at: new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false }),
       expected_delivery_date: data.expectedDeliveryDate,
       status: 'في ورشة المكن',
       notes: cleanNotes,
@@ -475,7 +475,7 @@ export const buildPrintSewingActions = (ctx: AppInternalContext) => {
     const newReceived = Math.min(totalPieces, alreadyReceived + batchQty);
     const isComplete = isQuick || newReceived >= totalPieces;
     const resolvedStatus: SewingDispatchStatus = isComplete ? 'تم الاستلام' : 'استلام جزئي';
-    const nowStr = new Date().toLocaleString('ar-EG', { hour12: false });
+    const nowStr = new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false });
 
     const updatedDispatches = sewingDispatches.map((d) => {
       if (d.id !== dispatchId) return d;

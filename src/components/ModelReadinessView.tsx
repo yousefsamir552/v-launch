@@ -33,6 +33,7 @@ import { finishedSetsOf, photographyOutstandingOf, stageRank } from '../utils/co
 import { QCPartStageCounts, qcPartStageCounts } from '../utils/qcStageCounts';
 import { ZoomableImage } from './ZoomableImage';
 import { exportCsv, datedFileName, CsvValue } from '../utils/exportExcel';
+import { toLatinDigits } from '../utils/latinDigits';
 import {
   escapeHtml,
   logClientPrintAction,
@@ -771,7 +772,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
 
   // Apply Search, Smart Filters & Sort By
   const filteredItems = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = toLatinDigits(searchQuery).trim().toLowerCase();
     const list = bucketItems.filter((item) => {
       if (genderFilter !== 'all' && item.gender !== genderFilter) return false;
       if (sizeCategoryFilter !== 'all' && (item.model.size_category_id || '') !== sizeCategoryFilter) {
@@ -960,7 +961,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
         const lines = details
           .map((d) => {
             const label = escapeHtml(getPartLabel(d.part));
-            const qtyTxt = d.qty.toLocaleString('ar-EG');
+            const qtyTxt = d.qty.toLocaleString('en-US');
             const extraStage = isPrintCompleted
               ? ` <span class="part-tag-other">${escapeHtml(describeOtherPartLocation(d))}</span>`
               : '';
@@ -980,7 +981,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
           const label = escapeHtml(getPartLabel(d.part));
           if (d.isInCurrentBucket) {
             return `<div class="part-line part-active"><strong>${label}:</strong> <span class="num">${d.qty.toLocaleString(
-              'ar-EG'
+              'en-US'
             )}</span> <span class="part-tag-active${badgeToneClass}">(${escapeHtml(
               activeLabel
             )})</span></div>`;
@@ -1014,7 +1015,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
               anyShortage = true;
               lines.push(
                 `<div class="bad">${escapeHtml(getPartLabel(d.part))}: -${shortage.toLocaleString(
-                  'ar-EG'
+                  'en-US'
                 )} ق</div>`
               );
             } else {
@@ -1068,7 +1069,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
             anyShortage = true;
             lines.push(
               `<div class="bad">عجز ${escapeHtml(getPartLabel(d.part))}: ${shortage.toLocaleString(
-                'ar-EG'
+                'en-US'
               )} ق</div>`
             );
           } else {
@@ -1087,13 +1088,13 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
       if (!it.hasIssue) return '<span class="muted">—</span>';
       const issueBits: string[] = [];
       if (it.totalDefects > 0) {
-        issueBits.push(`${it.totalDefects.toLocaleString('ar-EG')} تالف`);
+        issueBits.push(`${it.totalDefects.toLocaleString('en-US')} تالف`);
       }
       if (it.destShortage > 0) {
-        issueBits.push(`${it.destShortage.toLocaleString('ar-EG')} عجز`);
+        issueBits.push(`${it.destShortage.toLocaleString('en-US')} عجز`);
       }
       if (it.photoShortage > 0) {
-        issueBits.push(`${it.photoShortage.toLocaleString('ar-EG')} تصوير`);
+        issueBits.push(`${it.photoShortage.toLocaleString('en-US')} تصوير`);
       }
       return `<span class="bad">${issueBits.join(' • ') || '—'}</span>`;
     };
@@ -1130,7 +1131,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
           <td>${escapeHtml(genderLabel(it.gender))}</td>
           <td>${escapeHtml(it.sizeCategoryName)}</td>
           <td class="text-right">${partsHtml}</td>
-          <td class="num"><strong>${it.totalPieces.toLocaleString('ar-EG')}</strong></td>
+          <td class="num"><strong>${it.totalPieces.toLocaleString('en-US')}</strong></td>
           <td>${escapeHtml(it.sizes.join(' - ') || '—')}</td>
           <td>${photoTxt}</td>
           ${defectsTd}
@@ -1141,10 +1142,10 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
 
     const bodyHtml = `
       <div class="p-kpis">
-        <div class="p-kpi"><span class="p-kpi-label">إجمالي الموديلات</span><span class="p-kpi-val">${kpis.totalModels.toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">ولادي</span><span class="p-kpi-val">${kpis.boys.toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">بناتي</span><span class="p-kpi-val">${kpis.girls.toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">إجمالي القطع / الأطقم</span><span class="p-kpi-val ok">${kpis.totalPieces.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الموديلات</span><span class="p-kpi-val">${kpis.totalModels.toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">ولادي</span><span class="p-kpi-val">${kpis.boys.toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">بناتي</span><span class="p-kpi-val">${kpis.girls.toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي القطع / الأطقم</span><span class="p-kpi-val ok">${kpis.totalPieces.toLocaleString('en-US')}</span></div>
       </div>
       <table class="rd-table">
         <thead>
@@ -1177,8 +1178,8 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
         title: `${cfg.fullTitle} — ${bucketLabel}`,
         subtitle: `المرحلة السابقة: ${cfg.precedingLabel}`,
         metaItems: [
-          `عدد الموديلات: ${kpis.totalModels.toLocaleString('ar-EG')}`,
-          `إجمالي القطع: ${kpis.totalPieces.toLocaleString('ar-EG')}`
+          `عدد الموديلات: ${kpis.totalModels.toLocaleString('en-US')}`,
+          `إجمالي القطع: ${kpis.totalPieces.toLocaleString('en-US')}`
         ]
       },
       bodyHtml,
@@ -1410,7 +1411,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
           <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5">
             <span className="text-[11px] font-bold text-slate-500 block">إجمالي الموديلات</span>
             <strong className="text-2xl font-black text-slate-900 font-mono">
-              {kpis.totalModels.toLocaleString('ar-EG')}
+              {kpis.totalModels.toLocaleString('en-US')}
             </strong>
             <span className="text-[10px] font-bold text-slate-400 block mt-0.5">{bucketLabel}</span>
           </div>
@@ -1418,7 +1419,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
           <div className="rounded-2xl border border-blue-200/80 bg-blue-50/50 p-3.5">
             <span className="text-[11px] font-bold text-blue-700 block">موديلات ولادي</span>
             <strong className="text-2xl font-black text-blue-900 font-mono">
-              {kpis.boys.toLocaleString('ar-EG')}
+              {kpis.boys.toLocaleString('en-US')}
             </strong>
             <span className="text-[10px] font-bold text-blue-600/80 block mt-0.5">
               {kpis.totalModels > 0 ? `${Math.round((kpis.boys / kpis.totalModels) * 100)}%` : '0%'}
@@ -1428,7 +1429,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
           <div className="rounded-2xl border border-pink-200/80 bg-pink-50/50 p-3.5">
             <span className="text-[11px] font-bold text-pink-700 block">موديلات بناتي</span>
             <strong className="text-2xl font-black text-pink-900 font-mono">
-              {kpis.girls.toLocaleString('ar-EG')}
+              {kpis.girls.toLocaleString('en-US')}
             </strong>
             <span className="text-[10px] font-bold text-pink-600/80 block mt-0.5">
               {kpis.other > 0
@@ -1444,11 +1445,11 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
               {stage === 'packaging' || stage === 'dest' ? 'إجمالي الأطقم التامة' : 'إجمالي القطع المتاحة'}
             </span>
             <strong className="text-2xl font-black text-emerald-900 font-mono">
-              {kpis.totalPieces.toLocaleString('ar-EG')}
+              {kpis.totalPieces.toLocaleString('en-US')}
             </strong>
             {stage !== 'packaging' && stage !== 'dest' && (
               <span className="text-[10px] font-bold text-emerald-700/80 block mt-0.5">
-                أطقم تقريبية: {kpis.totalSets.toLocaleString('ar-EG')}
+                أطقم تقريبية: {kpis.totalSets.toLocaleString('en-US')}
               </span>
             )}
           </div>
@@ -1647,7 +1648,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
                         : 'الكمية المتاحة للمرحلة'}
                     </span>
                     <strong className="font-mono font-black text-slate-900 text-sm">
-                      {item.totalPieces.toLocaleString('ar-EG')}{' '}
+                      {item.totalPieces.toLocaleString('en-US')}{' '}
                       <span className="text-[10px] font-bold text-slate-500">
                         {stage === 'packaging' || stage === 'dest' ? 'طقم' : 'قطعة'}
                       </span>
@@ -1668,7 +1669,7 @@ export const ModelReadinessView: React.FC<ModelReadinessViewProps> = ({ stage, o
                         >
                           <span>{PART_EMOJI[part]}</span>
                           <span>{getPartLabel(part)}:</span>
-                          <strong className="font-mono">{qty.toLocaleString('ar-EG')}</strong>
+                          <strong className="font-mono">{qty.toLocaleString('en-US')}</strong>
                         </span>
                       );
                     })}

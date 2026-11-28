@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { toLatinDigits } from '../utils/latinDigits';
 import { useApp } from '../context/AppContext';
 import { api } from '../api/client';
 import {
@@ -192,7 +193,7 @@ export const PurchaseRequestsView: React.FC = () => {
     [accessoryShortages]
   );
 
-  const q = searchQuery.trim().toLowerCase();
+  const q = toLatinDigits(searchQuery).trim().toLowerCase();
 
   const matchesRequestSearch = (r: PurchaseRequest): boolean => {
     if (categoryFilter !== 'all' && (r.category || 'أخرى') !== categoryFilter) return false;
@@ -466,9 +467,9 @@ export const PurchaseRequestsView: React.FC = () => {
             }</td>
             <td class="text-right"><strong>${escapeHtml(r.item_name)}</strong></td>
             <td>${escapeHtml(r.category || 'أخرى')}</td>
-            <td class="num"><strong>${Number(r.quantity || 0).toLocaleString('ar-EG')} ${escapeHtml(r.unit || 'قطعة')}</strong></td>
+            <td class="num"><strong>${Number(r.quantity || 0).toLocaleString('en-US')} ${escapeHtml(r.unit || 'قطعة')}</strong></td>
             <td>${escapeHtml(r.model_code || r.model_code_text || '—')}</td>
-            <td class="num ok"><strong>${Number(r.purchased_price || 0).toLocaleString('ar-EG')} ج.م</strong></td>
+            <td class="num ok"><strong>${Number(r.purchased_price || 0).toLocaleString('en-US')} ج.م</strong></td>
             <td class="text-right">${escapeHtml(r.supplier_name || '—')}</td>
             <td class="mono">${escapeHtml(r.purchased_at || '—')}</td>
             <td>${escapeHtml(r.purchased_by || '—')}</td>
@@ -479,8 +480,8 @@ export const PurchaseRequestsView: React.FC = () => {
 
       const bodyHtml = `
         <div class="p-kpis">
-          <div class="p-kpi"><span class="p-kpi-label">عدد الطلبات المشتراة</span><span class="p-kpi-val">${filteredPurchasedRequests.length.toLocaleString('ar-EG')}</span></div>
-          <div class="p-kpi"><span class="p-kpi-label">إجمالي قيمة المشتريات</span><span class="p-kpi-val ok">${Math.round(totalSpentHistory).toLocaleString('ar-EG')} ج.م</span></div>
+          <div class="p-kpi"><span class="p-kpi-label">عدد الطلبات المشتراة</span><span class="p-kpi-val">${filteredPurchasedRequests.length.toLocaleString('en-US')}</span></div>
+          <div class="p-kpi"><span class="p-kpi-label">إجمالي قيمة المشتريات</span><span class="p-kpi-val ok">${Math.round(totalSpentHistory).toLocaleString('en-US')} ج.م</span></div>
         </div>
         <table>
           <thead>
@@ -512,7 +513,7 @@ export const PurchaseRequestsView: React.FC = () => {
           logo: globalSettings?.logo,
           title: 'سجل طلبات الشراء السابقة (المشتريات المنفذة)',
           subtitle: 'كشف مفصّل بالأصناف المشتراة والأسعار الفعلية والموردين وتواريخ التنفيذ',
-          metaItems: [`إجمالي السجلات: ${filteredPurchasedRequests.length.toLocaleString('ar-EG')}`]
+          metaItems: [`إجمالي السجلات: ${filteredPurchasedRequests.length.toLocaleString('en-US')}`]
         },
         bodyHtml,
         extraCss: `
@@ -543,7 +544,7 @@ export const PurchaseRequestsView: React.FC = () => {
           }</td>
           <td class="text-right"><strong>${escapeHtml(r.item_name)}</strong></td>
           <td>${escapeHtml(r.category || 'أخرى')}</td>
-          <td class="num bad"><strong>${Number(r.quantity || 0).toLocaleString('ar-EG')} ${escapeHtml(r.unit || 'قطعة')}</strong></td>
+          <td class="num bad"><strong>${Number(r.quantity || 0).toLocaleString('en-US')} ${escapeHtml(r.unit || 'قطعة')}</strong></td>
           <td>${escapeHtml(r.model_code || r.model_code_text || '—')}</td>
           <td>${escapeHtml(r.created_by || '—')}</td>
           <td class="mono">${escapeHtml(r.created_at || '—')}</td>
@@ -575,8 +576,8 @@ export const PurchaseRequestsView: React.FC = () => {
 
     const bodyHtml = `
       <div class="p-kpis">
-        <div class="p-kpi"><span class="p-kpi-label">طلبات شراء مسجلة</span><span class="p-kpi-val warn">${filteredPendingRequests.length.toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">نواقص إكسسوارات تلقائية</span><span class="p-kpi-val bad">${filteredAccessoryShortages.length.toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">طلبات شراء مسجلة</span><span class="p-kpi-val warn">${filteredPendingRequests.length.toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">نواقص إكسسوارات تلقائية</span><span class="p-kpi-val bad">${filteredAccessoryShortages.length.toLocaleString('en-US')}</span></div>
       </div>
 
       <div class="p-sec">أولاً: طلبات الشراء المسجلة (قيد الانتظار — ${filteredPendingRequests.length} صنف)</div>
@@ -628,7 +629,7 @@ export const PurchaseRequestsView: React.FC = () => {
         title: 'كشف طلبات الشراء ونواقص المخازن العاجلة',
         subtitle: 'يشمل طلبات الشراء المسجلة قيد الانتظار ونواقص مخزن الإكسسوارات التلقائية',
         metaItems: [
-          `إجمالي البنود: ${(filteredPendingRequests.length + filteredAccessoryShortages.length).toLocaleString('ar-EG')}`
+          `إجمالي البنود: ${(filteredPendingRequests.length + filteredAccessoryShortages.length).toLocaleString('en-US')}`
         ]
       },
       bodyHtml,
@@ -811,7 +812,7 @@ export const PurchaseRequestsView: React.FC = () => {
               <div>
                 <span className="text-[11px] font-bold text-slate-500 block">عدد الطلبات المشتراة</span>
                 <strong className="text-xl font-black text-slate-900 font-mono">
-                  {filteredPurchasedRequests.length.toLocaleString('ar-EG')}
+                  {filteredPurchasedRequests.length.toLocaleString('en-US')}
                 </strong>
               </div>
               <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
@@ -822,7 +823,7 @@ export const PurchaseRequestsView: React.FC = () => {
               <div>
                 <span className="text-[11px] font-bold text-slate-500 block">إجمالي قيمة المشتريات المعروضة</span>
                 <strong className="text-xl font-black text-emerald-700 font-mono">
-                  {totalSpentHistory.toLocaleString('ar-EG', { maximumFractionDigits: 2 })} ج.م
+                  {totalSpentHistory.toLocaleString('en-US', { maximumFractionDigits: 2 })} ج.م
                 </strong>
               </div>
               <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
@@ -870,7 +871,7 @@ export const PurchaseRequestsView: React.FC = () => {
                         <p className="text-xs font-bold text-slate-600">
                           الكمية:{' '}
                           <span className="font-mono text-slate-900">
-                            {Number(req.quantity || 0).toLocaleString('ar-EG')}
+                            {Number(req.quantity || 0).toLocaleString('en-US')}
                           </span>{' '}
                           {req.unit || 'قطعة'}
                           {modelDisplay && (
@@ -892,7 +893,7 @@ export const PurchaseRequestsView: React.FC = () => {
                         </span>
                         <strong className="font-mono font-black text-emerald-700 text-sm">
                           {req.purchased_price !== null && req.purchased_price !== undefined
-                            ? `${Number(req.purchased_price).toLocaleString('ar-EG')} ج.م`
+                            ? `${Number(req.purchased_price).toLocaleString('en-US')} ج.م`
                             : '—'}
                         </strong>
                       </div>
@@ -1049,7 +1050,7 @@ export const PurchaseRequestsView: React.FC = () => {
                           <div className="flex items-baseline gap-1.5">
                             <span className="text-xs text-slate-500 font-bold">الكمية المطلوبة:</span>
                             <strong className="font-mono text-sm font-black text-slate-900">
-                              {Number(req.quantity || 0).toLocaleString('ar-EG')}
+                              {Number(req.quantity || 0).toLocaleString('en-US')}
                             </strong>
                             <span className="text-xs font-bold text-slate-600">
                               {req.unit || 'قطعة'}

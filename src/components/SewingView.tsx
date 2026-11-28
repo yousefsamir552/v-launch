@@ -31,7 +31,8 @@ import {
   PART_STAGE_LABELS,
   PartStage
 } from '../types';
-import { SewingPrintModal } from './SewingPrintModal';
+import { SewingPrintModal, resolvePartSewingFallbackCount } from './SewingPrintModal';
+import { toLatinDigits } from '../utils/latinDigits';
 import { CompletedModelsToggle, EndedModelBadge } from './CompletedModelsToggle';
 import { stageBeyond } from '../utils/completedModels';
 import { printAccessoryIssueOrder } from '../utils/printAccessoryIssueOrder';
@@ -83,6 +84,7 @@ export const SewingView: React.FC = () => {
     getModelParts,
     getPartStages,
     sewingDispatches, 
+    qcRecords,
     dispatchModelToSewing, 
     receiveModelFromSewing,
     workshops,
@@ -295,13 +297,16 @@ export const SewingView: React.FC = () => {
     const openDisp = sewingDispatches.find(
       (d) => d.model_id === m.id && d.piece_type === part && d.status !== 'تم الاستلام'
     );
+    if (openDisp && Number(openDisp.pieces_count) > 0) return Number(openDisp.pieces_count);
     const prevPieces =
       part === 'shirt' ? m.sewing_shirt_pieces : part === 'pants' ? m.sewing_pants_pieces : 0;
-    return openDisp?.pieces_count || prevPieces || Number(m.sewing_available?.[part] ?? 0);
+    return Number(prevPieces) > 0
+      ? Number(prevPieces)
+      : resolvePartSewingFallbackCount(m, part, qcRecords);
   };
 
   const filteredReadyPartCards = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const list = readyPartCards.filter(({ model, part }) => {
       if (pieceFilter !== 'all' && part !== pieceFilter) return false;
       if (!q) return true;
@@ -309,7 +314,7 @@ export const SewingView: React.FC = () => {
         (d) => d.model_id === model.id && d.piece_type === part && d.status !== 'تم الاستلام'
       );
       return (
-        (model.model_code || '').toLowerCase().includes(q) ||
+        toLatinDigits(model.model_code || '').toLowerCase().includes(q) ||
         (model.model_type || '').toLowerCase().includes(q) ||
         getPartLabel(part).toLowerCase().includes(q) ||
         (openDisp?.workshop_name || '').toLowerCase().includes(q)
@@ -323,15 +328,15 @@ export const SewingView: React.FC = () => {
       if (sortBy === 'oldest') return toTimestamp(a.model.created_at) - toTimestamp(b.model.created_at);
       return toTimestamp(b.model.created_at) - toTimestamp(a.model.created_at);
     });
-  }, [readyPartCards, pieceFilter, searchTerm, sortBy, sewingDispatches]);
+  }, [readyPartCards, pieceFilter, searchTerm, sortBy, sewingDispatches, qcRecords]);
 
   const filteredEndedPartCards = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const list = endedPartCards.filter(({ model, part }) => {
       if (pieceFilter !== 'all' && part !== pieceFilter) return false;
       if (!q) return true;
       return (
-        (model.model_code || '').toLowerCase().includes(q) ||
+        toLatinDigits(model.model_code || '').toLowerCase().includes(q) ||
         (model.model_type || '').toLowerCase().includes(q) ||
         getPartLabel(part).toLowerCase().includes(q)
       );
@@ -347,10 +352,10 @@ export const SewingView: React.FC = () => {
   }, [endedPartCards, pieceFilter, searchTerm, sortBy]);
 
   const filteredDispatches = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const list = sewingDispatches.filter((disp) => {
       const m = models.find((mod) => mod.id === disp.model_id);
-      const code = m?.model_code || '';
+      const code = toLatinDigits(m?.model_code || '');
       const name = disp.workshop_name || '';
       const label = disp.piece_label || '';
       const matchesSearch = !q || code.toLowerCase().includes(q) || name.toLowerCase().includes(q) || label.toLowerCase().includes(q);
@@ -379,21 +384,30 @@ export const SewingView: React.FC = () => {
     setDispatchPieceType(pieceType);
     setDispatchPieceLabel(getPartLabel(pieceType));
 
-    // Each part uses ONLY its own available quantity — never a shared/combined number.
+    // Each part uses ONLY its own available/fallback quantity — never a shared/combined number.
+    const partDispatch = sewingDispatches.find(
+      (d) => d.model_id === model.id && d.piece_type === pieceType && d.status !== 'تم الاستلام'
+    );
     const prevPieces =
       pieceType === 'shirt'
         ? model.sewing_shirt_pieces
         : pieceType === 'pants'
         ? model.sewing_pants_pieces
         : 0;
-    const count = prevPieces || Number(model.sewing_available?.[pieceType] ?? 0);
+    const count =
+      Number(partDispatch?.pieces_count) ||
+      Number(prevPieces) ||
+      resolvePartSewingFallbackCount(model, pieceType, qcRecords);
     setPiecesCount(count);
 
-    const prevWorkshop = pieceType === 'shirt'
-      ? (model.sewing_shirt_workshop || model.sewing_workshop || '')
-      : pieceType === 'pants'
-      ? (model.sewing_pants_workshop || model.sewing_workshop || '')
-      : (model.sewing_workshop || '');
+    // لا نسحب اسم ورشة أو تاريخ قطعة أخرى عندما لا توجد إرسالية لهذه القطعة بعد
+    const prevWorkshop =
+      partDispatch?.workshop_name ||
+      (pieceType === 'shirt'
+        ? model.sewing_shirt_workshop || ''
+        : pieceType === 'pants'
+        ? model.sewing_pants_workshop || ''
+        : '');
     // إعادة اختيار الورشة السابقة من القائمة، أو فتح وضع الكتابة اليدوية إن لم تكن مسجّلة.
     const matchedPrevWorkshop = sewingWorkshops.find((w) => w.name === prevWorkshop);
     if (matchedPrevWorkshop) {
@@ -407,11 +421,13 @@ export const SewingView: React.FC = () => {
       setCustomWorkshopName('');
     }
 
-    const prevDate = pieceType === 'shirt'
-      ? model.sewing_shirt_expected_date
-      : pieceType === 'pants'
-      ? model.sewing_pants_expected_date
-      : model.sewing_expected_date;
+    const prevDate =
+      partDispatch?.expected_delivery_date ||
+      (pieceType === 'shirt'
+        ? model.sewing_shirt_expected_date
+        : pieceType === 'pants'
+        ? model.sewing_pants_expected_date
+        : '');
 
     if (prevDate) {
       setExpectedDeliveryDate(prevDate);
@@ -719,7 +735,7 @@ export const SewingView: React.FC = () => {
           <div>
             <p className="text-xs font-bold text-slate-500 mb-1">إجمالي القطع بالمكن</p>
             <h3 className="text-2xl font-black text-slate-900">
-              {activeDispatches.reduce((acc, d) => acc + getRemainingPieces(d), 0).toLocaleString('ar-EG')}
+              {activeDispatches.reduce((acc, d) => acc + getRemainingPieces(d), 0).toLocaleString('en-US')}
             </h3>
             <span className="text-[11px] text-slate-500 font-semibold mt-1 inline-block">قطعة متبقية بالورش</span>
           </div>
@@ -783,18 +799,22 @@ export const SewingView: React.FC = () => {
                 const isReceived = allReceived && !openDispatch;
                 const workshop =
                   openDispatch?.workshop_name ||
-                  (isShirt
-                    ? m.sewing_shirt_workshop || m.sewing_workshop
-                    : isPants
-                    ? m.sewing_pants_workshop || m.sewing_workshop
-                    : m.sewing_workshop);
+                  (legacyDispatched
+                    ? isShirt
+                      ? m.sewing_shirt_workshop || ''
+                      : isPants
+                      ? m.sewing_pants_workshop || ''
+                      : ''
+                    : '');
                 const expectedDate =
                   openDispatch?.expected_delivery_date ||
-                  (isShirt
-                    ? m.sewing_shirt_expected_date || m.sewing_expected_date
-                    : isPants
-                    ? m.sewing_pants_expected_date || m.sewing_expected_date
-                    : m.sewing_expected_date);
+                  (legacyDispatched
+                    ? isShirt
+                      ? m.sewing_shirt_expected_date || ''
+                      : isPants
+                      ? m.sewing_pants_expected_date || ''
+                      : ''
+                    : '');
                 const prevPieces = isShirt
                   ? m.sewing_shirt_pieces
                   : isPants
@@ -802,7 +822,9 @@ export const SewingView: React.FC = () => {
                   : 0;
                 // Each card shows ONLY its own part quantity (no shared combined number).
                 const pieces =
-                  openDispatch?.pieces_count || prevPieces || Number(m.sewing_available?.[part] ?? 0);
+                  Number(openDispatch?.pieces_count) ||
+                  Number(prevPieces) ||
+                  resolvePartSewingFallbackCount(m, part, qcRecords);
                 const style = PART_CARD_STYLES[part] || PART_CARD_STYLES.shirt;
 
                 return {
@@ -867,7 +889,7 @@ export const SewingView: React.FC = () => {
                         موديل: {item.model.model_code}
                       </h4>
                       <p className="text-[11px] text-slate-300">
-                        العدد: <strong className="text-white font-bold">{item.pieces.toLocaleString('ar-EG')} ق</strong>
+                        العدد: <strong className="text-white font-bold">{item.pieces.toLocaleString('en-US')} ق</strong>
                       </p>
                     </div>
                   </div>
@@ -1112,7 +1134,7 @@ export const SewingView: React.FC = () => {
                       </td>
 
                       <td className="px-6 py-4 text-center font-black text-slate-900 text-sm">
-                        <div>{totalPieces.toLocaleString('ar-EG')} ق</div>
+                        <div>{totalPieces.toLocaleString('en-US')} ق</div>
                         <div className="mt-1.5 w-28 mx-auto">
                           <div className="h-1.5 rounded-full bg-slate-200 overflow-hidden">
                             <div
@@ -1128,10 +1150,10 @@ export const SewingView: React.FC = () => {
                           </div>
                           <div className="mt-1 flex items-center justify-between text-[10px] font-bold">
                             <span className="text-emerald-700">
-                              مستلم {receivedPieces.toLocaleString('ar-EG')}
+                              مستلم {receivedPieces.toLocaleString('en-US')}
                             </span>
                             <span className={remainingPieces > 0 ? 'text-amber-700' : 'text-slate-400'}>
-                              متبقي {remainingPieces.toLocaleString('ar-EG')}
+                              متبقي {remainingPieces.toLocaleString('en-US')}
                             </span>
                           </div>
                         </div>
@@ -1150,7 +1172,7 @@ export const SewingView: React.FC = () => {
                           </td>
                           <td className="px-6 py-4 text-center font-mono font-black text-emerald-800">
                             {disp.total_cost
-                              ? `${Number(disp.total_cost).toLocaleString('ar-EG')} ج.م`
+                              ? `${Number(disp.total_cost).toLocaleString('en-US')} ج.م`
                               : '—'}
                           </td>
                         </>
@@ -1455,7 +1477,7 @@ export const SewingView: React.FC = () => {
                           </span>
                           <span className="flex items-center gap-2 shrink-0 font-bold">
                             <span className="text-indigo-800">
-                              مطلوب: {required.toLocaleString('ar-EG')}
+                              مطلوب: {required.toLocaleString('en-US')}
                             </span>
                             {alreadyIssued ? (
                               <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
@@ -1464,7 +1486,7 @@ export const SewingView: React.FC = () => {
                             ) : (
                               <>
                                 <span className={short ? 'text-red-600' : 'text-emerald-600'}>
-                                  بالمخزن: {Number(stock).toLocaleString('ar-EG')}
+                                  بالمخزن: {Number(stock).toLocaleString('en-US')}
                                 </span>
                                 {short && (
                                   <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
@@ -1600,7 +1622,7 @@ export const SewingView: React.FC = () => {
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                   <div className="text-[10px] font-bold text-slate-500">العدد المرسل</div>
                   <div className="text-xs font-black text-slate-800">
-                    {Number(receivingDispatch.pieces_count || 0).toLocaleString('ar-EG')} قطعة
+                    {Number(receivingDispatch.pieces_count || 0).toLocaleString('en-US')} قطعة
                   </div>
                 </div>
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
@@ -1615,7 +1637,7 @@ export const SewingView: React.FC = () => {
                     وقت الاستلام الآن
                   </div>
                   <div className="text-xs font-mono font-black text-emerald-800">
-                    {new Date().toLocaleString('ar-EG', {
+                    {new Date().toLocaleString('ar-EG-u-nu-latn', {
                       year: 'numeric',
                       month: '2-digit',
                       day: '2-digit',
@@ -1712,7 +1734,7 @@ export const SewingView: React.FC = () => {
                   <option value="">— اختر صنف الإكسسوار —</option>
                   {extraAccessoryOptions.map((row) => (
                     <option key={row.itemId} value={row.itemId}>
-                      {row.acc.accessory_name} — رصيد {Number(row.stock).toLocaleString('ar-EG')}{' '}
+                      {row.acc.accessory_name} — رصيد {Number(row.stock).toLocaleString('en-US')}{' '}
                       {row.acc.unit || ''}
                     </option>
                   ))}
@@ -1743,7 +1765,7 @@ export const SewingView: React.FC = () => {
                   if (!selected) return null;
                   return (
                     <p className="mt-1 text-[10px] font-bold text-slate-500">
-                      الرصيد المتاح بالمخزن: {Number(selected.stock).toLocaleString('ar-EG')}{' '}
+                      الرصيد المتاح بالمخزن: {Number(selected.stock).toLocaleString('en-US')}{' '}
                       {selected.acc.unit || ''}
                     </p>
                   );

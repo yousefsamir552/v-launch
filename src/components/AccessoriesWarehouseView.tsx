@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { toLatinDigits } from '../utils/latinDigits';
 import { useApp } from '../context/AppContext';
 import { makeIdempotentRequestId } from '../context/appContextTypes';
 import { api } from '../api/client';
@@ -263,7 +264,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
       }
 
       if (searchQuery.trim()) {
-        const q = searchQuery.trim().toLowerCase();
+        const q = toLatinDigits(searchQuery).trim().toLowerCase();
         const matchName = item.name.toLowerCase().includes(q);
         const matchCode = item.code.toLowerCase().includes(q);
         const matchModel = item.custom_model_code?.toLowerCase().includes(q);
@@ -813,15 +814,15 @@ export const AccessoriesWarehouseView: React.FC = () => {
           <td>${escapeHtml(item.type_name || '—')}</td>
           <td class="text-right"><strong>${escapeHtml(item.name)}</strong></td>
           <td class="text-right">${escapeHtml(usageLabel)}</td>
-          <td class="num"><strong>${Number(item.quantity || 0).toLocaleString('ar-EG')}</strong></td>
-          <td class="num">${Number(item.reserved_quantity || 0).toLocaleString('ar-EG')}</td>
-          <td class="num ${avail <= 0 ? 'bad' : 'ok'}">${avail.toLocaleString('ar-EG')}</td>
+          <td class="num"><strong>${Number(item.quantity || 0).toLocaleString('en-US')}</strong></td>
+          <td class="num">${Number(item.reserved_quantity || 0).toLocaleString('en-US')}</td>
+          <td class="num ${avail <= 0 ? 'bad' : 'ok'}">${avail.toLocaleString('en-US')}</td>
           <td class="num">${escapeHtml(thresholdLabel)}</td>
           <td>${escapeHtml(item.unit || 'قطعة')}</td>
           ${
             showPrices
-              ? `<td class="num">${Number(item.price_per_unit || 0).toLocaleString('ar-EG')}</td>
-                 <td class="num ok">${rowValue.toLocaleString('ar-EG')}</td>`
+              ? `<td class="num">${Number(item.price_per_unit || 0).toLocaleString('en-US')}</td>
+                 <td class="num ok">${rowValue.toLocaleString('en-US')}</td>`
               : ''
           }
         </tr>`;
@@ -830,13 +831,13 @@ export const AccessoriesWarehouseView: React.FC = () => {
 
     const bodyHtml = `
       <div class="p-kpis">
-        <div class="p-kpi"><span class="p-kpi-label">إجمالي الأصناف</span><span class="p-kpi-val">${accessoryItems.length.toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">إجمالي الرصيد الفعلي</span><span class="p-kpi-val">${Math.round(totalQty).toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">إجمالي المحجوز</span><span class="p-kpi-val warn">${Math.round(totalReserved).toLocaleString('ar-EG')}</span></div>
-        <div class="p-kpi"><span class="p-kpi-label">إجمالي المتاح</span><span class="p-kpi-val ok">${Math.round(totalAvailable).toLocaleString('ar-EG')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الأصناف</span><span class="p-kpi-val">${accessoryItems.length.toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي الرصيد الفعلي</span><span class="p-kpi-val">${Math.round(totalQty).toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي المحجوز</span><span class="p-kpi-val warn">${Math.round(totalReserved).toLocaleString('en-US')}</span></div>
+        <div class="p-kpi"><span class="p-kpi-label">إجمالي المتاح</span><span class="p-kpi-val ok">${Math.round(totalAvailable).toLocaleString('en-US')}</span></div>
         ${
           showPrices
-            ? `<div class="p-kpi"><span class="p-kpi-label">إجمالي قيمة المخزون</span><span class="p-kpi-val ok">${Math.round(totalValue).toLocaleString('ar-EG')} ج.م</span></div>`
+            ? `<div class="p-kpi"><span class="p-kpi-label">إجمالي قيمة المخزون</span><span class="p-kpi-val ok">${Math.round(totalValue).toLocaleString('en-US')} ج.م</span></div>`
             : ''
         }
       </div>
@@ -862,11 +863,11 @@ export const AccessoriesWarehouseView: React.FC = () => {
         <tfoot>
           <tr class="total">
             <td colspan="6" class="text-right">الإجمالي</td>
-            <td class="num">${Math.round(totalQty).toLocaleString('ar-EG')}</td>
-            <td class="num">${Math.round(totalReserved).toLocaleString('ar-EG')}</td>
-            <td class="num">${Math.round(totalAvailable).toLocaleString('ar-EG')}</td>
+            <td class="num">${Math.round(totalQty).toLocaleString('en-US')}</td>
+            <td class="num">${Math.round(totalReserved).toLocaleString('en-US')}</td>
+            <td class="num">${Math.round(totalAvailable).toLocaleString('en-US')}</td>
             <td colspan="2"></td>
-            ${showPrices ? `<td>—</td><td class="num">${Math.round(totalValue).toLocaleString('ar-EG')} ج.م</td>` : ''}
+            ${showPrices ? `<td>—</td><td class="num">${Math.round(totalValue).toLocaleString('en-US')} ج.م</td>` : ''}
           </tr>
         </tfoot>
       </table>
@@ -883,7 +884,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
         logo: globalSettings?.logo,
         title: 'كشف جرد مخزن الإكسسوارات والمستلزمات',
         subtitle: 'جرد شامل لجميع أصناف الإكسسوارات والكميات الفعلية والمحجوزة والمتاحة',
-        metaItems: [`عدد الأصناف: ${accessoryItems.length.toLocaleString('ar-EG')}`]
+        metaItems: [`عدد الأصناف: ${accessoryItems.length.toLocaleString('en-US')}`]
       },
       bodyHtml,
       extraCss: `
@@ -1023,7 +1024,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
         logo: globalSettings?.logo,
         title: 'كشف طلبيات ونواقص الإكسسوارات العاجلة (شراء وتوريد)',
         subtitle: `التصنيف: ${scopeLabel}`,
-        metaItems: [`إجمالي النواقص: ${lowStockItems.length.toLocaleString('ar-EG')} صنف`]
+        metaItems: [`إجمالي النواقص: ${lowStockItems.length.toLocaleString('en-US')} صنف`]
       },
       bodyHtml,
       extraCss: `
@@ -1406,7 +1407,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                       <div className="flex items-center justify-between gap-2">
                         <span>سعر الوحدة:</span>
                         <strong className="font-black">
-                          {Number(item.price_per_unit || 0).toLocaleString('ar-EG')} ج.م
+                          {Number(item.price_per_unit || 0).toLocaleString('en-US')} ج.م
                         </strong>
                       </div>
                       <div className="flex items-center justify-between gap-2">
@@ -1416,7 +1417,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                             (
                               Number(item.price_per_unit || 0) * Number(item.quantity || 0)
                             ).toFixed(2)
-                          ).toLocaleString('ar-EG')}{' '}
+                          ).toLocaleString('en-US')}{' '}
                           ج.م
                         </strong>
                       </div>
@@ -1580,7 +1581,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                           <strong className="text-slate-700">{model.model_type || '—'}</strong>
                           {' | '}العدد المستهدف:{' '}
                           <strong className="text-slate-700">
-                            {Number(model.target_cut_quantity || 0).toLocaleString('ar-EG')}
+                            {Number(model.target_cut_quantity || 0).toLocaleString('en-US')}
                           </strong>{' '}
                           قطعة
                         </p>
@@ -1727,7 +1728,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                                 (sum, line) => sum + resolvePermitQuantity(model.id, line),
                                 0
                               )
-                              .toLocaleString('ar-EG')}
+                              .toLocaleString('en-US')}
                           </strong>
                         </div>
                         <button
@@ -2643,7 +2644,7 @@ export const AccessoriesWarehouseView: React.FC = () => {
                             }`}
                           >
                             {isAdd ? '+' : '−'}
-                            {Number(tx.amount || 0).toLocaleString('ar-EG')}
+                            {Number(tx.amount || 0).toLocaleString('en-US')}
                           </td>
                           <td className="border border-slate-200 p-2 text-center font-bold text-slate-700 whitespace-nowrap">
                             {tx.model_code_ref || '—'}
@@ -2652,14 +2653,14 @@ export const AccessoriesWarehouseView: React.FC = () => {
                             <>
                               <td className="border border-slate-200 p-2 text-center font-bold text-slate-900">
                                 {hasSnapshot
-                                  ? `${snapshot.toLocaleString('ar-EG')} ج.م`
+                                  ? `${snapshot.toLocaleString('en-US')} ج.م`
                                   : '—'}
                               </td>
                               <td className="border border-slate-200 p-2 text-center font-black text-emerald-800">
                                 {hasSnapshot
                                   ? `${Number(
                                       (snapshot * Number(tx.amount || 0)).toFixed(2)
-                                    ).toLocaleString('ar-EG')} ج.م`
+                                    ).toLocaleString('en-US')} ج.م`
                                   : '—'}
                               </td>
                             </>

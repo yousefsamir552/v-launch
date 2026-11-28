@@ -31,6 +31,7 @@ import {
 } from '../types';
 import { modelPackagingPieces } from '../utils/packagingMaterials';
 import { printUnifiedModelCard } from '../utils/printUnifiedModelCard';
+import { toLatinDigits } from '../utils/latinDigits';
 import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
 import { useModalBackHandler } from '../utils/mobileBackNav';
 import {
@@ -95,12 +96,12 @@ const QC_STAGE_LABELS: Record<QCStageType, string> = {
 
 const fmtInt = (val: unknown): string => {
   const n = Number(val || 0);
-  return Math.round(Number.isFinite(n) ? n : 0).toLocaleString('ar-EG');
+  return Math.round(Number.isFinite(n) ? n : 0).toLocaleString('en-US');
 };
 
 const fmtNum = (val: unknown): string => {
   const n = Number(val || 0);
-  return (Number.isFinite(n) ? Number(n.toFixed(2)) : 0).toLocaleString('ar-EG', {
+  return (Number.isFinite(n) ? Number(n.toFixed(2)) : 0).toLocaleString('en-US', {
     maximumFractionDigits: 2
   });
 };
@@ -275,11 +276,11 @@ export const UnifiedModelCardsView: React.FC<{
   }, [modelSummaries]);
 
   const filteredSummaries = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = toLatinDigits(search).trim().toLowerCase();
     const list = modelSummaries.filter((item) => {
       if (q) {
-        const matchCode = item.model.model_code.toLowerCase().includes(q);
-        const matchType = (item.model.model_type || '').toLowerCase().includes(q);
+        const matchCode = toLatinDigits(item.model.model_code).toLowerCase().includes(q);
+        const matchType = toLatinDigits(item.model.model_type || '').toLowerCase().includes(q);
         if (!matchCode && !matchType) return false;
       }
       if (stageFilter !== 'all' && item.coarseStage !== stageFilter) return false;
@@ -885,11 +886,11 @@ export const UnifiedModelCardsView: React.FC<{
                         <tbody className="divide-y divide-slate-100">
                           {mPrint.map((d) => {
                             const sent = Number(d.pieces_count || 0);
-                            const rec =
-                              d.status === 'تم الاستلام بالمصنع'
-                                ? Number(d.received_pieces ?? sent)
-                                : Number(d.received_pieces || 0);
-                            const shortage = Math.max(0, sent - rec);
+                            const isFinalReceived = d.status === 'تم الاستلام بالمصنع';
+                            const rec = isFinalReceived
+                              ? Number(d.received_pieces ?? sent)
+                              : Number(d.received_pieces || 0);
+                            const shortage = isFinalReceived ? Math.max(0, sent - rec) : null;
                             return (
                               <tr key={d.id}>
                                 <td className="py-2 font-bold text-slate-800">
@@ -902,10 +903,14 @@ export const UnifiedModelCardsView: React.FC<{
                                 </td>
                                 <td
                                   className={`py-2 text-center tabular-nums font-black ${
-                                    shortage > 0 ? 'text-rose-600' : 'text-emerald-600'
+                                    shortage === null
+                                      ? 'text-slate-400'
+                                      : shortage > 0
+                                      ? 'text-rose-600'
+                                      : 'text-emerald-600'
                                   }`}
                                 >
-                                  {fmtInt(shortage)}
+                                  {shortage === null ? '—' : fmtInt(shortage)}
                                 </td>
                                 <td className="py-2 text-center font-mono text-slate-500">
                                   {fmtDate(d.dispatched_at)}
@@ -955,11 +960,11 @@ export const UnifiedModelCardsView: React.FC<{
                         <tbody className="divide-y divide-slate-100">
                           {mSewing.map((d) => {
                             const sent = Number(d.pieces_count || 0);
-                            const rec =
-                              d.status === 'تم الاستلام'
-                                ? Number(d.received_pieces ?? sent)
-                                : Number(d.received_pieces || 0);
-                            const shortage = Math.max(0, sent - rec);
+                            const isFinalReceived = d.status === 'تم الاستلام';
+                            const rec = isFinalReceived
+                              ? Number(d.received_pieces ?? sent)
+                              : Number(d.received_pieces || 0);
+                            const shortage = isFinalReceived ? Math.max(0, sent - rec) : null;
                             return (
                               <tr key={d.id}>
                                 <td className="py-2 font-bold text-slate-800">
@@ -974,10 +979,14 @@ export const UnifiedModelCardsView: React.FC<{
                                 </td>
                                 <td
                                   className={`py-2 text-center tabular-nums font-black ${
-                                    shortage > 0 ? 'text-rose-600' : 'text-emerald-600'
+                                    shortage === null
+                                      ? 'text-slate-400'
+                                      : shortage > 0
+                                      ? 'text-rose-600'
+                                      : 'text-emerald-600'
                                   }`}
                                 >
-                                  {fmtInt(shortage)}
+                                  {shortage === null ? '—' : fmtInt(shortage)}
                                 </td>
                                 <td className="py-2 text-center font-mono text-slate-500">
                                   {fmtDate(d.dispatched_at)}

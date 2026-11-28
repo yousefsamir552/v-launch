@@ -1,10 +1,73 @@
 import React, { useEffect, useState } from 'react';
 import { FileText, Printer, RotateCcw, Save, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { GarmentPart, getPartLabel, ImageCropRegion, Model } from '../types';
+import { GarmentPart, getPartLabel, ImageCropRegion, Model, QCRecord, SewingDispatch } from '../types';
+import { formatLatinDate, toLatinDigits } from '../utils/latinDigits';
 import { printSewingSheets, SewingSheetOptions } from '../utils/printSewingSheet';
 import { ImageCropperModal } from './ImageCropperModal';
 import { SewingSheetData, SewingSheetPreview } from './SewingSheetPreview';
+
+/**
+ * يحسب العدد الاحتياطي الدقيق لقطعة واحدة عندما لا يوجد لها SewingDispatch بعد:
+ * 1) model.sewing_available?.[part]
+ * 2) آخر عدّ سليم للقطعة في qcRecords (after_print ثم before_print)
+ * 3) model.cut_summary?.[part] (أو حقول القص الخاصة بالقطعة)
+ * 4) model.target_cut_quantity
+ */
+export const resolvePartSewingFallbackCount = (
+  model: Model,
+  part: GarmentPart,
+  qcRecords: QCRecord[]
+): number => {
+  const safePos = (value: unknown): number => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+  };
+
+  const fromAvailable = safePos(model.sewing_available?.[part]);
+  if (fromAvailable > 0) return fromAvailable;
+
+  const sumQcStage = (stage: 'after_print' | 'before_print'): number =>
+    qcRecords.reduce((sum, rec) => {
+      if (rec.model_id !== model.id || rec.stage !== stage) return sum;
+      const recPart = (rec.part_type || rec.partType || 'shirt') as string;
+      if (recPart !== part) return sum;
+      return sum + safePos(rec.good_qty ?? rec.counted_pieces);
+    }, 0);
+
+  const afterPrintGood = sumQcStage('after_print');
+  if (afterPrintGood > 0) return afterPrintGood;
+
+  const beforePrintGood = sumQcStage('before_print');
+  if (beforePrintGood > 0) return beforePrintGood;
+
+  const fromCutSummary = safePos(model.cut_summary?.[part]);
+  if (fromCutSummary > 0) return fromCutSummary;
+
+  const legacyCut =
+    part === 'shirt'
+      ? safePos(model.cut_shirt_pieces)
+      : part === 'pants'
+        ? safePos(model.cut_pants_pieces)
+        : part === 'jacket'
+          ? safePos(model.cut_jacket_pieces)
+          : 0;
+  if (legacyCut > 0) return legacyCut;
+
+  return safePos(model.target_cut_quantity);
+};
+
+/** يبحث عن تشغيلة المكن الأنسب لقطعة محددة (النشطة أولاً ثم الأحدث). */
+export const findPartSewingDispatch = (
+  dispatches: SewingDispatch[],
+  modelId: string,
+  part: GarmentPart
+): SewingDispatch | null => {
+  const matching = dispatches.filter((d) => d.model_id === modelId && d.piece_type === part);
+  if (matching.length === 0) return null;
+  const open = matching.find((d) => d.status !== 'تم الاستلام');
+  return open || matching[matching.length - 1] || null;
+};
 
 interface SewingPrintModalProps {
   model: Model;
@@ -25,6 +88,7 @@ export const SewingPrintModal: React.FC<SewingPrintModalProps> = ({
     getModelSizeList,
     getModelParts,
     sewingDispatches,
+    qcRecords,
     sizeDefs,
     globalSettings,
     updateGlobalSettings,
@@ -68,29 +132,28 @@ export const SewingPrintModal: React.FC<SewingPrintModalProps> = ({
   };
 
   const buildSheet = (piece: GarmentPart): SewingSheetData => {
-    const dispatch =
-      sewingDispatches.find((d) => d.model_id === model.id && d.piece_type === piece) || null;
+    const dispatch = findPartSewingDispatch(sewingDispatches, model.id, piece);
 
-    const fallbackPieces =
-      piece === 'shirt'
-        ? model.sewing_shirt_pieces
-        : piece === 'pants'
-          ? model.sewing_pants_pieces
-          : Number(model.sewing_available?.[piece] ?? 0);
+    const fallbackPieces = resolvePartSewingFallbackCount(model, piece, qcRecords);
 
-    const fallbackWorkshop =
-      piece === 'shirt'
-        ? model.sewing_shirt_workshop || model.sewing_workshop
-        : piece === 'pants'
-          ? model.sewing_pants_workshop || model.sewing_workshop
-          : model.sewing_workshop;
+    // إذا وُجد SewingDispatch لهذه القطعة نستخدم بياناته مباشرة؛
+    // وإلا نعرض عدد القطعة الاحتياطي الدقيق دون سحب اسم ورشة أو تاريخ استلام قطعة أخرى.
+    const piecesCount =
+      dispatch && Number(dispatch.pieces_count) > 0
+        ? Number(dispatch.pieces_count)
+        : fallbackPieces;
 
-    const fallbackExpected =
-      piece === 'shirt'
-        ? model.sewing_shirt_expected_date || model.sewing_expected_date
-        : piece === 'pants'
-          ? model.sewing_pants_expected_date || model.sewing_expected_date
-          : model.sewing_expected_date;
+    const workshopName = dispatch
+      ? dispatch.workshop_name || '—'
+      : 'لم يُرسل للورشة بعد';
+
+    const dispatchDate = dispatch?.dispatched_at
+      ? toLatinDigits(dispatch.dispatched_at)
+      : formatLatinDate(new Date());
+
+    const expectedDate = dispatch
+      ? toLatinDigits(dispatch.expected_delivery_date || 'حسب الاتفاق')
+      : '—';
 
     const fallbackNotes =
       piece === 'shirt'
@@ -111,10 +174,10 @@ export const SewingPrintModal: React.FC<SewingPrintModalProps> = ({
       sizes: getModelSizeList(model.id),
       imageUrl: model.image,
       crop: crops[piece] || null,
-      piecesCount: Number(dispatch?.pieces_count ?? fallbackPieces ?? 0) || 0,
-      workshopName: dispatch?.workshop_name || fallbackWorkshop || '',
-      dispatchDate: dispatch?.dispatched_at || new Date().toLocaleDateString('ar-EG'),
-      expectedDate: dispatch?.expected_delivery_date || fallbackExpected || '',
+      piecesCount,
+      workshopName,
+      dispatchDate,
+      expectedDate,
       accessories: modelAccessories.filter(
         (accessory) => accessory.model_id === model.id && accessory.target_type === piece
       ),

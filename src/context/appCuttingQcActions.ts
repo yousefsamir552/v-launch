@@ -96,7 +96,7 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
     clientId?: string;
   }): Promise<boolean> => {
     const recId = data.clientId || makeIdempotentRequestId('cut');
-    const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
+    const createdAt = new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false });
     const cleanNotes = canAddCuttingNotes() ? (data.notes?.trim() || '') : '';
     const existingModelSpreads = cuttingRecords.filter((r) => r.model_id === data.modelId);
     // أكبر رقم فرشة موجود + 1 (وليس عدد السجلات) حتى لا يتكرر الرقم بعد حذف فرشة.
@@ -655,7 +655,7 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
       stage === 'before_print' ? canAddQCBeforePrintNotes() : canAddQCAfterPrintNotes();
     const cleanNotes = allowNotes ? (data.defectNotes?.trim() || '') : '';
     const qcId = 'qc-' + Date.now();
-    const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
+    const createdAt = new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false });
 
     const newQC: QCRecord = {
       id: qcId,
@@ -748,7 +748,7 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
       data.stage === 'before_print' ? canAddQCBeforePrintNotes() : canAddQCAfterPrintNotes();
     const cleanNotes = allowNotes ? (data.notes?.trim() || '') : '';
     const inspector = currentUser?.real_name || 'مراقب الجودة';
-    const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
+    const createdAt = new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false });
     const partType: GarmentPart = normalizePartKey(data.partType || 'shirt');
     const entries = data.matrixEntries.map((entry) => ({
       ...entry,
@@ -810,7 +810,7 @@ export const buildCuttingQcActions = (ctx: AppInternalContext) => {
       data.stage === 'before_print' ? canAddQCBeforePrintNotes() : canAddQCAfterPrintNotes();
     const cleanNotes = allowNotes ? (data.defectNotes?.trim() || '') : '';
     const qcId = 'qc-' + Date.now();
-    const createdAt = new Date().toLocaleString('ar-EG', { hour12: false });
+    const createdAt = new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false });
     const inspector = currentUser?.real_name || 'مراقب الجودة';
 
     const matrixList = (data.matrixEntries || []).map((cell) => ({

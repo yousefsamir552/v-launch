@@ -184,7 +184,7 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
     }
 
     const trId = data.clientId || makeIdempotentRequestId('tr');
-    const timestamp = new Date().toLocaleString('ar-EG', { hour12: false });
+    const timestamp = new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false });
 
     setFabricColors((prev) =>
       prev.map((c) => {
@@ -570,7 +570,7 @@ export const buildWarehouseActions = (ctx: AppInternalContext) => {
     }
 
     const trId = data.clientId || makeIdempotentRequestId('acc-tr');
-    const timestamp = new Date().toLocaleString('ar-EG', { hour12: false });
+    const timestamp = new Date().toLocaleString('ar-EG-u-nu-latn', { hour12: false });
 
     setAccessoryItems((prev) =>
       prev.map((a) => {

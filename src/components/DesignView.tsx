@@ -19,6 +19,7 @@ import { ZoomableImage } from './ZoomableImage';
 import { EditModelModal } from './EditModelModal';
 import { SortBySelect, compareNatural, toTimestamp } from './SortBySelect';
 import { useModalBackHandler } from '../utils/mobileBackNav';
+import { toLatinDigits } from '../utils/latinDigits';
 
 import {
   DesignModel,
@@ -143,7 +144,7 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
 
   // Filter models (Only display models in design stage)
   const filteredModels = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
+    const q = toLatinDigits(searchQuery).toLowerCase().trim();
     const list = models
       .filter((m) => !m.is_deleted && (m.status === 'مرحلة التصميم' || m.status === 'تصميم'))
       .filter((m) => {
@@ -160,7 +161,7 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
 
   // الموديلات التي تجاوزت قسم التصميم (منتهية من هذا القسم).
   const endedModels = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
+    const q = toLatinDigits(searchQuery).toLowerCase().trim();
     const list = models
       .filter((m) => !m.is_deleted && m.status !== 'مرحلة التصميم' && m.status !== 'تصميم')
       .filter((m) => {
@@ -377,7 +378,7 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                       {model.status}
                     </span>
                     <span className="inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-800 border border-blue-200">
-                      {Number(model.target_cut_quantity || 0).toLocaleString('ar-EG')} ق
+                      {Number(model.target_cut_quantity || 0).toLocaleString('en-US')} ق
                     </span>
                     <span className="inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-50 text-purple-800 border border-purple-200">
                       {distinctColorsCount} {distinctColorsCount === 1 ? 'لون' : 'ألوان'}
@@ -500,7 +501,7 @@ export const DesignView: React.FC<DesignViewProps> = ({ onOpenModelDetails }) =>
                     <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600 font-semibold">
                       <span>{model.model_type || 'غير محدد'}</span>
                       <span>•</span>
-                      <span>{Number(model.target_cut_quantity || 0).toLocaleString('ar-EG')} ق</span>
+                      <span>{Number(model.target_cut_quantity || 0).toLocaleString('en-US')} ق</span>
                       <span>•</span>
                       <span>{distinctColorsCount} ألوان</span>
                     </div>

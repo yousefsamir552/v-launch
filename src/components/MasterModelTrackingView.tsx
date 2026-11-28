@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { toLatinDigits } from '../utils/latinDigits';
 import { useApp } from '../context/AppContext';
 import {
   GitCommit,
@@ -256,7 +257,7 @@ const formatPartsQty = (map: Partial<Record<GarmentPart, number>>): string => {
   const entries = Object.entries(map).filter(([, v]) => Number(v) > 0);
   if (!entries.length) return 'لا يوجد';
   return entries
-    .map(([k, v]) => `${getPartLabel(k)}: ${Number(v).toLocaleString('ar-EG')}`)
+    .map(([k, v]) => `${getPartLabel(k)}: ${Number(v).toLocaleString('en-US')}`)
     .join(' • ');
 };
 
@@ -340,7 +341,7 @@ const AccessoriesTable: React.FC<{ accs: ModelAccessory[] }> = ({ accs }) => {
                 <td className="py-2 px-3 font-mono text-slate-600">{a.accessory_code || '-'}</td>
                 <td className="py-2 px-3 text-center font-bold">{a.piece_consumption ?? '-'}</td>
                 <td className="py-2 px-3 text-center font-black text-slate-900">
-                  {(a.planned_quantity || 0).toLocaleString('ar-EG')} {a.unit || ''}
+                  {(a.planned_quantity || 0).toLocaleString('en-US')} {a.unit || ''}
                 </td>
               </tr>
             ))}
@@ -388,10 +389,10 @@ const RequirementsTable: React.FC<{
                   </td>
                   <td className="py-2 px-3 text-slate-600">{r.part_name || '-'}</td>
                   <td className="py-2 px-3 text-center font-black text-slate-900">
-                    {(r.planned_quantity || 0).toLocaleString('ar-EG')}
+                    {(r.planned_quantity || 0).toLocaleString('en-US')}
                   </td>
                   <td className="py-2 px-3 text-center font-bold text-blue-700">
-                    {r.required_quantity != null ? r.required_quantity.toLocaleString('ar-EG') : '-'}
+                    {r.required_quantity != null ? r.required_quantity.toLocaleString('en-US') : '-'}
                   </td>
                 </tr>
               );
@@ -457,7 +458,7 @@ const CuttingSpreadsTable: React.FC<{ records: CuttingRecord[] }> = ({ records }
                   {rec.shade_degree ? ` (${rec.shade_degree})` : ''}
                 </td>
                 <td className="py-2 px-3 text-center font-bold text-blue-700">
-                  {(rec.layers_count ?? rec.layersCount ?? 0).toLocaleString('ar-EG')}
+                  {(rec.layers_count ?? rec.layersCount ?? 0).toLocaleString('en-US')}
                 </td>
                 <td className="py-2 px-3 text-center font-bold text-slate-700">
                   {rec.pieces_per_layer ?? rec.piecesPerLayer ?? '-'}
@@ -466,7 +467,7 @@ const CuttingSpreadsTable: React.FC<{ records: CuttingRecord[] }> = ({ records }
                   {rec.layer_weight ?? rec.layerWeight ?? 0} كجم
                 </td>
                 <td className="py-2 px-3 text-center font-black text-slate-900">
-                  {(rec.pieces_count ?? rec.piecesCount ?? rec.cut_pieces ?? 0).toLocaleString('ar-EG')} ق
+                  {(rec.pieces_count ?? rec.piecesCount ?? rec.cut_pieces ?? 0).toLocaleString('en-US')} ق
                 </td>
                 <td className="py-2 px-3 font-semibold text-emerald-800">
                   {rec.cutter_name || rec.cutterName || '-'}
@@ -528,13 +529,13 @@ const PrintDispatchesTable: React.FC<{ records: PrintDispatch[] }> = ({ records 
                   {pr.expected_delivery_date || '-'}
                 </td>
                 <td className="py-2 px-3 text-center font-black text-slate-900">
-                  {(pr.pieces_count || 0).toLocaleString('ar-EG')} ق
+                  {(pr.pieces_count || 0).toLocaleString('en-US')} ق
                 </td>
                 <td className="py-2 px-3 text-center font-bold text-emerald-700">
                   {Number(pr.received_pieces ?? 0) > 0
-                    ? `${Number(pr.received_pieces).toLocaleString('ar-EG')} ق`
+                    ? `${Number(pr.received_pieces).toLocaleString('en-US')} ق`
                     : pr.status === 'تم الاستلام بالمصنع'
-                    ? `${(pr.pieces_count || 0).toLocaleString('ar-EG')} ق`
+                    ? `${(pr.pieces_count || 0).toLocaleString('en-US')} ق`
                     : '-'}
                 </td>
                 <td className="py-2 px-3 text-center font-bold text-indigo-700">{pr.status}</td>
@@ -587,7 +588,7 @@ const SewingDispatchesTable: React.FC<{ records: SewingDispatch[] }> = ({ record
                 </td>
                 <td className="py-2 px-3 text-center font-mono text-emerald-700">{sd.received_at || '-'}</td>
                 <td className="py-2 px-3 text-center font-black text-slate-900">
-                  {(sd.pieces_count || 0).toLocaleString('ar-EG')} ق
+                  {(sd.pieces_count || 0).toLocaleString('en-US')} ق
                 </td>
                 <td className="py-2 px-3 text-center font-bold text-emerald-700">{sd.status}</td>
                 <td className="py-2 px-3 text-slate-600">{sd.notes || '-'}</td>
@@ -646,7 +647,7 @@ const QcMatrixTable: React.FC<{
             <div className="bg-slate-900 px-4 py-2 font-black text-white text-xs flex items-center justify-between">
               <span>مصفوفة العد — قطعة: {getPartLabel(part)}</span>
               <span className="text-[11px] font-bold text-emerald-300">
-                سليم: {matrix.grand.good.toLocaleString('ar-EG')} • هالك: {matrix.grand.defect.toLocaleString('ar-EG')}
+                سليم: {matrix.grand.good.toLocaleString('en-US')} • هالك: {matrix.grand.defect.toLocaleString('en-US')}
               </span>
             </div>
             <div className="overflow-x-auto">
@@ -683,7 +684,7 @@ const QcMatrixTable: React.FC<{
                             <td key={s} className="py-2 px-2 text-center">
                               {v ? (
                                 <span className="font-bold text-slate-800">
-                                  {v.good.toLocaleString('ar-EG')}
+                                  {v.good.toLocaleString('en-US')}
                                   {v.defect > 0 && (
                                     <span className="text-rose-600 font-black"> / {v.defect}</span>
                                   )}
@@ -695,10 +696,10 @@ const QcMatrixTable: React.FC<{
                           );
                         })}
                         <td className="py-2 px-3 text-center font-black text-emerald-700 bg-emerald-50/40">
-                          {rowGood.toLocaleString('ar-EG')}
+                          {rowGood.toLocaleString('en-US')}
                         </td>
                         <td className="py-2 px-3 text-center font-black text-rose-700 bg-rose-50/40">
-                          {rowDefect.toLocaleString('ar-EG')}
+                          {rowDefect.toLocaleString('en-US')}
                         </td>
                       </tr>
                     );
@@ -709,15 +710,15 @@ const QcMatrixTable: React.FC<{
                     <td className="py-2 px-3">الإجمالي</td>
                     {matrix.sizeTotals.map((t) => (
                       <td key={t.size} className="py-2 px-2 text-center">
-                        {t.good.toLocaleString('ar-EG')}
+                        {t.good.toLocaleString('en-US')}
                         {t.defect > 0 && <span className="text-rose-600"> / {t.defect}</span>}
                       </td>
                     ))}
                     <td className="py-2 px-3 text-center text-emerald-800">
-                      {matrix.grand.good.toLocaleString('ar-EG')}
+                      {matrix.grand.good.toLocaleString('en-US')}
                     </td>
                     <td className="py-2 px-3 text-center text-rose-800">
-                      {matrix.grand.defect.toLocaleString('ar-EG')}
+                      {matrix.grand.defect.toLocaleString('en-US')}
                     </td>
                   </tr>
                 </tfoot>
@@ -948,7 +949,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
         user: cutFinishEvent?.user || cutFinishEvent?.user_name || cutRecs[0]?.cutter_name,
         summary: cutRecs.length
           ? `${cutRecs.length} فرشة • المقصوص: ${formatPartsQty(cutByPart)}`
-          : `لم يبدأ القص • المستهدف: ${(model.target_cut_quantity || 0).toLocaleString('ar-EG')} قطعة`
+          : `لم يبدأ القص • المستهدف: ${(model.target_cut_quantity || 0).toLocaleString('en-US')} قطعة`
       },
       {
         key: 'qc_pre_print',
@@ -1077,12 +1078,14 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
       .filter((s) => s.model_id === model.id)
       .map((s) => s.workshop_name)
       .join(' ');
+    const q = toLatinDigits(searchTerm).trim().toLowerCase();
     const matchesSearch =
-      model.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (model.model_type || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (model.cutter_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      printHouse.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      workshops.toLowerCase().includes(searchTerm.toLowerCase());
+      !q ||
+      toLatinDigits(model.model_code).toLowerCase().includes(q) ||
+      toLatinDigits(model.model_type || '').toLowerCase().includes(q) ||
+      (model.cutter_name || '').toLowerCase().includes(q) ||
+      printHouse.toLowerCase().includes(q) ||
+      workshops.toLowerCase().includes(q);
 
     if (!matchesSearch) return false;
 
@@ -1170,10 +1173,10 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
           <td class="text-right"><strong>${escapeHtml(m.model_code)}</strong></td>
           <td>${escapeHtml(GARMENT_COMPOSITION_LABELS[m.garment_composition || 'two_pieces'] || 'غير محدد')}</td>
           <td><strong>${escapeHtml(STAGE_META[resolveCurrentStageKey(m)].title)}</strong></td>
-          <td class="num">${(m.target_cut_quantity || 0).toLocaleString('ar-EG')}</td>
-          <td class="num"><strong>${cutCount.toLocaleString('ar-EG')}</strong></td>
-          <td class="num">${m.count_after_print ? m.count_after_print.toLocaleString('ar-EG') : '—'}</td>
-          <td class="num">${m.count_after_sewing ? m.count_after_sewing.toLocaleString('ar-EG') : '—'}</td>
+          <td class="num">${(m.target_cut_quantity || 0).toLocaleString('en-US')}</td>
+          <td class="num"><strong>${cutCount.toLocaleString('en-US')}</strong></td>
+          <td class="num">${m.count_after_print ? m.count_after_print.toLocaleString('en-US') : '—'}</td>
+          <td class="num">${m.count_after_sewing ? m.count_after_sewing.toLocaleString('en-US') : '—'}</td>
           <td class="text-right">${escapeHtml(ownerParts || '—')}</td>
         </tr>`;
       })
@@ -1208,7 +1211,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
         logo: globalSettings.logo,
         title: 'كشف جرد وتتبع حركة الموديلات الشامل',
         subtitle: 'متابعة جميع الموديلات عبر 12 مرحلة إنتاج',
-        metaItems: [`إجمالي الموديلات: ${filteredModels.length.toLocaleString('ar-EG')}`]
+        metaItems: [`إجمالي الموديلات: ${filteredModels.length.toLocaleString('en-US')}`]
       },
       bodyHtml,
       popupBlockedMessage: 'يرجى السماح بالنوافذ المنبثقة (Pop-ups) لطباعة كشف جرد الموديلات.'
@@ -1407,7 +1410,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                             </span>
                             <span className="text-[10px] text-slate-400 font-medium">
                               {model.created_at
-                                ? new Date(model.created_at).toLocaleDateString('ar-EG')
+                                ? new Date(model.created_at).toLocaleDateString('ar-EG-u-nu-latn')
                                 : '-'}
                             </span>
                           </div>
@@ -1444,12 +1447,12 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
 
 
                       <td className="py-3 px-3 text-center font-bold text-slate-700">
-                        {(model.target_cut_quantity || 0).toLocaleString('ar-EG')}
+                        {(model.target_cut_quantity || 0).toLocaleString('en-US')}
                       </td>
 
                       <td className="py-3 px-3 text-center">
                         <div className="font-extrabold text-blue-700">
-                          {cutPieces > 0 ? cutPieces.toLocaleString('ar-EG') : '-'}
+                          {cutPieces > 0 ? cutPieces.toLocaleString('en-US') : '-'}
                         </div>
                         {cutPieces > 0 && (
                           <div className="text-[10px] text-slate-500 font-semibold mt-0.5">
@@ -1460,7 +1463,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
 
                       <td className="py-3 px-3 text-center">
                         <div className="font-extrabold text-fuchsia-700">
-                          {postPrintShown ? postPrintShown.toLocaleString('ar-EG') : '-'}
+                          {postPrintShown ? postPrintShown.toLocaleString('en-US') : '-'}
                         </div>
                         {postPrintTotal > 0 && (
                           <div className="text-[10px] text-slate-500 font-semibold mt-0.5">
@@ -1471,7 +1474,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
 
                       <td className="py-3 px-3 text-center">
                         <div className="font-extrabold text-teal-700">
-                          {postSewShown ? postSewShown.toLocaleString('ar-EG') : '-'}
+                          {postSewShown ? postSewShown.toLocaleString('en-US') : '-'}
                         </div>
                         {postSewTotal > 0 && (
                           <div className="text-[10px] text-slate-500 font-semibold mt-0.5">
@@ -1637,7 +1640,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                 <div>
                   <span className="text-slate-500 block">المستهدف للقص:</span>
                   <strong className="text-slate-900 text-sm font-black">
-                    {(model.target_cut_quantity || 0).toLocaleString('ar-EG')} ق
+                    {(model.target_cut_quantity || 0).toLocaleString('en-US')} ق
                   </strong>
                 </div>
                 <div>
@@ -1873,7 +1876,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                         <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200">
                           <span className="text-slate-500 font-bold block text-[10px]">المستهدف للقص</span>
                           <strong className="text-slate-900 font-black">
-                            {(model.target_cut_quantity || 0).toLocaleString('ar-EG')} قطعة
+                            {(model.target_cut_quantity || 0).toLocaleString('en-US')} قطعة
                           </strong>
                         </div>
                       </div>
@@ -2091,7 +2094,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                                 الأطقم الجاهزة بالمخزن
                               </span>
                               <strong className="text-base font-black text-emerald-900">
-                                {setsCount.toLocaleString('ar-EG')} طقم
+                                {setsCount.toLocaleString('en-US')} طقم
                               </strong>
                             </div>
                             <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200">
@@ -2117,7 +2120,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                                 عينات بالتصوير
                               </span>
                               <strong className="text-indigo-900 font-black">
-                                {photoHold.toLocaleString('ar-EG')} قطعة
+                                {photoHold.toLocaleString('en-US')} قطعة
                               </strong>
                             </div>
                           </div>
@@ -2135,7 +2138,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                                     key={part}
                                     className="px-3 py-1 rounded-full bg-white border border-slate-200 text-xs font-bold text-slate-800"
                                   >
-                                    {getPartLabel(part)}: {qty.toLocaleString('ar-EG')} قطعة
+                                    {getPartLabel(part)}: {qty.toLocaleString('en-US')} قطعة
                                   </span>
                                 );
                               })}
@@ -2232,7 +2235,7 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                   كشف جرد وتتبع حركة الموديلات الشامل
                 </h2>
                 <div className="text-xs text-slate-500 mt-1 flex justify-center gap-6">
-                  <span>تاريخ التقرير: {new Date().toLocaleDateString('ar-EG')}</span>
+                  <span>تاريخ التقرير: {new Date().toLocaleDateString('ar-EG-u-nu-latn')}</span>
                   <span>إجمالي الموديلات: {filteredModels.length}</span>
                 </div>
               </div>
@@ -2266,16 +2269,16 @@ export const MasterModelTrackingView: React.FC<MasterModelTrackingViewProps> = (
                           {STAGE_META[resolveCurrentStageKey(m)].title}
                         </td>
                         <td className="py-2 px-3 text-center text-slate-600">
-                          {(m.target_cut_quantity || 0).toLocaleString('ar-EG')}
+                          {(m.target_cut_quantity || 0).toLocaleString('en-US')}
                         </td>
                         <td className="py-2 px-3 text-center font-bold text-slate-900">
-                          {cutCount.toLocaleString('ar-EG')}
+                          {cutCount.toLocaleString('en-US')}
                         </td>
                         <td className="py-2 px-3 text-center text-slate-700">
-                          {m.count_after_print ? m.count_after_print.toLocaleString('ar-EG') : '-'}
+                          {m.count_after_print ? m.count_after_print.toLocaleString('en-US') : '-'}
                         </td>
                         <td className="py-2 px-3 text-center text-slate-700">
-                          {m.count_after_sewing ? m.count_after_sewing.toLocaleString('ar-EG') : '-'}
+                          {m.count_after_sewing ? m.count_after_sewing.toLocaleString('en-US') : '-'}
                         </td>
                         <td className="py-2 px-3 text-slate-600 text-[11px]">
                           {m.cutter_name ? `مقصدار: ${m.cutter_name} ` : ''}

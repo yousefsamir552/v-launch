@@ -1,10 +1,11 @@
 import React from 'react';
 import { Crop as CropIcon, RotateCcw } from 'lucide-react';
 import type { ImageCropRegion, ModelAccessory } from '../types';
+import { toLatinDigits } from '../utils/latinDigits';
 import { isImageLogo } from '../utils/printShared';
 import { CroppedImage } from './ImageCropperModal';
 
-/** البيانات الكاملة اللازمة لورقة المكن الواحدة (تيشرت أو بنطلون). */
+/** البيانات الكاملة اللازمة لورقة المكن الواحدة (تيشرت أو بنطلون أو جاكيت). */
 export interface SewingSheetData {
   pieceType: 'shirt' | 'pants' | 'jacket' | 'single';
   pieceLabel: string;
@@ -35,26 +36,35 @@ interface SewingSheetPreviewProps {
 }
 
 const fmt = (value: number): string =>
-  Math.round(Number.isFinite(value) ? value : 0).toLocaleString('ar-EG');
+  Math.round(Number.isFinite(value) ? value : 0).toLocaleString('en-US');
 
 /** يحافظ على الكسور العشرية للاستهلاك لكل قطعة (مثل 0.4 متر) بدون تصفيرها بـ Math.round. */
 const fmtDecimal = (value: number): string =>
-  (Number.isFinite(value) ? Number(value.toFixed(3)) : 0).toLocaleString('ar-EG', {
+  (Number.isFinite(value) ? Number(value.toFixed(3)) : 0).toLocaleString('en-US', {
     maximumFractionDigits: 3
   });
 
 /** إجمالي الإكسسوار المطلوب يُقرّب للأعلى (Math.ceil) لضمان عدم العجز. */
 const fmtTotalCeil = (value: number): string =>
-  Math.ceil(Number.isFinite(value) && value > 0 ? value : 0).toLocaleString('ar-EG');
+  Math.ceil(Number.isFinite(value) && value > 0 ? value : 0).toLocaleString('en-US');
 
-const Field: React.FC<{ label: string; value: string; strong?: boolean }> = ({
-  label,
-  value,
-  strong
-}) => (
-  <div className="flex items-baseline justify-between gap-2 border-b border-dotted border-slate-300 px-0.5 py-1">
+const Field: React.FC<{
+  label: string;
+  value: string;
+  strong?: boolean;
+  highlight?: boolean;
+}> = ({ label, value, strong, highlight }) => (
+  <div
+    className={`flex items-baseline justify-between gap-2 border-b border-dotted border-slate-300 px-1.5 py-1 ${
+      highlight ? 'bg-slate-50 rounded-md' : ''
+    }`}
+  >
     <span className="text-slate-500 font-bold whitespace-nowrap">{label}</span>
-    <span className={`font-black text-slate-900 text-start ${strong ? 'text-[13px]' : ''}`}>
+    <span
+      className={`font-black text-slate-900 text-start tabular-nums ${
+        strong ? 'text-[13.5px]' : ''
+      }`}
+    >
       {value}
     </span>
   </div>
@@ -67,90 +77,146 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
   hasCustomImage,
   isLast
 }) => {
+  const hasDesignNotes = Boolean(data.designNotes && data.designNotes.trim());
+  const hasPieceNotes = Boolean(data.pieceNotes && data.pieceNotes.trim());
+  const cropRatio =
+    data.crop && data.crop.h > 0 ? data.crop.w / data.crop.h : 1;
+
   return (
     <div
-      className={`bg-white border border-slate-300 rounded-lg p-5 text-slate-900 ${
+      className={`bg-white border border-slate-300 rounded-xl p-4 sm:p-5 text-slate-900 shadow-xs ${
         isLast ? '' : 'print-page-break'
       }`}
     >
-      {/* هيدر الورقة */}
-      <div className="text-center border-b-[3px] border-double border-slate-800 pb-2 mb-3">
-        <div className="flex items-center justify-center mb-1">
+      {/* 1. ترويسة علوية مدمجة ونظيفة */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-slate-900 pb-2.5 mb-3">
+        <div className="flex items-center gap-2.5 min-w-0">
           {isImageLogo(data.logo) ? (
             <img
               src={data.logo}
               alt={data.siteName}
-              className="h-12 w-auto max-w-[170px] object-contain"
+              className="h-10 w-auto max-w-[130px] object-contain shrink-0"
               onError={(e) => {
                 (e.target as HTMLImageElement).style.display = 'none';
               }}
             />
           ) : (
-            <span className="text-3xl leading-none">{data.logo || '🏭'}</span>
+            <span className="text-2xl leading-none shrink-0">{data.logo || '🏭'}</span>
           )}
+          <div className="min-w-0">
+            <div className="text-sm font-black text-slate-900 leading-tight truncate">
+              {data.siteName}
+            </div>
+            <div className="text-[10px] font-bold text-slate-500">
+              نظام إدارة الإنتاج والمصنع
+            </div>
+          </div>
         </div>
-        <h4 className="text-lg font-black leading-snug">
-          {data.siteName} — أمر تشغيل ورشة المكن
-        </h4>
-        <p className="text-xs font-bold text-slate-600 mt-0.5">
-          قسم الخياطة والمكن — ورقة {data.pieceLabel}
-        </p>
+
+        <div className="text-center flex-1 min-w-[200px]">
+          <h4 className="text-base sm:text-lg font-black leading-snug text-slate-900">
+            أمر تشغيل ورشة المكن — ورقة {data.pieceLabel}
+          </h4>
+          <p className="text-[11px] font-bold text-slate-600">قسم الخياطة والمكن</p>
+        </div>
+
+        <div className="text-end text-[11px] font-bold text-slate-600 shrink-0 tabular-nums">
+          <div>
+            الموديل: <strong className="text-slate-900">{toLatinDigits(data.modelCode)}</strong>
+          </div>
+        </div>
       </div>
 
-      {/* بيانات الموديل */}
-      <div className="flex flex-col sm:flex-row gap-3 items-stretch border-[1.5px] border-slate-800 rounded-lg p-3 mb-3">
-        <div className="shrink-0 w-full sm:w-[190px] flex flex-col items-center gap-1.5">
-          <div className="w-full flex items-center justify-center overflow-hidden rounded-md border border-slate-300 bg-slate-50 p-1">
-            {data.crop ? (
+      {/* 2. النصف العلوي: مربع صورة الموديل بحجم كبير وواضح */}
+      <div className="mb-3">
+        <div
+          className="relative w-full h-[360px] sm:h-[440px] rounded-xl border-[1.5px] border-slate-800 bg-white p-2.5 flex items-center justify-center overflow-hidden"
+          style={{ containerType: 'size' }}
+        >
+          {data.imageUrl ? (
+            data.crop ? (
               <CroppedImage
                 src={data.imageUrl}
                 alt={data.modelCode}
                 crop={data.crop}
-                className="w-full"
-                style={{ width: '100%', aspectRatio: `${data.crop.w} / ${data.crop.h}` }}
+                style={{
+                  width: `min(100cqw, calc(100cqh * ${cropRatio}))`,
+                  height: `min(100cqh, calc(100cqw / ${cropRatio}))`
+                }}
               />
             ) : (
               <img
                 src={data.imageUrl}
                 alt={data.modelCode}
-                className="w-full object-contain"
-                style={{ maxHeight: 200 }}
+                className="w-full h-full object-contain bg-white"
               />
-            )}
-          </div>
+            )
+          ) : (
+            <span className="text-xs font-bold text-slate-400">لا توجد صورة للموديل</span>
+          )}
+        </div>
+
+        {/* شريط أدوات قص الصورة (للمعاينة فقط ولا يُطبع) */}
+        <div className="print:hidden mt-2 flex flex-wrap items-center justify-center gap-2">
           <button
             type="button"
             onClick={onEditImage}
-            className="print:hidden inline-flex items-center justify-center gap-1 w-full px-2 py-1 rounded-md bg-slate-900 text-white text-[10px] font-bold hover:bg-slate-700 cursor-pointer"
+            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-700 transition cursor-pointer"
           >
-            <CropIcon className="w-3 h-3" /> تعديل / قص الصورة
+            <CropIcon className="w-3.5 h-3.5" />
+            <span>✂️ تعديل / قص الصورة</span>
           </button>
           {hasCustomImage && (
             <button
               type="button"
               onClick={onResetImage}
-              className="print:hidden inline-flex items-center justify-center gap-1 w-full px-2 py-1 rounded-md bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-bold hover:bg-amber-200 cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-amber-100 border border-amber-300 text-amber-900 text-xs font-bold hover:bg-amber-200 transition cursor-pointer"
             >
-              <RotateCcw className="w-3 h-3" /> إعادة تعيين الصورة الأصلية
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>إعادة تعيين الصورة الأصلية</span>
             </button>
           )}
         </div>
+      </div>
 
-        <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-0.5 content-start text-[12px]">
-          <Field label="كود الموديل" value={data.modelCode} />
-          <Field label="نوع الموديل" value={data.modelType || '—'} />
-          <Field label="فئة المقاسات" value={data.sizeCategoryName || '—'} />
+      {/* 3. النصف السفلي: بطاقة البيانات الأساسية */}
+      <div className="border-[1.5px] border-slate-800 rounded-lg p-3 mb-2.5 bg-white">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-0.5 text-[12px]">
+          <Field label="كود الموديل" value={toLatinDigits(data.modelCode)} />
+          <Field label="نوع الموديل" value={data.modelType || 'غير محدد'} />
           <Field label="القطعة" value={data.pieceLabel} />
-          <div className="sm:col-span-2 flex items-baseline justify-between gap-2 border-b border-dotted border-slate-300 px-0.5 py-1">
+          <Field
+            label="فئة المقاسات"
+            value={toLatinDigits(data.sizeCategoryName || '—')}
+          />
+          <Field
+            label="العدد المسلم للورشة"
+            value={`${fmt(data.piecesCount)} قطعة`}
+            strong
+            highlight
+          />
+          <Field
+            label="اسم الورشة"
+            value={data.workshopName || 'لم يُرسل للورشة بعد'}
+          />
+          <Field
+            label="تاريخ التسليم للورشة"
+            value={toLatinDigits(data.dispatchDate || '—')}
+          />
+          <Field
+            label="تاريخ الاستلام المتوقع"
+            value={toLatinDigits(data.expectedDate || '—')}
+          />
+          <div className="sm:col-span-2 flex items-baseline justify-between gap-2 border-b border-dotted border-slate-300 px-1.5 py-1">
             <span className="text-slate-500 font-bold whitespace-nowrap">المقاسات المعتمدة</span>
-            <span className="flex flex-wrap gap-1 justify-end">
+            <span className="flex flex-wrap gap-1 justify-end tabular-nums">
               {data.sizes.length > 0 ? (
                 data.sizes.map((size) => (
                   <span
                     key={size}
                     className="px-1.5 py-0.5 border border-slate-500 rounded text-[11px] font-black bg-slate-50"
                   >
-                    {size}
+                    {toLatinDigits(size)}
                   </span>
                 ))
               ) : (
@@ -158,35 +224,40 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
               )}
             </span>
           </div>
-          <Field label="العدد المسلم للورشة" value={`${fmt(data.piecesCount)} قطعة`} strong />
-          <Field label="اسم الورشة" value={data.workshopName || '—'} />
-          <Field label="تاريخ التسليم للورشة" value={data.dispatchDate || '—'} />
-          <Field label="تاريخ الاستلام المتوقع" value={data.expectedDate || 'حسب الاتفاق'} />
         </div>
       </div>
 
-      {/* ملاحظات التصميم */}
-      {data.designNotes && (
-        <div className="border-[1.5px] border-slate-800 rounded-lg px-3 py-2 mb-2 break-inside-avoid">
-          <div className="text-[12px] font-black mb-1">📝 ملاحظات التصميم</div>
-          <div className="text-[12px] whitespace-pre-wrap text-slate-800 leading-relaxed">
-            {data.designNotes}
-          </div>
-        </div>
-      )}
+      {/* ملاحظات التصميم وخياطة القطعة */}
+      {(hasDesignNotes || hasPieceNotes) && (
+        <div
+          className={`grid gap-2 mb-2.5 ${
+            hasDesignNotes && hasPieceNotes ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1'
+          }`}
+        >
+          {hasDesignNotes && (
+            <div className="border-[1.5px] border-slate-800 rounded-lg px-3 py-2 bg-slate-50/60 break-inside-avoid">
+              <div className="text-[11.5px] font-black mb-0.5">📝 ملاحظات التصميم</div>
+              <div className="text-[11.5px] whitespace-pre-wrap text-slate-800 leading-relaxed">
+                {toLatinDigits(data.designNotes)}
+              </div>
+            </div>
+          )}
 
-      {/* ملاحظات خياطة القطعة */}
-      {data.pieceNotes && (
-        <div className="border-[1.5px] border-slate-800 rounded-lg px-3 py-2 mb-2 break-inside-avoid">
-          <div className="text-[12px] font-black mb-1">✂️ ملاحظات خياطة {data.pieceLabel}</div>
-          <div className="text-[12px] whitespace-pre-wrap text-slate-800 leading-relaxed">
-            {data.pieceNotes}
-          </div>
+          {hasPieceNotes && (
+            <div className="border-[1.5px] border-slate-800 rounded-lg px-3 py-2 bg-slate-50/60 break-inside-avoid">
+              <div className="text-[11.5px] font-black mb-0.5">
+                ✂️ ملاحظات خياطة {data.pieceLabel}
+              </div>
+              <div className="text-[11.5px] whitespace-pre-wrap text-slate-800 leading-relaxed">
+                {toLatinDigits(data.pieceNotes)}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {/* جدول الإكسسوارات */}
-      <h5 className="text-[13px] font-black bg-slate-100 border-[1.5px] border-slate-800 rounded-md px-2 py-1 my-2">
+      <h5 className="text-[12.5px] font-black bg-slate-100 border-[1.5px] border-slate-800 rounded-md px-2.5 py-1 my-2">
         إكسسوارات {data.pieceLabel} الخاصة
       </h5>
       <table className="w-full border-collapse text-[11.5px] table-fixed">
@@ -201,7 +272,9 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
         <thead>
           <tr className="bg-slate-100">
             <th className="border-[1.2px] border-slate-800 px-1 py-1.5">#</th>
-            <th className="border-[1.2px] border-slate-800 px-1 py-1.5 text-start">اسم الإكسسوار</th>
+            <th className="border-[1.2px] border-slate-800 px-1 py-1.5 text-start">
+              اسم الإكسسوار
+            </th>
             <th className="border-[1.2px] border-slate-800 px-1 py-1.5">الكود</th>
             <th className="border-[1.2px] border-slate-800 px-1 py-1.5">الاستهلاك / قطعة</th>
             <th className="border-[1.2px] border-slate-800 px-1 py-1.5">الوحدة</th>
@@ -214,22 +287,22 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
               const per = Number(accessory.piece_consumption) || 1;
               return (
                 <tr key={accessory.id} className="break-inside-avoid">
-                  <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center">
+                  <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center tabular-nums">
                     {index + 1}
                   </td>
                   <td className="border-[1.2px] border-slate-800 px-2 py-1.5 text-start font-bold">
                     {accessory.accessory_name || accessory.accessory_code || '—'}
                   </td>
-                  <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center">
-                    {accessory.accessory_code || '—'}
+                  <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center font-mono">
+                    {toLatinDigits(accessory.accessory_code || '—')}
                   </td>
-                  <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center">
+                  <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center tabular-nums">
                     {fmtDecimal(per)}
                   </td>
                   <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center">
                     {accessory.unit || 'قطعة'}
                   </td>
-                  <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center font-black">
+                  <td className="border-[1.2px] border-slate-800 px-1 py-1.5 text-center font-black tabular-nums">
                     {fmtTotalCeil(per * data.piecesCount)}
                   </td>
                 </tr>
@@ -239,7 +312,7 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
             <tr>
               <td
                 colSpan={6}
-                className="border-[1.2px] border-slate-800 px-2 py-2.5 text-center text-slate-400 font-bold"
+                className="border-[1.2px] border-slate-800 px-2 py-2 text-center text-slate-400 font-bold"
               >
                 لا توجد إكسسوارات مسجلة لهذه القطعة.
               </td>
@@ -250,15 +323,17 @@ export const SewingSheetPreview: React.FC<SewingSheetPreviewProps> = ({
 
       {/* التعليمات الثابتة */}
       {data.fixedInstructions && (
-        <div className="border-[1.5px] border-slate-800 rounded-lg px-3 py-2 mt-3 break-inside-avoid">
-          <div className="text-[12px] font-black mb-1">📌 التعليمات والملاحظات الثابتة المعتمدة</div>
-          <div className="text-[12px] whitespace-pre-wrap text-slate-800 leading-relaxed">
-            {data.fixedInstructions}
+        <div className="border-[1.5px] border-slate-800 rounded-lg px-3 py-2 mt-2.5 break-inside-avoid">
+          <div className="text-[11.5px] font-black mb-0.5">
+            📌 التعليمات والملاحظات الثابتة المعتمدة
+          </div>
+          <div className="text-[11.5px] whitespace-pre-wrap text-slate-800 leading-relaxed">
+            {toLatinDigits(data.fixedInstructions)}
           </div>
         </div>
       )}
 
-      {/* شريط التوقيعات */}
+      {/* شريط التوقيعات بالمربعات الكبيرة */}
       <div className="grid grid-cols-3 gap-2.5 mt-3 break-inside-avoid">
         {['مسؤول التسليم والتشغيل', 'توقيع مستلم ورشة المكن', 'اعتماد مشرف الإنتاج'].map((label) => (
           <div
