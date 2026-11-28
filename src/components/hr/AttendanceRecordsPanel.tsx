@@ -45,20 +45,24 @@ interface AttendanceRecordForm {
   excuse_note: string;
   calculated_deduction_days: string;
   calculated_deduction_hours: string;
+  weekly_off_worked_hours: string;
+  weekly_off_hour_multiplier_override: string;
   review_status: HRReviewStatus;
 }
 
 const emptyRecordForm = (employeeId: string): AttendanceRecordForm => ({
   employee_id: employeeId,
   date: todayISO(),
-  check_in: '08:30',
-  check_out: '17:30',
+  check_in: '08:00',
+  check_out: '17:00',
   status: 'present',
   is_excused: false,
   absence_decision: '',
   excuse_note: '',
   calculated_deduction_days: '0',
   calculated_deduction_hours: '0',
+  weekly_off_worked_hours: '',
+  weekly_off_hour_multiplier_override: '',
   review_status: 'auto_applied'
 });
 
@@ -371,6 +375,15 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
       excuse_note: record.excuse_note || '',
       calculated_deduction_days: String(record.calculated_deduction_days ?? 0),
       calculated_deduction_hours: String(record.calculated_deduction_hours ?? 0),
+      weekly_off_worked_hours:
+        record.weekly_off_worked_hours !== undefined && record.weekly_off_worked_hours !== null
+          ? String(record.weekly_off_worked_hours)
+          : '',
+      weekly_off_hour_multiplier_override:
+        record.weekly_off_hour_multiplier_override !== undefined &&
+        record.weekly_off_hour_multiplier_override !== null
+          ? String(record.weekly_off_hour_multiplier_override)
+          : '',
       review_status: record.review_status || 'auto_applied'
     });
     setFormError('');
@@ -428,6 +441,12 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
       excuse_note: form.excuse_note.trim(),
       calculated_deduction_days: manualDays,
       calculated_deduction_hours: manualHours,
+      weekly_off_worked_hours:
+        form.weekly_off_worked_hours !== '' ? Number(form.weekly_off_worked_hours) : null,
+      weekly_off_hour_multiplier_override:
+        form.weekly_off_hour_multiplier_override !== ''
+          ? Number(form.weekly_off_hour_multiplier_override)
+          : null,
       review_status: form.review_status,
       manual_deduction: manualDeduction,
       recalculate: !manualDeduction
@@ -1401,7 +1420,7 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
                       {
                         key: 'excused_unpaid',
                         label: '🟡 بعذر (خصم اليوم فقط)',
-                        hint: 'خصم اليوم بدون جزاء وبدون خصم الأحد',
+                        hint: 'خصم اليوم بدون جزاء إضافي (ويدخل في عدّاد الأحد)',
                         activeClass: 'bg-amber-500 text-white border-amber-600',
                         idleClass: 'bg-white text-amber-800 border-amber-200 hover:bg-amber-50'
                       },
@@ -1521,6 +1540,41 @@ export const AttendanceRecordsPanel: React.FC<{ employees: HREmployee[] }> = ({ 
                 </select>
               </div>
             </div>
+
+            {form.date && new Date(`${form.date}T00:00:00`).getDay() === weeklyOffIndex && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 rounded-2xl bg-blue-50/70 border border-blue-200">
+                <div>
+                  <label className={labelClass}>
+                    ساعات العمل الفعلية يوم {weeklyOffLabel} (اختياري — تُحسب تلقائياً من البصمات)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.25"
+                    placeholder="مثال: 5"
+                    value={form.weekly_off_worked_hours}
+                    onChange={(event) => updateForm({ weekly_off_worked_hours: event.target.value })}
+                    className={`${inputClass} font-mono`}
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>
+                    معامل ساعات يوم {weeklyOffLabel} المخصص (اختياري — افتراضي الإعدادات)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.25"
+                    placeholder="مثال: 1.5"
+                    value={form.weekly_off_hour_multiplier_override}
+                    onChange={(event) =>
+                      updateForm({ weekly_off_hour_multiplier_override: event.target.value })
+                    }
+                    className={`${inputClass} font-mono`}
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-blue-50 border border-blue-200 text-blue-800 text-[11px] font-bold">
               <Info className="w-4 h-4 shrink-0" />

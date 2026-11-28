@@ -15,6 +15,7 @@ from .models import (
     PART_STAGE_LABELS, PART_STAGE_ORDER, PART_TYPE_CHOICES,
     HRJobTitle, HREmployee, HRAttendanceSettings,
     HRAttendanceRecord, HRPenalty, HRLoan, HRPayrollSnapshot,
+    HRBonusPlan, HRDirectBonus,
     RANK_SUDO, RANK_LEVEL_THREE, DEFAULT_RANK_LEVEL,
     coerce_rank_level, rank_visibility_label, SALARY_PERMISSION_KEYS,
     normalize_ui_preferences,
@@ -1250,6 +1251,25 @@ class HREmployeeSerializer(serializers.ModelSerializer):
             ),
             'hire_date': to_date_str(instance.hire_date) or None,
             'termination_date': to_date_str(instance.termination_date) or None,
+            'shift_start_time': to_time_str(instance.shift_start_time) if instance.shift_start_time else '',
+            'shift_end_time': to_time_str(instance.shift_end_time) if instance.shift_end_time else '',
+            'late_grace_minutes': instance.late_grace_minutes,
+            'late_grace_period_months': instance.late_grace_period_months,
+            'recurring_bonus_plan_ids': [
+                get_ext_id(p) for p in instance.recurring_bonus_plans.all()
+            ] if instance.pk else [],
+            'recurring_bonus_plans': [
+                {
+                    'id': get_ext_id(p),
+                    'name': p.name,
+                    'category': p.category,
+                    'category_label': p.get_category_display(),
+                    'value_type': p.value_type,
+                    'value': float(p.value or 0),
+                    'is_active': bool(p.is_active),
+                }
+                for p in instance.recurring_bonus_plans.all()
+            ] if instance.pk else [],
             'phone': instance.phone or '',
             'photo': instance.photo or '',
             'notes': instance.notes or '',
@@ -1268,12 +1288,18 @@ class HRAttendanceSettingsSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         return {
             'id': str(instance.id),
-            'official_start_time': to_time_str(instance.official_start_time, '08:30'),
-            'official_end_time': to_time_str(instance.official_end_time, '17:30'),
+            'official_start_time': to_time_str(instance.official_start_time, '08:00'),
+            'official_end_time': to_time_str(instance.official_end_time, '17:00'),
             'weekly_off_day': instance.weekly_off_day,
             'weekly_off_day_label': instance.weekly_off_day_label,
             'month_calculation_days': instance.month_calculation_days or 30,
             'weekly_off_work_multiplier': float(instance.weekly_off_work_multiplier if instance.weekly_off_work_multiplier is not None else 1.0),
+            'weekly_off_partial_hour_multiplier': float(instance.weekly_off_partial_hour_multiplier if instance.weekly_off_partial_hour_multiplier is not None else 1.0),
+            'overtime_regular_multiplier': float(instance.overtime_regular_multiplier if instance.overtime_regular_multiplier is not None else 1.0),
+            'overtime_night_multiplier': float(instance.overtime_night_multiplier if instance.overtime_night_multiplier is not None else 1.0),
+            'overtime_holiday_multiplier': float(instance.overtime_holiday_multiplier if instance.overtime_holiday_multiplier is not None else 2.0),
+            'monthly_late_grace_minutes': int(instance.monthly_late_grace_minutes or 0),
+            'monthly_late_grace_period_months': int(instance.monthly_late_grace_period_months or 1),
             'working_hours_per_day': float(instance.working_hours_per_day),
             'rules_json': instance.rules_json if isinstance(instance.rules_json, list) else [],
             'overtime_rules': instance.overtime_rules if isinstance(instance.overtime_rules, list) else [],
@@ -1314,6 +1340,12 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
             'early_minutes': float(instance.early_minutes or 0),
             'overtime_days': float(instance.overtime_days or 0),
             'overtime_hours': float(instance.overtime_hours or 0),
+            'weekly_off_worked_hours': float(instance.weekly_off_worked_hours) if instance.weekly_off_worked_hours is not None else None,
+            'weekly_off_hour_multiplier_override': (
+                float(instance.weekly_off_hour_multiplier_override)
+                if instance.weekly_off_hour_multiplier_override is not None
+                else None
+            ),
             'sunday_deduction_days': float(instance.sunday_deduction_days or 0),
             'sunday_deduction_note': instance.sunday_deduction_note or '',
             'review_status': instance.review_status,
@@ -1357,7 +1389,59 @@ class HRLoanSerializer(serializers.ModelSerializer):
             'employee_name': employee.name if employee else '',
             'date': to_date_str(instance.date) or None,
             'amount': float(instance.amount or 0),
+            'loan_kind': instance.loan_kind or 'standard',
+            'loan_kind_label': instance.get_loan_kind_display(),
+            'parent_loan_id': get_ext_id(instance.parent_loan) if instance.parent_loan_id else None,
+            'total_amount': float(instance.total_amount if instance.total_amount is not None else (instance.amount or 0)),
+            'installments_count': int(instance.installments_count or 1),
+            'installment_number': int(instance.installment_number or 1),
+            'source_month': instance.source_month or '',
             'notes': instance.notes or '',
+            'created_at': instance.created_at.isoformat() if instance.created_at else '',
+        }
+
+
+class HRBonusPlanSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HRBonusPlan
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        return {
+            'id': get_ext_id(instance),
+            'name': instance.name,
+            'category': instance.category,
+            'category_label': instance.get_category_display(),
+            'value_type': instance.value_type,
+            'value_type_label': instance.get_value_type_display(),
+            'value': float(instance.value or 0),
+            'requires_full_month': bool(instance.requires_full_month),
+            'affected_by_absence': bool(instance.affected_by_absence),
+            'absence_deduction_percent': float(instance.absence_deduction_percent or 0),
+            'affected_by_late': bool(instance.affected_by_late),
+            'late_deduction_percent': float(instance.late_deduction_percent or 0),
+            'is_active': bool(instance.is_active),
+            'notes': instance.notes or '',
+            'employees_count': instance.employees.count(),
+            'created_at': instance.created_at.isoformat() if instance.created_at else '',
+        }
+
+
+class HRDirectBonusSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HRDirectBonus
+        fields = '__all__'
+
+    def to_representation(self, instance):
+        employee = instance.employee
+        return {
+            'id': get_ext_id(instance),
+            'employee_id': get_ext_id(employee),
+            'employee_code': employee.employee_code if employee else '',
+            'employee_name': employee.name if employee else '',
+            'date': to_date_str(instance.date) or None,
+            'amount': float(instance.amount or 0),
+            'reason': instance.reason or '',
             'created_at': instance.created_at.isoformat() if instance.created_at else '',
         }
 

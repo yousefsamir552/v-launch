@@ -1530,19 +1530,56 @@ export interface HRAttendanceRule {
   deduction_type: HRRuleDeductionType;
   deduction_value: number;
   apply_mode: HRRuleApplyMode;
+  /** هل تُخصم هذه الشريحة من رصيد السماح الشهري (مع أثر رجعي عند التجاوز)؟ */
+  uses_monthly_grace?: boolean;
 }
 
 /** نوع مكافأة العمل الإضافي: أيام أو ساعات. */
 export type HROvertimeRewardType = 'hours' | 'days';
 
-/** قاعدة/شريحة عمل إضافي مربوطة بوقت الانصراف. */
+/** قاعدة/شريحة عمل إضافي مربوطة بوقت الانصراف أو بنهاية الوردية نسبياً. */
 export interface HROvertimeRule {
   id: string;
   label?: string;
   from_time: string;
   to_time: string;
+  offset_from_minutes?: number | null;
+  offset_to_minutes?: number | null;
   reward_type: HROvertimeRewardType;
   reward_value: number;
+}
+
+export type HRBonusCategory = 'attendance' | 'quality' | 'other';
+export type HRBonusValueType = 'fixed' | 'percent';
+
+export interface HRBonusPlan {
+  id: string;
+  name: string;
+  category: HRBonusCategory;
+  category_label?: string;
+  value_type: HRBonusValueType;
+  value_type_label?: string;
+  value: number;
+  requires_full_month: boolean;
+  affected_by_absence: boolean;
+  absence_deduction_percent: number;
+  affected_by_late: boolean;
+  late_deduction_percent: number;
+  is_active: boolean;
+  notes?: string;
+  employees_count?: number;
+  created_at?: string;
+}
+
+export interface HRDirectBonus {
+  id: string;
+  employee_id: string;
+  employee_code?: string;
+  employee_name?: string;
+  date: string;
+  amount: number;
+  reason?: string;
+  created_at?: string;
 }
 
 export interface HRJobTitle {
@@ -1570,6 +1607,20 @@ export interface HREmployee {
   birth_date?: string | null;
   hire_date?: string | null;
   termination_date?: string | null;
+  shift_start_time?: string;
+  shift_end_time?: string;
+  late_grace_minutes?: number | null;
+  late_grace_period_months?: number | null;
+  recurring_bonus_plan_ids?: string[];
+  recurring_bonus_plans?: Array<{
+    id: string;
+    name: string;
+    category: HRBonusCategory;
+    category_label?: string;
+    value_type: HRBonusValueType;
+    value: number;
+    is_active?: boolean;
+  }>;
   phone?: string;
   photo?: string;
   notes?: string;
@@ -1591,6 +1642,18 @@ export interface HRAttendanceSettings {
   month_calculation_days: number;
   /** معامل أجر العمل يوم الإجازة الأسبوعية (مثلاً 1.0 أو 1.5 أو 2.0). */
   weekly_off_work_multiplier?: number;
+  /** معامل ساعات العمل الجزئي يوم الإجازة الأسبوعية. */
+  weekly_off_partial_hour_multiplier?: number;
+  /** معامل الإضافي في الأيام العادية. */
+  overtime_regular_multiplier?: number;
+  /** معامل الإضافي الليلي. */
+  overtime_night_multiplier?: number;
+  /** معامل العمل في الإجازات الرسمية. */
+  overtime_holiday_multiplier?: number;
+  /** رصيد السماح الافتراضي للتأخير (بالدقائق). */
+  monthly_late_grace_minutes?: number;
+  /** دورية رصيد السماح الافتراضية (بالشهور). */
+  monthly_late_grace_period_months?: number;
   /** ساعات العمل اليومية المحسوبة ديناميكياً من مواعيد الحضور والانصراف. */
   working_hours_per_day?: number;
   rules_json: HRAttendanceRule[];
@@ -1626,6 +1689,8 @@ export interface HRAttendanceRecord {
   early_minutes?: number;
   overtime_days?: number;
   overtime_hours?: number;
+  weekly_off_worked_hours?: number | null;
+  weekly_off_hour_multiplier_override?: number | null;
   sunday_deduction_days?: number;
   sunday_deduction_note?: string;
   review_status: HRReviewStatus;
@@ -1696,6 +1761,8 @@ export interface HRPenalty {
   created_at?: string;
 }
 
+export type HRLoanKind = 'standard' | 'installment' | 'carryover_debt';
+
 export interface HRLoan {
   id: string;
   employee_id: string;
@@ -1703,6 +1770,13 @@ export interface HRLoan {
   employee_name?: string;
   date: string;
   amount: number;
+  loan_kind?: HRLoanKind;
+  loan_kind_label?: string;
+  parent_loan_id?: string | null;
+  total_amount?: number;
+  installments_count?: number;
+  installment_number?: number;
+  source_month?: string;
   notes?: string;
   created_at?: string;
 }

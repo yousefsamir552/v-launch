@@ -677,7 +677,7 @@ def is_attended_record(record) -> bool:
 
 
 def is_excused_unpaid_record(record) -> bool:
-    """غياب بعذر (خصم اليوم فقط دون جزاء إضافي ودون دخول في خصم الإجازة الأسبوعية)."""
+    """غياب بعذر (خصم اليوم فقط دون جزاء إضافي، ويدخل الآن في عدّاد خصم الإجازة الأسبوعية)."""
     if record is None or is_attended_record(record):
         return False
     status = getattr(record, 'status', '') or ''
@@ -686,13 +686,68 @@ def is_excused_unpaid_record(record) -> bool:
     return False
 
 
+def is_pending_absence_record(record) -> bool:
+    """غياب معلّق بدون قرار مسؤول (يُعامل كغياب بعذر لصالح العامل عند الحساب ويدخل في عدّاد الأحد)."""
+    if record is None or is_attended_record(record):
+        return False
+    status = getattr(record, 'status', '') or ''
+    if status in ('absent', 'leave'):
+        raw_decision = str(getattr(record, 'absence_decision', '') or '').strip()
+        review_status = str(getattr(record, 'review_status', '') or '').strip()
+        if not raw_decision and not getattr(record, 'is_excused', False):
+            return True
+        if review_status == 'pending_review':
+            return True
+    return False
+
+
 def is_unexcused_absence_record(record) -> bool:
-    """غياب بدون عذر (يدخل في خصم الإجازة الأسبوعية ويستوجب جزاء الغياب الإضافي)."""
+    """غياب بدون عذر (يدخل في خصم الإجازة الأسبوعية ويستوجب جزاء الغياب الإضافي بعد الاعتماد)."""
     if record is None:
         return True
     if is_attended_record(record):
         return False
     return not is_excused_unpaid_record(record)
+
+
+def is_absence_for_weekly_off(record) -> bool:
+    """
+    هل يُحتسب اليوم ضمن عدّاد خصم يوم الإجازة الأسبوعية (الأحد)؟
+    وفق القاعدة النهائية المعتمدة (بنود 9، 10، 12):
+    جميع أيام الغياب (بدون عذر + بعذر + الغياب المعلّق) تدخل في عدّاد خصم يوم الإجازة،
+    ولا يُستثنى منها إلا الحضور الفعلي أو الإجازة المدفوعة على حساب الشركة أو البصمة الناقصة.
+    """
+    return not is_attended_record(record)
+
+
+def employee_shift_times(settings, employee=None):
+    """إرجاع (بداية الوردية، نهاية الوردية) للموظف مع fallback للإعدادات العامة (الافتراضي 08:00–17:00)."""
+    emp_start = getattr(employee, 'shift_start_time', None) if employee is not None else None
+    emp_end = getattr(employee, 'shift_end_time', None) if employee is not None else None
+    official_start = emp_start or getattr(settings, 'official_start_time', None) or time(8, 0)
+    official_end = emp_end or getattr(settings, 'official_end_time', None) or time(17, 0)
+    return official_start, official_end
+
+
+def compute_worked_hours(check_in, check_out, official_start=None, official_end=None):
+    """احتساب عدد ساعات العمل الفعلية بين بصمتي الحضور والانصراف (مع دعم الورديات الليلية)."""
+    ci = _clock_minutes(check_in)
+    co = _clock_minutes(check_out)
+    if ci is None or co is None:
+        return None
+    eff_in = ci
+    eff_out = co
+    start_m = _clock_minutes(official_start) if official_start else None
+    end_m = _clock_minutes(official_end) if official_end else None
+    if start_m is not None and end_m is not None and end_m <= start_m:
+        if eff_in < start_m - 360:
+            eff_in += 1440
+        if eff_out <= start_m:
+            eff_out += 1440
+    if eff_out < eff_in:
+        eff_out += 1440
+    diff_mins = max(0.0, eff_out - eff_in)
+    return round(diff_mins / 60.0, 4)
 
 
 def absence_extra_penalty_days(rules) -> float:
@@ -752,8 +807,7 @@ def compute_attendance(settings, employee, work_date, check_in, check_out,
     Returns dict(status, late_minutes, early_minutes, deduction_days,
                  deduction_hours, review_status).
     """
-    official_start = getattr(settings, 'official_start_time', None) or time(8, 30)
-    official_end = getattr(settings, 'official_end_time', None) or time(17, 30)
+    official_start, official_end = employee_shift_times(settings, employee)
 
     status = (status_override or '').strip()
     if status not in VALID_ATTENDANCE_STATUSES:
@@ -871,33 +925,37 @@ def _clock_minutes(value):
     return hours * 60 + minutes
 
 
-def working_hours_per_day(settings) -> float:
-    """احتساب ساعات العمل اليومية ديناميكياً من مواعيد الحضور والانصراف الرسمية."""
-    if settings is not None and hasattr(settings, 'working_hours_per_day'):
+def working_hours_per_day(settings, employee=None) -> float:
+    """احتساب ساعات العمل اليومية ديناميكياً من مواعيد وردية الموظف أو الإعدادات العامة."""
+    emp_start = getattr(employee, 'shift_start_time', None) if employee is not None else None
+    emp_end = getattr(employee, 'shift_end_time', None) if employee is not None else None
+    if not emp_start and not emp_end and settings is not None and hasattr(settings, 'working_hours_per_day'):
         try:
             val = float(settings.working_hours_per_day)
             if val > 0:
                 return val
         except (TypeError, ValueError):
             pass
-    start_m = _clock_minutes(getattr(settings, 'official_start_time', None) or time(8, 30))
-    end_m = _clock_minutes(getattr(settings, 'official_end_time', None) or time(17, 30))
+    official_start, official_end = employee_shift_times(settings, employee)
+    start_m = _clock_minutes(official_start)
+    end_m = _clock_minutes(official_end)
     if start_m is None or end_m is None:
-        return 8.0
+        return 9.0
     diff = end_m - start_m
     if diff <= 0:
         diff += 1440
     hours = round(diff / 60.0, 4)
-    return hours if hours > 0 else 8.0
+    return hours if hours > 0 else 9.0
 
 
-def compute_overtime(settings, check_out, check_in=None):
+def compute_overtime(settings, check_out, check_in=None, employee=None):
     """
-    احتساب العمل الإضافي من بصمة الانصراف وفق قواعد الإضافي.
+    احتساب العمل الإضافي من بصمة الانصراف وفق قواعد الإضافي الديناميكية.
 
-    تُحترم بدايتا ونهايتا كل قاعدة (from_time <= check_out <= to_time) مع دعم
-    الورديات التي تعبر منتصف الليل، وعند تطابق أكثر من شريحة تُختار الأكثر تحديداً
-    (الأكبر في from_time).
+    يدعم كلا النوعين من الشرائح:
+    - شرائح نسبية مربوطة بموعد نهاية وردية الموظف (`offset_from_minutes` / `offset_to_minutes`).
+    - شرائح ساعات ثابتة (`from_time` / `to_time`) للتوافق الكامل مع الإعدادات القائمة.
+    مع دعم الورديات الليلية التي تعبر منتصف الليل.
 
     Returns dict(overtime_days, overtime_hours, overtime_label).
     """
@@ -910,11 +968,11 @@ def compute_overtime(settings, check_out, check_in=None):
     if check_out_minutes is None:
         return empty
 
-    official_start = getattr(settings, 'official_start_time', None) or time(8, 30)
-    official_end = getattr(settings, 'official_end_time', None) or time(17, 30)
+    official_start, official_end = employee_shift_times(settings, employee)
     start_minutes = _clock_minutes(official_start) or 0
     end_minutes = _clock_minutes(official_end) or 0
     is_overnight_shift = end_minutes <= start_minutes
+    eff_shift_end = end_minutes + 1440 if is_overnight_shift else end_minutes
     check_in_minutes = _clock_minutes(check_in)
 
     eff_out = check_out_minutes
@@ -931,23 +989,38 @@ def compute_overtime(settings, check_out, check_in=None):
     for rule in rules:
         if not isinstance(rule, dict):
             continue
-        from_minutes = _clock_minutes(rule.get('from_time'))
-        if from_minutes is None:
-            continue
-        to_minutes = _clock_minutes(rule.get('to_time'))
+        raw_offset_from = rule.get('offset_from_minutes')
+        raw_offset_to = rule.get('offset_to_minutes')
+        if raw_offset_from not in (None, ''):
+            try:
+                eff_from = eff_shift_end + float(raw_offset_from)
+            except (TypeError, ValueError):
+                continue
+            if raw_offset_to not in (None, ''):
+                try:
+                    eff_to = eff_shift_end + float(raw_offset_to)
+                except (TypeError, ValueError):
+                    eff_to = None
+            else:
+                eff_to = None
+        else:
+            from_minutes = _clock_minutes(rule.get('from_time'))
+            if from_minutes is None:
+                continue
+            to_minutes = _clock_minutes(rule.get('to_time'))
 
-        # تطبيع شريحة الإضافي لعبور منتصف الليل عند الحاجة.
-        eff_from = from_minutes
-        eff_to = to_minutes
-        if is_overnight_shift and eff_from <= start_minutes:
-            eff_from += 1440
-        elif not is_overnight_shift and eff_from < start_minutes:
-            eff_from += 1440
-        if eff_to is not None:
-            if eff_to <= eff_from:
-                eff_to += 1440
-            elif eff_to < start_minutes and eff_from >= 1440:
-                eff_to += 1440
+            # تطبيع شريحة الإضافي لعبور منتصف الليل عند الحاجة.
+            eff_from = from_minutes
+            eff_to = to_minutes
+            if is_overnight_shift and eff_from <= start_minutes:
+                eff_from += 1440
+            elif not is_overnight_shift and eff_from < start_minutes:
+                eff_from += 1440
+            if eff_to is not None:
+                if eff_to <= eff_from:
+                    eff_to += 1440
+                elif eff_to < start_minutes and eff_from >= 1440:
+                    eff_to += 1440
 
         if eff_out < eff_from:
             continue
@@ -986,7 +1059,7 @@ def compute_overtime(settings, check_out, check_in=None):
 
 def sunday_deduction_for_week(records_by_date, week_dates, hire_date=None, termination_date=None):
     """
-    احتساب خصم يوم الإجازة الأسبوعية وفق عدد أيام الغياب بدون عذر
+    احتساب خصم يوم الإجازة الأسبوعية وفق إجمالي عدد أيام الغياب (بدون عذر + بعذر + معلّق)
     خلال أيام العمل الستة السابقة له ضمن فترة عمل الموظف:
 
       0 أو 1 يوم -> 0 (بدون خصم)
@@ -1004,7 +1077,7 @@ def sunday_deduction_for_week(records_by_date, week_dates, hire_date=None, termi
     absent_dates = []
     for day in scoped_dates:
         record = records_by_date.get(day)
-        if is_unexcused_absence_record(record):
+        if is_absence_for_weekly_off(record):
             absent_dates.append(day)
 
     count = len(absent_dates)
@@ -1021,7 +1094,7 @@ def sunday_deduction_for_week(records_by_date, week_dates, hire_date=None, termi
         label = 'ثلث يوم الإجازة'
 
     dates_text = '، '.join(day.isoformat() for day in absent_dates)
-    note = f'خصم {label} بسبب غياب بدون عذر في أيام: {dates_text}'
+    note = f'خصم {label} بسبب غياب في أيام: {dates_text}'
     return {
         'sunday_deduction_days': round(ratio, 2),
         'sunday_deduction_note': note,
@@ -1140,7 +1213,7 @@ def reapply_employee_month(settings, employee, month_start, month_end, preserve_
         if (is_weekly_off and not worked_weekly_off) or not attended_after:
             overtime = {'overtime_days': 0.0, 'overtime_hours': 0.0}
         else:
-            overtime = compute_overtime(settings, record.check_out, record.check_in)
+            overtime = compute_overtime(settings, record.check_out, record.check_in, employee=employee)
 
         weekly_off_days = 0.0
         weekly_off_note = ''

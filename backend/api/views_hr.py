@@ -1,3 +1,5 @@
+import calendar
+from decimal import Decimal, ROUND_HALF_UP
 from .views_common import *
 from .views_common import _truthy_permission_keys, _accessory_price_snapshot
 from .hr_attendance_io import (
@@ -5,7 +7,127 @@ from .hr_attendance_io import (
     effective_absence_decision,
     is_attended_record,
     is_excused_unpaid_record,
+    is_pending_absence_record,
 )
+
+
+def _next_month_key(month_key: str) -> str:
+    y, m = (int(p) for p in month_key.split('-'))
+    if m == 12:
+        return f'{y + 1:04d}-01'
+    return f'{y:04d}-{m + 1:02d}'
+
+
+def _add_months(base_date: date, offset: int) -> date:
+    total = (base_date.year * 12 + (base_date.month - 1)) + offset
+    y, m_zero = divmod(total, 12)
+    m = m_zero + 1
+    last_day = calendar.monthrange(y, m)[1]
+    return date(y, m, min(base_date.day, last_day))
+
+
+def _split_amount_decimal(total_val, count: int):
+    total_dec = Decimal(str(total_val)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    if count <= 1:
+        return [total_dec]
+    base_part = (total_dec / Decimal(count)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    parts = [base_part for _ in range(count - 1)]
+    last_part = (total_dec - sum(parts, Decimal('0.00'))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    parts.append(last_part)
+    return parts
+
+
+def _sync_employee_bonus_plans(employee, raw_plan_ids):
+    if raw_plan_ids is None:
+        return
+    if not isinstance(raw_plan_ids, list):
+        return
+    resolved = []
+    for pid in raw_plan_ids:
+        plan = resolve_by_id(HRBonusPlan, pid)
+        if plan is not None:
+            resolved.append(plan)
+    employee.recurring_bonus_plans.set(resolved)
+
+
+def _sync_carryover_debts_for_month(month_key: str, rows_json: list, emp_by_ext_id: dict):
+    """
+    ترحيل الرصيد السالب من الشهر المغلق كمديونية دقيقة بالقرش للشهر التالي
+    مع منع التكرار نهائياً (Idempotency) باستخدام source_month.
+    """
+    next_month = _next_month_key(month_key)
+    ny, nm = (int(p) for p in next_month.split('-'))
+    next_start = date(ny, nm, 1)
+
+    existing_qs = HRLoan.objects.filter(
+        source_month=month_key, loan_kind='carryover_debt'
+    ).order_by('installment_number', 'id')
+    existing_by_emp = {}
+    for item in existing_qs:
+        existing_by_emp.setdefault(item.employee_id, []).append(item)
+
+    seen_emp_ids = set()
+    for row in rows_json:
+        emp = emp_by_ext_id.get(str(row.get('employee_id') or ''))
+        if not emp:
+            continue
+        exact_net = Decimal(str(row.get('exact_net_pay', row.get('net_pay', 0)))).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP
+        )
+        if exact_net < Decimal('0.00'):
+            seen_emp_ids.add(emp.id)
+            debt = abs(exact_net)
+            existing_list = existing_by_emp.get(emp.id, [])
+            if len(existing_list) == 1:
+                rec = existing_list[0]
+                rec.date = next_start
+                rec.amount = float(debt)
+                rec.total_amount = float(debt)
+                rec.installments_count = 1
+                rec.installment_number = 1
+                rec.parent_loan = None
+                rec.notes = f'مديونية مرحّلة من شهر {month_key}'
+                rec.save()
+            elif len(existing_list) > 1:
+                # إعادة توزيع المديونية المحدّثة على نفس عدد الأقساط بدون إنشاء تكرار.
+                count = len(existing_list)
+                parts = _split_amount_decimal(debt, count)
+                root = existing_list[0]
+                root.date = next_start
+                root.amount = float(parts[0])
+                root.total_amount = float(debt)
+                root.installments_count = count
+                root.installment_number = 1
+                root.parent_loan = None
+                root.notes = f'مديونية مرحّلة من شهر {month_key} (قسط 1/{count})'
+                root.save()
+                for idx, child in enumerate(existing_list[1:], start=2):
+                    child.date = _add_months(next_start, idx - 1)
+                    child.amount = float(parts[idx - 1])
+                    child.total_amount = float(debt)
+                    child.installments_count = count
+                    child.installment_number = idx
+                    child.parent_loan = root
+                    child.notes = f'مديونية مرحّلة من شهر {month_key} (قسط {idx}/{count})'
+                    child.save()
+            else:
+                HRLoan.objects.create(
+                    employee=emp,
+                    date=next_start,
+                    amount=float(debt),
+                    total_amount=float(debt),
+                    loan_kind='carryover_debt',
+                    installments_count=1,
+                    installment_number=1,
+                    source_month=month_key,
+                    notes=f'مديونية مرحّلة من شهر {month_key}',
+                )
+
+    # أي موظف كانت له مديونية مرحّلة من هذا الشهر وأصبح رصيده >= 0 بعد التعديل: تُلغى مديونيته تلقائياً.
+    for emp_id, items in existing_by_emp.items():
+        if emp_id not in seen_emp_ids:
+            for item in items:
+                item.delete()
 
 
 def _reapply_affected_months(settings_obj, employee, target_date):
@@ -106,7 +228,8 @@ class HREmployeeViewSet(BasePermViewSet):
 
     def get_queryset(self):
         return rank_scoped_queryset(
-            HREmployee.objects.select_related('job').all(), self.request
+            HREmployee.objects.select_related('job').prefetch_related('recurring_bonus_plans').all(),
+            self.request,
         )
 
     def create(self, request, *args, **kwargs):
@@ -167,7 +290,22 @@ class HREmployeeViewSet(BasePermViewSet):
                 {'detail': 'تاريخ ترك العمل لا يمكن أن يسبق تاريخ التعيين'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if data.get('shift_start_time'):
+            obj.shift_start_time = parse_time_value(data.get('shift_start_time'))
+        if data.get('shift_end_time'):
+            obj.shift_end_time = parse_time_value(data.get('shift_end_time'))
+        if data.get('late_grace_minutes') not in (None, ''):
+            try:
+                obj.late_grace_minutes = max(0, int(data.get('late_grace_minutes')))
+            except (TypeError, ValueError):
+                pass
+        if data.get('late_grace_period_months') not in (None, ''):
+            try:
+                obj.late_grace_period_months = max(1, int(data.get('late_grace_period_months')))
+            except (TypeError, ValueError):
+                pass
         obj.save()
+        _sync_employee_bonus_plans(obj, data.get('recurring_bonus_plan_ids'))
         return Response(
             HREmployeeSerializer(obj, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
@@ -239,12 +377,38 @@ class HREmployeeViewSet(BasePermViewSet):
                 {'detail': 'تاريخ ترك العمل لا يمكن أن يسبق تاريخ التعيين'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if 'shift_start_time' in data:
+            val = data.get('shift_start_time')
+            obj.shift_start_time = parse_time_value(val) if val else None
+        if 'shift_end_time' in data:
+            val = data.get('shift_end_time')
+            obj.shift_end_time = parse_time_value(val) if val else None
+        if 'late_grace_minutes' in data:
+            val = data.get('late_grace_minutes')
+            if val in (None, ''):
+                obj.late_grace_minutes = None
+            else:
+                try:
+                    obj.late_grace_minutes = max(0, int(val))
+                except (TypeError, ValueError):
+                    pass
+        if 'late_grace_period_months' in data:
+            val = data.get('late_grace_period_months')
+            if val in (None, ''):
+                obj.late_grace_period_months = None
+            else:
+                try:
+                    obj.late_grace_period_months = max(1, int(val))
+                except (TypeError, ValueError):
+                    pass
         if data.get('rank_level') not in (None, ''):
             new_rank, rank_error = resolve_rank_for_grant(request, data.get('rank_level'))
             if rank_error:
                 return rank_error
             obj.rank_level = new_rank
         obj.save()
+        if 'recurring_bonus_plan_ids' in data:
+            _sync_employee_bonus_plans(obj, data.get('recurring_bonus_plan_ids'))
         return Response(HREmployeeSerializer(obj, context={'request': request}).data)
 
     def destroy(self, request, *args, **kwargs):
@@ -298,6 +462,36 @@ class HRAttendanceSettingsViewSet(viewsets.ViewSet):
         if data.get('weekly_off_work_multiplier') not in (None, ''):
             mult = max(Decimal('0.00'), to_decimal(data.get('weekly_off_work_multiplier'), Decimal('1.00'), places=2))
             obj.weekly_off_work_multiplier = mult
+        if data.get('weekly_off_partial_hour_multiplier') not in (None, ''):
+            obj.weekly_off_partial_hour_multiplier = max(
+                Decimal('0.00'),
+                to_decimal(data.get('weekly_off_partial_hour_multiplier'), Decimal('1.00'), places=2),
+            )
+        if data.get('overtime_regular_multiplier') not in (None, ''):
+            obj.overtime_regular_multiplier = max(
+                Decimal('0.00'),
+                to_decimal(data.get('overtime_regular_multiplier'), Decimal('1.00'), places=2),
+            )
+        if data.get('overtime_night_multiplier') not in (None, ''):
+            obj.overtime_night_multiplier = max(
+                Decimal('0.00'),
+                to_decimal(data.get('overtime_night_multiplier'), Decimal('1.00'), places=2),
+            )
+        if data.get('overtime_holiday_multiplier') not in (None, ''):
+            obj.overtime_holiday_multiplier = max(
+                Decimal('0.00'),
+                to_decimal(data.get('overtime_holiday_multiplier'), Decimal('2.00'), places=2),
+            )
+        if data.get('monthly_late_grace_minutes') not in (None, ''):
+            try:
+                obj.monthly_late_grace_minutes = max(0, int(data.get('monthly_late_grace_minutes')))
+            except (TypeError, ValueError):
+                pass
+        if data.get('monthly_late_grace_period_months') not in (None, ''):
+            try:
+                obj.monthly_late_grace_period_months = max(1, int(data.get('monthly_late_grace_period_months')))
+            except (TypeError, ValueError):
+                pass
         if isinstance(data.get('rules_json'), list):
             obj.rules_json = data.get('rules_json')
         if isinstance(data.get('overtime_rules'), list):
@@ -443,6 +637,20 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             late_minutes_val = 0.0
             early_minutes_val = 0.0
             review_val = 'auto_applied'
+        weekly_off_worked_hours = None
+        if data.get('weekly_off_worked_hours') not in (None, ''):
+            try:
+                weekly_off_worked_hours = parse_finite_float(
+                    data.get('weekly_off_worked_hours'), 'ساعات العمل يوم الإجازة', default=0.0, minimum=0.0
+                )
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        weekly_off_hour_mult = None
+        if data.get('weekly_off_hour_multiplier_override') not in (None, ''):
+            weekly_off_hour_mult = max(
+                Decimal('0.00'),
+                to_decimal(data.get('weekly_off_hour_multiplier_override'), Decimal('1.00'), places=2),
+            )
         obj = HRAttendanceRecord.objects.create(
             client_id=(data.get('id') or data.get('client_id') or None),
             employee=employee,
@@ -458,13 +666,15 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             calculated_deduction_hours=ded_hours,
             late_minutes=late_minutes_val,
             early_minutes=early_minutes_val,
+            weekly_off_worked_hours=weekly_off_worked_hours,
+            weekly_off_hour_multiplier_override=weekly_off_hour_mult,
             review_status=review_val,
         )
         if is_weekly_off_no_punch or not is_attended_record(obj):
             obj.overtime_days = 0.0
             obj.overtime_hours = 0.0
         else:
-            overtime = compute_overtime(settings_obj, obj.check_out, obj.check_in)
+            overtime = compute_overtime(settings_obj, obj.check_out, obj.check_in, employee=obj.employee)
             obj.overtime_days = overtime['overtime_days']
             obj.overtime_hours = overtime['overtime_hours']
         obj.save(update_fields=['overtime_days', 'overtime_hours'])
@@ -630,11 +840,31 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
             if data.get('review_status') is None:
                 obj.review_status = 'auto_applied'
 
+        if 'weekly_off_worked_hours' in data:
+            raw_wh = data.get('weekly_off_worked_hours')
+            if raw_wh in (None, ''):
+                obj.weekly_off_worked_hours = None
+            else:
+                try:
+                    obj.weekly_off_worked_hours = parse_finite_float(
+                        raw_wh, 'ساعات العمل يوم الإجازة', default=0.0, minimum=0.0
+                    )
+                except ValueError as exc:
+                    return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if 'weekly_off_hour_multiplier_override' in data:
+            raw_wm = data.get('weekly_off_hour_multiplier_override')
+            if raw_wm in (None, ''):
+                obj.weekly_off_hour_multiplier_override = None
+            else:
+                obj.weekly_off_hour_multiplier_override = max(
+                    Decimal('0.00'), to_decimal(raw_wm, Decimal('1.00'), places=2)
+                )
+
         if is_weekly_off_no_punch or not is_attended_record(obj):
             obj.overtime_days = 0.0
             obj.overtime_hours = 0.0
         else:
-            overtime = compute_overtime(settings_obj, obj.check_out, obj.check_in)
+            overtime = compute_overtime(settings_obj, obj.check_out, obj.check_in, employee=obj.employee)
             obj.overtime_days = overtime['overtime_days']
             obj.overtime_hours = overtime['overtime_hours']
 
@@ -955,6 +1185,11 @@ class HRAttendanceRecordViewSet(BasePermViewSet):
                 if rec.manual_deduction:
                     approved_ded_days += float(rec.calculated_deduction_days or 0)
                     approved_ded_hours += float(rec.calculated_deduction_hours or 0)
+                elif is_pending_absence_record(rec):
+                    sd = float(rec.calculated_deduction_days or 0)
+                    sh = float(rec.calculated_deduction_hours or 0)
+                    pending_ded_days += sd if (sd > 0 or sh > 0) else extra_abs_default
+                    pending_ded_hours += sh
                 else:
                     sd = float(rec.calculated_deduction_days or 0)
                     sh = float(rec.calculated_deduction_hours or 0)
@@ -1203,22 +1438,145 @@ class HRLoanViewSet(BasePermViewSet):
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         loan_date = parse_date(str(data.get('date'))) if data.get('date') else date.today()
-        locked_err = _locked_month_error(loan_date or date.today())
-        if locked_err:
-            return locked_err
+        loan_date = loan_date or date.today()
+
+        try:
+            installments_count = int(data.get('installments_count') or 1)
+        except (TypeError, ValueError):
+            installments_count = 1
+        if installments_count < 1 or installments_count > 36:
+            return Response(
+                {'detail': 'عدد أقساط السلفة يجب أن يكون بين 1 و 36 شهراً'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # التحقق من أن كافة الشهور المستهدفة مفتوحة قبل الإنشاء.
+        for offset in range(installments_count):
+            target_d = _add_months(loan_date, offset)
+            locked_err = _locked_month_error(target_d)
+            if locked_err:
+                return locked_err
+
         req_client_id = data.get('id') or data.get('client_id') or None
         if req_client_id:
             existing = HRLoan.objects.filter(client_id=str(req_client_id)).first()
             if existing:
                 return Response(HRLoanSerializer(existing).data, status=status.HTTP_200_OK)
-        obj = HRLoan.objects.create(
-            client_id=req_client_id,
-            employee=employee,
-            date=loan_date or date.today(),
-            amount=amount,
-            notes=data.get('notes') or '',
-        )
-        return Response(HRLoanSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+        base_notes = str(data.get('notes') or '').strip()
+        if installments_count == 1:
+            obj = HRLoan.objects.create(
+                client_id=req_client_id,
+                employee=employee,
+                date=loan_date,
+                amount=amount,
+                total_amount=amount,
+                loan_kind='standard',
+                installments_count=1,
+                installment_number=1,
+                notes=base_notes,
+            )
+            return Response(HRLoanSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+        # تقسيط السلفة تلقائياً على N أشهر متتالية بدقة القرش.
+        parts = _split_amount_decimal(amount, installments_count)
+        with transaction.atomic():
+            first_note = f'{base_notes} — قسط 1/{installments_count}'.strip(' —')
+            first_obj = HRLoan.objects.create(
+                client_id=req_client_id,
+                employee=employee,
+                date=loan_date,
+                amount=float(parts[0]),
+                total_amount=amount,
+                loan_kind='installment',
+                installments_count=installments_count,
+                installment_number=1,
+                notes=first_note,
+            )
+            created = [first_obj]
+            for idx in range(2, installments_count + 1):
+                inst_date = _add_months(loan_date, idx - 1)
+                inst_note = f'{base_notes} — قسط {idx}/{installments_count}'.strip(' —')
+                child = HRLoan.objects.create(
+                    employee=employee,
+                    date=inst_date,
+                    amount=float(parts[idx - 1]),
+                    total_amount=amount,
+                    loan_kind='installment',
+                    parent_loan=first_obj,
+                    installments_count=installments_count,
+                    installment_number=idx,
+                    notes=inst_note,
+                )
+                created.append(child)
+
+        payload = HRLoanSerializer(first_obj).data
+        payload['installments'] = [HRLoanSerializer(item).data for item in created]
+        return Response(payload, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='split-installments')
+    def split_installments(self, request, *args, **kwargs):
+        """تقسيم سلفة قائمة أو مديونية مرحّلة إلى عدة أقساط شهرية بموافقة المشرف."""
+        obj = self.get_object()
+        locked_err = _locked_month_error(obj.date)
+        if locked_err:
+            return locked_err
+        if obj.parent_loan_id or (obj.installments_count or 1) > 1:
+            return Response(
+                {'detail': 'هذه السلفة / المديونية مقسّطة بالفعل'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            count = int(request.data.get('installments_count') or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count < 2 or count > 36:
+            return Response(
+                {'detail': 'عدد الأقساط يجب أن يكون بين 2 و 36 شهراً'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        for offset in range(count):
+            target_d = _add_months(obj.date, offset)
+            err = _locked_month_error(target_d)
+            if err:
+                return err
+
+        orig_amount = float(obj.amount or 0)
+        parts = _split_amount_decimal(orig_amount, count)
+        kind = obj.loan_kind if obj.loan_kind == 'carryover_debt' else 'installment'
+        base_notes = (obj.notes or '').strip()
+
+        with transaction.atomic():
+            obj.amount = float(parts[0])
+            obj.total_amount = orig_amount
+            obj.loan_kind = kind
+            obj.installments_count = count
+            obj.installment_number = 1
+            obj.notes = f'{base_notes} (قسط 1/{count})'.strip()
+            obj.save()
+
+            created = [obj]
+            for idx in range(2, count + 1):
+                child = HRLoan.objects.create(
+                    employee=obj.employee,
+                    date=_add_months(obj.date, idx - 1),
+                    amount=float(parts[idx - 1]),
+                    total_amount=orig_amount,
+                    loan_kind=kind,
+                    parent_loan=obj,
+                    installments_count=count,
+                    installment_number=idx,
+                    source_month=obj.source_month or '',
+                    notes=f'{base_notes} (قسط {idx}/{count})'.strip(),
+                )
+                created.append(child)
+
+        return Response({
+            'id': get_ext_id(obj),
+            'installments_count': count,
+            'total_amount': orig_amount,
+            'installments': [HRLoanSerializer(item).data for item in created],
+        })
 
     def update(self, request, *args, **kwargs):
         obj = self.get_object()
@@ -1248,6 +1606,8 @@ class HRLoanViewSet(BasePermViewSet):
             except ValueError as exc:
                 return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             obj.amount = amount
+            if (obj.installments_count or 1) == 1:
+                obj.total_amount = amount
         if 'notes' in data:
             obj.notes = data.get('notes') or ''
         obj.save()
@@ -1258,16 +1618,201 @@ class HRLoanViewSet(BasePermViewSet):
         locked_err = _locked_month_error(obj.date)
         if locked_err:
             return locked_err
+        for child in obj.installments.all():
+            child_err = _locked_month_error(child.date)
+            if child_err:
+                return child_err
+        return super().destroy(request, *args, **kwargs)
+
+
+class HRBonusPlanViewSet(BasePermViewSet):
+    """أنظمة المكافآت الدورية الديناميكية (حافز انتظام / جودة / أخرى)."""
+    queryset = HRBonusPlan.objects.all()
+    serializer_class = HRBonusPlanSerializer
+    permission_classes = [CanManageHR]
+
+    def _ensure_write_perm(self, request):
+        profile = resolve_request_user_profile(request)
+        if profile is None:
+            raise PermissionDenied('مطلوب تسجيل الدخول')
+        if (
+            is_sudo_profile(profile)
+            or profile.has_perm('manage_permissions')
+            or profile.has_perm('can_manage_hr')
+            or profile.has_perm('hr_payroll')
+            or profile.has_perm('hr_rules')
+        ):
+            return
+        raise PermissionDenied('لا تملك صلاحية إدارة أنظمة المكافآت الدورية')
+
+    def create(self, request, *args, **kwargs):
+        self._ensure_write_perm(request)
+        data = request.data
+        name = str(data.get('name') or '').strip()
+        if not name:
+            return Response({'detail': 'اسم نظام المكافأة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+        category = str(data.get('category') or 'attendance').strip()
+        if category not in ('attendance', 'quality', 'other'):
+            category = 'attendance'
+        value_type = str(data.get('value_type') or 'fixed').strip()
+        if value_type not in ('fixed', 'percent'):
+            value_type = 'fixed'
+        val = to_decimal(data.get('value'), Decimal('0.00'), places=2)
+        if val <= Decimal('0.00'):
+            return Response({'detail': 'قيمة المكافأة يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+        abs_pct = min(Decimal('100.00'), max(Decimal('0.00'), to_decimal(data.get('absence_deduction_percent'), Decimal('100.00'), places=2)))
+        late_pct = min(Decimal('100.00'), max(Decimal('0.00'), to_decimal(data.get('late_deduction_percent'), Decimal('100.00'), places=2)))
+
+        obj = HRBonusPlan.objects.create(
+            client_id=(data.get('id') or data.get('client_id') or None),
+            name=name,
+            category=category,
+            value_type=value_type,
+            value=val,
+            requires_full_month=bool(data.get('requires_full_month', True)),
+            affected_by_absence=bool(data.get('affected_by_absence', True)),
+            absence_deduction_percent=abs_pct,
+            affected_by_late=bool(data.get('affected_by_late', True)),
+            late_deduction_percent=late_pct,
+            is_active=bool(data.get('is_active', True)),
+            notes=str(data.get('notes') or '').strip(),
+        )
+        return Response(HRBonusPlanSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        self._ensure_write_perm(request)
+        obj = self.get_object()
+        data = request.data
+        if data.get('name') is not None:
+            name = str(data.get('name') or '').strip()
+            if not name:
+                return Response({'detail': 'اسم نظام المكافأة مطلوب'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.name = name
+        if data.get('category') in ('attendance', 'quality', 'other'):
+            obj.category = data.get('category')
+        if data.get('value_type') in ('fixed', 'percent'):
+            obj.value_type = data.get('value_type')
+        if data.get('value') not in (None, ''):
+            val = to_decimal(data.get('value'), Decimal('0.00'), places=2)
+            if val <= Decimal('0.00'):
+                return Response({'detail': 'قيمة المكافأة يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.value = val
+        if 'requires_full_month' in data:
+            obj.requires_full_month = bool(data.get('requires_full_month'))
+        if 'affected_by_absence' in data:
+            obj.affected_by_absence = bool(data.get('affected_by_absence'))
+        if data.get('absence_deduction_percent') not in (None, ''):
+            obj.absence_deduction_percent = min(
+                Decimal('100.00'), max(Decimal('0.00'), to_decimal(data.get('absence_deduction_percent'), Decimal('100.00'), places=2))
+            )
+        if 'affected_by_late' in data:
+            obj.affected_by_late = bool(data.get('affected_by_late'))
+        if data.get('late_deduction_percent') not in (None, ''):
+            obj.late_deduction_percent = min(
+                Decimal('100.00'), max(Decimal('0.00'), to_decimal(data.get('late_deduction_percent'), Decimal('100.00'), places=2))
+            )
+        if 'is_active' in data:
+            obj.is_active = bool(data.get('is_active'))
+        if 'notes' in data:
+            obj.notes = str(data.get('notes') or '').strip()
+        obj.save()
+        return Response(HRBonusPlanSerializer(obj).data)
+
+    def destroy(self, request, *args, **kwargs):
+        self._ensure_write_perm(request)
+        return super().destroy(request, *args, **kwargs)
+
+
+class HRDirectBonusViewSet(BasePermViewSet):
+    """المكافآت الفورية / المباشرة للموظفين."""
+    queryset = HRDirectBonus.objects.select_related('employee').all()
+    serializer_class = HRDirectBonusSerializer
+    permission_classes = [CanManageHR]
+    required_hr_section = 'payroll'
+
+    def get_queryset(self):
+        qs = rank_scoped_queryset(
+            HRDirectBonus.objects.select_related('employee').all(),
+            self.request,
+            field='employee__rank_level',
+        )
+        month_value = self.request.query_params.get('month')
+        if month_value and re.match(r'^\d{4}-\d{2}$', month_value.strip()):
+            month_start, month_end = month_bounds(month_value)
+            qs = qs.filter(date__gte=month_start, date__lte=month_end)
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
+        if not employee:
+            return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+        hidden = hidden_employee_error(request, employee)
+        if hidden:
+            return hidden
+        amount = to_decimal(data.get('amount'), Decimal('0.00'), places=2)
+        if amount <= Decimal('0.00'):
+            return Response({'detail': 'قيمة المكافأة يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+        bonus_date = parse_date(str(data.get('date'))) if data.get('date') else date.today()
+        bonus_date = bonus_date or date.today()
+        locked_err = _locked_month_error(bonus_date)
+        if locked_err:
+            return locked_err
+        obj = HRDirectBonus.objects.create(
+            client_id=(data.get('id') or data.get('client_id') or None),
+            employee=employee,
+            date=bonus_date,
+            amount=amount,
+            reason=str(data.get('reason') or '').strip(),
+        )
+        return Response(HRDirectBonusSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        locked_err = _locked_month_error(obj.date)
+        if locked_err:
+            return locked_err
+        data = request.data
+        if data.get('employee_id') is not None or data.get('employee') is not None:
+            employee = resolve_by_id(HREmployee, data.get('employee_id') or data.get('employee'))
+            if not employee:
+                return Response({'detail': 'الموظف غير موجود'}, status=status.HTTP_400_BAD_REQUEST)
+            hidden = hidden_employee_error(request, employee)
+            if hidden:
+                return hidden
+            obj.employee = employee
+        if data.get('date'):
+            b_date = parse_date(str(data.get('date')))
+            if b_date:
+                new_locked_err = _locked_month_error(b_date)
+                if new_locked_err:
+                    return new_locked_err
+                obj.date = b_date
+        if data.get('amount') not in (None, ''):
+            amount = to_decimal(data.get('amount'), Decimal('0.00'), places=2)
+            if amount <= Decimal('0.00'):
+                return Response({'detail': 'قيمة المكافأة يجب أن تكون أكبر من صفر'}, status=status.HTTP_400_BAD_REQUEST)
+            obj.amount = amount
+        if 'reason' in data:
+            obj.reason = str(data.get('reason') or '').strip()
+        obj.save()
+        return Response(HRDirectBonusSerializer(obj).data)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        locked_err = _locked_month_error(obj.date)
+        if locked_err:
+            return locked_err
         return super().destroy(request, *args, **kwargs)
 
 
 class HRPayrollSnapshotViewSet(BasePermViewSet):
-    """اعتماد وإغلاق كشف المرتبات الشهري لتجميد الرواتب والقواعد وصافي المستحق."""
+    """اعتماد وإغلاق كشف المرتبات الشهري + المعاينة الحية من الباك إند (Single Source of Truth)."""
     queryset = HRPayrollSnapshot.objects.all()
     serializer_class = HRPayrollSnapshotSerializer
     permission_classes = [CanManageHR]
     required_hr_section = 'payroll'
-    # ممنوع تعديل أو حذف أو إنشاء اللقطة المالية مباشرة؛ فقط عبر lock / unlock.
+    # ممنوع تعديل أو حذف أو إنشاء اللقطة المالية مباشرة؛ فقط عبر lock / unlock / preview.
     http_method_names = ['get', 'post', 'head', 'options']
 
     def list(self, request, *args, **kwargs):
@@ -1284,6 +1829,170 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
             status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
 
+    @staticmethod
+    def _build_totals(rows: list) -> dict:
+        def _s(key, default=0.0):
+            return float(
+                sum((Decimal(str(r.get(key, default) or 0)) for r in rows), Decimal('0.00'))
+                .quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            )
+        payable_cash_total = float(
+            sum(
+                (
+                    max(Decimal('0.00'), Decimal(str(r.get('payable_cash', r.get('net_pay', 0)) or 0)))
+                    for r in rows
+                ),
+                Decimal('0.00'),
+            ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        )
+        return {
+            'employees_count': len(rows),
+            'base_salary': _s('base_salary'),
+            'earned_base': _s('earned_base'),
+            'overtime_pay': _s('overtime_pay'),
+            'bonus_pay': _s('bonus_pay'),
+            'attendance_deduction': _s('attendance_deduction'),
+            'penalty_deduction': _s('penalty_deduction'),
+            'loan_deduction': _s('loan_deduction'),
+            'carryover_debt_deduction': _s('carryover_debt_deduction'),
+            'total_deduction': _s('total_deduction'),
+            'payable_cash': payable_cash_total,
+            'net_pay': payable_cash_total,
+        }
+
+    @staticmethod
+    def _build_live_rows(month_raw: str, employees_list, settings_obj, up_to_iso=None, max_event_date=None):
+        from .hr_reports import _payroll_for_employee_month
+
+        month_start, month_end = month_bounds(month_raw)
+        lookup_start = month_start - timedelta(days=6)
+        off_idx = weekly_off_weekday(settings_obj)
+
+        emp_ids = [e.id for e in employees_list]
+        att_qs = HRAttendanceRecord.objects.filter(
+            employee_id__in=emp_ids, date__gte=lookup_start, date__lte=month_end
+        )
+        pen_qs = HRPenalty.objects.filter(
+            employee_id__in=emp_ids, date__gte=month_start, date__lte=month_end
+        )
+        loan_qs = HRLoan.objects.filter(
+            employee_id__in=emp_ids, date__gte=month_start, date__lte=month_end
+        )
+        bonus_qs = HRDirectBonus.objects.filter(
+            employee_id__in=emp_ids, date__gte=month_start, date__lte=month_end
+        )
+        if max_event_date is not None:
+            att_qs = att_qs.filter(date__lte=max_event_date)
+            pen_qs = pen_qs.filter(date__lte=max_event_date)
+            loan_qs = loan_qs.filter(date__lte=max_event_date)
+            bonus_qs = bonus_qs.filter(date__lte=max_event_date)
+
+        att_by_emp = {}
+        for rec in att_qs:
+            att_by_emp.setdefault(rec.employee_id, []).append(rec)
+        pen_by_emp = {}
+        for pen in pen_qs:
+            pen_by_emp.setdefault(pen.employee_id, []).append(pen)
+        loans_by_emp = {}
+        for ln in loan_qs:
+            loans_by_emp.setdefault(ln.employee_id, []).append(ln)
+        bonuses_by_emp = {}
+        for bn in bonus_qs:
+            bonuses_by_emp.setdefault(bn.employee_id, []).append(bn)
+
+        rows_json = []
+        emp_by_ext_id = {}
+        for emp in employees_list:
+            emp_att = att_by_emp.get(emp.id, [])
+            emp_pen = pen_by_emp.get(emp.id, [])
+            emp_loans = loans_by_emp.get(emp.id, [])
+            emp_bonuses = bonuses_by_emp.get(emp.id, [])
+            if not emp.is_active and not (
+                any(month_start <= r.date <= month_end for r in emp_att) or emp_pen or emp_loans or emp_bonuses
+            ):
+                continue
+            ext_id = get_ext_id(emp)
+            emp_by_ext_id[ext_id] = emp
+            rec_by_date = {r.date: r for r in emp_att}
+            emp_plans = [p for p in emp.recurring_bonus_plans.all() if p.is_active]
+            calc = _payroll_for_employee_month(
+                emp, emp_att, rec_by_date, emp_pen, emp_loans,
+                month_raw, settings_obj, up_to_iso, off_idx,
+                direct_bonuses=emp_bonuses,
+                bonus_plans=emp_plans,
+            )
+            rows_json.append({
+                'employee_id': ext_id,
+                'employee_code': emp.employee_code or '',
+                'employee_name': emp.name,
+                'job_title': emp.job.title if emp.job else '',
+                'department': emp.department or '',
+                'department_label': emp.department_label or '',
+                'rank_level': int(emp.rank_level),
+                'is_active': bool(emp.is_active),
+                'hire_date': emp.hire_date.isoformat() if emp.hire_date else None,
+                'termination_date': emp.termination_date.isoformat() if emp.termination_date else None,
+                'base_salary': calc['base_salary'],
+                'day_rate': calc['day_rate'],
+                'hour_rate': calc['hour_rate'],
+                'shift_hours': calc['shift_hours'],
+                'attended_days': calc['attended_days'],
+                'paid_sunday_days': calc['paid_sunday_days'],
+                'worked_weekly_off_days': calc['worked_weekly_off_days'],
+                'weekly_off_extra_days': calc['weekly_off_extra_days'],
+                'weekly_off_partial_hours': calc['weekly_off_partial_hours'],
+                'weekly_off_extra_pay': calc['weekly_off_extra_pay'],
+                'earned_days': calc['earned_days'],
+                'earned_base': calc['earned_base'],
+                'overtime_days': calc['overtime_days'],
+                'overtime_hours': calc['overtime_hours'],
+                'overtime_pay': calc['overtime_pay'],
+                'direct_bonus_pay': calc['direct_bonus_pay'],
+                'recurring_bonus_pay': calc['recurring_bonus_pay'],
+                'bonus_pay': calc['bonus_pay'],
+                'bonus_breakdown': calc['bonus_breakdown'],
+                'attendance_days': calc['attendance_days'],
+                'attendance_hours': calc['attendance_hours'],
+                'attendance_deduction': calc['attendance_deduction'],
+                'sunday_deduction_days': calc['sunday_deduction_days'],
+                'sunday_deduction': calc['sunday_deduction'],
+                'penalty_days': calc['penalty_days'],
+                'penalty_hours': calc['penalty_hours'],
+                'penalty_deduction': calc['penalty_deduction'],
+                'regular_loan_deduction': calc['regular_loan_amount'],
+                'carryover_debt_deduction': calc['carryover_debt_amount'],
+                'loan_deduction': calc['loan_amount'],
+                'total_deduction': calc['total_deduction'],
+                'exact_net_pay': calc['exact_net_pay'],
+                'rounded_net_pay': calc['rounded_net_pay'],
+                'net_pay': calc['net_pay'],
+                'payable_cash': calc['payable_cash'],
+                'carryover_debt_next': calc['carryover_debt_next'],
+                'grace_used_minutes': calc['grace_used_minutes'],
+                'grace_limit_minutes': calc['grace_limit_minutes'],
+                'grace_exceeded': calc['grace_exceeded'],
+            })
+        return rows_json, emp_by_ext_id
+
+    def _unlock_meta(self, request, snap: HRPayrollSnapshot):
+        profile = resolve_request_user_profile(request)
+        is_top_admin = bool(
+            is_sudo_profile(profile) or (profile is not None and profile.has_perm('manage_permissions'))
+        )
+        is_hr_supervisor = bool(profile is not None and profile.has_perm('can_manage_hr'))
+        deadline = (snap.locked_at + timedelta(days=30)) if snap.locked_at else None
+        within_30_days = bool(deadline and timezone.now() <= deadline)
+        next_month = _next_month_key(snap.month)
+        next_is_locked = HRPayrollSnapshot.objects.filter(month=next_month, is_locked=True).exists()
+        can_unlock = (is_top_admin or (is_hr_supervisor and within_30_days)) and not next_is_locked
+        return {
+            'can_unlock': can_unlock,
+            'within_supervisor_window': within_30_days,
+            'supervisor_unlock_deadline': deadline.isoformat() if deadline else '',
+            'next_month_locked': next_is_locked,
+            'next_month': next_month,
+        }
+
     def _visible_snapshot_payload(self, request, snap: HRPayrollSnapshot):
         data = HRPayrollSnapshotSerializer(snap).data
         allowed_ranks = visible_rank_levels(get_viewer_rank(request))
@@ -1292,17 +2001,8 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
             if coerce_rank_level(row.get('rank_level'), DEFAULT_RANK_LEVEL) in allowed_ranks
         ]
         data['rows'] = rows
-        data['totals'] = {
-            'employees_count': len(rows),
-            'base_salary': round(sum(float(r.get('base_salary') or 0) for r in rows), 2),
-            'earned_base': round(sum(float(r.get('earned_base') or 0) for r in rows), 2),
-            'overtime_pay': round(sum(float(r.get('overtime_pay') or 0) for r in rows), 2),
-            'attendance_deduction': round(sum(float(r.get('attendance_deduction') or 0) for r in rows), 2),
-            'penalty_deduction': round(sum(float(r.get('penalty_deduction') or 0) for r in rows), 2),
-            'loan_deduction': round(sum(float(r.get('loan_deduction') or 0) for r in rows), 2),
-            'total_deduction': round(sum(float(r.get('total_deduction') or 0) for r in rows), 2),
-            'net_pay': round(sum(max(0.0, float(r.get('net_pay') or 0)) for r in rows), 2),
-        }
+        data['totals'] = self._build_totals(rows)
+        data.update(self._unlock_meta(request, snap))
         return data
 
     @action(detail=False, methods=['get'], url_path='for-month')
@@ -1319,10 +2019,59 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
             'snapshot': self._visible_snapshot_payload(request, snap),
         })
 
+    @action(detail=False, methods=['get'], url_path='preview')
+    def preview(self, request):
+        """
+        مصدر الحساب الوحيد (Single Source of Truth) لشاشة المرتبات والسُلف:
+        يُرجع اللقطة المجمّدة إذا كان الشهر مغلقاً، أو يحسب الكشف حياً في الباك إند باستخدام Decimal.
+        """
+        month_raw = str(request.query_params.get('month') or '').strip()
+        if not re.match(r'^\d{4}-\d{2}$', month_raw):
+            return Response({'detail': 'صيغة الشهر غير صحيحة (YYYY-MM)'}, status=status.HTTP_400_BAD_REQUEST)
+
+        as_of = str(request.query_params.get('as_of') or '').strip().lower()
+        snap = HRPayrollSnapshot.objects.filter(month=month_raw, is_locked=True).first()
+        if snap and as_of != 'today':
+            visible = self._visible_snapshot_payload(request, snap)
+            return Response({
+                'is_locked': True,
+                'month': month_raw,
+                'snapshot': visible,
+                'rows': visible['rows'],
+                'totals': visible['totals'],
+                'settings_snapshot': visible.get('settings_snapshot') or {},
+            })
+
+        settings_obj = HRAttendanceSettings.get_solo()
+        month_start, month_end = month_bounds(month_raw)
+        today = timezone.localdate()
+        current_month_key = today.strftime('%Y-%m')
+        up_to_iso = (today - timedelta(days=1)) if (month_raw == current_month_key and today < month_end) else None
+        max_event_date = today if as_of == 'today' else None
+
+        visible_employees = list(
+            rank_scoped_queryset(
+                HREmployee.objects.select_related('job')
+                .prefetch_related('recurring_bonus_plans')
+                .exclude(rank_level=RANK_SUDO),
+                request,
+                field='rank_level',
+            ).order_by('name')
+        )
+        rows, _ = self._build_live_rows(
+            month_raw, visible_employees, settings_obj, up_to_iso=up_to_iso, max_event_date=max_event_date
+        )
+        return Response({
+            'is_locked': False,
+            'month': month_raw,
+            'snapshot': None,
+            'rows': rows,
+            'totals': self._build_totals(rows),
+            'settings_snapshot': HRAttendanceSettingsSerializer(settings_obj).data,
+        })
+
     @action(detail=False, methods=['post'])
     def lock(self, request):
-        from .hr_reports import _payroll_for_employee_month
-
         month_raw = str(request.data.get('month') or '').strip()
         if not re.match(r'^\d{4}-\d{2}$', month_raw):
             return Response({'detail': 'صيغة الشهر غير صحيحة (YYYY-MM)'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1330,25 +2079,15 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
             return Response({'detail': f'شهر {month_raw} معتمد ومغلق بالفعل'}, status=status.HTTP_400_BAD_REQUEST)
 
         month_start, month_end = month_bounds(month_raw)
-        lookup_start = month_start - timedelta(days=6)
         settings_obj = HRAttendanceSettings.get_solo()
-        off_idx = weekly_off_weekday(settings_obj)
 
         # نحفظ كشف كل الموظفين النشطين + أي موظف غير نشط له سجلات في هذا الشهر.
-        all_employees = list(HREmployee.objects.select_related('job').exclude(rank_level=RANK_SUDO).order_by('name'))
-        all_att = list(HRAttendanceRecord.objects.filter(date__gte=lookup_start, date__lte=month_end))
-        all_pen = list(HRPenalty.objects.filter(date__gte=month_start, date__lte=month_end))
-        all_loans = list(HRLoan.objects.filter(date__gte=month_start, date__lte=month_end))
-
-        att_by_emp = {}
-        for rec in all_att:
-            att_by_emp.setdefault(rec.employee_id, []).append(rec)
-        pen_by_emp = {}
-        for pen in all_pen:
-            pen_by_emp.setdefault(pen.employee_id, []).append(pen)
-        loans_by_emp = {}
-        for ln in all_loans:
-            loans_by_emp.setdefault(ln.employee_id, []).append(ln)
+        all_employees = list(
+            HREmployee.objects.select_related('job')
+            .prefetch_related('recurring_bonus_plans')
+            .exclude(rank_level=RANK_SUDO)
+            .order_by('name')
+        )
 
         today = timezone.localdate()
         current_month_key = today.strftime('%Y-%m')
@@ -1359,62 +2098,10 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
             if HRPayrollSnapshot.objects.select_for_update().filter(month=month_raw, is_locked=True).exists():
                 return Response({'detail': f'شهر {month_raw} معتمد ومغلق بالفعل'}, status=status.HTTP_400_BAD_REQUEST)
 
-            rows_json = []
-            for emp in all_employees:
-                emp_att = att_by_emp.get(emp.id, [])
-                emp_pen = pen_by_emp.get(emp.id, [])
-                emp_loans = loans_by_emp.get(emp.id, [])
-                if not emp.is_active and not (
-                    any(month_start <= r.date <= month_end for r in emp_att) or emp_pen or emp_loans
-                ):
-                    continue
-                rec_by_date = {r.date: r for r in emp_att}
-                calc = _payroll_for_employee_month(
-                    emp, emp_att, rec_by_date, emp_pen, emp_loans,
-                    month_raw, settings_obj, up_to_iso, off_idx,
-                )
-                rows_json.append({
-                    'employee_id': get_ext_id(emp),
-                    'employee_code': emp.employee_code or '',
-                    'employee_name': emp.name,
-                    'job_title': emp.job.title if emp.job else '',
-                    'department': emp.department or '',
-                    'department_label': emp.department_label or '',
-                    'rank_level': int(emp.rank_level),
-                    'is_active': bool(emp.is_active),
-                    'base_salary': calc['base_salary'],
-                    'attended_days': calc['attended_days'],
-                    'paid_sunday_days': calc['paid_sunday_days'],
-                    'worked_weekly_off_days': calc['worked_weekly_off_days'],
-                    'weekly_off_extra_days': calc['weekly_off_extra_days'],
-                    'earned_days': calc['earned_days'],
-                    'earned_base': calc['earned_base'],
-                    'overtime_days': calc['overtime_days'],
-                    'overtime_hours': calc['overtime_hours'],
-                    'overtime_pay': calc['overtime_pay'],
-                    'attendance_days': calc['attendance_days'],
-                    'attendance_hours': calc['attendance_hours'],
-                    'attendance_deduction': calc['attendance_deduction'],
-                    'sunday_deduction_days': calc['sunday_deduction_days'],
-                    'penalty_days': calc['penalty_days'],
-                    'penalty_hours': calc['penalty_hours'],
-                    'penalty_deduction': calc['penalty_deduction'],
-                    'loan_deduction': calc['loan_amount'],
-                    'total_deduction': calc['total_deduction'],
-                    'net_pay': calc['net_pay'],
-                })
-
-            totals_json = {
-                'employees_count': len(rows_json),
-                'base_salary': round(sum(r['base_salary'] for r in rows_json), 2),
-                'earned_base': round(sum(r['earned_base'] for r in rows_json), 2),
-                'overtime_pay': round(sum(r['overtime_pay'] for r in rows_json), 2),
-                'attendance_deduction': round(sum(r['attendance_deduction'] for r in rows_json), 2),
-                'penalty_deduction': round(sum(r['penalty_deduction'] for r in rows_json), 2),
-                'loan_deduction': round(sum(r['loan_deduction'] for r in rows_json), 2),
-                'total_deduction': round(sum(r['total_deduction'] for r in rows_json), 2),
-                'net_pay': round(sum(max(0.0, r['net_pay']) for r in rows_json), 2),
-            }
+            rows_json, emp_by_ext_id = self._build_live_rows(
+                month_raw, all_employees, settings_obj, up_to_iso=up_to_iso
+            )
+            totals_json = self._build_totals(rows_json)
 
             profile = resolve_request_user_profile(request)
             locker_name = (getattr(profile, 'real_name', '') or getattr(profile, 'username', '') or 'النظام') if profile else 'النظام'
@@ -1431,6 +2118,9 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
                     'notes': str(request.data.get('notes') or '').strip(),
                 },
             )
+            # ترحيل الأرصدة السالبة تلقائياً كمديونية للشهر التالي بدقة القرش ومنع التكرار (Idempotency).
+            _sync_carryover_debts_for_month(month_raw, rows_json, emp_by_ext_id)
+
         set_audit_meta(
             request,
             section='الموارد البشرية',
@@ -1452,14 +2142,42 @@ class HRPayrollSnapshotViewSet(BasePermViewSet):
     @action(detail=False, methods=['post'])
     def unlock(self, request):
         profile = resolve_request_user_profile(request)
-        if not (is_sudo_profile(profile) or (profile is not None and profile.has_perm('manage_permissions'))):
-            raise PermissionDenied('فك إغلاق كشف المرتبات مخصص لحساب sudo أو من يملك صلاحية إدارة الصلاحيات فقط')
         month_raw = str(request.data.get('month') or '').strip()
         if not re.match(r'^\d{4}-\d{2}$', month_raw):
             return Response({'detail': 'صيغة الشهر غير صحيحة (YYYY-MM)'}, status=status.HTTP_400_BAD_REQUEST)
+
         snap = HRPayrollSnapshot.objects.filter(month=month_raw).first()
+        is_top_admin = bool(
+            is_sudo_profile(profile) or (profile is not None and profile.has_perm('manage_permissions'))
+        )
+        is_hr_supervisor = bool(profile is not None and profile.has_perm('can_manage_hr'))
+
+        if not is_top_admin:
+            if not is_hr_supervisor:
+                raise PermissionDenied(
+                    'فك إغلاق كشف المرتبات مخصص للإدارة العليا، أو للمشرف خلال 30 يوماً من الإغلاق فقط.'
+                )
+            if snap is not None and snap.locked_at and (timezone.now() - snap.locked_at) > timedelta(days=30):
+                raise PermissionDenied(
+                    'انتهت مهلة الـ 30 يوماً المسموح بها للمشرف لإعادة فتح هذا الشهر؛ يرجى الرجوع للإدارة العليا.'
+                )
+
         if not snap:
             return Response({'detail': f'لا يوجد إغلاق محفوظ لشهر {month_raw}'}, status=status.HTTP_404_NOT_FOUND)
+
+        # حماية الأرصدة المرحّلة (بند 24 وحالة 14): يُمنع إعادة فتح شهر مغلق إذا كان الشهر التالي مغلقاً بالفعل.
+        next_month = _next_month_key(month_raw)
+        if HRPayrollSnapshot.objects.filter(month=next_month, is_locked=True).exists():
+            return Response(
+                {
+                    'detail': (
+                        f'لا يمكن إعادة فتح شهر {month_raw} لأن الشهر التالي ({next_month}) مغلق بالفعل. '
+                        f'يرجى إعادة فتح شهر {next_month} أولاً لحماية الأرصدة المرحّلة.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         snap.delete()
         set_audit_meta(
             request,

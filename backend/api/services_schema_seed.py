@@ -320,13 +320,43 @@ def ensure_schema_columns():
                             "ALTER TABLE api_userprofile ADD COLUMN ui_preferences TEXT NOT NULL DEFAULT '{}';"
                         )
 
-            # حقول الموارد البشرية الجديدة: تاريخ التعيين والترك، قرار الغياب الثلاثي، والخصم اليدوي.
+            # حقول الموارد البشرية الجديدة: تاريخ التعيين والترك، قرار الغياب الثلاثي، والخصم اليدوي،
+            # والوردية المخصصة، ورصيد السماح، وتقسيط السلف، والمكافآت الفورية والدورية.
             if 'api_hremployee' in table_names:
                 cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_hremployee')]
                 if 'hire_date' not in cols:
                     cursor.execute('ALTER TABLE api_hremployee ADD COLUMN hire_date date NULL;')
                 if 'termination_date' not in cols:
                     cursor.execute('ALTER TABLE api_hremployee ADD COLUMN termination_date date NULL;')
+                if 'shift_start_time' not in cols:
+                    cursor.execute('ALTER TABLE api_hremployee ADD COLUMN shift_start_time time NULL;')
+                if 'shift_end_time' not in cols:
+                    cursor.execute('ALTER TABLE api_hremployee ADD COLUMN shift_end_time time NULL;')
+                if 'late_grace_minutes' not in cols:
+                    cursor.execute('ALTER TABLE api_hremployee ADD COLUMN late_grace_minutes integer NULL;')
+                if 'late_grace_period_months' not in cols:
+                    cursor.execute('ALTER TABLE api_hremployee ADD COLUMN late_grace_period_months integer NULL;')
+
+            if 'api_hrattendancesettings' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_hrattendancesettings')]
+                for dec_col, default_v in (
+                    ('weekly_off_partial_hour_multiplier', '1.00'),
+                    ('overtime_regular_multiplier', '1.00'),
+                    ('overtime_night_multiplier', '1.00'),
+                    ('overtime_holiday_multiplier', '2.00'),
+                ):
+                    if dec_col not in cols:
+                        cursor.execute(
+                            f'ALTER TABLE api_hrattendancesettings ADD COLUMN {dec_col} numeric(5,2) NOT NULL DEFAULT {default_v};'
+                        )
+                if 'monthly_late_grace_minutes' not in cols:
+                    cursor.execute(
+                        'ALTER TABLE api_hrattendancesettings ADD COLUMN monthly_late_grace_minutes integer NOT NULL DEFAULT 0;'
+                    )
+                if 'monthly_late_grace_period_months' not in cols:
+                    cursor.execute(
+                        'ALTER TABLE api_hrattendancesettings ADD COLUMN monthly_late_grace_period_months integer NOT NULL DEFAULT 1;'
+                    )
 
             if 'api_hrattendancerecord' in table_names:
                 cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_hrattendancerecord')]
@@ -337,6 +367,43 @@ def ensure_schema_columns():
                 if 'manual_deduction' not in cols:
                     cursor.execute(
                         'ALTER TABLE api_hrattendancerecord ADD COLUMN manual_deduction boolean NOT NULL DEFAULT false;'
+                    )
+                if 'weekly_off_worked_hours' not in cols:
+                    float_type = 'double precision' if connection.vendor == 'postgresql' else 'real'
+                    cursor.execute(
+                        f'ALTER TABLE api_hrattendancerecord ADD COLUMN weekly_off_worked_hours {float_type} NULL;'
+                    )
+                if 'weekly_off_hour_multiplier_override' not in cols:
+                    cursor.execute(
+                        'ALTER TABLE api_hrattendancerecord ADD COLUMN weekly_off_hour_multiplier_override numeric(5,2) NULL;'
+                    )
+
+            if 'api_hrloan' in table_names:
+                cols = [col.name for col in connection.introspection.get_table_description(cursor, 'api_hrloan')]
+                if 'loan_kind' not in cols:
+                    cursor.execute(
+                        "ALTER TABLE api_hrloan ADD COLUMN loan_kind varchar(20) NOT NULL DEFAULT 'standard';"
+                    )
+                if 'parent_loan_id' not in cols:
+                    cursor.execute(
+                        f'ALTER TABLE api_hrloan ADD COLUMN parent_loan_id {fk_id_type} NULL REFERENCES api_hrloan(id) ON DELETE CASCADE;'
+                    )
+                if 'total_amount' not in cols:
+                    float_type = 'double precision' if connection.vendor == 'postgresql' else 'real'
+                    cursor.execute(
+                        f'ALTER TABLE api_hrloan ADD COLUMN total_amount {float_type} NULL;'
+                    )
+                if 'installments_count' not in cols:
+                    cursor.execute(
+                        'ALTER TABLE api_hrloan ADD COLUMN installments_count integer NOT NULL DEFAULT 1;'
+                    )
+                if 'installment_number' not in cols:
+                    cursor.execute(
+                        'ALTER TABLE api_hrloan ADD COLUMN installment_number integer NOT NULL DEFAULT 1;'
+                    )
+                if 'source_month' not in cols:
+                    cursor.execute(
+                        "ALTER TABLE api_hrloan ADD COLUMN source_month varchar(7) NOT NULL DEFAULT '';"
                     )
         # Only mark as done after a fully successful pass so transient failures retry.
         _SCHEMA_ENSURED = True

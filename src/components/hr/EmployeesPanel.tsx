@@ -12,7 +12,7 @@ import {
   HRJobTitle, HREmployee, HRAttendanceSettings, HRAttendanceRule,
   HRAttendanceRecord, HRAttendanceStatus, HRAttendanceStats,
   HRAttendanceImportResult, HRReviewStatus, HRPenalty, HRPenaltyType,
-  HRLoan, HRDepartmentKey, HR_DEPARTMENTS, HR_DEPARTMENT_LABELS,
+  HRLoan, HRBonusPlan, HRDepartmentKey, HR_DEPARTMENTS, HR_DEPARTMENT_LABELS,
   HR_WEEK_DAYS, HRWeekDayKey, HRRuleApplicationMode, HRRuleViolationType,
   HRRuleDeductionType, HRRuleApplyMode, HROvertimeRule, HROvertimeRewardType
 } from '../../types';
@@ -38,6 +38,11 @@ type EmployeeForm = {
   birth_date: string;
   hire_date: string;
   termination_date: string;
+  shift_start_time: string;
+  shift_end_time: string;
+  late_grace_minutes: string;
+  late_grace_period_months: string;
+  recurring_bonus_plan_ids: string[];
   phone: string;
   photo: string;
   notes: string;
@@ -55,6 +60,11 @@ const emptyEmployeeForm: EmployeeForm = {
   birth_date: '',
   hire_date: '',
   termination_date: '',
+  shift_start_time: '',
+  shift_end_time: '',
+  late_grace_minutes: '',
+  late_grace_period_months: '',
+  recurring_bonus_plan_ids: [],
   phone: '',
   photo: '',
   notes: '',
@@ -93,6 +103,14 @@ export const EmployeesPanel: React.FC<{
   const [deleteError, setDeleteError] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [isPhotoUploading, setIsPhotoUploading] = useState(false);
+  const [bonusPlans, setBonusPlans] = useState<HRBonusPlan[]>([]);
+
+  useEffect(() => {
+    api
+      .getHRBonusPlans()
+      .then((res) => setBonusPlans(Array.isArray(res) ? res : []))
+      .catch(() => setBonusPlans([]));
+  }, []);
 
   const jobsForFilter = useMemo(() => {
     if (!departmentFilter) return jobTitles;
@@ -157,6 +175,19 @@ export const EmployeesPanel: React.FC<{
       birth_date: employee.birth_date || '',
       hire_date: employee.hire_date || '',
       termination_date: employee.termination_date || '',
+      shift_start_time: employee.shift_start_time || '',
+      shift_end_time: employee.shift_end_time || '',
+      late_grace_minutes:
+        employee.late_grace_minutes !== undefined && employee.late_grace_minutes !== null
+          ? String(employee.late_grace_minutes)
+          : '',
+      late_grace_period_months:
+        employee.late_grace_period_months !== undefined && employee.late_grace_period_months !== null
+          ? String(employee.late_grace_period_months)
+          : '',
+      recurring_bonus_plan_ids: Array.isArray(employee.recurring_bonus_plan_ids)
+        ? employee.recurring_bonus_plan_ids
+        : [],
       phone: employee.phone || '',
       photo: employee.photo || '',
       notes: employee.notes || '',
@@ -207,6 +238,12 @@ export const EmployeesPanel: React.FC<{
       birth_date: form.birth_date || null,
       hire_date: form.hire_date || null,
       termination_date: form.termination_date || null,
+      shift_start_time: form.shift_start_time || null,
+      shift_end_time: form.shift_end_time || null,
+      late_grace_minutes: form.late_grace_minutes !== '' ? Number(form.late_grace_minutes) : null,
+      late_grace_period_months:
+        form.late_grace_period_months !== '' ? Number(form.late_grace_period_months) : null,
+      recurring_bonus_plan_ids: form.recurring_bonus_plan_ids,
       phone: form.phone.trim(),
       photo: form.photo.trim(),
       notes: form.notes.trim(),
@@ -600,6 +637,98 @@ export const EmployeesPanel: React.FC<{
                 </p>
               </div>
             </div>
+
+            {/* الوردية المخصصة ورصيد السماح المخصص للموظف */}
+            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+              <div className="text-[11px] font-black text-slate-800">
+                تخصيص الوردية ورصيد السماح للتأخير (اختياري — يُترك فارغاً لاستخدام الإعدادات العامة)
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+                <div>
+                  <label className={labelClass}>بداية الوردية</label>
+                  <input
+                    type="time"
+                    value={form.shift_start_time}
+                    onChange={(event) => updateForm({ shift_start_time: event.target.value })}
+                    className={`${inputClass} font-mono`}
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>نهاية الوردية</label>
+                  <input
+                    type="time"
+                    value={form.shift_end_time}
+                    onChange={(event) => updateForm({ shift_end_time: event.target.value })}
+                    className={`${inputClass} font-mono`}
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>رصيد السماح (دقائق)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="افتراضي"
+                    value={form.late_grace_minutes}
+                    onChange={(event) => updateForm({ late_grace_minutes: event.target.value })}
+                    className={`${inputClass} font-mono`}
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>دورية السماح (شهور)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    placeholder="1 = شهري"
+                    value={form.late_grace_period_months}
+                    onChange={(event) => updateForm({ late_grace_period_months: event.target.value })}
+                    className={`${inputClass} font-mono`}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* المكافآت الدورية المسجّل بها الموظف */}
+            {bonusPlans.length > 0 && (
+              <div className="p-3 rounded-2xl bg-purple-50/50 border border-purple-200 space-y-2">
+                <div className="text-[11px] font-black text-purple-900">
+                  أنظمة المكافآت الدورية (يمكن اختيار نظام واحد أو أكثر)
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {bonusPlans
+                    .filter((plan) => plan.is_active !== false)
+                    .map((plan) => {
+                      const checked = form.recurring_bonus_plan_ids.includes(plan.id);
+                      return (
+                        <label
+                          key={plan.id}
+                          className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-[11px] font-bold cursor-pointer transition ${
+                            checked
+                              ? 'bg-purple-100/70 border-purple-400 text-purple-900'
+                              : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => {
+                              const next = event.target.checked
+                                ? [...form.recurring_bonus_plan_ids, plan.id]
+                                : form.recurring_bonus_plan_ids.filter((id) => id !== plan.id);
+                              updateForm({ recurring_bonus_plan_ids: next });
+                            }}
+                            className="rounded border-slate-300 text-purple-600"
+                          />
+                          <span className="flex-1 truncate">{plan.name}</span>
+                          <span className="font-mono text-[10px] font-black text-emerald-700">
+                            {plan.value_type === 'percent' ? `${plan.value}%` : formatMoney(plan.value)}
+                          </span>
+                        </label>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
 
             <div>
               <label className={labelClass}>صورة الموظف (اختياري)</label>

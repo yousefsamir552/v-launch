@@ -61,9 +61,19 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
   const [employeeFilter, setEmployeeFilter] = useState('');
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editing, setEditing] = useState<HRLoan | null>(null);
-  const [form, setForm] = useState({ employee_id: '', date: todayISO(), amount: '', notes: '' });
+  const [form, setForm] = useState({
+    employee_id: '',
+    date: todayISO(),
+    amount: '',
+    installments_count: '1',
+    notes: ''
+  });
   const [formError, setFormError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [splitTarget, setSplitTarget] = useState<HRLoan | null>(null);
+  const [splitCount, setSplitCount] = useState('2');
+  const [splitError, setSplitError] = useState('');
+  const [isSplitting, setIsSplitting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<HRLoan | null>(null);
   const [deleteError, setDeleteError] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
@@ -380,6 +390,7 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
       employee_id: employeeId || employees[0]?.id || '',
       date: todayISO(),
       amount: '',
+      installments_count: '1',
       notes: ''
     });
     setFormError('');
@@ -394,6 +405,7 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
       employee_id: loan.employee_id,
       date: loan.date || todayISO(),
       amount: String(loan.amount ?? ''),
+      installments_count: String(loan.installments_count ?? 1),
       notes: loan.notes || ''
     });
     setFormError('');
@@ -422,21 +434,47 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
       return;
     }
 
+    const installmentsCount = editing ? 1 : Math.max(1, Math.min(36, Math.round(Number(form.installments_count) || 1)));
     const payload: any = {
       employee_id: form.employee_id,
       date: form.date,
       amount,
+      ...(editing ? {} : { installments_count: installmentsCount }),
       notes: form.notes.trim()
     };
 
+    const firstInstallment = installmentsCount > 1 ? amount / installmentsCount : amount;
     // تنبيه عند تجاوز الحد الأقصى (المستحق الحالي) مع السماح بالمتابعة بعد التأكيد.
-    if (amount > selectedEmployeeDue + 0.0001) {
+    if (firstInstallment > selectedEmployeeDue + 0.0001) {
       setPendingLoanPayload(payload);
-      setOverLimit({ amount, limit: selectedEmployeeDue });
+      setOverLimit({ amount: firstInstallment, limit: selectedEmployeeDue });
       return;
     }
 
     await saveLoan(payload);
+  };
+
+  const handleSplitSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!splitTarget) return;
+    const count = Math.round(Number(splitCount) || 0);
+    if (count < 2 || count > 36) {
+      setSplitError('عدد الأقساط يجب أن يكون بين 2 و 36 شهراً');
+      return;
+    }
+    setIsSplitting(true);
+    setSplitError('');
+    try {
+      await api.splitHRLoanInstallments(splitTarget.id, count);
+      addFlashMessage(`تم تقسيط المبلغ على ${count} أقساط شهرية بنجاح`);
+      logAction('الموارد البشرية', `تقسيط سلفة/مديونية بقيمة ${splitTarget.amount} على ${count} شهور`);
+      setSplitTarget(null);
+      await loadLoans();
+    } catch (err: any) {
+      setSplitError(err?.message || 'فشل تقسيط المبلغ');
+    } finally {
+      setIsSplitting(false);
+    }
   };
 
   const saveLoan = async (payload: any) => {
@@ -706,13 +744,38 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
                       </p>
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-black text-rose-600 whitespace-nowrap">
-                      {formatMoney(Number(loan.amount) || 0)}
+                      <div>{formatMoney(Number(loan.amount) || 0)}</div>
+                      {(loan.installments_count || 1) > 1 && (
+                        <div className="text-[10px] font-bold text-purple-600 mt-0.5">
+                          قسط {loan.installment_number || 1}/{loan.installments_count} من{' '}
+                          {formatMoney(Number(loan.total_amount || loan.amount) || 0)}
+                        </div>
+                      )}
+                      {loan.loan_kind === 'carryover_debt' && (
+                        <span className="inline-block mt-0.5 px-2 py-0.5 rounded-full text-[9px] font-black bg-amber-50 text-amber-800 border border-amber-200">
+                          مديونية مرحّلة {loan.source_month ? `من ${loan.source_month}` : ''}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 font-bold text-slate-600 max-w-[260px] truncate">
                       {loan.notes || '—'}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-center gap-1">
+                        {!loan.parent_loan_id && (loan.installments_count || 1) === 1 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSplitTarget(loan);
+                              setSplitCount('2');
+                              setSplitError('');
+                            }}
+                            title="تقسيط على عدة شهور"
+                            className="px-2 py-1 rounded-lg text-[10px] font-black bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 transition cursor-pointer"
+                          >
+                            تقسيط
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => openEdit(loan)}
@@ -777,21 +840,45 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
               </div>
             </div>
 
-            <div>
-              <label className={labelClass}>قيمة السلفة (ج.م) *</label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.amount}
-                onChange={(event) => updateForm({ amount: event.target.value })}
-                placeholder="0.00"
-                className={`${inputClass} font-mono`}
-              />
-              <p className="text-[10px] font-bold text-slate-500 mt-1">
-                المستحق الحالي للموظف حتى أمس: {formatMoney(selectedEmployeeDue)} — وهو الحد الأقصى للسلفة.
-              </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className={labelClass}>قيمة السلفة (ج.م) *</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.amount}
+                  onChange={(event) => updateForm({ amount: event.target.value })}
+                  placeholder="0.00"
+                  className={`${inputClass} font-mono`}
+                />
+              </div>
+              {!editing && (
+                <div>
+                  <label className={labelClass}>عدد الأقساط (شهور)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="36"
+                    value={form.installments_count}
+                    onChange={(event) => updateForm({ installments_count: event.target.value })}
+                    className={`${inputClass} font-mono`}
+                  />
+                </div>
+              )}
             </div>
+            <p className="text-[10px] font-bold text-slate-500">
+              المستحق الحالي للموظف حتى أمس: <span className="font-mono">{formatMoney(selectedEmployeeDue)}</span>
+              {!editing && Number(form.installments_count) > 1 && Number(form.amount) > 0 && (
+                <>
+                  {' — '}قيمة القسط الشهري التقريبي:{' '}
+                  <strong className="font-mono text-purple-700">
+                    {formatMoney(Number(form.amount) / Math.max(1, Math.round(Number(form.installments_count) || 1)))}
+                  </strong>{' '}
+                  × {Math.round(Number(form.installments_count) || 1)} شهور.
+                </>
+              )}
+            </p>
 
             <div>
               <label className={labelClass}>ملاحظات</label>
@@ -873,6 +960,53 @@ export const LoansPanel: React.FC<{ employees: HREmployee[] }> = ({ employees })
         </Modal>
       )}
 
+
+      {splitTarget && (
+        <Modal
+          title="تقسيط السلفة / المديونية على عدة شهور"
+          subtitle={`الإجمالي: ${formatMoney(Number(splitTarget.amount) || 0)} — يبدأ من ${splitTarget.date}`}
+          onClose={() => setSplitTarget(null)}
+          maxWidthClass="max-w-md"
+        >
+          <form onSubmit={handleSplitSubmit} className="space-y-3">
+            <div>
+              <label className={labelClass}>عدد الأقساط الشهرية (2 إلى 36 شهراً)</label>
+              <input
+                type="number"
+                min="2"
+                max="36"
+                value={splitCount}
+                onChange={(event) => setSplitCount(event.target.value)}
+                className={`${inputClass} font-mono`}
+              />
+              {Number(splitCount) >= 2 && (
+                <p className="text-[11px] font-bold text-purple-700 mt-1.5 font-mono">
+                  قيمة القسط الشهري: {formatMoney((Number(splitTarget.amount) || 0) / Math.round(Number(splitCount)))} ×{' '}
+                  {Math.round(Number(splitCount))} شهور
+                </p>
+              )}
+            </div>
+            <ErrorNote message={splitError} />
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setSplitTarget(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-[11px] font-black hover:bg-slate-200 transition cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="submit"
+                disabled={isSplitting}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-purple-600 text-white text-[11px] font-black hover:bg-purple-700 transition cursor-pointer disabled:opacity-60"
+              >
+                <Save className="w-4 h-4" />
+                {isSplitting ? 'جاري التقسيط...' : 'تأكيد التقسيط'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {deleteTarget && (
         <Modal

@@ -720,13 +720,15 @@ class FactoryResetViewSet(viewsets.ViewSet):
             if selected & {'users_roles', 'audit_logs'}:
                 _count_and_delete(InternalMessage.objects.all(), 'الرسائل الداخلية', summary)
 
-            # 2) الموارد البشرية: الحضور/الجزاءات/السُلف ← الموظفين ← الوظائف (PROTECT).
+            # 2) الموارد البشرية: الحضور/الجزاءات/السُلف/المكافآت ← الموظفين ← الوظائف (PROTECT).
             if 'hr' in selected:
                 _count_and_delete(HRPayrollSnapshot.objects.all(), 'كشوف الرواتب المعتمدة', summary)
                 _count_and_delete(HRAttendanceRecord.objects.all(), 'سجلات الحضور', summary)
                 _count_and_delete(HRPenalty.objects.all(), 'الجزاءات', summary)
                 _count_and_delete(HRLoan.objects.all(), 'السُلف', summary)
+                _count_and_delete(HRDirectBonus.objects.all(), 'المكافآت الفورية', summary)
                 _count_and_delete(HREmployee.objects.all(), 'الموظفين', summary)
+                _count_and_delete(HRBonusPlan.objects.all(), 'أنظمة المكافآت الدورية', summary)
                 _count_and_delete(HRJobTitle.objects.all(), 'الوظائف', summary)
                 _count_and_delete(HRAttendanceSettings.objects.all(), 'إعدادات الحضور', summary)
 

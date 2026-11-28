@@ -830,6 +830,17 @@ export const api = {
     request<{ is_locked: boolean; month: string; snapshot: any | null }>(
       `/hr-payroll-snapshots/for-month/?month=${encodeURIComponent(month)}`
     ),
+  getHRPayrollPreview: (month: string, asOf?: 'today') =>
+    request<{
+      is_locked: boolean;
+      month: string;
+      snapshot: any | null;
+      rows: any[];
+      totals: any;
+      settings_snapshot: any;
+    }>(
+      `/hr-payroll-snapshots/preview/?month=${encodeURIComponent(month)}${asOf ? `&as_of=${encodeURIComponent(asOf)}` : ''}`
+    ),
   lockHRPayroll: (month: string, notes = '') =>
     request<{ is_locked: boolean; month: string; snapshot: any }>('/hr-payroll-snapshots/lock/', {
       method: 'POST',
@@ -856,6 +867,26 @@ export const api = {
     request<any>(`/hr-loans/${encodeURIComponent(id)}/`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteHRLoan: (id: string) =>
     request<any>(`/hr-loans/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  splitHRLoanInstallments: (id: string, installments_count: number) =>
+    request<any>(`/hr-loans/${encodeURIComponent(id)}/split-installments/`, {
+      method: 'POST',
+      body: JSON.stringify({ installments_count })
+    }),
+  getHRBonusPlans: () => request<any[]>('/hr-bonus-plans/'),
+  createHRBonusPlan: (data: any) =>
+    request<any>('/hr-bonus-plans/', { method: 'POST', body: JSON.stringify(data) }),
+  updateHRBonusPlan: (id: string, data: any) =>
+    request<any>(`/hr-bonus-plans/${encodeURIComponent(id)}/`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteHRBonusPlan: (id: string) =>
+    request<any>(`/hr-bonus-plans/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
+  getHRDirectBonuses: (month?: string) =>
+    request<any[]>(`/hr-direct-bonuses/${month ? `?month=${encodeURIComponent(month)}` : ''}`),
+  createHRDirectBonus: (data: any) =>
+    request<any>('/hr-direct-bonuses/', { method: 'POST', body: JSON.stringify(data) }),
+  updateHRDirectBonus: (id: string, data: any) =>
+    request<any>(`/hr-direct-bonuses/${encodeURIComponent(id)}/`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteHRDirectBonus: (id: string) =>
+    request<any>(`/hr-direct-bonuses/${encodeURIComponent(id)}/`, { method: 'DELETE' }),
   getHRReports: (params?: { year?: number; from?: string; to?: string }) => {
     const search = new URLSearchParams();
     if (params?.year) search.set('year', String(params.year));

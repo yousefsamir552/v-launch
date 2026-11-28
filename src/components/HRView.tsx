@@ -14,6 +14,7 @@ import { AttendanceRulesPanel } from './hr/AttendanceRulesPanel';
 import { AttendanceRecordsPanel } from './hr/AttendanceRecordsPanel';
 import { LoansPanel } from './hr/LoansPanel';
 import { PenaltiesPanel } from './hr/PenaltiesPanel';
+import { BonusesPanel } from './hr/BonusesPanel';
 import { PayrollPanel } from './hr/PayrollPanel';
 
 export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initialSubTab }) => {
@@ -26,8 +27,8 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
   const [attendanceTab, setAttendanceTab] = useState<'records' | 'rules'>(
     initialSubTab === 'rules' ? 'rules' : 'records'
   );
-  const [loansTab, setLoansTab] = useState<'loans' | 'penalties'>(
-    initialSubTab === 'penalties' ? 'penalties' : 'loans'
+  const [loansTab, setLoansTab] = useState<'loans' | 'penalties' | 'bonuses'>(
+    initialSubTab === 'penalties' ? 'penalties' : initialSubTab === 'bonuses' ? 'bonuses' : 'loans'
   );
 
   // Per-tab HR permissions (each tab has its own independent permission).
@@ -61,7 +62,7 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
   useEffect(() => {
     if (initialSubTab === 'employees' || initialSubTab === 'jobs') setStaffTab(initialSubTab);
     else if (initialSubTab === 'records' || initialSubTab === 'rules') setAttendanceTab(initialSubTab);
-    else if (initialSubTab === 'loans' || initialSubTab === 'penalties') setLoansTab(initialSubTab);
+    else if (initialSubTab === 'loans' || initialSubTab === 'penalties' || initialSubTab === 'bonuses') setLoansTab(initialSubTab);
   }, [initialSubTab]);
 
   const loadHRData = useCallback(async () => {
@@ -104,8 +105,8 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
       icon: Clock
     },
     loans_penalties: {
-      title: 'السُلف والجزاءات',
-      subtitle: 'تسجيل السُلف المالية والجزاءات على الموظفين',
+      title: 'السُلف والجزاءات والمكافآت',
+      subtitle: 'تسجيل السُلف المقسّطة والجزاءات والمكافآت الفورية والدورية',
       icon: Scale
     },
     payroll: {
@@ -136,8 +137,11 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
           ]
         : section === 'loans_penalties'
           ? [
-              ...(hrPerm.loans ? [{ id: 'loans', label: 'السُلف' }] : []),
-              ...(hrPerm.penalties ? [{ id: 'penalties', label: 'الجزاءات' }] : [])
+              ...(hrPerm.loans ? [{ id: 'loans', label: 'السُلف والأقساط' }] : []),
+              ...(hrPerm.penalties ? [{ id: 'penalties', label: 'الجزاءات' }] : []),
+              ...(hrPerm.payroll || hrPerm.loans || hrPerm.penalties
+                ? [{ id: 'bonuses', label: 'المكافآت الفورية والدورية' }]
+                : [])
             ]
           : [];
 
@@ -161,7 +165,7 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
   const handleTabChange = (tabId: string) => {
     if (section === 'staff') setStaffTab(tabId as 'employees' | 'jobs');
     else if (section === 'attendance') setAttendanceTab(tabId as 'records' | 'rules');
-    else if (section === 'loans_penalties') setLoansTab(tabId as 'loans' | 'penalties');
+    else if (section === 'loans_penalties') setLoansTab(tabId as 'loans' | 'penalties' | 'bonuses');
   };
 
   // Defense-in-depth: never render the HR panels without the dynamic permission.
@@ -286,6 +290,10 @@ export const HRView: React.FC<HRViewProps> = ({ initialSection = 'staff', initia
 
       {section === 'loans_penalties' && activeTab === 'penalties' && (
         <PenaltiesPanel employees={activeEmployees} />
+      )}
+
+      {section === 'loans_penalties' && activeTab === 'bonuses' && (
+        <BonusesPanel employees={activeEmployees} />
       )}
 
       {section === 'payroll' && <PayrollPanel employees={activeEmployees} />}

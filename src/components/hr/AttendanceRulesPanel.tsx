@@ -35,10 +35,16 @@ export const AttendanceRulesPanel: React.FC<{
 }> = ({ settings, isLoading, onRefresh }) => {
   const { addFlashMessage, logAction } = useApp();
 
-  const [startTime, setStartTime] = useState('08:30');
-  const [endTime, setEndTime] = useState('17:30');
+  const [startTime, setStartTime] = useState('08:00');
+  const [endTime, setEndTime] = useState('17:00');
   const [weeklyOff, setWeeklyOff] = useState<HRWeekDayKey>('Sunday');
   const [weeklyOffMultiplier, setWeeklyOffMultiplier] = useState<string>('1');
+  const [weeklyOffPartialMultiplier, setWeeklyOffPartialMultiplier] = useState<string>('1');
+  const [overtimeRegularMult, setOvertimeRegularMult] = useState<string>('1');
+  const [overtimeNightMult, setOvertimeNightMult] = useState<string>('1');
+  const [overtimeHolidayMult, setOvertimeHolidayMult] = useState<string>('2');
+  const [graceMinutes, setGraceMinutes] = useState<string>('0');
+  const [gracePeriodMonths, setGracePeriodMonths] = useState<string>('1');
   const [rules, setRules] = useState<HRAttendanceRule[]>([]);
   const [overtimeRules, setOvertimeRules] = useState<HROvertimeRule[]>([]);
   const [formError, setFormError] = useState('');
@@ -56,10 +62,16 @@ export const AttendanceRulesPanel: React.FC<{
 
   useEffect(() => {
     if (!settings) return;
-    setStartTime(settings.official_start_time || '08:30');
-    setEndTime(settings.official_end_time || '17:30');
+    setStartTime(settings.official_start_time || '08:00');
+    setEndTime(settings.official_end_time || '17:00');
     setWeeklyOff(settings.weekly_off_day || 'Sunday');
     setWeeklyOffMultiplier(String(settings.weekly_off_work_multiplier ?? 1));
+    setWeeklyOffPartialMultiplier(String(settings.weekly_off_partial_hour_multiplier ?? 1));
+    setOvertimeRegularMult(String(settings.overtime_regular_multiplier ?? 1));
+    setOvertimeNightMult(String(settings.overtime_night_multiplier ?? 1));
+    setOvertimeHolidayMult(String(settings.overtime_holiday_multiplier ?? 2));
+    setGraceMinutes(String(settings.monthly_late_grace_minutes ?? 0));
+    setGracePeriodMonths(String(settings.monthly_late_grace_period_months ?? 1));
     setRules(Array.isArray(settings.rules_json) ? settings.rules_json : []);
     setOvertimeRules(Array.isArray(settings.overtime_rules) ? settings.overtime_rules : []);
   }, [settings]);
@@ -75,12 +87,13 @@ export const AttendanceRulesPanel: React.FC<{
         id: `hr-rule-${Date.now()}`,
         violation_type: 'late_arrival',
         label: 'قاعدة تأخير جديدة',
-        from_minutes: 0,
+        from_minutes: 1,
         to_minutes: 15,
         until_time: '',
         deduction_type: 'days',
         deduction_value: 0.25,
-        apply_mode: 'manual_review'
+        apply_mode: 'auto',
+        uses_monthly_grace: true
       }
     ]);
   };
@@ -97,6 +110,8 @@ export const AttendanceRulesPanel: React.FC<{
         label: 'ميعاد إضافي جديد',
         from_time: '17:30',
         to_time: '20:00',
+        offset_from_minutes: null,
+        offset_to_minutes: null,
         reward_type: 'hours',
         reward_value: 1
       }
@@ -149,6 +164,17 @@ export const AttendanceRulesPanel: React.FC<{
       setFormError('معامل أجر العمل يوم الإجازة الأسبوعية يجب أن يكون رقماً موجباً (مثلاً 1 أو 1.5 أو 2)');
       return;
     }
+    const parsedPartialMult = Number(weeklyOffPartialMultiplier);
+    if (!Number.isFinite(parsedPartialMult) || parsedPartialMult < 0) {
+      setFormError('معامل ساعات العمل الجزئي يوم الإجازة يجب أن يكون رقماً موجباً');
+      return;
+    }
+    const parsedOtReg = Number(overtimeRegularMult);
+    const parsedOtNight = Number(overtimeNightMult);
+    const parsedOtHol = Number(overtimeHolidayMult);
+    const parsedGraceMin = Math.max(0, Math.round(Number(graceMinutes) || 0));
+    const parsedGracePeriod = Math.max(1, Math.round(Number(gracePeriodMonths) || 1));
+
     if (rules.some((rule) => !Number(rule.deduction_value) || Number(rule.deduction_value) <= 0)) {
       setFormError('قيمة الخصم في كل قاعدة يجب أن تكون أكبر من صفر');
       return;
@@ -158,11 +184,10 @@ export const AttendanceRulesPanel: React.FC<{
         (rule) =>
           !Number(rule.reward_value) ||
           Number(rule.reward_value) <= 0 ||
-          !rule.from_time ||
-          !rule.to_time
+          (!(rule.from_time && rule.to_time) && rule.offset_from_minutes == null)
       )
     ) {
-      setFormError('كل قاعدة إضافي يجب أن تحدد من/إلى الساعة وقيمة أكبر من صفر');
+      setFormError('كل قاعدة إضافي يجب أن تحدد وقتاً أو دقائق بعد نهاية الوردية وقيمة أكبر من صفر');
       return;
     }
 
@@ -176,6 +201,12 @@ export const AttendanceRulesPanel: React.FC<{
         official_end_time: endTime,
         weekly_off_day: weeklyOff,
         weekly_off_work_multiplier: parsedMultiplier,
+        weekly_off_partial_hour_multiplier: parsedPartialMult,
+        overtime_regular_multiplier: Number.isFinite(parsedOtReg) && parsedOtReg >= 0 ? parsedOtReg : 1,
+        overtime_night_multiplier: Number.isFinite(parsedOtNight) && parsedOtNight >= 0 ? parsedOtNight : 1,
+        overtime_holiday_multiplier: Number.isFinite(parsedOtHol) && parsedOtHol >= 0 ? parsedOtHol : 2,
+        monthly_late_grace_minutes: parsedGraceMin,
+        monthly_late_grace_period_months: parsedGracePeriod,
         month_calculation_days: 30,
         rules_json: rules.map((rule) => ({
           ...rule,
@@ -184,10 +215,19 @@ export const AttendanceRulesPanel: React.FC<{
             rule.to_minutes === undefined || rule.to_minutes === null || (rule.to_minutes as unknown) === ''
               ? null
               : Number(rule.to_minutes),
-          deduction_value: Number(rule.deduction_value) || 0
+          deduction_value: Number(rule.deduction_value) || 0,
+          uses_monthly_grace: rule.violation_type === 'late_arrival' ? Boolean(rule.uses_monthly_grace) : false
         })),
         overtime_rules: overtimeRules.map((rule) => ({
           ...rule,
+          offset_from_minutes:
+            rule.offset_from_minutes === undefined || rule.offset_from_minutes === null || (rule.offset_from_minutes as unknown) === ''
+              ? null
+              : Number(rule.offset_from_minutes),
+          offset_to_minutes:
+            rule.offset_to_minutes === undefined || rule.offset_to_minutes === null || (rule.offset_to_minutes as unknown) === ''
+              ? null
+              : Number(rule.offset_to_minutes),
           reward_value: Number(rule.reward_value) || 0
         }))
       });
@@ -265,7 +305,7 @@ export const AttendanceRulesPanel: React.FC<{
             </select>
           </div>
           <div>
-            <label className={labelClass}>معامل العمل يوم الإجازة (فوق الـ30 يوم)</label>
+            <label className={labelClass}>معامل العمل يوم الإجازة (يوم كامل)</label>
             <input
               type="number"
               min="0"
@@ -273,6 +313,74 @@ export const AttendanceRulesPanel: React.FC<{
               value={weeklyOffMultiplier}
               onChange={(event) => setWeeklyOffMultiplier(event.target.value)}
               placeholder="1.0 / 1.5 / 2.0"
+              className={`${inputClass} font-mono`}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>معامل ساعات العمل الجزئي يوم الإجازة</label>
+            <input
+              type="number"
+              min="0"
+              step="0.25"
+              value={weeklyOffPartialMultiplier}
+              onChange={(event) => setWeeklyOffPartialMultiplier(event.target.value)}
+              placeholder="1.0 / 1.5 / 2.0"
+              className={`${inputClass} font-mono`}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>معامل الإضافي (عادي / ليلي / رسمي)</label>
+            <div className="grid grid-cols-3 gap-1.5">
+              <input
+                type="number"
+                min="0"
+                step="0.25"
+                title="معامل الإضافي العادي"
+                value={overtimeRegularMult}
+                onChange={(event) => setOvertimeRegularMult(event.target.value)}
+                className={`${inputClass} font-mono px-2`}
+              />
+              <input
+                type="number"
+                min="0"
+                step="0.25"
+                title="معامل الإضافي الليلي"
+                value={overtimeNightMult}
+                onChange={(event) => setOvertimeNightMult(event.target.value)}
+                className={`${inputClass} font-mono px-2`}
+              />
+              <input
+                type="number"
+                min="0"
+                step="0.25"
+                title="معامل الإجازات الرسمية"
+                value={overtimeHolidayMult}
+                onChange={(event) => setOvertimeHolidayMult(event.target.value)}
+                className={`${inputClass} font-mono px-2`}
+              />
+            </div>
+          </div>
+          <div>
+            <label className={labelClass}>رصيد السماح الافتراضي للتأخير (دقيقة)</label>
+            <input
+              type="number"
+              min="0"
+              step="5"
+              value={graceMinutes}
+              onChange={(event) => setGraceMinutes(event.target.value)}
+              placeholder="مثال: 60"
+              className={`${inputClass} font-mono`}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>دورية رصيد السماح الافتراضية (شهور)</label>
+            <input
+              type="number"
+              min="1"
+              max="12"
+              value={gracePeriodMonths}
+              onChange={(event) => setGracePeriodMonths(event.target.value)}
+              placeholder="1 = شهري"
               className={`${inputClass} font-mono`}
             />
           </div>
@@ -447,6 +555,21 @@ export const AttendanceRulesPanel: React.FC<{
                     />
                   </div>
                 </div>
+                {rule.violation_type === 'late_arrival' && (
+                  <label className="inline-flex items-center gap-2 text-[11px] font-bold text-slate-700 cursor-pointer pt-1">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(rule.uses_monthly_grace)}
+                      onChange={(event) =>
+                        updateRule(index, { uses_monthly_grace: event.target.checked })
+                      }
+                      className="rounded border-slate-300 text-purple-600 focus:ring-purple-500"
+                    />
+                    <span>
+                      تُخصم من رصيد السماح الشهري (لا يُخصم طالما الإجمالي ضمن الرصيد، وعند التجاوز يُخصم الكل بأثر رجعي)
+                    </span>
+                  </label>
+                )}
               </div>
             ))}
           </div>
@@ -499,8 +622,8 @@ export const AttendanceRulesPanel: React.FC<{
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                    <div>
+                  <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+                    <div className="md:col-span-2">
                       <label className={labelClass}>وصف القاعدة</label>
                       <input
                         value={rule.label || ''}
@@ -510,10 +633,10 @@ export const AttendanceRulesPanel: React.FC<{
                       />
                     </div>
                     <div>
-                      <label className={labelClass}>من الساعة</label>
+                      <label className={labelClass}>من الساعة (أو فارغ)</label>
                       <input
                         type="time"
-                        value={rule.from_time}
+                        value={rule.from_time || ''}
                         onChange={(event) => updateOvertimeRule(index, { from_time: event.target.value })}
                         className={`${inputClass} font-mono`}
                       />
@@ -522,14 +645,43 @@ export const AttendanceRulesPanel: React.FC<{
                       <label className={labelClass}>إلى الساعة</label>
                       <input
                         type="time"
-                        value={rule.to_time}
+                        value={rule.to_time || ''}
                         onChange={(event) => updateOvertimeRule(index, { to_time: event.target.value })}
                         className={`${inputClass} font-mono`}
                       />
                     </div>
                     <div>
+                      <label className={labelClass}>أو دقائق بعد الوردية (من / إلى)</label>
+                      <div className="flex gap-1.5">
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="+30"
+                          value={rule.offset_from_minutes ?? ''}
+                          onChange={(event) =>
+                            updateOvertimeRule(index, {
+                              offset_from_minutes: event.target.value === '' ? null : Number(event.target.value)
+                            })
+                          }
+                          className={`${inputClass} font-mono px-2`}
+                        />
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="+120"
+                          value={rule.offset_to_minutes ?? ''}
+                          onChange={(event) =>
+                            updateOvertimeRule(index, {
+                              offset_to_minutes: event.target.value === '' ? null : Number(event.target.value)
+                            })
+                          }
+                          className={`${inputClass} font-mono px-2`}
+                        />
+                      </div>
+                    </div>
+                    <div>
                       <label className={labelClass}>المكافأة</label>
-                      <div className="flex gap-2">
+                      <div className="flex gap-1.5">
                         <select
                           value={rule.reward_type}
                           onChange={(event) =>

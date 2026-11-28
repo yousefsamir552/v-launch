@@ -31,6 +31,8 @@ from .models import (
     HRAttendanceRecord,
     HRPenalty,
     HRLoan,
+    HRBonusPlan,
+    HRDirectBonus,
     HRAttendanceSettings,
     HRPayrollSnapshot,
     RANK_SUDO,
@@ -41,11 +43,16 @@ from .models import (
 from .permissions import IsAuthenticatedProfile
 from .hr_attendance_io import (
     DEFAULT_WEEKLY_OFF_WEEKDAY,
+    _match_rule,
     absence_extra_penalty_days,
+    compute_worked_hours,
     effective_absence_decision,
     eligible_week_dates,
+    employee_shift_times,
+    is_absence_for_weekly_off,
     is_attended_record,
     is_excused_unpaid_record,
+    is_pending_absence_record,
     is_unexcused_absence_record,
     weekly_off_ratio_for_absences,
     weekly_off_weekday,
@@ -59,16 +66,57 @@ from .views import (
 )
 
 
-def _round_half_up(value, places=2) -> float:
-    """تقريب مالي مطابق لـ Math.round في الواجهة (ROUND_HALF_UP)."""
+def _D(value, default='0') -> Decimal:
+    """تحويل آمن ودقيق إلى Decimal (بدون انزياح ثنائي للـ float)."""
+    if value is None or value == '':
+        return Decimal(default)
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else Decimal(default)
     try:
-        dec = Decimal(str(float(value or 0.0)))
-        if not dec.is_finite():
-            return 0.0
+        dec = Decimal(str(value))
+        return dec if dec.is_finite() else Decimal(default)
+    except Exception:
+        return Decimal(default)
+
+
+def _q2(value) -> Decimal:
+    """تقريب مالي دقيق لأقرب قرش (رقمين عشريين) بقاعدة ROUND_HALF_UP."""
+    return _D(value).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+def _round_half_up(value, places=2) -> float:
+    """تقريب مالي بقاعدة ROUND_HALF_UP (تجنب تقريب بايثون Banker's Rounding)."""
+    try:
+        dec = _D(value)
         quant = Decimal('1').scaleb(-places)
         return float(dec.quantize(quant, rounding=ROUND_HALF_UP))
     except Exception:
         return round(float(value or 0.0), places)
+
+
+def _round_nearest_5(value) -> Decimal:
+    """
+    تقريب صافي المرتب النهائي الموجب فقط عند الصرف لأقرب 5 جنيهات بقاعدة ROUND_HALF_UP:
+      2582.50 -> 2585.00
+      2587.50 -> 2590.00
+    أما الرصيد السالب أو الصفر فيبقى بقيمته الدقيقة بالقرش بدون تقريب.
+    """
+    dec = _q2(value)
+    if dec <= Decimal('0.00'):
+        return dec
+    return ((dec / Decimal('5')).quantize(Decimal('1'), rounding=ROUND_HALF_UP)) * Decimal('5')
+
+
+def _weekly_off_ratio_dec(absent_count: int) -> Decimal:
+    if absent_count >= 5:
+        return Decimal('1')
+    if absent_count == 4:
+        return Decimal('2') / Decimal('3')
+    if absent_count == 3:
+        return Decimal('0.5')
+    if absent_count == 2:
+        return Decimal('1') / Decimal('3')
+    return Decimal('0')
 
 
 MONTH_LABELS_AR = [
@@ -146,27 +194,36 @@ def _weekly_off_ratio(absent_count):
     return weekly_off_ratio_for_absences(absent_count)
 
 
-def _weekly_off_deduction_for_date(records_by_date, off_date, hire_date=None, termination_date=None):
-    """نسبة خصم يوم الإجازة الأسبوعية وفق الغياب بدون عذر في الأيام الستة السابقة ضمن فترة التوظيف."""
+def _weekly_off_deduction_for_date_dec(records_by_date, off_date, hire_date=None, termination_date=None) -> Decimal:
+    """نسبة خصم يوم الإجازة الأسبوعية (Decimal دقيق) وفق إجمالي أيام الغياب في الأيام الستة السابقة ضمن فترة التوظيف."""
     raw_week_dates = [off_date - timedelta(days=offset) for offset in range(6, 0, -1)]
     week_dates = eligible_week_dates(raw_week_dates, hire_date=hire_date, termination_date=termination_date)
     if not week_dates or not any(day in records_by_date for day in week_dates):
-        return 0.0
+        return Decimal('0')
     absent_count = 0
     for day in week_dates:
         record = records_by_date.get(day)
-        if is_unexcused_absence_record(record):
+        if is_absence_for_weekly_off(record):
             absent_count += 1
-    return _weekly_off_ratio(absent_count)
+    return _weekly_off_ratio_dec(absent_count)
+
+
+def _weekly_off_deduction_for_date(records_by_date, off_date, hire_date=None, termination_date=None):
+    """نسبة خصم يوم الإجازة الأسبوعية وفق إجمالي أيام الغياب (بدون عذر + بعذر + معلّق) في الأيام الستة السابقة."""
+    return float(_weekly_off_deduction_for_date_dec(records_by_date, off_date, hire_date=hire_date, termination_date=termination_date))
 
 
 def _compute_month_accrual(records_by_date, month_key, up_to_iso,
                            weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY,
                            weekly_off_work_multiplier=1.0,
                            hire_date=None,
-                           termination_date=None):
+                           termination_date=None,
+                           weekly_off_partial_hour_multiplier=1.0,
+                           shift_hours=9.0,
+                           official_start=None,
+                           official_end=None):
     """
-    استحقاق الشهر وفق قواعد المصنع الرسمية النهائية:
+    استحقاق الشهر وفق قواعد المصنع الرسمية النهائية المعتمدة (باستخدام Decimal):
     - النطاق الفعلي للموظف = [max(month_start, hire_date), min(month_end, termination_date)].
       أي يوم خارج هذا النطاق يُتجاهل تماماً (لا غياب ولا إجازة أسبوعية ولا خصم أحد).
     1) الموظف المنتظم طوال الشهر (لا تعيين ولا ترك داخل الشهر) في شهر مكتمل:
@@ -175,7 +232,9 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso,
     2) المعيَّن في منتصف الشهر (hire_date > month_start) أو التارك قبل نهاية الشهر (termination_date < month_end)
        أو منتصف الشهر المفتوح (month_complete = False):
        base_earned = min(30, attended_regular_days + paid_weekly_off_days).
-    3) العمل يوم الإجازة الأسبوعية يُضاف فوق سقف الـ 30 يوماً بمعامل weekly_off_work_multiplier.
+    3) العمل يوم الإجازة الأسبوعية يُضاف فوق سقف الـ 30 يوماً:
+       - يوم كامل: أجر يوم × weekly_off_work_multiplier.
+       - ساعات جزئية (< ساعات الوردية): ساعات العمل الفعلية × أجر الساعة × معامل ساعات الأحد.
     """
     y, m = (int(part) for part in month_key.split('-'))
     last_day = calendar.monthrange(y, m)[1]
@@ -188,6 +247,7 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso,
         (hire_date and hire_date > month_first)
         or (termination_date and termination_date < month_last)
     )
+    month_complete = up_to_iso is None or up_to_iso >= month_last
 
     if effective_start > effective_end:
         return {
@@ -195,35 +255,47 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso,
             'paid_sunday_days': 0.0,
             'worked_weekly_off_days': 0.0,
             'weekly_off_extra_days': 0.0,
+            'weekly_off_partial_hours': 0.0,
             'sunday_deduction_days': 0.0,
             'unexcused_absence_days': 0.0,
             'excused_unpaid_absence_days': 0.0,
             'is_partial_month': is_partial_month,
+            'month_complete': month_complete,
             'earned_days': 0.0,
             '_earned_days_raw': 0.0,
+            '_base_earned_days_dec': Decimal('0'),
+            '_weekly_off_full_weighted_days_dec': Decimal('0'),
+            '_weekly_off_partial_weighted_hours_dec': Decimal('0'),
+            '_sunday_deduction_days_dec': Decimal('0'),
+            '_total_unpaid_absence_days_dec': Decimal('0'),
         }
 
-    attended_regular_days = 0.0
-    worked_weekly_off_days = 0.0
-    workdays_in_scope = 0
-    paid_weekly_off_days = 0.0
-    unexcused_absence_days = 0.0
-    excused_unpaid_absence_days = 0.0
-    sunday_deduction_days = 0.0
-    try:
-        mult = max(0.0, float(weekly_off_work_multiplier))
-    except (TypeError, ValueError):
-        mult = 1.0
+    attended_regular_days = Decimal('0')
+    worked_weekly_off_days = Decimal('0')
+    weekly_off_full_weighted_days = Decimal('0')
+    weekly_off_partial_hours = Decimal('0')
+    weekly_off_partial_weighted_hours = Decimal('0')
+    paid_weekly_off_days = Decimal('0')
+    unexcused_absence_days = Decimal('0')
+    excused_unpaid_absence_days = Decimal('0')
+    sunday_deduction_days = Decimal('0')
 
-    month_complete = up_to_iso is None or up_to_iso >= month_last
+    mult_dec = max(Decimal('0'), _D(weekly_off_work_multiplier, '1'))
+    partial_mult_default = max(Decimal('0'), _D(weekly_off_partial_hour_multiplier, '1'))
+    shift_h_dec = _D(shift_hours, '9')
+    if shift_h_dec <= Decimal('0'):
+        shift_h_dec = Decimal('9')
 
     for day in range(1, last_day + 1):
         cursor = date(y, m, day)
         if cursor < effective_start or cursor > effective_end:
             continue
         record = records_by_date.get(cursor)
-        has_check_in = bool(record and record.check_in)
-        has_any_punch = bool(record and (record.check_in or record.check_out))
+        rec_in = getattr(record, 'check_in', None) if record else None
+        rec_out = getattr(record, 'check_out', None) if record else None
+        explicit_off_hours = getattr(record, 'weekly_off_worked_hours', None) if record else None
+        has_check_in = bool(rec_in) or bool(explicit_off_hours and float(explicit_off_hours) > 0)
+        has_any_punch = bool(rec_in or rec_out or (explicit_off_hours and float(explicit_off_hours) > 0))
         if up_to_iso and cursor > up_to_iso and not has_any_punch:
             continue
 
@@ -233,55 +305,82 @@ def _compute_month_accrual(records_by_date, month_key, up_to_iso,
                 raw_week_dates, hire_date=hire_date, termination_date=termination_date
             )
             if scoped_week and any(day_key in records_by_date for day_key in scoped_week):
-                ded = _weekly_off_deduction_for_date(
+                ded_dec = _weekly_off_deduction_for_date_dec(
                     records_by_date, cursor, hire_date=hire_date, termination_date=termination_date
                 )
-                sunday_deduction_days += ded
-                paid_weekly_off_days += max(0.0, 1.0 - ded)
+                sunday_deduction_days += ded_dec
+                paid_weekly_off_days += max(Decimal('0'), Decimal('1') - ded_dec)
             elif month_complete and not is_partial_month:
                 # أسبوع كامل بلا أي حضور لموظف منتظم في شهر مكتمل => خصم يوم الإجازة كاملاً.
-                sunday_deduction_days += 1.0
+                sunday_deduction_days += Decimal('1')
+
             if has_check_in:
-                worked_weekly_off_days += 1.0
+                worked_weekly_off_days += Decimal('1')
+                if explicit_off_hours is not None and float(explicit_off_hours) > 0:
+                    worked_h = _D(explicit_off_hours)
+                elif rec_in and rec_out:
+                    worked_h_val = compute_worked_hours(rec_in, rec_out, official_start, official_end)
+                    worked_h = _D(worked_h_val) if worked_h_val is not None else None
+                else:
+                    worked_h = None
+
+                override_mult = getattr(record, 'weekly_off_hour_multiplier_override', None)
+                if worked_h is not None and worked_h > Decimal('0') and worked_h < shift_h_dec:
+                    part_mult = max(Decimal('0'), _D(override_mult)) if override_mult is not None else partial_mult_default
+                    weekly_off_partial_hours += worked_h
+                    weekly_off_partial_weighted_hours += worked_h * part_mult
+                elif override_mult is not None and worked_h is not None and worked_h > Decimal('0'):
+                    part_mult = max(Decimal('0'), _D(override_mult))
+                    weekly_off_partial_hours += worked_h
+                    weekly_off_partial_weighted_hours += worked_h * part_mult
+                else:
+                    weekly_off_full_weighted_days += Decimal('1') * mult_dec
             continue
 
-        workdays_in_scope += 1
         if record and _is_attended(record):
-            attended_regular_days += 1.0
+            attended_regular_days += Decimal('1')
         elif record and is_excused_unpaid_record(record):
-            excused_unpaid_absence_days += 1.0
+            excused_unpaid_absence_days += Decimal('1')
         else:
-            unexcused_absence_days += 1.0
+            unexcused_absence_days += Decimal('1')
 
     attended_days = attended_regular_days + worked_weekly_off_days
-    weekly_off_extra_days = worked_weekly_off_days * mult
+    weekly_off_extra_days_dec = weekly_off_full_weighted_days + (weekly_off_partial_weighted_hours / shift_h_dec)
     total_unpaid_absence_days = unexcused_absence_days + excused_unpaid_absence_days
 
     if attended_regular_days == 0 and worked_weekly_off_days == 0:
-        # بدون أي حضور فعلي خلال الشهر نفسه: الاستحقاق = 0 (يمنع المرتب الوهمي للمستقيلين والشهور المستقبلية).
-        paid_weekly_off_days = 0.0
-        sunday_deduction_days = 0.0
-        earned_days_raw = 0.0
+        # بدون أي حضور فعلي (ولا إجازة مدفوعة على حساب الشركة) خلال الشهر: الاستحقاق = 0.
+        paid_weekly_off_days = Decimal('0')
+        sunday_deduction_days = Decimal('0')
+        base_earned_days = Decimal('0')
+        earned_days_raw_dec = Decimal('0')
     elif month_complete and not is_partial_month:
         # الموظف المنتظم طوال الشهر: نحاسب بالشهر (30 يوماً) ونخصم أيام الغياب وخصم الإجازة الأسبوعية.
-        base_earned = max(0.0, 30.0 - total_unpaid_absence_days - sunday_deduction_days)
-        earned_days_raw = base_earned + weekly_off_extra_days
+        base_earned_days = max(Decimal('0'), Decimal('30') - total_unpaid_absence_days - sunday_deduction_days)
+        earned_days_raw_dec = base_earned_days + weekly_off_extra_days_dec
     else:
         # المعيَّن أو التارك في منتصف الشهر (أو الشهر المفتوح قبل نهايته): نحاسب بالأيام الفعلية.
-        base_earned = min(30.0, attended_regular_days + paid_weekly_off_days)
-        earned_days_raw = base_earned + weekly_off_extra_days
+        base_earned_days = min(Decimal('30'), attended_regular_days + paid_weekly_off_days)
+        earned_days_raw_dec = base_earned_days + weekly_off_extra_days_dec
 
     return {
         'attended_days': _round_half_up(attended_days, 2),
         'paid_sunday_days': _round_half_up(paid_weekly_off_days, 2),
         'worked_weekly_off_days': _round_half_up(worked_weekly_off_days, 2),
-        'weekly_off_extra_days': _round_half_up(weekly_off_extra_days, 2),
+        'weekly_off_extra_days': _round_half_up(weekly_off_extra_days_dec, 2),
+        'weekly_off_partial_hours': _round_half_up(weekly_off_partial_hours, 2),
         'sunday_deduction_days': _round_half_up(sunday_deduction_days, 2),
         'unexcused_absence_days': _round_half_up(unexcused_absence_days, 2),
         'excused_unpaid_absence_days': _round_half_up(excused_unpaid_absence_days, 2),
         'is_partial_month': is_partial_month,
-        'earned_days': _round_half_up(earned_days_raw, 2),
-        '_earned_days_raw': earned_days_raw,
+        'month_complete': month_complete,
+        'earned_days': _round_half_up(earned_days_raw_dec, 2),
+        '_earned_days_raw': float(earned_days_raw_dec),
+        '_base_earned_days_dec': base_earned_days,
+        '_weekly_off_full_weighted_days_dec': weekly_off_full_weighted_days,
+        '_weekly_off_partial_weighted_hours_dec': weekly_off_partial_weighted_hours,
+        '_sunday_deduction_days_dec': sunday_deduction_days,
+        '_total_unpaid_absence_days_dec': total_unpaid_absence_days,
     }
 
 
@@ -369,33 +468,146 @@ def _match_late_rule(rules, late_minutes):
     return None
 
 
+def _early_minutes(check_out, official_start, official_end, check_in=None):
+    co = _minutes_from_time(check_out)
+    start = _minutes_from_time(official_start)
+    end = _minutes_from_time(official_end)
+    if co is None or start is None or end is None:
+        return 0.0
+    is_overnight = end <= start
+    eff_end = end + 1440 if is_overnight else end
+    eff_out = co
+    if is_overnight and eff_out <= start:
+        eff_out += 1440
+    elif not is_overnight:
+        ci = _minutes_from_time(check_in)
+        if ci is not None and eff_out < ci:
+            eff_out += 1440
+    diff = eff_end - eff_out
+    return float(round(diff)) if diff > 0 else 0.0
+
+
+def _rule_deduction_pair(rule):
+    """إرجاع (days_dec, hours_dec) من قاعدة خصم واحدة."""
+    if not rule:
+        return Decimal('0'), Decimal('0')
+    val = _D(rule.get('deduction_value'), '0')
+    if val <= Decimal('0'):
+        return Decimal('0'), Decimal('0')
+    if rule.get('deduction_type') == 'days':
+        return val, Decimal('0')
+    return Decimal('0'), val
+
+
 # ---------------------------------------------------------------------------
-# Helpers — monthly payroll row (mirror of PayrollPanel)
+# Helpers — monthly payroll row (Single Source of Truth in Python / Decimal)
 # ---------------------------------------------------------------------------
 def _payroll_for_employee_month(employee, employee_records, records_by_date,
                                 penalties, loans, month_key, settings, up_to_iso,
-                                weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY):
-    salary = float(employee.monthly_salary or 0)
-    day_rate = salary / 30.0
-    shift_hours = working_hours_per_day(settings)
-    hour_rate = day_rate / shift_hours
-    official_start = getattr(settings, 'official_start_time', None) if settings else None
-    official_end = getattr(settings, 'official_end_time', None) if settings else None
+                                weekly_off_index=DEFAULT_WEEKLY_OFF_WEEKDAY,
+                                direct_bonuses=None, bonus_plans=None):
+    salary_dec = _D(getattr(employee, 'monthly_salary', 0), '0')
+    day_rate_exact = salary_dec / Decimal('30')
+    day_rate = _q2(day_rate_exact)
+    shift_hours_val = working_hours_per_day(settings, employee)
+    shift_hours_dec = _D(shift_hours_val, '9')
+    if shift_hours_dec <= Decimal('0'):
+        shift_hours_dec = Decimal('9')
+    hour_rate_exact = day_rate_exact / shift_hours_dec
+    hour_rate = _q2(hour_rate_exact)
+
+    official_start, official_end = employee_shift_times(settings, employee)
     rules = getattr(settings, 'rules_json', None) if settings else None
-    raw_mult = getattr(settings, 'weekly_off_work_multiplier', None) if settings else None
-    try:
-        weekly_off_mult = 1.0 if raw_mult is None else max(0.0, float(raw_mult))
-    except (TypeError, ValueError):
-        weekly_off_mult = 1.0
+    weekly_off_mult = max(
+        Decimal('0'),
+        _D(getattr(settings, 'weekly_off_work_multiplier', None), '1') if settings else Decimal('1'),
+    )
+    weekly_off_partial_mult = max(
+        Decimal('0'),
+        _D(getattr(settings, 'weekly_off_partial_hour_multiplier', None), '1') if settings else Decimal('1'),
+    )
+    overtime_regular_mult = max(
+        Decimal('0'),
+        _D(getattr(settings, 'overtime_regular_multiplier', None), '1') if settings else Decimal('1'),
+    )
 
     hire_date = getattr(employee, 'hire_date', None)
     termination_date = getattr(employee, 'termination_date', None)
-    extra_absence_days_default = absence_extra_penalty_days(rules)
+    extra_absence_days_default = _D(absence_extra_penalty_days(rules), '1')
 
-    attendance_days = 0.0
-    attendance_hours = 0.0
-    overtime_days = 0.0
-    overtime_hours = 0.0
+    # إعدادات رصيد السماح الديناميكي (تخصيص الموظف يتفوق على الإعداد العام).
+    emp_grace_min = getattr(employee, 'late_grace_minutes', None)
+    if emp_grace_min is not None:
+        grace_limit = max(0, int(emp_grace_min))
+    else:
+        grace_limit = max(0, int(getattr(settings, 'monthly_late_grace_minutes', 0) or 0)) if settings else 0
+
+    emp_grace_period = getattr(employee, 'late_grace_period_months', None)
+    if emp_grace_period is not None:
+        grace_period_months = max(1, int(emp_grace_period))
+    else:
+        grace_period_months = max(1, int(getattr(settings, 'monthly_late_grace_period_months', 1) or 1)) if settings else 1
+
+    month_start = _month_start(month_key)
+    month_end = _month_end(month_key)
+    y_num, m_num = month_start.year, month_start.month
+    period_start_m = ((m_num - 1) // grace_period_months) * grace_period_months + 1
+    grace_window_start = date(y_num, period_start_m, 1)
+
+    # تجميع السجلات ضمن نافذة السماح (للدوريات متعددة الشهور نجلب الشهور السابقة في نفس الدورة عند الحاجة).
+    grace_records = list(employee_records)
+    if grace_period_months > 1 and grace_window_start < month_start and getattr(employee, 'pk', None):
+        existing_dates = {getattr(r, 'date', None) for r in grace_records}
+        extra_recs = HRAttendanceRecord.objects.filter(
+            employee=employee,
+            date__gte=grace_window_start,
+            date__lt=month_start,
+        )
+        for er in extra_recs:
+            if er.date not in existing_dates:
+                grace_records.append(er)
+
+    # ------------------------------------------------------------------
+    # المرحلة 1: احتساب دقائق التأخير المستهلكة من رصيد السماح خلال الفترة
+    # (يشمل التأخير المُصفَّر يدوياً من المشرف وفق قاعدة 14 وحالة 12).
+    # ------------------------------------------------------------------
+    grace_used_minutes = Decimal('0')
+    for record in grace_records:
+        rec_date = getattr(record, 'date', None)
+        if not rec_date or rec_date < grace_window_start or rec_date > month_end:
+            continue
+        if hire_date and rec_date < hire_date:
+            continue
+        if termination_date and rec_date > termination_date:
+            continue
+        if rec_date.weekday() == weekly_off_index and not getattr(record, 'check_in', None):
+            continue
+        if not _is_attended(record):
+            continue
+        if record.status in ('absent', 'leave') and effective_absence_decision(record) == 'paid_company':
+            continue
+        if getattr(record, 'is_excused', False):
+            continue
+        if getattr(record, 'review_status', '') == 'rejected' and not getattr(record, 'manual_deduction', False):
+            continue
+
+        stored_late = float(getattr(record, 'late_minutes', 0) or 0)
+        late_m = stored_late if stored_late > 0 else _late_minutes(record.check_in, official_start, official_end)
+        if late_m > 0:
+            l_rule = _match_late_rule(rules, late_m)
+            if l_rule and bool(l_rule.get('uses_monthly_grace')):
+                grace_used_minutes += _D(late_m)
+
+    grace_exceeded = (grace_limit > 0) and (grace_used_minutes > _D(grace_limit))
+
+    # ------------------------------------------------------------------
+    # المرحلة 2: احتساب خصومات الحضور والغياب الإضافي والأوفرتايم للشهر
+    # ------------------------------------------------------------------
+    attendance_days = Decimal('0')
+    attendance_hours = Decimal('0')
+    overtime_days = Decimal('0')
+    overtime_hours = Decimal('0')
+    penalized_late_count = 0
 
     for record in employee_records:
         if not str(record.date).startswith(month_key):
@@ -405,23 +617,25 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
         if termination_date and record.date > termination_date:
             continue
         # يوم الإجازة الأسبوعية بدون بصمة حضور = إجازة مدفوعة (لا إضافي/خصم عليه).
-        if record.date.weekday() == weekly_off_index and not record.check_in:
+        if record.date.weekday() == weekly_off_index and not getattr(record, 'check_in', None):
             continue
 
-        # 1) سجل غير حاضر (غياب بدون عذر أو غياب بعذر): لا يُصرف له إضافي.
+        # 1) سجل غير حاضر (غياب بدون عذر / بعذر / معلّق): لا يُصرف له إضافي.
         if not _is_attended(record):
             if is_excused_unpaid_record(record):
-                # غياب بعذر (خصم اليوم فقط داخل earned_days دون جزاء إضافي).
+                # غياب بعذر: لا جزاء إضافي (فقط يوم الغياب نفسه داخل earned_days).
                 continue
-            # غياب بدون عذر (أو بدون قرار بعد): يُضاف يوم جزاء إضافي (أو القيمة المحددة) فوق يوم الغياب.
             if record.review_status == 'rejected':
                 continue
+            # الغياب المعلّق بدون قرار مسؤول عند قفل الشهر يُحسم لصالح العامل (0 جزاء إضافي).
+            if is_pending_absence_record(record) and not getattr(record, 'manual_deduction', False):
+                continue
             if getattr(record, 'manual_deduction', False):
-                attendance_days += float(record.calculated_deduction_days or 0)
-                attendance_hours += float(record.calculated_deduction_hours or 0)
+                attendance_days += _D(record.calculated_deduction_days, '0')
+                attendance_hours += _D(record.calculated_deduction_hours, '0')
             else:
-                stored_d = float(record.calculated_deduction_days or 0)
-                stored_h = float(record.calculated_deduction_hours or 0)
+                stored_d = _D(record.calculated_deduction_days, '0')
+                stored_h = _D(record.calculated_deduction_hours, '0')
                 if stored_d > 0 or stored_h > 0:
                     attendance_days += stored_d
                     attendance_hours += stored_h
@@ -429,37 +643,96 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
                     attendance_days += extra_absence_days_default
             continue
 
-        # 2) الإضافي يُحسب لأيام الحضور الفعلية فقط (بعد التأكد من _is_attended)،
-        #    ويستمر احتسابه حتى عند رفض خصم التأخير.
-        overtime_days += float(record.overtime_days or 0)
-        overtime_hours += float(record.overtime_hours or 0)
+        # 2) الإضافي يُحسب لأيام الحضور الفعلية فقط ومنفصلاً تماماً عن التأخير.
+        overtime_days += _D(getattr(record, 'overtime_days', 0), '0')
+        overtime_hours += _D(getattr(record, 'overtime_hours', 0), '0')
 
         # الإجازة المدفوعة على حساب الشركة أو اليوم المعذور لا يُخصم عليه تأخير.
         if record.status in ('absent', 'leave') and effective_absence_decision(record) == 'paid_company':
             continue
-        if record.is_excused:
+        if getattr(record, 'is_excused', False):
             continue
-        # الخصومات المرفوضة (rejected) أو بانتظار المراجعة (pending_review) لا تُخصم من الصافي.
+        # الحالات المعلّقة (بصمة ناقصة / تأخير معلّق / انصراف مبكر معلّق) أو المرفوضة = 0 خصم لصالح العامل.
         if record.review_status in ('rejected', 'pending_review'):
             continue
 
-        ded_days = float(record.calculated_deduction_days or 0)
-        ded_hours = float(record.calculated_deduction_hours or 0)
-        # احترام التصفير اليدوي (manual_deduction=True): لا نُشغّل الـ Fallback الديناميكي أبداً.
-        if (
-            ded_days == 0
-            and ded_hours == 0
-            and not getattr(record, 'manual_deduction', False)
-            and getattr(employee, 'rule_application_mode', 'auto') != 'manual_review'
-        ):
-            late = _late_minutes(record.check_in, official_start, official_end)
-            rule = _match_late_rule(rules, late)
-            rule_value = float(rule.get('deduction_value') or 0) if rule else 0.0
-            if rule and rule_value > 0 and rule.get('apply_mode') != 'manual_review':
-                if rule.get('deduction_type') == 'days':
-                    ded_days = rule_value
-                else:
-                    ded_hours = rule_value
+        # احترام القرار اليدوي للمشرف (بما فيه التصفير اليدوي = 0.00).
+        if getattr(record, 'manual_deduction', False):
+            m_days = _D(record.calculated_deduction_days, '0')
+            m_hours = _D(record.calculated_deduction_hours, '0')
+            attendance_days += m_days
+            attendance_hours += m_hours
+            if m_days > 0 or m_hours > 0:
+                penalized_late_count += 1
+            continue
+
+        stored_late = float(getattr(record, 'late_minutes', 0) or 0)
+        late_m = stored_late if stored_late > 0 else _late_minutes(record.check_in, official_start, official_end)
+        stored_early = float(getattr(record, 'early_minutes', 0) or 0)
+        early_m = stored_early if stored_early > 0 else _early_minutes(record.check_out, official_start, official_end, record.check_in)
+
+        late_rule = _match_late_rule(rules, late_m) if late_m > 0 else None
+        early_rule = _match_rule(rules, 'early_departure', early_m) if early_m > 0 else None
+
+        is_grace_managed = bool(late_rule and late_rule.get('uses_monthly_grace') and grace_limit > 0)
+        if is_grace_managed:
+            ded_days = Decimal('0')
+            ded_hours = Decimal('0')
+            # إذا تجاوز رصيد السماح تُخصم كل المرات بأثر رجعي؛ وإلا = 0.00.
+            if grace_exceeded:
+                if (
+                    record.review_status == 'approved'
+                    or (
+                        getattr(employee, 'rule_application_mode', 'auto') != 'manual_review'
+                        and late_rule.get('apply_mode') != 'manual_review'
+                    )
+                ):
+                    ld, lh = _rule_deduction_pair(late_rule)
+                    ded_days += ld
+                    ded_hours += lh
+                    if ld > 0 or lh > 0:
+                        penalized_late_count += 1
+            # الانصراف المبكر في نفس اليوم يُحسب بشكل مستقل عن رصيد سماح التأخير.
+            if early_rule and (
+                record.review_status == 'approved'
+                or (
+                    getattr(employee, 'rule_application_mode', 'auto') != 'manual_review'
+                    and early_rule.get('apply_mode') != 'manual_review'
+                )
+            ):
+                ed, eh = _rule_deduction_pair(early_rule)
+                ded_days += ed
+                ded_hours += eh
+            attendance_days += ded_days
+            attendance_hours += ded_hours
+            continue
+
+        # الحالات غير المرتبطة برصيد السماح (تأخير خارج السماح / انصراف مبكر / بدون رصيد سماح).
+        ded_days = _D(record.calculated_deduction_days, '0')
+        ded_hours = _D(record.calculated_deduction_hours, '0')
+        if ded_days == 0 and ded_hours == 0:
+            if late_rule and (
+                record.review_status == 'approved'
+                or (
+                    getattr(employee, 'rule_application_mode', 'auto') != 'manual_review'
+                    and late_rule.get('apply_mode') != 'manual_review'
+                )
+            ):
+                ld, lh = _rule_deduction_pair(late_rule)
+                ded_days += ld
+                ded_hours += lh
+            if early_rule and (
+                record.review_status == 'approved'
+                or (
+                    getattr(employee, 'rule_application_mode', 'auto') != 'manual_review'
+                    and early_rule.get('apply_mode') != 'manual_review'
+                )
+            ):
+                ed, eh = _rule_deduction_pair(early_rule)
+                ded_days += ed
+                ded_hours += eh
+        if (ded_days > 0 or ded_hours > 0) and late_m > 0:
+            penalized_late_count += 1
         attendance_days += ded_days
         attendance_hours += ded_hours
 
@@ -471,64 +744,180 @@ def _payroll_for_employee_month(employee, employee_records, records_by_date,
         weekly_off_work_multiplier=weekly_off_mult,
         hire_date=hire_date,
         termination_date=termination_date,
+        weekly_off_partial_hour_multiplier=weekly_off_partial_mult,
+        shift_hours=shift_hours_dec,
+        official_start=official_start,
+        official_end=official_end,
     )
-    earned_base = accrual.get('_earned_days_raw', accrual['earned_days']) * day_rate
+    base_earned_pay = _q2(accrual['_base_earned_days_dec'] * day_rate_exact)
+    weekly_off_extra_pay = _q2(
+        accrual['_weekly_off_full_weighted_days_dec'] * day_rate_exact
+        + accrual['_weekly_off_partial_weighted_hours_dec'] * hour_rate_exact
+    )
+    earned_base = _q2(base_earned_pay + weekly_off_extra_pay)
+    sunday_deduction_money = _q2(accrual['_sunday_deduction_days_dec'] * day_rate_exact)
 
-    penalty_days = 0.0
-    penalty_hours = 0.0
+    # الجزاءات اليدوية
+    penalty_days = Decimal('0')
+    penalty_hours = Decimal('0')
     for penalty in penalties:
         if not str(penalty.date).startswith(month_key):
             continue
-        value = float(penalty.value or 0)
+        value = _D(penalty.value, '0')
         if penalty.penalty_type == 'days':
             penalty_days += value
         else:
             penalty_hours += value
 
-    loan_amount = sum(
-        float(loan.amount or 0)
-        for loan in loans
-        if str(loan.date).startswith(month_key)
-    )
+    # السُلف والأقساط والمديونية المرحّلة
+    regular_loan_amount = Decimal('0')
+    carryover_debt_amount = Decimal('0')
+    for loan in loans:
+        if not str(loan.date).startswith(month_key):
+            continue
+        amt = _D(loan.amount, '0')
+        if getattr(loan, 'loan_kind', 'standard') == 'carryover_debt':
+            carryover_debt_amount += amt
+        else:
+            regular_loan_amount += amt
+    regular_loan_amount = _q2(regular_loan_amount)
+    carryover_debt_amount = _q2(carryover_debt_amount)
+    loan_amount = _q2(regular_loan_amount + carryover_debt_amount)
 
-    attendance_deduction = attendance_days * day_rate + attendance_hours * hour_rate
-    penalty_deduction = penalty_days * day_rate + penalty_hours * hour_rate
-    overtime_pay = overtime_days * day_rate + overtime_hours * hour_rate
-    total_deduction = attendance_deduction + penalty_deduction + loan_amount
+    # المكافآت الفورية والدورية (بند 21)
+    if direct_bonuses is None:
+        if getattr(employee, 'pk', None):
+            direct_bonuses = list(
+                HRDirectBonus.objects.filter(
+                    employee=employee, date__gte=month_start, date__lte=month_end
+                )
+            )
+        else:
+            direct_bonuses = []
+    if bonus_plans is None:
+        if getattr(employee, 'pk', None) and hasattr(employee, 'recurring_bonus_plans'):
+            bonus_plans = list(employee.recurring_bonus_plans.filter(is_active=True))
+        else:
+            bonus_plans = []
+
+    direct_bonus_pay = Decimal('0')
+    bonus_breakdown = []
+    for db_item in direct_bonuses:
+        if not str(db_item.date).startswith(month_key):
+            continue
+        amt = _q2(db_item.amount)
+        if amt > 0:
+            direct_bonus_pay += amt
+            bonus_breakdown.append({
+                'kind': 'direct',
+                'label': db_item.reason or 'مكافأة فورية',
+                'amount': float(amt),
+            })
+    direct_bonus_pay = _q2(direct_bonus_pay)
+
+    recurring_bonus_pay = Decimal('0')
+    total_absences_for_bonus = accrual['_total_unpaid_absence_days_dec']
+    for plan in bonus_plans:
+        if not getattr(plan, 'is_active', True):
+            continue
+        if getattr(plan, 'value_type', 'fixed') == 'percent':
+            plan_base = _q2(salary_dec * _D(plan.value, '0') / Decimal('100'))
+        else:
+            plan_base = _q2(plan.value)
+
+        requires_full = bool(getattr(plan, 'requires_full_month', True)) or getattr(plan, 'category', '') == 'attendance'
+        if requires_full and (
+            accrual['is_partial_month']
+            or not accrual['month_complete']
+            or accrual['attended_days'] <= 0
+        ):
+            earned_plan = Decimal('0.00')
+            note = 'غير مستحقة لعدم اكتمال الشهر'
+        else:
+            reduction_pct = Decimal('0')
+            if getattr(plan, 'affected_by_absence', True) and total_absences_for_bonus > 0:
+                reduction_pct += total_absences_for_bonus * _D(getattr(plan, 'absence_deduction_percent', 100), '100')
+            if getattr(plan, 'affected_by_late', True) and penalized_late_count > 0:
+                reduction_pct += Decimal(penalized_late_count) * _D(getattr(plan, 'late_deduction_percent', 100), '100')
+            reduction_pct = min(Decimal('100'), max(Decimal('0'), reduction_pct))
+            earned_plan = _q2(plan_base * (Decimal('100') - reduction_pct) / Decimal('100'))
+            note = f'خصم {float(reduction_pct):g}%' if reduction_pct > 0 else 'كاملة'
+
+        recurring_bonus_pay += earned_plan
+        bonus_breakdown.append({
+            'kind': 'recurring',
+            'plan_id': _ext_id(plan) if hasattr(plan, 'id') else '',
+            'label': plan.name,
+            'category': getattr(plan, 'category', 'attendance'),
+            'base_amount': float(plan_base),
+            'amount': float(earned_plan),
+            'note': note,
+        })
+    recurring_bonus_pay = _q2(recurring_bonus_pay)
+    bonus_pay = _q2(direct_bonus_pay + recurring_bonus_pay)
+
+    attendance_deduction = _q2(attendance_days * day_rate_exact + attendance_hours * hour_rate_exact)
+    penalty_deduction = _q2(penalty_days * day_rate_exact + penalty_hours * hour_rate_exact)
+    overtime_pay = _q2((overtime_days * day_rate_exact + overtime_hours * hour_rate_exact) * overtime_regular_mult)
+    total_deduction = _q2(attendance_deduction + penalty_deduction + loan_amount)
+
+    exact_net_pay = _q2(earned_base + overtime_pay + bonus_pay - total_deduction)
+    rounded_net_pay = _round_nearest_5(exact_net_pay)
+    payable_cash = rounded_net_pay if rounded_net_pay > Decimal('0.00') else Decimal('0.00')
+    carryover_debt_next = abs(exact_net_pay) if exact_net_pay < Decimal('0.00') else Decimal('0.00')
 
     return {
-        'base_salary': _round_half_up(salary, 2),
+        'base_salary': float(_q2(salary_dec)),
+        'day_rate': float(day_rate),
+        'hour_rate': float(hour_rate),
+        'shift_hours': float(shift_hours_dec),
         'attended_days': accrual['attended_days'],
         'paid_sunday_days': accrual['paid_sunday_days'],
         'worked_weekly_off_days': accrual['worked_weekly_off_days'],
         'weekly_off_extra_days': accrual['weekly_off_extra_days'],
+        'weekly_off_partial_hours': accrual['weekly_off_partial_hours'],
+        'weekly_off_extra_pay': float(weekly_off_extra_pay),
         'sunday_deduction_days': accrual['sunday_deduction_days'],
+        'sunday_deduction': float(sunday_deduction_money),
         'earned_days': accrual['earned_days'],
-        'earned_base': _round_half_up(earned_base, 2),
+        'earned_base': float(earned_base),
         'overtime_days': _round_half_up(overtime_days, 2),
         'overtime_hours': _round_half_up(overtime_hours, 2),
-        'overtime_pay': _round_half_up(overtime_pay, 2),
+        'overtime_pay': float(overtime_pay),
+        'direct_bonus_pay': float(direct_bonus_pay),
+        'recurring_bonus_pay': float(recurring_bonus_pay),
+        'bonus_pay': float(bonus_pay),
+        'bonus_breakdown': bonus_breakdown,
         'attendance_days': _round_half_up(attendance_days, 2),
         'attendance_hours': _round_half_up(attendance_hours, 2),
         'penalty_days': _round_half_up(penalty_days, 2),
         'penalty_hours': _round_half_up(penalty_hours, 2),
-        'loan_amount': _round_half_up(loan_amount, 2),
-        'attendance_deduction': _round_half_up(attendance_deduction, 2),
-        'penalty_deduction': _round_half_up(penalty_deduction, 2),
-        'deductions': _round_half_up(attendance_deduction + penalty_deduction, 2),
-        'total_deduction': _round_half_up(total_deduction, 2),
-        'net_pay': _round_half_up(earned_base + overtime_pay - total_deduction, 2),
+        'regular_loan_amount': float(regular_loan_amount),
+        'carryover_debt_amount': float(carryover_debt_amount),
+        'loan_amount': float(loan_amount),
+        'attendance_deduction': float(attendance_deduction),
+        'penalty_deduction': float(penalty_deduction),
+        'deductions': float(_q2(attendance_deduction + penalty_deduction)),
+        'total_deduction': float(total_deduction),
+        'exact_net_pay': float(exact_net_pay),
+        'rounded_net_pay': float(rounded_net_pay),
+        'net_pay': float(rounded_net_pay),
+        'payable_cash': float(payable_cash),
+        'carryover_debt_next': float(carryover_debt_next),
+        'grace_used_minutes': _round_half_up(grace_used_minutes, 2),
+        'grace_limit_minutes': grace_limit,
+        'grace_exceeded': grace_exceeded,
     }
 
 
 def _sum_rows(rows):
     return {
-        'earned': sum(row['earned_base'] for row in rows),
-        'overtime': sum(row['overtime_pay'] for row in rows),
-        'loans': sum(row['loan_amount'] for row in rows),
-        'deductions': sum(row['deductions'] for row in rows),
-        # إجمالي النقد المطلوب دفعه: لا نطرح أرصدة سالبة لعامل من مستحقات زملائه.
-        'net': sum(max(0.0, float(row['net_pay'] or 0)) for row in rows),
+        'earned': sum(float(row.get('earned_base') or 0) for row in rows),
+        'overtime': sum(float(row.get('overtime_pay') or 0) + float(row.get('bonus_pay') or 0) for row in rows),
+        'loans': sum(float(row.get('loan_amount') or 0) for row in rows),
+        'deductions': sum(float(row.get('deductions') or 0) for row in rows),
+        # إجمالي النقد المطلوب دفعه: مجموع الصفوف الموجبة المقرّبة فقط (الرصيد السالب = 0.00 في الكاش).
+        'net': sum(max(0.0, float(row.get('payable_cash', row.get('net_pay')) or 0)) for row in rows),
     }
 
 
@@ -644,7 +1033,9 @@ class HRReportsViewSet(viewsets.ViewSet):
 
         employees = list(
             rank_scoped_queryset(
-                HREmployee.objects.select_related('job').exclude(rank_level=RANK_SUDO),
+                HREmployee.objects.select_related('job')
+                .prefetch_related('recurring_bonus_plans')
+                .exclude(rank_level=RANK_SUDO),
                 request,
                 field='rank_level',
             ).order_by('name')
@@ -667,12 +1058,18 @@ class HRReportsViewSet(viewsets.ViewSet):
             request,
             field='employee__rank_level',
         )
+        direct_bonus_qs = rank_scoped_queryset(
+            HRDirectBonus.objects.exclude(employee__rank_level=RANK_SUDO).select_related('employee'),
+            request,
+            field='employee__rank_level',
+        )
 
         available_years = self._available_years(year, today, attendance_qs, penalty_qs, loan_qs)
 
         window_records = list(attendance_qs.filter(date__gte=record_start, date__lte=record_end))
         window_penalties = list(penalty_qs.filter(date__gte=record_start, date__lte=record_end))
         window_loans = list(loan_qs.filter(date__gte=loans_start, date__lte=loans_end))
+        window_bonuses = list(direct_bonus_qs.filter(date__gte=record_start, date__lte=record_end))
 
         records_by_employee = defaultdict(list)
         for record in window_records:
@@ -683,6 +1080,9 @@ class HRReportsViewSet(viewsets.ViewSet):
         loans_by_employee = defaultdict(list)
         for loan in window_loans:
             loans_by_employee[loan.employee_id].append(loan)
+        bonuses_by_employee = defaultdict(list)
+        for bonus in window_bonuses:
+            bonuses_by_employee[bonus.employee_id].append(bonus)
 
         settings = HRAttendanceSettings.objects.first()
         weekly_off_index = weekly_off_weekday(settings)
@@ -709,11 +1109,13 @@ class HRReportsViewSet(viewsets.ViewSet):
                 by_emp[emp_key] = {
                     'earned_base': float(row.get('earned_base') or 0),
                     'overtime_pay': float(row.get('overtime_pay') or 0),
+                    'bonus_pay': float(row.get('bonus_pay') or 0),
                     'loan_amount': float(row.get('loan_deduction', row.get('loan_amount')) or 0),
                     'attendance_deduction': float(row.get('attendance_deduction') or 0),
                     'penalty_deduction': float(row.get('penalty_deduction') or 0),
                     'deductions': float(row.get('attendance_deduction') or 0) + float(row.get('penalty_deduction') or 0),
                     'net_pay': float(row.get('net_pay') or 0),
+                    'payable_cash': float(row.get('payable_cash', max(0.0, float(row.get('net_pay') or 0))) or 0),
                     'department': row.get('department') or 'other',
                     'department_label': row.get('department_label') or row.get('department') or '—',
                 }
@@ -754,6 +1156,7 @@ class HRReportsViewSet(viewsets.ViewSet):
                             'deductions': 0.0, 'net_pay': 0.0,
                         }
                         continue
+                emp_plans = [p for p in employee.recurring_bonus_plans.all() if p.is_active]
                 per_month[month_key] = _payroll_for_employee_month(
                     employee,
                     employee_records,
@@ -764,6 +1167,8 @@ class HRReportsViewSet(viewsets.ViewSet):
                     settings,
                     up_to_for(month_key),
                     weekly_off_index,
+                    direct_bonuses=bonuses_by_employee.get(employee.id, []),
+                    bonus_plans=emp_plans,
                 )
             employee_rows[employee.id] = per_month
 

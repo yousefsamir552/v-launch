@@ -63,7 +63,7 @@ import {
 } from '../../types';
 
 export type HRSection = 'staff' | 'attendance' | 'loans_penalties' | 'payroll' | 'reports';
-export type HRSubTab = 'employees' | 'jobs' | 'records' | 'rules' | 'loans' | 'penalties';
+export type HRSubTab = 'employees' | 'jobs' | 'records' | 'rules' | 'loans' | 'penalties' | 'bonuses';
 
 export interface HRViewProps {
   initialSection?: HRSection;
@@ -195,6 +195,23 @@ export const PENALTY_TYPE_LABELS: Record<HRPenaltyType, string> = {
   hours: 'ساعات'
 };
 
+export const BONUS_CATEGORY_LABELS: Record<string, string> = {
+  attendance: 'حافز انتظام',
+  quality: 'مكافأة جودة',
+  other: 'أخرى'
+};
+
+export const BONUS_VALUE_TYPE_LABELS: Record<string, string> = {
+  fixed: 'مبلغ ثابت',
+  percent: 'نسبة من المرتب'
+};
+
+export const LOAN_KIND_LABELS: Record<string, string> = {
+  standard: 'سلفة عادية',
+  installment: 'قسط سلفة',
+  carryover_debt: 'مديونية مرحّلة'
+};
+
 export const todayISO = () => isoDate(new Date());
 export const currentMonth = () => isoDate(new Date()).slice(0, 7);
 
@@ -301,7 +318,7 @@ export const weeklyOffDeductionForDate = (
   if (!weekDates.some((day) => recordsByDate.has(day))) return 0;
   const absentCount = weekDates.filter((day) => {
     const record = recordsByDate.get(day);
-    return isUnexcusedAbsenceRecord(record);
+    return !isAttendedRecord(record);
   }).length;
   return weeklyOffRatioForAbsences(absentCount);
 };
@@ -344,13 +361,13 @@ export const workingHoursPerDayFor = (
   if (settings?.working_hours_per_day && Number(settings.working_hours_per_day) > 0) {
     return Number(settings.working_hours_per_day);
   }
-  const startMins = timeToMinutes(settings?.official_start_time || '08:30');
-  const endMins = timeToMinutes(settings?.official_end_time || '17:30');
-  if (startMins == null || endMins == null) return 8;
+  const startMins = timeToMinutes(settings?.official_start_time || '08:00');
+  const endMins = timeToMinutes(settings?.official_end_time || '17:00');
+  if (startMins == null || endMins == null) return 9;
   let diff = endMins - startMins;
   if (diff <= 0) diff += 24 * 60;
   const hours = Math.round((diff / 60) * 10000) / 10000;
-  return hours > 0 ? hours : 8;
+  return hours > 0 ? hours : 9;
 };
 
 /** أجر اليوم = المرتب ÷ 30، وأجر الساعة = أجر اليوم ÷ ساعات العمل اليومية الديناميكية. */

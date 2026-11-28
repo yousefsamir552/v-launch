@@ -36,6 +36,7 @@ from .models import (
     PACKAGING_MATERIAL_UNIT_KEYS, PACKAGING_MATERIAL_RULE_MODE_KEYS,
     HRJobTitle, HREmployee, HRAttendanceSettings,
     HRAttendanceRecord, HRPenalty, HRLoan, HRPayrollSnapshot,
+    HRBonusPlan, HRDirectBonus,
     HR_DEPARTMENT_LABELS, WEEK_DAY_LABELS, HR_ATTENDANCE_STATUS_CHOICES,
     HR_REVIEW_STATUS_CHOICES, HR_ABSENCE_DECISION_CHOICES, HR_PENALTY_TYPE_CHOICES,
     RANK_SUDO, RANK_LEVEL_ONE, RANK_LEVEL_TWO, RANK_LEVEL_THREE,
@@ -60,6 +61,7 @@ from .serializers import (
     PackagingMaterialTransactionSerializer,
     HRJobTitleSerializer, HREmployeeSerializer, HRAttendanceSettingsSerializer,
     HRAttendanceRecordSerializer, HRPenaltySerializer, HRLoanSerializer,
+    HRBonusPlanSerializer, HRDirectBonusSerializer,
     HRPayrollSnapshotSerializer,
 )
 from .services import (

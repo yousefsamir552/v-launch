@@ -12,6 +12,86 @@ def generate_employee_code() -> str:
     return f"EMP-{uuid.uuid4().hex[:6].upper()}"
 
 
+HR_LOAN_KIND_CHOICES = [
+    ('standard', 'سلفة عادية'),
+    ('installment', 'قسط سلفة'),
+    ('carryover_debt', 'مديونية مرحّلة'),
+]
+HR_LOAN_KIND_LABELS = dict(HR_LOAN_KIND_CHOICES)
+
+HR_BONUS_CATEGORY_CHOICES = [
+    ('attendance', 'حافز انتظام'),
+    ('quality', 'مكافأة جودة'),
+    ('other', 'أخرى'),
+]
+HR_BONUS_CATEGORY_LABELS = dict(HR_BONUS_CATEGORY_CHOICES)
+
+HR_BONUS_VALUE_TYPE_CHOICES = [
+    ('fixed', 'مبلغ ثابت'),
+    ('percent', 'نسبة من المرتب'),
+]
+HR_BONUS_VALUE_TYPE_LABELS = dict(HR_BONUS_VALUE_TYPE_CHOICES)
+
+
+class HRBonusPlan(models.Model):
+    """نظام مكافأة دورية ديناميكي (حافز انتظام / جودة / أخرى) يمكن إلحاق الموظفين به."""
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    name = models.CharField(max_length=200, verbose_name="اسم نظام المكافأة")
+    category = models.CharField(
+        max_length=30,
+        choices=HR_BONUS_CATEGORY_CHOICES,
+        default='attendance',
+        verbose_name="الفئة / السبب",
+    )
+    value_type = models.CharField(
+        max_length=20,
+        choices=HR_BONUS_VALUE_TYPE_CHOICES,
+        default='fixed',
+        verbose_name="نوع القيمة",
+    )
+    value = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        verbose_name="القيمة (جنيه أو نسبة %)",
+    )
+    requires_full_month = models.BooleanField(
+        default=True,
+        verbose_name="يشترط اكتمال الشهر (لا يُصرف للتعيين/الترك في منتصف الشهر)",
+    )
+    affected_by_absence = models.BooleanField(default=True, verbose_name="تتأثر بالغياب")
+    absence_deduction_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal('100.00'),
+        verbose_name="نسبة الخصم لكل يوم غياب (%)",
+    )
+    affected_by_late = models.BooleanField(default=True, verbose_name="تتأثر بالتأخير")
+    late_deduction_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal('100.00'),
+        verbose_name="نسبة الخصم لكل مرة تأخير مخصومة (%)",
+    )
+    is_active = models.BooleanField(default=True, verbose_name="نشط")
+    notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name', 'id']
+        verbose_name = "نظام مكافأة دورية"
+        verbose_name_plural = "أنظمة المكافآت الدورية"
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('hr-bplan')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} ({self.get_category_display()})"
+
+
 class HRJobTitle(models.Model):
     """وظيفة داخل المصنع مع قسمها / مكان عملها."""
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
@@ -62,6 +142,16 @@ class HREmployee(models.Model):
     birth_date = models.DateField(blank=True, null=True, verbose_name="تاريخ الميلاد")
     hire_date = models.DateField(blank=True, null=True, verbose_name="تاريخ التعيين / بداية العمل")
     termination_date = models.DateField(blank=True, null=True, verbose_name="تاريخ ترك العمل (اختياري)")
+    shift_start_time = models.TimeField(blank=True, null=True, verbose_name="بداية وردية الموظف (اختياري)")
+    shift_end_time = models.TimeField(blank=True, null=True, verbose_name="نهاية وردية الموظف (اختياري)")
+    late_grace_minutes = models.IntegerField(blank=True, null=True, verbose_name="رصيد السماح المخصص للتأخير (دقائق)")
+    late_grace_period_months = models.IntegerField(blank=True, null=True, verbose_name="دورية رصيد السماح المخصصة (شهور)")
+    recurring_bonus_plans = models.ManyToManyField(
+        'HRBonusPlan',
+        blank=True,
+        related_name='employees',
+        verbose_name="أنظمة المكافآت الدورية",
+    )
     phone = models.CharField(max_length=50, blank=True, null=True, verbose_name="الهاتف")
     photo = models.TextField(blank=True, null=True, verbose_name="صورة الموظف (Base64 أو URL)")
     notes = models.TextField(blank=True, null=True, verbose_name="ملاحظات")
@@ -106,8 +196,8 @@ class HREmployee(models.Model):
 
 class HRAttendanceSettings(models.Model):
     """إعدادات عامة (Singleton) للحضور والانصراف وقواعد التأخير."""
-    official_start_time = models.TimeField(default='08:30', verbose_name="موعد الحضور الرسمي")
-    official_end_time = models.TimeField(default='17:30', verbose_name="موعد الانصراف الرسمي")
+    official_start_time = models.TimeField(default='08:00', verbose_name="موعد الحضور الرسمي")
+    official_end_time = models.TimeField(default='17:00', verbose_name="موعد الانصراف الرسمي")
     weekly_off_day = models.CharField(
         max_length=20, choices=WEEK_DAY_CHOICES, default=DEFAULT_WEEKLY_OFF_DAY,
         verbose_name="يوم الإجازة الأسبوعية المدفوعة",
@@ -118,6 +208,38 @@ class HRAttendanceSettings(models.Model):
         decimal_places=2,
         default=Decimal('1.00'),
         verbose_name="معامل أجر العمل يوم الإجازة الأسبوعية",
+    )
+    weekly_off_partial_hour_multiplier = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal('1.00'),
+        verbose_name="معامل ساعات العمل الجزئي يوم الإجازة الأسبوعية",
+    )
+    overtime_regular_multiplier = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal('1.00'),
+        verbose_name="معامل الإضافي في الأيام العادية",
+    )
+    overtime_night_multiplier = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal('1.00'),
+        verbose_name="معامل الإضافي الليلي",
+    )
+    overtime_holiday_multiplier = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal('2.00'),
+        verbose_name="معامل العمل في الإجازات الرسمية",
+    )
+    monthly_late_grace_minutes = models.IntegerField(
+        default=0,
+        verbose_name="رصيد السماح الافتراضي للتأخير (دقائق)",
+    )
+    monthly_late_grace_period_months = models.IntegerField(
+        default=1,
+        verbose_name="دورية رصيد السماح الافتراضية (شهور)",
     )
     rules_json = models.JSONField(default=list, blank=True, verbose_name="قواعد التأخير والانصراف والغياب")
     overtime_rules = models.JSONField(default=list, blank=True, verbose_name="قواعد ومواعيد العمل الإضافي")
@@ -145,6 +267,7 @@ class HRAttendanceSettings(models.Model):
                         'deduction_type': 'days',
                         'deduction_value': 0.25,
                         'apply_mode': 'auto',
+                        'uses_monthly_grace': False,
                     },
                     {
                         'id': 'hr-rule-early-leave',
@@ -188,25 +311,40 @@ class HRAttendanceSettings(models.Model):
         if isinstance(end, str):
             end = _parse_time(end)
         if not start or not end:
-            return 8.0
+            return 9.0
         start_mins = start.hour * 60 + start.minute
         end_mins = end.hour * 60 + end.minute
         diff = end_mins - start_mins
         if diff <= 0:
             diff += 24 * 60
         hours = round(diff / 60.0, 4)
-        return hours if hours > 0 else 8.0
+        return hours if hours > 0 else 9.0
 
     def save(self, *args, **kwargs):
         # عدد أيام الشهر الحسابية ثابت دائماً = 30 يوماً
         self.month_calculation_days = 30
+        for field_name, default_val in (
+            ('weekly_off_work_multiplier', Decimal('1.00')),
+            ('weekly_off_partial_hour_multiplier', Decimal('1.00')),
+            ('overtime_regular_multiplier', Decimal('1.00')),
+            ('overtime_night_multiplier', Decimal('1.00')),
+            ('overtime_holiday_multiplier', Decimal('2.00')),
+        ):
+            try:
+                mult = Decimal(str(getattr(self, field_name)))
+                if mult < 0:
+                    mult = default_val
+                setattr(self, field_name, mult)
+            except Exception:
+                setattr(self, field_name, default_val)
         try:
-            mult = Decimal(str(self.weekly_off_work_multiplier))
-            if mult < 0:
-                mult = Decimal('1.00')
-            self.weekly_off_work_multiplier = mult
+            self.monthly_late_grace_minutes = max(0, int(self.monthly_late_grace_minutes or 0))
         except Exception:
-            self.weekly_off_work_multiplier = Decimal('1.00')
+            self.monthly_late_grace_minutes = 0
+        try:
+            self.monthly_late_grace_period_months = max(1, int(self.monthly_late_grace_period_months or 1))
+        except Exception:
+            self.monthly_late_grace_period_months = 1
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -243,6 +381,16 @@ class HRAttendanceRecord(models.Model):
     early_minutes = models.FloatField(default=0.0, verbose_name="دقائق الانصراف المبكر (محتسبة)")
     overtime_days = models.FloatField(default=0.0, verbose_name="العمل الإضافي (أيام)")
     overtime_hours = models.FloatField(default=0.0, verbose_name="العمل الإضافي (ساعات)")
+    weekly_off_worked_hours = models.FloatField(
+        blank=True, null=True, verbose_name="ساعات العمل الفعلية يوم الإجازة"
+    )
+    weekly_off_hour_multiplier_override = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        blank=True,
+        null=True,
+        verbose_name="معامل ساعات يوم الإجازة المخصص",
+    )
     sunday_deduction_days = models.FloatField(default=0.0, verbose_name="خصم يوم الإجازة (أيام)")
     sunday_deduction_note = models.TextField(blank=True, default='', verbose_name="سبب خصم يوم الإجازة")
     review_status = models.CharField(
@@ -300,14 +448,39 @@ class HRPenalty(models.Model):
 
 
 class HRLoan(models.Model):
-    """سلفة مالية على الموظف تُخصم من المرتبات."""
+    """سلفة مالية أو قسط سلفة أو مديونية مرحّلة تُخصم من المرتبات."""
     client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
     employee = models.ForeignKey(
         HREmployee, on_delete=models.CASCADE, related_name='loans',
         verbose_name="الموظف",
     )
     date = models.DateField(default=date.today, db_index=True, verbose_name="التاريخ")
-    amount = models.FloatField(default=0.0, verbose_name="مبلغ السلفة")
+    amount = models.FloatField(default=0.0, verbose_name="مبلغ السلفة / القسط")
+    loan_kind = models.CharField(
+        max_length=20,
+        choices=HR_LOAN_KIND_CHOICES,
+        default='standard',
+        db_index=True,
+        verbose_name="نوع السلفة / المديونية",
+    )
+    parent_loan = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        blank=True,
+        null=True,
+        related_name='installments',
+        verbose_name="السلفة الأصلية",
+    )
+    total_amount = models.FloatField(blank=True, null=True, verbose_name="إجمالي السلفة قبل التقسيط")
+    installments_count = models.IntegerField(default=1, verbose_name="عدد الأقساط")
+    installment_number = models.IntegerField(default=1, verbose_name="رقم القسط")
+    source_month = models.CharField(
+        max_length=7,
+        blank=True,
+        default='',
+        db_index=True,
+        verbose_name="الشهر المصدر للمديونية المرحّلة",
+    )
     notes = models.TextField(blank=True, default='', verbose_name="ملاحظات")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -318,6 +491,40 @@ class HRLoan(models.Model):
     def save(self, *args, **kwargs):
         if not self.client_id:
             self.client_id = generate_client_id('hr-loan')
+        if self.total_amount is None:
+            self.total_amount = self.amount
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.employee} - {self.amount} ({self.get_loan_kind_display()})"
+
+
+class HRDirectBonus(models.Model):
+    """مكافأة فورية / مباشرة تُصرف لموظف في شهر محدد."""
+    client_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="المعرف")
+    employee = models.ForeignKey(
+        HREmployee, on_delete=models.CASCADE, related_name='direct_bonuses',
+        verbose_name="الموظف",
+    )
+    date = models.DateField(default=date.today, db_index=True, verbose_name="التاريخ")
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        verbose_name="مبلغ المكافأة",
+    )
+    reason = models.TextField(blank=True, default='', verbose_name="السبب / البيان")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-date', '-id']
+        verbose_name = "مكافأة فورية"
+        verbose_name_plural = "المكافآت الفورية"
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = generate_client_id('hr-bonus')
         super().save(*args, **kwargs)
 
     def __str__(self):

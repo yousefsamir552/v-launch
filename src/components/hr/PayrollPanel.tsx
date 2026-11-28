@@ -39,15 +39,21 @@ import {
 interface PayrollRow {
   employee: HREmployee;
   baseSalary: number;
+  dayRate: number;
+  hourRate: number;
   attendedDays: number;
   paidSundayDays: number;
   workedWeeklyOffDays: number;
   weeklyOffExtraDays: number;
+  weeklyOffPartialHours: number;
   earnedDays: number;
   earnedBase: number;
   overtimeDays: number;
   overtimeHours: number;
   overtimePay: number;
+  directBonusPay: number;
+  recurringBonusPay: number;
+  bonusPay: number;
   attendanceDays: number;
   attendanceHours: number;
   attendanceDeduction: number;
@@ -56,30 +62,43 @@ interface PayrollRow {
   penaltyDays: number;
   penaltyHours: number;
   penaltyDeduction: number;
+  regularLoanDeduction: number;
+  carryoverDebtDeduction: number;
   loanDeduction: number;
   totalDeduction: number;
+  exactNetPay: number;
+  roundedNetPay: number;
   netPay: number;
+  payableCash: number;
+  carryoverDebtNext: number;
+  graceUsedMinutes: number;
+  graceLimitMinutes: number;
+  graceExceeded: boolean;
 }
 
 export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees }) => {
-  const { addFlashMessage, logAction, globalSettings, currentUser, canManagePermissions } = useApp();
-  const canUnlockPayroll = Boolean(
-    currentUser?.is_sudo ||
-    currentUser?.username?.toLowerCase() === 'sudo' ||
-    canManagePermissions()
-  );
+  const { addFlashMessage, logAction, globalSettings, currentUser, canManagePermissions, canManageHR } = useApp();
 
   const [month, setMonth] = useState(currentMonth());
   const [records, setRecords] = useState<HRAttendanceRecord[]>([]);
-  const [penalties, setPenalties] = useState<HRPenalty[]>([]);
   const [loans, setLoans] = useState<HRLoan[]>([]);
   const [settings, setSettings] = useState<HRAttendanceSettings | null>(null);
+  const [previewRowsRaw, setPreviewRowsRaw] = useState<any[]>([]);
+  const [previewTotalsRaw, setPreviewTotalsRaw] = useState<any | null>(null);
   const [lockedSnapshot, setLockedSnapshot] = useState<any | null>(null);
   const [isLockModalOpen, setIsLockModalOpen] = useState(false);
   const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
   const [lockNotes, setLockNotes] = useState('');
   const [isLocking, setIsLocking] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+
+  const canUnlockPayroll = Boolean(
+    lockedSnapshot?.can_unlock ??
+      (currentUser?.is_sudo ||
+        currentUser?.username?.toLowerCase() === 'sudo' ||
+        canManagePermissions() ||
+        canManageHR())
+  );
 
   const effectiveSettings = (lockedSnapshot?.settings_snapshot || settings) as HRAttendanceSettings | null;
   // يوم الإجازة الأسبوعية المدفوعة من الإعدادات (الأحد افتراضياً).
@@ -94,18 +113,19 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
   const loadPayrollData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [recordsRes, penaltiesRes, loansRes, settingsRes, snapshotRes] = await Promise.all([
-        api.getHRAttendanceRecords({ month, includePrevWeek: true }),
-        api.getHRPenalties(month),
-        api.getHRLoans(month),
-        api.getHRAttendanceSettings().catch(() => null),
-        api.getHRPayrollSnapshot(month).catch(() => ({ is_locked: false, snapshot: null }))
+      // مصدر الحساب الوحيد (Single Source of Truth): قراءة كشف الشهر محسوباً بالكامل في الباك إند بدقة Decimal.
+      const [previewRes, recordsRes, loansRes, settingsRes] = await Promise.all([
+        api.getHRPayrollPreview(month),
+        api.getHRAttendanceRecords({ month, includePrevWeek: true }).catch(() => []),
+        api.getHRLoans(month).catch(() => []),
+        api.getHRAttendanceSettings().catch(() => null)
       ]);
+      setPreviewRowsRaw(Array.isArray(previewRes?.rows) ? previewRes.rows : []);
+      setPreviewTotalsRaw(previewRes?.totals || null);
+      setLockedSnapshot(previewRes?.is_locked ? previewRes.snapshot : null);
       setRecords(Array.isArray(recordsRes) ? recordsRes : []);
-      setPenalties(Array.isArray(penaltiesRes) ? penaltiesRes : []);
       setLoans(Array.isArray(loansRes) ? loansRes : []);
-      setSettings(settingsRes || null);
-      setLockedSnapshot(snapshotRes?.is_locked ? snapshotRes.snapshot : null);
+      setSettings(previewRes?.settings_snapshot || settingsRes || null);
     } catch (err: any) {
       addFlashMessage(err?.message || 'فشل تحميل بيانات المرتبات', 'danger');
     } finally {
@@ -123,9 +143,13 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
     try {
       const res = await api.lockHRPayroll(month, lockNotes.trim());
       setLockedSnapshot(res?.snapshot || null);
+      if (Array.isArray(res?.snapshot?.rows)) {
+        setPreviewRowsRaw(res.snapshot.rows);
+        setPreviewTotalsRaw(res.snapshot.totals || null);
+      }
       setIsLockModalOpen(false);
       setLockNotes('');
-      addFlashMessage(`تم اعتماد وإغلاق كشف رواتب شهر ${month} بنجاح وتجميد كافة الأرقام`, 'success');
+      addFlashMessage(`تم اعتماد وإغلاق كشف رواتب شهر ${month} بنجاح وتجميد كافة الأرقام وترحيل أي أرصدة سالبة`, 'success');
       logAction('الموارد البشرية', `اعتماد وإغلاق كشف مرتبات شهر ${month}`);
     } catch (err: any) {
       addFlashMessage(err?.message || 'فشل اعتماد وإغلاق الشهر', 'danger');
@@ -151,10 +175,23 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
   };
 
   const rows = useMemo<PayrollRow[]>(() => {
-    // عند اعتماد وإغلاق الشهر تُعرض اللقطة المجمّدة كما هي (لا تتأثر بأي تعديل مستقبلي للرواتب أو القواعد أو إيقاف الموظفين).
-    if (lockedSnapshot && Array.isArray(lockedSnapshot.rows)) {
-      return lockedSnapshot.rows.map((item: any) => ({
-        employee: {
+    const empById = new Map(employees.map((e) => [e.id, e]));
+    const sourceRows =
+      lockedSnapshot && Array.isArray(lockedSnapshot.rows) ? lockedSnapshot.rows : previewRowsRaw;
+    return sourceRows.map((item: any) => {
+      const matched = empById.get(String(item.employee_id || ''));
+      const baseSalary = Number(item.base_salary) || 0;
+      const netPay = Number(item.net_pay) || 0;
+      const exactNetPay =
+        item.exact_net_pay !== undefined && item.exact_net_pay !== null
+          ? Number(item.exact_net_pay)
+          : netPay;
+      const payableCash =
+        item.payable_cash !== undefined && item.payable_cash !== null
+          ? Number(item.payable_cash)
+          : Math.max(0, netPay);
+      return {
+        employee: matched || ({
           id: String(item.employee_id || ''),
           employee_code: item.employee_code || '',
           name: item.employee_name || '—',
@@ -162,123 +199,98 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           job_title: item.job_title || '—',
           department: item.department || undefined,
           department_label: item.department_label || '',
-          monthly_salary: Number(item.base_salary) || 0,
+          monthly_salary: baseSalary,
+          hire_date: item.hire_date || null,
+          termination_date: item.termination_date || null,
           rule_application_mode: 'auto',
           is_active: item.is_active !== false
-        } as HREmployee,
-        baseSalary: Number(item.base_salary) || 0,
+        } as HREmployee),
+        baseSalary,
+        dayRate: Number(item.day_rate) || dailyRateFor(baseSalary),
+        hourRate: Number(item.hour_rate) || hourlyRateFor(baseSalary, shiftHours),
         attendedDays: Number(item.attended_days) || 0,
         paidSundayDays: Number(item.paid_sunday_days) || 0,
         workedWeeklyOffDays: Number(item.worked_weekly_off_days) || 0,
         weeklyOffExtraDays: Number(item.weekly_off_extra_days) || 0,
+        weeklyOffPartialHours: Number(item.weekly_off_partial_hours) || 0,
         earnedDays: Number(item.earned_days) || 0,
         earnedBase: Number(item.earned_base) || 0,
         overtimeDays: Number(item.overtime_days) || 0,
         overtimeHours: Number(item.overtime_hours) || 0,
         overtimePay: Number(item.overtime_pay) || 0,
+        directBonusPay: Number(item.direct_bonus_pay) || 0,
+        recurringBonusPay: Number(item.recurring_bonus_pay) || 0,
+        bonusPay: Number(item.bonus_pay) || 0,
         attendanceDays: Number(item.attendance_days) || 0,
         attendanceHours: Number(item.attendance_hours) || 0,
         attendanceDeduction: Number(item.attendance_deduction) || 0,
         sundayDeductionDays: Number(item.sunday_deduction_days) || 0,
-        sundayDeduction: 0,
+        sundayDeduction: Number(item.sunday_deduction) || 0,
         penaltyDays: Number(item.penalty_days) || 0,
         penaltyHours: Number(item.penalty_hours) || 0,
         penaltyDeduction: Number(item.penalty_deduction) || 0,
+        regularLoanDeduction: Number(item.regular_loan_deduction ?? item.loan_deduction) || 0,
+        carryoverDebtDeduction: Number(item.carryover_debt_deduction) || 0,
         loanDeduction: Number(item.loan_deduction) || 0,
         totalDeduction: Number(item.total_deduction) || 0,
-        netPay: Number(item.net_pay) || 0
-      }));
+        exactNetPay,
+        roundedNetPay: Number(item.rounded_net_pay ?? netPay) || 0,
+        netPay,
+        payableCash,
+        carryoverDebtNext: Number(item.carryover_debt_next) || (exactNetPay < 0 ? Math.abs(exactNetPay) : 0),
+        graceUsedMinutes: Number(item.grace_used_minutes) || 0,
+        graceLimitMinutes: Number(item.grace_limit_minutes) || 0,
+        graceExceeded: Boolean(item.grace_exceeded)
+      };
+    });
+  }, [employees, previewRowsRaw, lockedSnapshot, shiftHours]);
+
+  const totals = useMemo(() => {
+    const srcTotals = lockedSnapshot?.totals || previewTotalsRaw;
+    if (srcTotals) {
+      return {
+        baseSalary: Number(srcTotals.base_salary) || 0,
+        earnedBase: Number(srcTotals.earned_base) || 0,
+        overtimePay: Number(srcTotals.overtime_pay) || 0,
+        bonusPay: Number(srcTotals.bonus_pay) || 0,
+        attendanceDeduction: Number(srcTotals.attendance_deduction) || 0,
+        penaltyDeduction: Number(srcTotals.penalty_deduction) || 0,
+        loanDeduction: Number(srcTotals.loan_deduction) || 0,
+        carryoverDebtDeduction: Number(srcTotals.carryover_debt_deduction) || 0,
+        totalDeduction: Number(srcTotals.total_deduction) || 0,
+        payableCash: Number(srcTotals.payable_cash ?? srcTotals.net_pay) || 0,
+        netPay: Number(srcTotals.payable_cash ?? srcTotals.net_pay) || 0
+      };
     }
-
-    const inMonth = (date?: string) => !!date && date.startsWith(month);
-    const today = new Date();
-    const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-    const lastDayOfCurrentMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-    const upToIso =
-      month === currentMonthKey && today.getDate() < lastDayOfCurrentMonth
-        ? isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1))
-        : undefined;
-
-    return employees
-      .filter((emp) => {
-        if (emp.is_active !== false) return true;
-        // مطابقة الباك إند: الموظف غير النشط الذي له سجلات حضور أو جزاءات أو سُلف في هذا الشهر يظهر في كشف الشهر.
-        return (
-          records.some((r) => r.employee_id === emp.id && inMonth(r.date)) ||
-          penalties.some((p) => p.employee_id === emp.id && inMonth(p.date)) ||
-          loans.some((l) => l.employee_id === emp.id && inMonth(l.date))
-        );
-      })
-      .map((employee) => {
-        const calc = computeEmployeeMonthPayroll({
-          employee,
-          records,
-          penalties,
-          loans,
-          monthKey: month,
-          settings,
-          upToIso,
-          weeklyOffIndex,
-          shiftHours,
-          weeklyOffMultiplier
-        });
-
-        return {
-          employee,
-          baseSalary: calc.baseSalary,
-          attendedDays: calc.accrual.attendedDays,
-          paidSundayDays: calc.accrual.paidSundayDays,
-          workedWeeklyOffDays: calc.accrual.workedWeeklyOffDays,
-          weeklyOffExtraDays: calc.accrual.weeklyOffExtraDays,
-          earnedDays: calc.accrual.earnedDays,
-          earnedBase: calc.earnedBase,
-          overtimeDays: calc.overtimeDays,
-          overtimeHours: calc.overtimeHours,
-          overtimePay: calc.overtimePay,
-          attendanceDays: calc.attendanceDays,
-          attendanceHours: calc.attendanceHours,
-          attendanceDeduction: calc.attendanceDeduction,
-          sundayDeductionDays: calc.accrual.sundayDeductionDays,
-          sundayDeduction: 0,
-          penaltyDays: calc.penaltyDays,
-          penaltyHours: calc.penaltyHours,
-          penaltyDeduction: calc.penaltyDeduction,
-          loanDeduction: calc.loanDeduction,
-          totalDeduction: calc.totalDeduction,
-          netPay: calc.netPay
-        };
-      });
-  }, [employees, records, penalties, loans, month, settings, lockedSnapshot, weeklyOffIndex, shiftHours, weeklyOffMultiplier]);
-
-  const totals = useMemo(
-    () =>
-      rows.reduce(
-        (acc, row) => ({
-          baseSalary: acc.baseSalary + row.baseSalary,
-          earnedBase: acc.earnedBase + row.earnedBase,
-          overtimePay: acc.overtimePay + row.overtimePay,
-          attendanceDeduction: acc.attendanceDeduction + row.attendanceDeduction,
-          sundayDeduction: acc.sundayDeduction + row.sundayDeduction,
-          penaltyDeduction: acc.penaltyDeduction + row.penaltyDeduction,
-          loanDeduction: acc.loanDeduction + row.loanDeduction,
-          totalDeduction: acc.totalDeduction + row.totalDeduction,
-          // إجمالي النقد المطلوب دفعه: لا يُسمح لرصيد سالب لعامل أن يخفض مستحقات باقي العمال.
-          netPay: acc.netPay + Math.max(0, row.netPay)
-        }),
-        {
-          baseSalary: 0,
-          earnedBase: 0,
-          overtimePay: 0,
-          attendanceDeduction: 0,
-          sundayDeduction: 0,
-          penaltyDeduction: 0,
-          loanDeduction: 0,
-          totalDeduction: 0,
-          netPay: 0
-        }
-      ),
-    [rows]
-  );
+    return rows.reduce(
+      (acc, row) => ({
+        baseSalary: acc.baseSalary + row.baseSalary,
+        earnedBase: acc.earnedBase + row.earnedBase,
+        overtimePay: acc.overtimePay + row.overtimePay,
+        bonusPay: acc.bonusPay + row.bonusPay,
+        attendanceDeduction: acc.attendanceDeduction + row.attendanceDeduction,
+        penaltyDeduction: acc.penaltyDeduction + row.penaltyDeduction,
+        loanDeduction: acc.loanDeduction + row.loanDeduction,
+        carryoverDebtDeduction: acc.carryoverDebtDeduction + row.carryoverDebtDeduction,
+        totalDeduction: acc.totalDeduction + row.totalDeduction,
+        payableCash: acc.payableCash + Math.max(0, row.payableCash),
+        netPay: acc.netPay + Math.max(0, row.payableCash)
+      }),
+      {
+        baseSalary: 0,
+        earnedBase: 0,
+        overtimePay: 0,
+        bonusPay: 0,
+        attendanceDeduction: 0,
+        penaltyDeduction: 0,
+        loanDeduction: 0,
+        carryoverDebtDeduction: 0,
+        totalDeduction: 0,
+        payableCash: 0,
+        netPay: 0
+      }
+    );
+  }, [rows, lockedSnapshot, previewTotalsRaw]);
 
   const workerDepartment = (row: PayrollRow) =>
     row.employee.department_label ||
@@ -324,8 +336,8 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
       Boolean(terminationDate && monthLastIso && terminationDate < monthLastIso);
     const dayRate = dailyRateFor(row.baseSalary);
     const hourRate = hourlyRateFor(row.baseSalary, shiftHours);
-    const officialStart = effectiveSettings?.official_start_time || '08:30';
-    const officialEnd = effectiveSettings?.official_end_time || '17:30';
+    const officialStart = effectiveSettings?.official_start_time || '08:00';
+    const officialEnd = effectiveSettings?.official_end_time || '17:00';
     const extraAbsenceDaysDefault = absenceExtraPenaltyDaysFor(effectiveSettings?.rules_json);
     const statusLabels: Record<string, string> = {
       present: 'حاضر',
@@ -361,7 +373,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
         : [];
       const hasWeekData = isWeeklyOff && scopedWeek.some((dateStr) => recordsByDate.has(dateStr));
       const weekAbsentCount = isWeeklyOff
-        ? scopedWeek.filter((dateStr) => isUnexcusedAbsenceRecord(recordsByDate.get(dateStr))).length
+        ? scopedWeek.filter((dateStr) => !isAttendedRecord(recordsByDate.get(dateStr))).length
         : 0;
       const weekOffRatio = isWeeklyOff
         ? hasWeekData
@@ -541,12 +553,14 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
         <table class="totals">
           <tr><td>الأجر المكتسب (${row.earnedDays.toFixed(2)} يوم)</td><td class="mono">${formatMoney(row.earnedBase)}</td></tr>
           <tr><td>إجمالي الإضافي (${overtimeText})</td><td class="mono pos">${formatMoney(row.overtimePay)}</td></tr>
-          <tr><td>خصم التأخير والانصراف المبكر (${attendanceText})</td><td class="mono neg">${formatMoney(row.attendanceDeduction)}</td></tr>
-          <tr><td>خصم أيام ${escapeHtml(weeklyOffLabel)} (${row.sundayDeductionDays.toFixed(2)} يوم — مطبّق ضمن الأيام المستحقة)</td><td class="mono">—</td></tr>
+          ${row.bonusPay > 0 ? `<tr><td>المكافآت (فورية ${formatMoney(row.directBonusPay)} + دورية ${formatMoney(row.recurringBonusPay)})</td><td class="mono pos">${formatMoney(row.bonusPay)}</td></tr>` : ''}
+          <tr><td>خصم التأخير والانصراف والغياب الإضافي (${attendanceText})</td><td class="mono neg">${formatMoney(row.attendanceDeduction)}</td></tr>
+          <tr><td>خصم أيام ${escapeHtml(weeklyOffLabel)} (${row.sundayDeductionDays.toFixed(2)} يوم — مطبّق ضمن الأيام المستحقة)</td><td class="mono">${row.sundayDeduction > 0 ? formatMoney(row.sundayDeduction) : '—'}</td></tr>
           <tr><td>الجزاءات (${penaltyText})</td><td class="mono neg">${formatMoney(row.penaltyDeduction)}</td></tr>
-          <tr><td>السُلف</td><td class="mono neg">${formatMoney(row.loanDeduction)}</td></tr>
+          <tr><td>السُلف والأقساط${row.carryoverDebtDeduction > 0 ? ` (تشمل مديونية مرحّلة ${formatMoney(row.carryoverDebtDeduction)})` : ''}</td><td class="mono neg">${formatMoney(row.loanDeduction)}</td></tr>
           <tr><td>إجمالي الخصومات</td><td class="mono neg">${formatMoney(row.totalDeduction)}</td></tr>
-          <tr class="net-row"><td>صافي المستحق</td><td class="mono">${formatMoney(row.netPay)}</td></tr>
+          ${Math.abs(row.exactNetPay - row.netPay) > 0.001 ? `<tr><td>الصافي الدقيق قبل التقريب</td><td class="mono">${formatMoney(row.exactNetPay)}</td></tr>` : ''}
+          <tr class="net-row"><td>${row.netPay < 0 ? 'رصيد سالب يترحّل للشهر التالي (صرف كاش 0.00)' : 'صافي الصرف النهائي (مقرّب لأقرب 5 ج.م)'}</td><td class="mono">${formatMoney(row.netPay)}</td></tr>
         </table>
       </div>
       ${renderSignatureBar(['توقيع العامل بالاستلام', 'مسؤول الموارد البشرية', 'اعتماد الإدارة'], true)}
@@ -834,7 +848,10 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           </span>
           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] font-black text-emerald-700">
             <Timer className="w-3.5 h-3.5" />
-            إجمالي الإضافي: {formatMoney(totals.overtimePay)}
+            الإضافي: {formatMoney(totals.overtimePay)}
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 text-[11px] font-black text-indigo-700">
+            المكافآت: {formatMoney(totals.bonusPay)}
           </span>
           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 border border-rose-200 text-[11px] font-black text-rose-700">
             <AlertTriangle className="w-3.5 h-3.5" />
@@ -842,7 +859,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
           </span>
           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] font-black text-emerald-700">
             <Wallet className="w-3.5 h-3.5" />
-            صافي المستحق: {formatMoney(totals.netPay)}
+            إجمالي الكاش المطلوب: {formatMoney(totals.payableCash)}
           </span>
         </div>
 
@@ -870,12 +887,13 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
                     الأجر المكتسب
                   </th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">الإضافي</th>
+                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">المكافآت</th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">
-                    خصم التأخير
+                    خصم الحضور
                   </th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">جزاءات</th>
-                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">سُلف</th>
-                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">الصافي</th>
+                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">سُلف / مديونية</th>
+                  <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">صافي الصرف</th>
                   <th className="text-center px-4 py-2.5 font-black whitespace-nowrap">إجراءات</th>
                 </tr>
               </thead>
@@ -917,6 +935,14 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
                         {row.overtimeDays} يوم / {row.overtimeHours} ساعة
                       </p>
                     </td>
+                    <td className="px-4 py-3 text-center font-mono font-bold text-indigo-600 whitespace-nowrap">
+                      <p>{formatMoney(row.bonusPay)}</p>
+                      {row.bonusPay > 0 && (
+                        <p className="text-[10px] text-slate-400">
+                          فوري {row.directBonusPay} / دوري {row.recurringBonusPay}
+                        </p>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-center font-mono font-bold text-rose-600 whitespace-nowrap">
                       <p>{formatMoney(row.attendanceDeduction)}</p>
                       <p className="text-[10px] text-slate-400">
@@ -933,7 +959,12 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
                       </p>
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-bold text-rose-600 whitespace-nowrap">
-                      {formatMoney(row.loanDeduction)}
+                      <p>{formatMoney(row.loanDeduction)}</p>
+                      {row.carryoverDebtDeduction > 0 && (
+                        <p className="text-[10px] text-amber-700 font-bold">
+                          منها مديونية مرحّلة {formatMoney(row.carryoverDebtDeduction)}
+                        </p>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-center font-mono font-black whitespace-nowrap">
                       <span
@@ -945,6 +976,16 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
                       >
                         {formatMoney(row.netPay)}
                       </span>
+                      {Math.abs(row.exactNetPay - row.netPay) > 0.001 && (
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          دقيق: {formatMoney(row.exactNetPay)}
+                        </p>
+                      )}
+                      {row.netPay < 0 && (
+                        <p className="text-[10px] text-rose-600 font-bold mt-1">
+                          كاش 0.00 — يترحّل {formatMoney(row.carryoverDebtNext)}
+                        </p>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-center">
                       <button
@@ -971,6 +1012,9 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
                   <td className="px-4 py-3 text-center font-mono font-black text-emerald-700">
                     {formatMoney(totals.overtimePay)}
                   </td>
+                  <td className="px-4 py-3 text-center font-mono font-black text-indigo-700">
+                    {formatMoney(totals.bonusPay)}
+                  </td>
                   <td className="px-4 py-3 text-center font-mono font-black text-rose-700">
                     {formatMoney(totals.attendanceDeduction)}
                   </td>
@@ -981,7 +1025,7 @@ export const PayrollPanel: React.FC<{ employees: HREmployee[] }> = ({ employees 
                     {formatMoney(totals.loanDeduction)}
                   </td>
                   <td className="px-4 py-3 text-center font-mono font-black text-emerald-700">
-                    {formatMoney(totals.netPay)}
+                    {formatMoney(totals.payableCash)}
                   </td>
                   <td className="px-4 py-3" />
                 </tr>
